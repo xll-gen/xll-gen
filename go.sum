@@ -1,6 +1,2 @@
 github.com/xll-gen/array2d v0.2.1 h1:mlzam86y9UruA+JNkAcIaGgDS8l70b6boKpPNr/oeFw=
 github.com/xll-gen/array2d v0.2.1/go.mod h1:/Ps/FRwqf7daa8i9735wmX8dYZks1pR/sdTA97KFZrI=
-golang.org/x/sync v0.12.0 h1:MHc5BpPuC30uJk597Ri8TV3CNZcTLu6B6z4lJy+g6Jw=
-golang.org/x/sync v0.12.0/go.mod h1:1dzgHSNfp02xaA81J2MS99Qcpr2w7fw1gpm99rleRqA=
-golang.org/x/sys v0.31.0 h1:ioabZlmFYtWhL+TRYpcnNlLwhyxaM9kWTDEmfnprqik=
-golang.org/x/sys v0.31.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=

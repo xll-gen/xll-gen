@@ -14,7 +14,7 @@ func init() {
 
 // nilType represents an XLOPER with TypeNil.
 type nilType struct {
-	_   [24]byte
+	_   [XlTypeOffset]byte
 	typ XlType
 }
 

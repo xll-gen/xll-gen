@@ -9,8 +9,8 @@ import (
 func _() {
 	var x [1]struct{}
 	var _ XLOPER = (*AsyncHandle)(nil)
-	var _ = x[32-unsafe.Sizeof(AsyncHandle{})]
-	var _ = x[24-unsafe.Offsetof(AsyncHandle{}.typ)]
+	var _ = x[XlOper12Size-unsafe.Sizeof(AsyncHandle{})]
+	var _ = x[XlTypeOffset-unsafe.Offsetof(AsyncHandle{}.typ)]
 }
 
 // AsyncHandle represents an xltypeBigData XLOPER. This type is used by Excel
@@ -23,7 +23,7 @@ func _() {
 type AsyncHandle struct {
 	handle unsafe.Pointer
 	cbData int32
-	_      [24 - ptrSize - unsafe.Sizeof(int32(0))]byte
+	_      [XlTypeOffset - ptrSize - unsafe.Sizeof(int32(0))]byte
 	typ    XlType
 }
 

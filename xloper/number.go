@@ -11,7 +11,7 @@ var _ XLOPER = (*Number)(nil)
 // Number represents an XLOPER with a float64 value (TypeNum).
 type Number struct {
 	val float64
-	_   [24 - unsafe.Sizeof(float64(0))]byte
+	_   [XlTypeOffset - unsafe.Sizeof(float64(0))]byte
 	typ XlType
 }
 
@@ -71,7 +71,7 @@ var _ XLOPER = (*Int32)(nil)
 // Int32 represents an XLOPER with an int32 value (TypeInt).
 type Int32 struct {
 	val int32
-	_   [24 - unsafe.Sizeof(int32(0))]byte
+	_   [XlTypeOffset - unsafe.Sizeof(int32(0))]byte
 	typ XlType
 }
 
@@ -126,7 +126,7 @@ var _ XLOPER = (*Bool)(nil)
 // Bool represents an XLOPER with a bool value (TypeBool).
 type Bool struct {
 	val int32 // Excel uses a 32-bit integer for booleans in XLOPER12
-	_   [24 - unsafe.Sizeof(int32(0))]byte
+	_   [XlTypeOffset - unsafe.Sizeof(int32(0))]byte
 	typ XlType
 }
 

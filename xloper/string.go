@@ -9,8 +9,8 @@ import (
 func _() {
 	var x [1]struct{}
 	var _ XLOPER = (*String)(nil)
-	var _ = x[32-unsafe.Sizeof(String{})]
-	var _ = x[24-unsafe.Offsetof(String{}.typ)]
+	var _ = x[XlOper12Size-unsafe.Sizeof(String{})]
+	var _ = x[XlTypeOffset-unsafe.Offsetof(String{}.typ)]
 }
 
 const MaxStringLength = 32767
@@ -54,7 +54,7 @@ type String struct {
 	ptr *uint16
 	// Go-managed buffer to keep it alive. This field is not part of the XLOPER12 memory layout.
 	stringBuf *PascalString
-	_         [24 - ptrSize*2]byte
+	_         [XlTypeOffset - ptrSize*2]byte
 	typ       XlType
 }
 

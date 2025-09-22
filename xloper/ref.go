@@ -11,13 +11,13 @@ func _() {
 
 	var _ XLOPER = (*Sref)(nil)
 	var _ Ref = (*Sref)(nil)
-	var _ = x[32-unsafe.Sizeof(Sref{})]
-	var _ = x[24-unsafe.Offsetof(Sref{}.typ)]
+	var _ = x[XlOper12Size-unsafe.Sizeof(Sref{})]
+	var _ = x[XlTypeOffset-unsafe.Offsetof(Sref{}.typ)]
 
 	var _ XLOPER = (*Mref)(nil)
 	var _ Ref = (*Mref)(nil)
-	var _ = x[32-unsafe.Sizeof(Mref{})]
-	var _ = x[24-unsafe.Offsetof(Mref{}.typ)]
+	var _ = x[XlOper12Size-unsafe.Sizeof(Mref{})]
+	var _ = x[XlTypeOffset-unsafe.Offsetof(Mref{}.typ)]
 }
 
 // Ref is an interface for XLOPERs that represent cell references.
@@ -49,7 +49,7 @@ func (r XLREF) BoundsCheck() error {
 type Sref struct {
 	count uint16
 	ref   XLREF
-	_     [24 - unsafe.Sizeof(XLREF{}) - 4]byte
+	_     [XlTypeOffset - unsafe.Sizeof(XLREF{}) - 4]byte
 	typ   XlType
 	_     [4]byte
 }
@@ -180,7 +180,7 @@ func NewXLMREF(refs []XLREF) *XLMREF {
 type Mref struct {
 	ptr     *XLMREF // Pointer to the count-prefixed array of XLMREF12s
 	idSheet uintptr
-	_       [24 - 2*ptrSize]byte
+	_       [XlTypeOffset - 2*ptrSize]byte
 	typ     XlType
 }
 

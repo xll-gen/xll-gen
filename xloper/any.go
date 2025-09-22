@@ -8,7 +8,7 @@ import (
 var _ XLOPER = (*Any)(nil)
 
 type Any struct {
-	buf [24]byte
+	buf [XlTypeOffset]byte
 	typ XlType
 }
 

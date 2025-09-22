@@ -49,7 +49,7 @@ var _ XLOPER = (*xlErr)(nil)
 
 type xlErr struct {
 	val XlErrorCode
-	_   [24 - unsafe.Sizeof(XlErrorCode(0))]byte
+	_   [XlTypeOffset - unsafe.Sizeof(XlErrorCode(0))]byte
 	typ XlType
 }
 

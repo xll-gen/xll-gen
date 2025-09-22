@@ -13,8 +13,8 @@ import (
 func _() {
 	var x [1]struct{}
 	var _ XLOPER = (*Multi)(nil)
-	var _ = x[32-unsafe.Sizeof(Multi{})]
-	var _ = x[24-unsafe.Offsetof(Multi{}.typ)]
+	var _ = x[XlOper12Size-unsafe.Sizeof(Multi{})]
+	var _ = x[XlTypeOffset-unsafe.Offsetof(Multi{}.typ)]
 }
 
 type Array2D = array2d.Array2D[Any]
@@ -25,7 +25,7 @@ type Multi struct {
 	rows       int32
 	cols       int32
 	arraySlice *[]Any
-	_          [24 - ptrSize*2 - unsafe.Sizeof(int32(0))*2]byte
+	_          [XlTypeOffset - ptrSize*2 - unsafe.Sizeof(int32(0))*2]byte
 	typ        XlType
 }
 
