@@ -17,8 +17,8 @@
 // to a Go string, and convert it back to the same original UTF-16 string.
 //
 // See go.dev/issues/59971 for more info.
-
 // Copied from https://github.com/golang/go/blob/master/src/syscall/wtf8_windows.go
+
 package xloper
 
 import (
