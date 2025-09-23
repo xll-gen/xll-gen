@@ -129,11 +129,11 @@ func ViewSref(ptr unsafe.Pointer) (*Sref, error) {
 type XLMREF []byte
 
 // Ptr returns a pointer to the underlying XLMREF data.
-func (m *XLMREF) Ptr() unsafe.Pointer {
+func (m *XLMREF) Ptr() *uint16 {
 	if len(*m) == 0 {
 		return nil
 	}
-	return unsafe.Pointer(&(*m)[0])
+	return (*uint16)(unsafe.Pointer(&(*m)[0]))
 }
 
 func (m *XLMREF) Count() uint16 {
@@ -178,9 +178,10 @@ func NewXLMREF(refs []XLREF) *XLMREF {
 // Mref is the Go representation of an xltypeRef XLOPER, which represents a
 // reference to one or more rectangular areas on a single sheet.
 type Mref struct {
-	ptr     *XLMREF // Pointer to the count-prefixed array of XLMREF12s
+	ptr     *uint16 // Pointer to the count-prefixed array of XLMREF12s
 	idSheet uintptr
-	_       [XlTypeOffset - 2*ptrSize]byte
+	mrefBuf *XLMREF // Managed buffer to keep it alive, not part of XLOPER12 layout
+	_       [XlTypeOffset - 3*ptrSize]byte
 	typ     XlType
 }
 
@@ -194,7 +195,11 @@ func (m *Mref) Ref() XLREF {
 	if m.ptr == nil {
 		return XLREF{}
 	}
-	return m.ptr.Refs()[0]
+	refs := m.Refs()
+	if len(refs) == 0 {
+		return XLREF{}
+	}
+	return refs[0]
 }
 
 // Refs returns a slice of XLREF structures defining the areas in the multi-reference.
@@ -202,7 +207,11 @@ func (m *Mref) Refs() []XLREF {
 	if m.ptr == nil {
 		return nil
 	}
-	return m.ptr.Refs()
+	count := *m.ptr
+	if count == 0 {
+		return nil
+	}
+	return unsafe.Slice((*XLREF)(unsafe.Pointer(unsafe.Add(unsafe.Pointer(m.ptr), 2))), int(count))
 }
 
 // Value returns the slice of XLREF coordinates as an `any` type.
@@ -242,11 +251,8 @@ func (m *Mref) Set(idSheet uintptr, refs []XLREF) error {
 
 	m.typ = TypeRef
 	m.idSheet = idSheet
-
-	m.ptr = NewXLMREF(refs)
-	if m.ptr == nil {
-		return ErrInvalid
-	}
+	m.mrefBuf = NewXLMREF(refs)
+	m.ptr = m.mrefBuf.Ptr()
 	return nil
 }
 
