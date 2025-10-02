@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/xll-gen/xll-gen/xloper"
 )
@@ -131,21 +132,23 @@ var ErrInvalidColumnName = errors.New("excel: invalid column name")
 
 // Ctoa converts a 0-based column index to an Excel column name (e.g., 0 -> "A", 26 -> "AA").
 func Ctoa(col int32) (string, error) {
-	if col < 0 || col >= 16384 {
+	if col < 0 || col >= 16384 { // Max columns in Excel is 16384 (XFD)
 		return "", xloper.ErrOutOfBounds
 	}
-	var result []byte
-	// Use 1-based index for calculation
+
+	// Max column name is XFD (3 chars).
+	var buf [3]byte
+	i := len(buf) - 1
+
 	n := col + 1
 	for n > 0 {
-		// Find remainder
-		rem := (n - 1) % 26
-		// Prepend character to result
-		result = append([]byte{byte('A' + rem)}, result...)
-		// Update n with integer division
+		buf[i] = byte('A' + (n-1)%26)
 		n = (n - 1) / 26
+		i--
 	}
-	return string(result), nil
+
+	// cut extra null byte
+	return unsafe.String(&buf[i+1], len(buf)-1-i), nil
 }
 
 // Atoc converts an Excel column name to a 0-based column index (e.g., "A" -> 0, "AA" -> 26).
@@ -182,7 +185,7 @@ func quoteSheetName(name string) string {
 	// Excel requires quotes for names that contain spaces, non-alphanumeric characters,
 	// or could be mistaken for a cell reference. A simple check for spaces or single
 	// quotes (which need escaping) handles most common cases.
-	if strings.ContainsAny(name, " '[]*?/:\\") {
+	if strings.ContainsAny(name, " '[]*?/:\\-!") {
 		// Existing single quotes are escaped by doubling them.
 		return "'" + strings.ReplaceAll(name, "'", "''") + "'"
 	}

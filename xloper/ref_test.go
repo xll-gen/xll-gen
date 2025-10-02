@@ -150,3 +150,36 @@ func TestMref(t *testing.T) {
 		}
 	})
 }
+
+func TestXLMREF(t *testing.T) {
+	refs := []XLREF{
+		{RowFirst: 1, RowLast: 2, ColFirst: 3, ColLast: 4},
+		{RowFirst: 10, RowLast: 12, ColFirst: 13, ColLast: 14},
+	}
+
+	// Test NewXLMREF which creates the byte layout
+	xlmref := NewXLMREF(refs)
+	if xlmref == nil {
+		t.Fatal("NewXLMREF returned nil")
+	}
+
+	// Test Count() which reads the count via unsafe cast
+	if count := xlmref.Count(); count != uint16(len(refs)) {
+		t.Errorf("Expected count %d, got %d", len(refs), count)
+	}
+
+	// Test Ptr() which gets a pointer to the start of the buffer
+	ptr := xlmref.Ptr()
+	if ptr == nil {
+		t.Fatal("Ptr() returned nil")
+	}
+	if *ptr != uint16(len(refs)) {
+		t.Errorf("Value at Ptr() should be count %d, got %d", len(refs), *ptr)
+	}
+
+	// Test Refs() which uses unsafe.Slice
+	retrievedRefs := xlmref.Refs()
+	if !reflect.DeepEqual(retrievedRefs, refs) {
+		t.Errorf("Refs() returned %v, want %v", retrievedRefs, refs)
+	}
+}

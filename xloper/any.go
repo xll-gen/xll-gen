@@ -124,6 +124,14 @@ func View(ptr unsafe.Pointer) XLOPER {
 		if op, err := ViewMulti(ptr); err == nil {
 			return op
 		}
+	case TypeSRef:
+		if op, err := ViewSref(ptr); err == nil {
+			return op
+		}
+	case TypeRef:
+		if op, err := ViewMref(ptr); err == nil {
+			return op
+		}
 	}
 
 	// Return Nil for TypeNil, TypeMissing, or any other unhandled types.
