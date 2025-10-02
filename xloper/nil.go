@@ -28,8 +28,12 @@ func (n *nilType) Value() any {
 	return nil
 }
 
+func (n *nilType) String() string {
+	return "nil"
+}
+
 // Pin is a no-op for NilInstance as it's a global singleton.
-func (n *nilType) Pin(p *runtime.Pinner) {
+func (n *nilType) Pin(p runtime.Pinner) {
 	// No-op
 }
 

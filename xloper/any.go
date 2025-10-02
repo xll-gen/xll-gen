@@ -7,11 +7,16 @@ import (
 
 var _ XLOPER = (*Any)(nil)
 
+// Any is a generic XLOPER12-sized struct that can represent any XLOPER type.
+// It is particularly useful for creating arrays of mixed-type data (xltypeMulti)
+// or for situations where the data type is not known at compile time. It acts
+// as a raw memory buffer that can be viewed as a specific XLOPER type.
 type Any struct {
 	buf [XlTypeOffset]byte
 	typ XlType
 }
 
+// Type returns the underlying XLOPER type identifier.
 func (a *Any) Type() XlType {
 	return a.typ
 }
@@ -41,6 +46,8 @@ func (a *Any) Set(v any) {
 		SetNil(a)
 	case XlErrorCode:
 		SetError(a, v)
+	case XLREF:
+		SetSref(a, v)
 	default:
 		SetError(a, XlErrValue)
 	}
@@ -130,13 +137,22 @@ func (a *Any) Value() any {
 	return View(unsafe.Pointer(a)).Value()
 }
 
+// String delegates the string conversion to the specific XLOPER type.
+// It views the `Any` struct as a specific XLOPER type and then calls the
+// `String()` method on that specific type.
+func (a *Any) String() string {
+	return View(unsafe.Pointer(a)).String()
+}
+
 // Pin delegates the pinning operation to the specific XLOPER type. This is
 // necessary to ensure that any Go-managed memory associated with the XLOPER
 // (like the buffer for a string or a multi) is not moved by the garbage collector.
-func (a *Any) Pin(p *runtime.Pinner) {
+func (a *Any) Pin(p runtime.Pinner) {
 	View(unsafe.Pointer(a)).Pin(p)
 }
 
+// NewEmpty creates a new, zeroed-out Any struct. This is useful for allocating
+// an XLOPER that will be populated by an external C function.
 func NewEmpty() *Any {
 	return &Any{}
 }

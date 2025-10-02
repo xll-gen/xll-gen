@@ -1,6 +1,7 @@
 package xloper
 
 import (
+	"fmt"
 	"runtime"
 	"unsafe"
 )
@@ -48,9 +49,14 @@ func (h *AsyncHandle) Value() any {
 	return h.Bytes()
 }
 
+// String returns a placeholder string representation for the AsyncHandle.
+func (h *AsyncHandle) String() string {
+	return fmt.Sprintf("AsyncHandle %p", h)
+}
+
 // Pin is a no-op for AsyncHandle. The memory pointed to by the handle is
 // managed by Excel, not the Go garbage collector, so no pinning is required.
-func (h *AsyncHandle) Pin(p *runtime.Pinner) {
+func (h *AsyncHandle) Pin(p runtime.Pinner) {
 	// no-op: The handle's memory is managed by Excel.
 }
 

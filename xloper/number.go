@@ -2,6 +2,7 @@ package xloper
 
 import (
 	"runtime"
+	"strconv"
 	"unsafe"
 )
 
@@ -34,7 +35,11 @@ func (n *Number) Value() any {
 	return n.Float64()
 }
 
-func (n *Number) Pin(p *runtime.Pinner) {
+func (n *Number) String() string {
+	return strconv.FormatFloat(n.Float64(), 'g', -1, 64)
+}
+
+func (n *Number) Pin(p runtime.Pinner) {
 	p.Pin(n)
 }
 
@@ -90,7 +95,11 @@ func (i *Int32) Value() any {
 	return i.Int32()
 }
 
-func (i *Int32) Pin(p *runtime.Pinner) {
+func (i *Int32) String() string {
+	return strconv.FormatInt(int64(i.val), 10)
+}
+
+func (i *Int32) Pin(p runtime.Pinner) {
 	p.Pin(i)
 }
 
@@ -145,7 +154,11 @@ func (b *Bool) Value() any {
 	return b.Bool()
 }
 
-func (b *Bool) Pin(p *runtime.Pinner) {
+func (b *Bool) String() string {
+	return strconv.FormatBool(b.Bool())
+}
+
+func (b *Bool) Pin(p runtime.Pinner) {
 	p.Pin(b)
 }
 

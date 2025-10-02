@@ -1,6 +1,7 @@
 package xloper
 
 import (
+	"fmt"
 	"runtime"
 	"unsafe"
 )
@@ -20,11 +21,11 @@ func _() {
 	var _ = x[XlTypeOffset-unsafe.Offsetof(Mref{}.typ)]
 }
 
-// Ref is an interface for XLOPERs that represent cell references.
-// It is implemented by Sref and Mref.
 type Ref interface {
-	Ref() XLREF
-	Refs() []XLREF
+	IdSheet() uintptr
+	XLREF() XLREF
+	Mref() (*Mref, error)
+	String() string
 }
 
 // XLREF corresponds to the XLREF12 structure, defining the coordinates of a
@@ -36,16 +37,20 @@ type XLREF struct {
 	ColLast  int32
 }
 
+// BoundsCheck verifies if the reference coordinates are within Excel's valid grid limits.
+// Excel's grid is 1,048,576 rows by 16,384 columns.
 func (r XLREF) BoundsCheck() error {
 	if r.RowFirst < 0 || r.RowLast < 0 || r.ColFirst < 0 || r.ColLast < 0 {
 		return ErrInvalid
 	}
-	if r.RowFirst > 1048576 || r.RowLast > 1048576 || r.ColFirst > 16384 || r.ColLast > 16384 {
+	if r.RowFirst >= 1048576 || r.RowLast >= 1048576 || r.ColFirst >= 16384 || r.ColLast >= 16384 {
 		return ErrOutOfBounds
 	}
 	return nil
 }
 
+// Sref represents an xltypeSRef XLOPER, which is a simple reference to a
+// single rectangular area on the currently active sheet.
 type Sref struct {
 	count uint16
 	ref   XLREF
@@ -59,28 +64,32 @@ func (s *Sref) Type() XlType {
 	return s.typ
 }
 
-// Ref returns the XLREF structure containing the coordinates of the reference.
-func (s *Sref) Ref() (ret XLREF) {
+// IdSheet returns 0, as Sref does not contain sheet ID information.
+func (m *Sref) IdSheet() uintptr {
+	return 0
+}
+
+// FirstRef returns the first XLREF in the Sref, which is the only one.
+func (s *Sref) XLREF() XLREF {
 	return s.ref
 }
 
-// Refs returns a slice containing the single XLREF of the Sref.
-func (s *Sref) Refs() []XLREF {
-	return []XLREF{s.ref}
+// Ref returns a pointer to the Sref struct itself.
+func (s *Sref) Mref() (*Mref, error) {
+	return NewMref(0, []XLREF{s.ref}), nil
 }
 
-// Value returns the underlying XLREF coordinates as an `any` type.
-// It returns nil if the reference is empty.
+// Value returns the Sref struct itself as an `any` type.
 func (s *Sref) Value() any {
-	ref := s.Ref()
-	if ref.RowFirst == 0 && ref.RowLast == 0 && ref.ColFirst == 0 && ref.ColLast == 0 {
-		return nil
-	}
-	return ref
+	return s
+}
+
+func (s *Sref) String() string {
+	return fmt.Sprintf("Sref %+v", s.ref)
 }
 
 // Pin prevents the garbage collector from moving the Sref struct.
-func (s *Sref) Pin(p *runtime.Pinner) {
+func (s *Sref) Pin(p runtime.Pinner) {
 	p.Pin(s)
 }
 
@@ -99,8 +108,7 @@ func SetSref(a *Any, ref XLREF) error {
 
 // NewSref creates a new Sref XLOPER for the given 0-indexed coordinates.
 // It returns nil if the coordinates are out of Excel's valid bounds.
-func NewSref(rowFirst, rowLast, colFirst, colLast int32) *Sref {
-	ref := XLREF{rowFirst, rowLast, colFirst, colLast}
+func NewSref(ref XLREF) *Sref {
 	if err := ref.BoundsCheck(); err != nil {
 		return nil
 	}
@@ -121,6 +129,9 @@ func ViewSref(ptr unsafe.Pointer) (*Sref, error) {
 	if s.typ.Base() != TypeSRef {
 		return nil, ErrInvalid
 	}
+	if err := s.ref.BoundsCheck(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -136,6 +147,7 @@ func (m *XLMREF) Ptr() *uint16 {
 	return (*uint16)(unsafe.Pointer(&(*m)[0]))
 }
 
+// Count returns the number of XLREF structures in the XLMREF.
 func (m *XLMREF) Count() uint16 {
 	if len(*m) < 2 {
 		return 0
@@ -143,7 +155,8 @@ func (m *XLMREF) Count() uint16 {
 	return *(*uint16)(unsafe.Pointer(&(*m)[0]))
 }
 
-func (m *XLMREF) SetCount(count uint16) {
+// setCount sets the number of XLREF structures in the XLMREF.
+func (m *XLMREF) setCount(count uint16) {
 	if len(*m) < 2 {
 		return
 	}
@@ -159,6 +172,8 @@ func (m *XLMREF) Refs() []XLREF {
 	return unsafe.Slice((*XLREF)(unsafe.Pointer(&(*m)[2])), int(cnt))
 }
 
+// NewXLMREF creates a new XLMREF byte slice from a slice of XLREF structures.
+// This is a helper for creating the C-compatible memory layout for Mref.
 func NewXLMREF(refs []XLREF) *XLMREF {
 	if len(refs) == 0 {
 		return nil
@@ -169,7 +184,7 @@ func NewXLMREF(refs []XLREF) *XLMREF {
 		count = 32767
 	}
 	xlMref := make(XLMREF, 2+count*int(unsafe.Sizeof(XLREF{})))
-	xlMref.SetCount(uint16(count))
+	xlMref.setCount(uint16(count))
 	refTblSlice := unsafe.Slice((*XLREF)(unsafe.Pointer(&xlMref[2])), count)
 	copy(refTblSlice, refs)
 	return &xlMref
@@ -178,6 +193,10 @@ func NewXLMREF(refs []XLREF) *XLMREF {
 // Mref is the Go representation of an xltypeRef XLOPER, which represents a
 // reference to one or more rectangular areas on a single sheet.
 type Mref struct {
+	// ptr is a pointer to the count-prefixed array of XLMREF12 structures.
+	// idSheet is the ID of the sheet this reference belongs to.
+	// mrefBuf is a Go-managed buffer to keep the data pointed to by ptr alive,
+	// preventing it from being garbage collected. It is not part of the XLOPER12 layout.
 	ptr     *uint16 // Pointer to the count-prefixed array of XLMREF12s
 	idSheet uintptr
 	mrefBuf *XLMREF // Managed buffer to keep it alive, not part of XLOPER12 layout
@@ -190,39 +209,43 @@ func (m *Mref) Type() XlType {
 	return m.typ
 }
 
-// Ref returns a slice of XLREF structures defining the areas in the multi-reference.
-func (m *Mref) Ref() XLREF {
-	if m.ptr == nil {
+// XLREF returns the first XLREF in the Mref.
+func (m *Mref) XLREF() XLREF {
+	if m.mrefBuf.Count() == 0 {
 		return XLREF{}
 	}
-	refs := m.Refs()
-	if len(refs) == 0 {
-		return XLREF{}
-	}
-	return refs[0]
+	return m.mrefBuf.Refs()[0]
 }
 
-// Refs returns a slice of XLREF structures defining the areas in the multi-reference.
-func (m *Mref) Refs() []XLREF {
-	if m.ptr == nil {
+// XLREFs returns the slice of XLREF structures defining the areas in the multi-reference.
+func (m *Mref) XLREFs() []XLREF {
+	if m.mrefBuf == nil {
 		return nil
 	}
-	count := *m.ptr
-	if count == 0 {
-		return nil
-	}
-	return unsafe.Slice((*XLREF)(unsafe.Pointer(unsafe.Add(unsafe.Pointer(m.ptr), 2))), int(count))
+	return m.mrefBuf.Refs()
+}
+
+// Ref returns a slice of XLREF structures defining the areas in the multi-reference.
+func (m *Mref) Mref() (*Mref, error) {
+	return m, nil
 }
 
 // Value returns the slice of XLREF coordinates as an `any` type.
 func (m *Mref) Value() any {
-	return m.Refs()
+	return m
+}
+
+func (m *Mref) String() string {
+	return fmt.Sprintf("Mref %d, %+v", m.idSheet, m.XLREFs())
 }
 
 // Pin prevents the garbage collector from moving the Mref struct and its internal
 // data buffer. This is crucial for passing a stable pointer to C code.
-func (m *Mref) Pin(p *runtime.Pinner) {
+func (m *Mref) Pin(p runtime.Pinner) {
 	p.Pin(m)
+	if m.mrefBuf != nil {
+		p.Pin(m.mrefBuf)
+	}
 }
 
 // IdSheet returns the sheet ID that this reference belongs to.
@@ -264,7 +287,7 @@ func SetMref(a *Any, idSheet uintptr, refs []XLREF) error {
 
 // NewMref creates a new Mref XLOPER from a sheet ID and a slice of XLREF coordinates.
 // It returns nil if the number of references is zero or exceeds the Excel limit.
-func NewMref(idSheet uintptr, refs []XLREF) *Mref {
+func NewMref(idsheet uintptr, refs []XLREF) *Mref {
 	if len(refs) == 0 {
 		return nil
 	}
@@ -276,7 +299,7 @@ func NewMref(idSheet uintptr, refs []XLREF) *Mref {
 	res := &Mref{
 		typ: TypeRef,
 	}
-	res.Set(idSheet, refs)
+	_ = res.Set(idsheet, refs)
 	return res
 }
 

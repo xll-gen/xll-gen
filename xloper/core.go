@@ -52,5 +52,6 @@ func (t XlType) IsDLLFree() bool {
 type XLOPER interface {
 	Type() XlType // Returns the Excel type (e.g., TypeNum)
 	Value() any
-	Pin(p *runtime.Pinner)
+	String() string
+	Pin(p runtime.Pinner)
 }

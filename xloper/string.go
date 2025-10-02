@@ -80,7 +80,7 @@ func (s *String) Value() any {
 	return s.String()
 }
 
-func (s *String) Pin(p *runtime.Pinner) {
+func (s *String) Pin(p runtime.Pinner) {
 	p.Pin(s)
 	if s.stringBuf != nil {
 		p.Pin(s.stringBuf)

@@ -19,7 +19,8 @@ a consistent way to handle different data types.
 	type XLOPER interface {
 		Type() XlType
 		Value() any
-		Pin(p *runtime.Pinner)
+		String() string
+		Pin(p runtime.Pinner)
 	}
 
 2. Type-Specific Structs:
@@ -32,7 +33,7 @@ precisely matches the memory layout of the C `XLOPER12` union.
   - `String`: For Pascal-style wide character strings (`xltypeStr`).
   - `Bool`: For boolean values (`xltypeBool`).
   - `Multi`: For two-dimensional arrays of other XLOPERs (`xltypeMulti`).
-  - `Ref`, `Sref`, `Mref`: For worksheet cell/range references (`xltypeRef`, `xltypeSRef`).
+  - `Sref`, `Mref`: For worksheet cell/range references (`xltypeSRef`, `xltypeRef`).
   - `Error`: For Excel error values like `#N/A` (`xltypeErr`).
   - `Nil`: For empty or missing arguments (`xltypeNil`, `xltypeMissing`).
   - `AsyncHandle`: For asynchronous function handles (`xltypeBigData`).
@@ -55,11 +56,12 @@ pointer to them.
 
 5. Bidirectional Conversion:
 
-  - From Go to XLOPER: Use the `New...` functions (e.g., `NewString`, `NewNumber`,
-    `NewMulti`) to create XLOPER types from standard Go values.
+  - From Go to XLOPER: Use the `New` function or type-specific `New...` functions
+    (e.g., `NewString`, `NewNumber`, `NewMulti`) to create XLOPER types from
+    standard Go values.
   - From XLOPER to Go: When receiving an `unsafe.Pointer` from Excel, use the
-    `View` function or type-specific `View...` functions (e.g., `ViewString`,
-    `ViewNumber`) to safely cast the pointer to the appropriate Go `XLOPER` type.
-    The `Value()` method can then be used to extract the data as a standard Go `any` type.
+    `View` function to safely interpret the pointer as the appropriate Go `XLOPER`
+    type. The `Value()` method can then be used to extract the data as a standard
+    Go `any` type.
 */
 package xloper

@@ -2,7 +2,12 @@
 
 The `xloper` package is designed to facilitate seamless interaction between the Go language and `XLOPER12`, the fundamental data structure used in the Microsoft Excel C API. It acts as a bridge between Go's type safety and Excel's flexible data type system, making XLL add-in development easier and safer.
 
-This package uses `unsafe` to directly handle C-style memory layouts, but aims to provide a safe and Go-friendly interface to the user.
+The companion `excel` package provides higher-level APIs for interacting with Excel itself, including calling worksheet functions, managing ranges, and handling Excel contexts. Together, these packages allow you to build robust Excel XLL add-ins in Go.
+
+## Package Overview
+
+- **`xloper`**: Low-level XLOPER type mapping, memory management, and conversion utilities.
+- **`excel`**: High-level Excel API wrappers for calling functions, managing ranges, and handling Excel-specific contexts.
 
 ## Key Features
 
@@ -13,6 +18,7 @@ This package uses `unsafe` to directly handle C-style memory layouts, but aims t
     * Safely view `XLOPER` pointers received from Excel as Go types using `View...` functions (e.g., `ViewString`, `ViewNumber`).
 * **`Any` Type**: A universal container that can hold any `XLOPER` type. The `Value()` method makes it easy to extract the internal data as a Go `any` type.
 * **`Multi` Type Support**: Supports converting 2D slices (`[][]any`) to Excel's `xltypeMulti` and vice versa, allowing for efficient handling of large amounts of data.
+* **Excel Integration**: The `excel` package lets you call worksheet functions, manage ranges, and interact with Excel contexts from Go.
 
 ## Core Interface: `XLOPER`
 
@@ -28,7 +34,7 @@ type XLOPER interface {
 
     // Pin pins the Go memory associated with the XLOPER (e.g., a string buffer)
     // so that C code (Excel) can access it safely.
-    Pin(p *runtime.Pinner)
+    Pin(p runtime.Pinner)
 }
 ```
 
@@ -57,6 +63,7 @@ multiOper, err := xloper.NewMulti(multiData)
 // The New function automatically handles various types
 anyOper, err := xloper.New(true) // Returns *xloper.Bool
 ```
+
 
 ### Converting XLOPER to Go Data
 
@@ -106,7 +113,15 @@ func ProcessOper(ptr unsafe.Pointer) {
 | `xltypeBigData` | `xloper.AsyncHandle`  | Handles async function handles or large binary data. |
 | (All types)     | `xloper.Any`          | A universal struct that holds any XLOPER type.   |
 
-The xloper package provides the essential foundation for developing powerful and stable Excel XLL add-ins with Go.
+## Excel API Integration
+
+The `excel` package provides:
+
+- **Function Calls**: Call Excel worksheet functions from Go.
+- **Range Management**: Work with Excel ranges and cells.
+- **Context Handling**: Manage Excel contexts for advanced add-in scenarios.
+
+See the `excel` package documentation for more details.
 
 ## License
 

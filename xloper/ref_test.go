@@ -16,8 +16,8 @@ func TestXLREF_BoundsCheck(t *testing.T) {
 		{"Valid Max", XLREF{0, 1048575, 0, 16383}, nil},
 		{"Invalid Negative Row", XLREF{-1, 10, 0, 5}, ErrInvalid},
 		{"Invalid Negative Col", XLREF{0, 10, -1, 5}, ErrInvalid},
-		{"Invalid Out of Bounds Row", XLREF{0, 1048577, 0, 5}, ErrOutOfBounds},
-		{"Invalid Out of Bounds Col", XLREF{0, 10, 0, 16385}, ErrOutOfBounds},
+		{"Invalid Out of Bounds Row", XLREF{0, 1048576, 0, 5}, ErrOutOfBounds},
+		{"Invalid Out of Bounds Col", XLREF{0, 10, 0, 16384}, ErrOutOfBounds},
 	}
 
 	for _, tc := range testCases {
@@ -34,26 +34,23 @@ func TestSref(t *testing.T) {
 	ref := XLREF{RowFirst: 1, RowLast: 2, ColFirst: 3, ColLast: 4}
 
 	t.Run("NewSref", func(t *testing.T) {
-		s := NewSref(ref.RowFirst, ref.RowLast, ref.ColFirst, ref.ColLast)
+		s := NewSref(ref)
 		if s == nil {
 			t.Fatal("NewSref returned nil for valid input")
 		}
 		if s.Type() != TypeSRef {
 			t.Errorf("Expected type %v, got %v", TypeSRef, s.Type())
 		}
-		if s.Ref() != ref {
-			t.Errorf("Expected ref %v, got %v", ref, s.Ref())
+		if s.ref != ref {
+			t.Errorf("Expected Ref() to return %v, got %v", ref, s.ref)
 		}
-		if len(s.Refs()) != 1 || s.Refs()[0] != ref {
-			t.Errorf("Expected Refs() to return a single ref %v, got %v", ref, s.Refs())
-		}
-		if !reflect.DeepEqual(s.Value(), ref) {
-			t.Errorf("Expected value %v, got %v", ref, s.Value())
+		if !reflect.DeepEqual(s.Value(), s) {
+			t.Errorf("Expected value %v, got %v", s, s.Value())
 		}
 	})
 
 	t.Run("NewSref Invalid", func(t *testing.T) {
-		s := NewSref(-1, 2, 3, 4)
+		s := NewSref(XLREF{-1, 2, 3, 4})
 		if s != nil {
 			t.Error("NewSref should return nil for invalid input")
 		}
@@ -70,19 +67,19 @@ func TestSref(t *testing.T) {
 		if s.Type() != TypeSRef {
 			t.Errorf("Expected type %v, got %v", TypeSRef, s.Type())
 		}
-		if s.Ref() != ref {
-			t.Errorf("Expected ref %v, got %v", ref, s.Ref())
+		if s.ref != ref {
+			t.Errorf("Expected ref %v, got %v", ref, s.ref)
 		}
 	})
 
 	t.Run("ViewSref", func(t *testing.T) {
-		s := NewSref(ref.RowFirst, ref.RowLast, ref.ColFirst, ref.ColLast)
+		s := NewSref(ref)
 		viewed, err := ViewSref(unsafe.Pointer(s))
 		if err != nil {
 			t.Fatalf("ViewSref failed: %v", err)
 		}
-		if viewed.Ref() != ref {
-			t.Errorf("Expected ref %v, got %v", ref, viewed.Ref())
+		if viewed.ref != ref {
+			t.Errorf("Expected ref %v, got %v", ref, viewed.ref)
 		}
 	})
 }
@@ -105,14 +102,13 @@ func TestMref(t *testing.T) {
 		if m.IdSheet() != idSheet {
 			t.Errorf("Expected idSheet %v, got %v", idSheet, m.IdSheet())
 		}
-		if !reflect.DeepEqual(m.Refs(), refs) {
-			t.Errorf("Expected refs %v, got %v", refs, m.Refs())
+		if !reflect.DeepEqual(m.mrefBuf.Refs(), refs) {
+			t.Errorf("Expected refs %v, got %v", refs, m.mrefBuf.Refs())
 		}
-		if !reflect.DeepEqual(m.Value(), refs) {
-			t.Errorf("Expected value %v, got %v", refs, m.Value())
-		}
-		if m.Ref() != refs[0] {
-			t.Errorf("Expected first ref %v, got %v", refs[0], m.Ref())
+		val := m.Value()
+		valMref, ok := val.(*Mref)
+		if !ok || !reflect.DeepEqual(valMref, m) {
+			t.Errorf("Expected value %v, got %v", m, val)
 		}
 	})
 
@@ -138,8 +134,8 @@ func TestMref(t *testing.T) {
 		if m.IdSheet() != idSheet {
 			t.Errorf("Expected idSheet %v, got %v", idSheet, m.IdSheet())
 		}
-		if !reflect.DeepEqual(m.Refs(), refs) {
-			t.Errorf("Expected refs %v, got %v", refs, m.Refs())
+		if !reflect.DeepEqual(m.mrefBuf.Refs(), refs) {
+			t.Errorf("Expected refs %v, got %v", refs, m.mrefBuf.Refs())
 		}
 	})
 
@@ -149,8 +145,8 @@ func TestMref(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ViewMref failed: %v", err)
 		}
-		if !reflect.DeepEqual(viewed.Refs(), refs) {
-			t.Errorf("Expected refs %v, got %v", refs, viewed.Refs())
+		if !reflect.DeepEqual(viewed.mrefBuf.Refs(), refs) {
+			t.Errorf("Expected refs %v, got %v", refs, viewed.mrefBuf.Refs())
 		}
 	})
 }

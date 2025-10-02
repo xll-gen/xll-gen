@@ -70,7 +70,7 @@ func (e *xlErr) String() string {
 }
 
 // Pin is a no-op for error instances as it's a global singleton.
-func (e *xlErr) Pin(p *runtime.Pinner) {
+func (e *xlErr) Pin(p runtime.Pinner) {
 	// no-op
 }
 
