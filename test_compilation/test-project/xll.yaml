@@ -1,0 +1,36 @@
+project:
+  name: "test-project"
+  version: "0.1.0"
+gen:
+  go:
+    package: "generated"
+functions:
+  - name: "Add"
+    description: "Adds two integers"
+    timeout: "100ms"
+    args:
+      - name: "a"
+        type: "int"
+      - name: "b"
+        type: "int"
+    return: "int"
+  - name: "GetPrice"
+    description: "Async"
+    timeout: "2s"
+    async: true
+    args:
+      - name: "ticker"
+        type: "string"
+    return: "float"
+  - name: "Greet"
+    description: "Greet"
+    args:
+      - name: "name"
+        type: "string"
+    return: "string"
+  - name: "IsEven"
+    description: "Check Even"
+    args:
+      - name: "val"
+        type: "int"
+    return: "bool"

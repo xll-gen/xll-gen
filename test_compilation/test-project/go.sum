@@ -1,0 +1,4 @@
+github.com/google/flatbuffers v25.9.23+incompatible h1:rGZKv+wOb6QPzIdkM2KxhBZCDrA0DeN6DNmRDrqIsQU=
+github.com/google/flatbuffers v25.9.23+incompatible/go.mod h1:1AeVuKshWv4vARoZatz6mlQ0JxURH0Kv5+zNeJKJCa8=
+github.com/xll-gen/shm/go v0.0.0-20251205224826-621e606a4eed h1:m9/yLpX5JjgwcKdQBOCgRpPB1aTi2CeQNq8bwDysQcg=
+github.com/xll-gen/shm/go v0.0.0-20251205224826-621e606a4eed/go.mod h1:XfLDapwHtbVeGUWgSw0TxAS4ZCPEe1tUfgIIYCYh2Rw=
