@@ -30,7 +30,13 @@ func init() {
 type Config struct {
 	Project   ProjectConfig `yaml:"project"`
 	Gen       GenConfig     `yaml:"gen"`
+	Server    ServerConfig  `yaml:"server"`
 	Functions []Function    `yaml:"functions"`
+}
+
+type ServerConfig struct {
+	Timeout string `yaml:"timeout"`
+	Workers int    `yaml:"workers"`
 }
 
 type ProjectConfig struct {
@@ -235,8 +241,10 @@ table {{.Name}}Response {
 func generateInterface(config Config, dir string) error {
 	tmpl := `package {{.Package}}
 
+import "context"
+
 type XllService interface {
-{{range .Functions}}	{{.Name}}({{range .Args}}{{.Name}} {{lookupGoType .Type}}, {{end}}) ({{lookupGoType .Return}}, error)
+{{range .Functions}}	{{.Name}}(ctx context.Context, {{range .Args}}{{.Name}} {{lookupGoType .Type}}, {{end}}) ({{lookupGoType .Return}}, error)
 {{end}}}
 `
 	funcMap := template.FuncMap{
@@ -285,7 +293,9 @@ func generateServer(config Config, dir string, modName string) error {
 	tmpl := `package {{.Package}}
 
 import (
+	"context"
 	"fmt"
+	"time"
 	"{{.ModName}}/generated/ipc"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -298,14 +308,53 @@ func Serve(handler XllService) {
 	}
 	defer client.Close()
 
+	// Configuration
+	timeout := 10 * time.Second
+	if t, err := time.ParseDuration("{{.ServerTimeout}}"); err == nil && t > 0 {
+		timeout = t
+	}
+
+	workerCount := 100
+	if n := {{.ServerWorkers}}; n > 0 {
+		workerCount = n
+	}
+
+	// Worker Pool
+	jobQueue := make(chan func(), workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			for job := range jobQueue {
+				job()
+			}
+		}()
+	}
+
 	client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 		builder := flatbuffers.NewBuilder(0)
 		builder.Reset()
 
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		// Note: We cannot defer cancel() unconditionally because async jobs need the context.
+
 		switch msgId {
 {{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
-			return handle{{.Name}}(req, respBuf, handler, builder, client, msgId)
+			{{if .Async}}
+			// Async: Hand off to worker
+			reqCopy := make([]byte, len(req))
+			copy(reqCopy, req)
+
+			jobQueue <- func() {
+				defer cancel()
+				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId)
+			}
+			return 0
+			{{else}}
+			// Sync: Run inline
+			defer cancel()
+			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId)
+			{{end}}
 {{end}}		default:
+			cancel()
 			return 0
 		}
 	})
@@ -315,58 +364,66 @@ func Serve(handler XllService) {
 }
 
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32) int32 {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32) int32 {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
 	{{range .Args}}
+	{{if eq .Type "string"}}
+	arg_{{.Name}} := string(request.{{.Name|capitalize}}())
+	{{else}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}()
+	{{end}}
 	{{end}}
 
 	{{if .Async}}
 	// Async execution
 	handle := request.AsyncHandle()
-	go func() {
-		// Call handler
-		res, err := handler.{{.Name}}({{range .Args}}arg_{{.Name}}, {{end}})
 
-		b2 := flatbuffers.NewBuilder(0)
-		var errOffset flatbuffers.UOffsetT
-		if err != nil {
-			errOffset = b2.CreateString(err.Error())
-		}
+	if ctx.Err() != nil {
+		sendAsyncError{{.Name}}(client, msgId, handle, ctx.Err())
+		return 0
+	}
 
+	// Call handler
+	res, err := handler.{{.Name}}(ctx, {{range .Args}}arg_{{.Name}}, {{end}})
+
+	b2 := flatbuffers.NewBuilder(0)
+	var errOffset flatbuffers.UOffsetT
+	if err != nil {
+		errOffset = b2.CreateString(err.Error())
+	}
+
+	{{if eq .Return "string"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil {
+		resOffset = b2.CreateString(res)
+	}
+	{{end}}
+
+	ipc.{{.Name}}ResponseStart(b2)
+	ipc.{{.Name}}ResponseAddAsyncHandle(b2, handle)
+	if err != nil {
+		ipc.{{.Name}}ResponseAddError(b2, errOffset)
+	} else {
 		{{if eq .Return "string"}}
-		var resOffset flatbuffers.UOffsetT
-		if err == nil {
-			resOffset = b2.CreateString(res)
-		}
+		ipc.{{.Name}}ResponseAddResult(b2, resOffset)
+		{{else}}
+		ipc.{{.Name}}ResponseAddResult(b2, res)
 		{{end}}
+	}
+	root := ipc.{{.Name}}ResponseEnd(b2)
+	b2.Finish(root)
 
-		ipc.{{.Name}}ResponseStart(b2)
-		ipc.{{.Name}}ResponseAddAsyncHandle(b2, handle)
-		if err != nil {
-			ipc.{{.Name}}ResponseAddError(b2, errOffset)
-		} else {
-			{{if eq .Return "string"}}
-			ipc.{{.Name}}ResponseAddResult(b2, resOffset)
-			{{else}}
-			ipc.{{.Name}}ResponseAddResult(b2, res)
-			{{end}}
-		}
-		root := ipc.{{.Name}}ResponseEnd(b2)
-		b2.Finish(root)
-
-		// Send Guest Call
-		if _, err := client.SendGuestCall(b2.FinishedBytes(), msgId); err != nil {
-			fmt.Printf("Error sending guest call for {{.Name}}: %v\n", err)
-		}
-	}()
-	return 0 // Return immediately
+	// Send Guest Call
+	if _, err := client.SendGuestCall(b2.FinishedBytes(), msgId); err != nil {
+		fmt.Printf("Error sending guest call for {{.Name}}: %v\n", err)
+	}
+	return 0
 	{{else}}
 	// Sync execution
 	// Call handler
-	res, err := handler.{{.Name}}({{range .Args}}arg_{{.Name}}, {{end}})
+	res, err := handler.{{.Name}}(ctx, {{range .Args}}arg_{{.Name}}, {{end}})
 
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
@@ -395,7 +452,6 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	b.Finish(root)
 
 	// Copy to respBuf
-	// Check size
 	payload := b.FinishedBytes()
 	if len(payload) > len(respBuf) {
 		return 0 // Error: buffer too small
@@ -404,6 +460,19 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	return int32(len(payload))
 	{{end}}
 }
+
+{{if .Async}}
+func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, err error) {
+	b := flatbuffers.NewBuilder(0)
+	errOffset := b.CreateString(err.Error())
+	ipc.{{.Name}}ResponseStart(b)
+	ipc.{{.Name}}ResponseAddAsyncHandle(b, handle)
+	ipc.{{.Name}}ResponseAddError(b, errOffset)
+	root := ipc.{{.Name}}ResponseEnd(b)
+	b.Finish(root)
+	client.SendGuestCall(b.FinishedBytes(), msgId)
+}
+{{end}}
 {{end}}
 `
 	funcMap := template.FuncMap{
@@ -439,15 +508,19 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	}
 
 	data := struct {
-		Package     string
-		ModName     string
-		ProjectName string
-		Functions   []Function
+		Package       string
+		ModName       string
+		ProjectName   string
+		Functions     []Function
+		ServerTimeout string
+		ServerWorkers int
 	}{
-		Package:     pkg,
+		Package:       pkg,
 		ModName:     modName,
-		ProjectName: config.Project.Name,
-		Functions:   config.Functions,
+		ProjectName:   config.Project.Name,
+		Functions:     config.Functions,
+		ServerTimeout: config.Server.Timeout,
+		ServerWorkers: config.Server.Workers,
 	}
 
 	f, err := os.Create(filepath.Join(dir, "server.go"))
