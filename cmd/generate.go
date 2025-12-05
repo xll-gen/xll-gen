@@ -106,7 +106,14 @@ func runGenerate() error {
 		}
 	}
 
-	// 3. Generate schema.fbs
+	// 3. Generate xltypes.fbs
+	xlTypesPath := filepath.Join(genDir, "xltypes.fbs")
+	if err := generateXlTypes(xlTypesPath); err != nil {
+		return err
+	}
+	fmt.Println("Generated xltypes.fbs")
+
+	// 4. Generate schema.fbs
 	schemaPath := filepath.Join(genDir, "schema.fbs")
 	if err := generateSchema(config, schemaPath); err != nil {
 		return err
@@ -198,7 +205,9 @@ func getModuleName() (string, error) {
 // ----------------------------------------------------------------------------
 
 func generateSchema(config Config, path string) error {
-	tmpl := `namespace ipc;
+	tmpl := `include "xltypes.fbs";
+
+namespace ipc;
 
 {{range .Functions}}
 table {{.Name}}Request {
@@ -241,6 +250,61 @@ table {{.Name}}Response {
 	defer f.Close()
 
 	return t.Execute(f, config)
+}
+
+func generateXlTypes(path string) error {
+	content := `namespace ipc.types;
+
+enum XlError : short {
+  Null = 2000,
+  Div0 = 2007,
+  Value = 2015,
+  Ref = 2023,
+  Name = 2029,
+  Num = 2036,
+  NA = 2042,
+  GettingData = 2043,
+  Spill = 2045,
+  Connect = 2046,
+  Blocked = 2047,
+  Unknown = 2048,
+  Field = 2049,
+  Calc = 2050
+}
+
+table Bool { val: bool; }
+table Num { val: double; }
+table Int { val: int; }
+table Str { val: string; }
+table Err { val: XlError = Null; }
+table AsyncHandle { val: ulong; }
+table Nil { }
+
+union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil }
+
+table Scalar {
+  val: ScalarValue;
+}
+
+table Array {
+  rows: int;
+  cols: int;
+  data: [Scalar];
+}
+
+table NumArray {
+  rows: int;
+  cols: int;
+  data: [double];
+}
+
+union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Array, NumArray }
+
+table Any {
+  val: AnyValue;
+}
+`
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func generateInterface(config Config, dir string) error {
