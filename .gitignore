@@ -25,3 +25,5 @@ go.work.sum
 .env
 
 *.logxll-gen
+temp_project/
+build_cmake/
