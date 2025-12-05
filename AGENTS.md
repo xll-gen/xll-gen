@@ -210,7 +210,7 @@ For types with multiple representation options, we stick to the following canoni
 | **Boolean** | `A` | `short` | 0=false, 1=true. |
 | **Double** | `B` | `double` | IEEE 8-byte floating point. |
 | **Int** | `J` | `int32_t` | 32-bit signed integer. |
-| **String** | `C%` | `const wchar_t *` | Null-terminated Unicode wide-character string. |
+| **String** | `D%` | `const wchar_t *` | Counted Unicode wide-character string (Pascal). |
 | **Array (FP)** | `K%` | `FP12 *` | Floating-point array structure. Efficient for math. |
 | **Any (Value)** | `Q` | `XLOPER12 *` | Pointer to XLOPER12. Dereferences references (Pass by Value). |
 | **Any (Ref)** | `U` | `XLOPER12 *` | Pointer to XLOPER12. Allows references (Range). |
@@ -218,18 +218,23 @@ For types with multiple representation options, we stick to the following canoni
 
 **Note**: Do not use the legacy 8-bit string types (`C`, `D`, `F`, `G`), `XLOPER` (`P`, `R`), or legacy `FP` (`K`). Always use the wide-char / `12` variants (e.g., `FP12` / `K%`).
 
+**Thread Safety (`$`)**
+Starting in Excel 2007, Excel can perform multithreaded workbook recalculation. Unless there is a specific reason to not support it, **all generated functions should be registered as thread-safe**.
+To do this, append a `$` character to the end of the `pxTypeText` string.
+*   Example: `QJJ$` (Returns Value, takes two Ints, Thread-Safe).
+
 ### 8.2 Memory Management
 
 Proper memory management is critical to prevent Excel crashes.
 
 **Rules:**
-1.  **Inputs are Read-Only**: Arguments passed to the XLL function must never be freed or modified (unless registered as modify-in-place, which we avoid for general safety).
-2.  **Returning DLL-Allocated Memory**: When the XLL returns an `XLOPER12` that points to memory allocated by the DLL (e.g., a string or array created via `malloc`/`new`):
+1.  **Inputs are Read-Only**: Arguments passed to the XLL function must never be freed or modified.
+2.  **Returning DLL-Allocated Memory**: When the XLL returns an `XLOPER12` that points to memory allocated by the DLL (e.g., a string):
     -   Set `xltype` to `type | xlbitDLLFree`.
-    -   Implement the `xlAutoFree12` callback in the XLL.
-    -   Excel will call `xlAutoFree12` when it is done with the return value.
-3.  **xlAutoFree12**: This function must identify what to free. Typically, it checks if `xlbitDLLFree` is set, and then frees the pointer in `val.str` or `val.array.lparray`, and finally the `XLOPER12` pointer itself if it was dynamically allocated.
-4.  **Avoid xlbitXLFree**: This bit is reserved for memory allocated by Excel (e.g., return values from C API callbacks like `xlfGetName`). If you receive such memory, make a deep copy if you need to keep it, then call `xlFree`.
+    -   Implement the `xlAutoFree12` callback.
+    -   Use the provided `xll_mem` library helpers (`NewExcelString`, `NewXLOPER12`) which use a thread-safe object pool and `xlAutoFree12` implementation.
+3.  **Pascal Strings**: We use `D%` for string inputs (counted wide string). For returns, we use `Q` (XLOPER12) wrapping a counted wide string with `xlbitDLLFree`.
+
 
 ### 8.3 Error Codes (`xlCVError`)
 
@@ -251,3 +256,62 @@ When returning errors from the XLL (e.g., if the Go server is unreachable), retu
 | `xlErrUnknown` | `2048` | Unknown error |
 | `xlErrField` | `2049` | Field error |
 | `xlErrCalc` | `2050` | Calculation error |
+
+## 9. Reference: Shared Memory (IPC)
+
+The `xll-gen/shm` library provides low-latency IPC. For maximum performance, we use **Zero-Copy** operations where possible, especially for FlatBuffers.
+
+### 9.1 Zero-Copy (C++ Host)
+
+Instead of building a FlatBuffer on the heap and copying it to the shared memory slot, we construct it directly in the slot's request buffer.
+
+```cpp
+// 1. Acquire a Zero-Copy Slot
+auto slot = host.GetZeroCopySlot();
+
+// 2. Build FlatBuffer directly in shared memory
+// slot.GetReqBuffer() returns the pointer to the buffer.
+// We pass it to the builder as the initial buffer.
+flatbuffers::FlatBufferBuilder builder(
+    slot.GetMaxReqSize(),
+    nullptr,
+    false,
+    slot.GetReqBuffer()
+);
+
+// ... build your object ...
+// auto offset = CreateMyRequest(builder, ...);
+// builder.Finish(offset);
+
+// 3. Send Request
+// Signals MSG_ID_FLATBUFFER (or user ID) and handles size internally.
+slot.SendFlatBuffer(builder.GetSize());
+
+// 4. Access Response Directly (Zero-Copy)
+// The response is available in the response buffer immediately after Send returns.
+uint8_t* respData = slot.GetRespBuffer();
+int32_t respSize = slot.GetRespSize();
+```
+
+### 9.2 Zero-Copy (Go Guest)
+
+The Go client handler receives a slice that points directly to the shared memory region. Reading from `req` is zero-copy.
+
+```go
+client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
+    // 'req' points to the shared memory slot payload.
+    // It is safe to read directly (e.g., using FlatBuffers GetRootAs...).
+
+    if msgId == shm.MsgIdFlatbuffer {
+        // processFlatBuffer(req)
+    }
+
+    // Write response to respBuf
+    // ...
+    return bytesWritten
+})
+```
+
+## 10. Agent Guidelines
+
+*   **Documentation Updates**: When modifying features or adding new capabilities, you must update the relevant documentation (e.g., `README.md`, `AGENTS.md`) to reflect the changes.

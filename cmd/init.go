@@ -113,6 +113,19 @@ generated/
 		return fmt.Errorf("failed to run go mod init: %w", err)
 	}
 
+	// 5. Create generated assets (C++ common files)
+	// We put them in generated/cpp/include
+	includeDir := filepath.Join(projectName, "generated", "cpp", "include")
+	if err := os.MkdirAll(includeDir, 0755); err != nil {
+		return err
+	}
+
+	for name, content := range assetsMap {
+		if err := os.WriteFile(filepath.Join(includeDir, name), []byte(content), 0644); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("Project %s initialized successfully!\n", projectName)
 	fmt.Println("Next steps:")
 	fmt.Printf("  cd %s\n", projectName)
