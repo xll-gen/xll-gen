@@ -157,6 +157,12 @@ func runGenerate() error {
 	}
 	fmt.Println("Generated CMakeLists.txt")
 
+	// 10. Generate Taskfile.yml
+	if err := generateTaskfile(config, "."); err != nil {
+		return err
+	}
+	fmt.Println("Generated Taskfile.yml")
+
 	fmt.Println("Done. Please run 'go mod tidy' to ensure dependencies are installed.")
 
 	return nil
@@ -768,6 +774,15 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   flatbuffers::flatbuffers
 )
 
+if(NOT MSVC)
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-march=native>
+    $<$<CONFIG:Release>:-flto>
+  )
+  target_link_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:-flto>)
+endif()
+
 set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".xll")
 `
 	t, err := template.New("cmake").Parse(tmpl)
@@ -776,6 +791,61 @@ set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".xll")
 	}
 
 	f, err := os.Create(filepath.Join(dir, "CMakeLists.txt"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return t.Execute(f, struct {
+		ProjectName string
+	}{
+		ProjectName: config.Project.Name,
+	})
+}
+
+func generateTaskfile(config Config, dir string) error {
+	tmpl := `version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    desc: Build both Go server and C++ XLL (Release)
+    cmds:
+      - task: build-go
+      - task: build-cpp
+
+  build-go:
+    desc: Build Go server
+    cmds:
+      - go build -o build/{{.ProjectName}}.exe main.go
+
+  build-cpp:
+    desc: Build C++ XLL (Release)
+    cmds:
+      - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build/cpp --config Release
+      - cmd: cmake -E copy build/cpp/Release/{{.ProjectName}}.xll build/{{.ProjectName}}.xll
+        ignore_error: true
+      - cmd: cmake -E copy build/cpp/{{.ProjectName}}.xll build/{{.ProjectName}}.xll
+        ignore_error: true
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cmd: cmake -E remove_directory build
+        ignore_error: true
+      - cmd: cmake -E remove_directory generated
+        ignore_error: true
+`
+	t, err := template.New("taskfile").Parse(tmpl)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(filepath.Join(dir, "Taskfile.yml"))
 	if err != nil {
 		return err
 	}
