@@ -104,7 +104,7 @@ func runGenerate() error {
 	fmt.Println("Generated schema.fbs")
 
 	// 4. Run flatc
-	flatcPath, err := EnsureFlatc()
+	flatcPath, flatcVersion, err := EnsureFlatc()
 	if err != nil {
 		return err
 	}
@@ -152,7 +152,7 @@ func runGenerate() error {
 	fmt.Println("Generated xll_main.cpp")
 
 	// 9. Generate CMakeLists.txt
-	if err := generateCMake(config, cppDir); err != nil {
+	if err := generateCMake(config, cppDir, flatcVersion); err != nil {
 		return err
 	}
 	fmt.Println("Generated CMakeLists.txt")
@@ -732,7 +732,7 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 	})
 }
 
-func generateCMake(config Config, dir string) error {
+func generateCMake(config Config, dir string, flatcVersion string) error {
 	tmpl := `cmake_minimum_required(VERSION 3.14)
 project({{ .ProjectName }} LANGUAGES CXX)
 
@@ -745,7 +745,7 @@ include(FetchContent)
 FetchContent_Declare(
   flatbuffers
   GIT_REPOSITORY https://github.com/google/flatbuffers.git
-  GIT_TAG v25.9.23
+  GIT_TAG {{.FlatcVersion}}
 )
 FetchContent_MakeAvailable(flatbuffers)
 
@@ -801,9 +801,11 @@ set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".xll")
 	defer f.Close()
 
 	return t.Execute(f, struct {
-		ProjectName string
+		ProjectName  string
+		FlatcVersion string
 	}{
-		ProjectName: config.Project.Name,
+		ProjectName:  config.Project.Name,
+		FlatcVersion: flatcVersion,
 	})
 }
 
