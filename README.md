@@ -116,42 +116,70 @@ functions:
 
 ## Debugging in VS Code
 
-Since the architecture involves two processes (Excel and your Go server), debugging requires a multi-target setup.
+Since the architecture involves two processes (Excel and your Go server), debugging requires a multi-target setup. You can debug both simultaneously or individually.
 
-1.  **Prerequisites**: Install `golang.go` and `ms-vscode.cpptools` extensions.
-2.  **Configuration**: Create `.vscode/launch.json`:
+### Prerequisites
+*   **Go Extension**: `golang.go`
+*   **C++ Extension**: `ms-vscode.cpptools`
+
+### Configuration (`.vscode/launch.json`)
+
+Create or update `.vscode/launch.json` with the following configurations.
+
+**Note**: You must adjust the `program` path to match your local Excel installation (e.g., `C:\\Program Files\\...\\EXCEL.EXE`).
 
 ```json
 {
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "1. Debug Go Server",
+            "name": "Debug Go Server",
             "type": "go",
             "request": "launch",
+            "mode": "auto",
             "program": "${workspaceFolder}/main.go",
             "env": { "GOOS": "windows", "GOARCH": "amd64" }
         },
         {
-            "name": "2. Debug XLL (Excel)",
+            "name": "Debug XLL (MSVC)",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
-            "args": ["${workspaceFolder}/build/Debug/YOUR_PROJECT.xll"],
-            "stopAtEntry": false,
+            "args": ["${workspaceFolder}/build/YOUR_PROJECT_NAME.xll"],
             "cwd": "${workspaceFolder}",
             "console": "externalTerminal"
+        },
+        {
+            "name": "Debug XLL (MinGW/GDB)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+            "args": ["${workspaceFolder}/build/YOUR_PROJECT_NAME.xll"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb.exe",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
         }
     ]
 }
 ```
 
-**Note**: Adjust the `program` path to match your Excel installation and `args` to point to your built XLL.
+### Debugging Steps
 
-3.  **Workflow**:
-    1.  **Start Excel**: Run "2. Debug XLL (Excel)". This loads the XLL and initializes Shared Memory.
-    2.  **Start Go Server**: Run "1. Debug Go Server". It connects to the running XLL.
-    3.  **Test**: Enter a function in Excel (e.g., `=Add(1, 2)`).
+1.  **Build the project**: Run `task build` to ensure the XLL is up to date.
+2.  **Start Excel (C++ Debugger)**:
+    *   Select **Debug XLL (MSVC)** or **Debug XLL (MinGW/GDB)** depending on your compiler.
+    *   Press `F5`. Excel will launch and load your XLL.
+3.  **Start Go Server**:
+    *   Select **Debug Go Server**.
+    *   Press `F5`. The server will start and connect to the shared memory host (Excel).
+4.  **Verify**: Type a function in Excel (e.g., `=Add(1, 2)`). You can now set breakpoints in both `main.go` and your C++ code.
 
 ## License
 
