@@ -330,3 +330,4 @@ client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 ## 10. Agent Guidelines
 
 *   **Documentation Updates**: When modifying features or adding new capabilities, you must update the relevant documentation (e.g., `README.md`, `AGENTS.md`) to reflect the changes.
+*   **Language Policy**: All documentation and code comments must be written in English. Do not use other languages.
