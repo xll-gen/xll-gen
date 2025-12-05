@@ -595,7 +595,11 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 
     {{range .Args}}
     {{if eq .Type "string"}}
-    auto {{.Name}}_off = builder.CreateString(WStringToString({{.Name}}));
+    std::wstring wstr_{{.Name}};
+    if ({{.Name}}) {
+        wstr_{{.Name}}.assign({{.Name}} + 1, (size_t){{.Name}}[0]);
+    }
+    auto {{.Name}}_off = builder.CreateString(WStringToString(wstr_{{.Name}}));
     {{end}}
     {{end}}
 
