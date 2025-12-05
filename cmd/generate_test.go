@@ -40,6 +40,7 @@ func TestGenerate(t *testing.T) {
 		"generated/cpp/xll_main.cpp",
 		"generated/cpp/CMakeLists.txt",
 		"generated/cpp/include/xll_mem.h", // From existing assets
+		"Taskfile.yml",
 	}
 
 	fbFiles := []string{
