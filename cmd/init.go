@@ -46,9 +46,13 @@ gen:
   go:
     package: "generated"
 
+# Function Definitions
+# Supported types: int, float, string, bool
 functions:
+  # Simple integer addition
   - name: "Add"
     description: "Adds two integers"
+    category: "Math"
     args:
       - name: "a"
         type: "int"
@@ -58,13 +62,36 @@ functions:
         description: "Second number"
     return: "int"
 
+  # Async function example
   - name: "GetPrice"
-    description: "Fetches price for a ticker"
+    description: "Fetches price for a ticker (Async simulation)"
+    category: "Finance"
     args:
       - name: "ticker"
         type: "string"
+        description: "Stock Ticker"
     return: "float"
     async: true
+
+  # String manipulation
+  - name: "Greet"
+    description: "Returns a greeting message"
+    category: "Text"
+    args:
+      - name: "name"
+        type: "string"
+        description: "Name to greet"
+    return: "string"
+
+  # Boolean logic
+  - name: "IsEven"
+    description: "Checks if a number is even"
+    category: "Logic"
+    args:
+      - name: "val"
+        type: "int"
+        description: "Value to check"
+    return: "bool"
 `
 	if err := os.WriteFile(filepath.Join(projectName, "xll.yaml"), []byte(xllContent), 0644); err != nil {
 		return err
@@ -74,7 +101,9 @@ functions:
 	mainContent := `package main
 
 import (
+	"fmt"
 	"` + projectName + `/generated"
+	"time"
 )
 
 type MyService struct{}
@@ -84,7 +113,17 @@ func (s *MyService) Add(a int32, b int32) (int32, error) {
 }
 
 func (s *MyService) GetPrice(ticker string) (float64, error) {
-	return 100.50, nil // Mock
+	// Simulate async work
+	time.Sleep(100 * time.Millisecond)
+	return 123.45, nil
+}
+
+func (s *MyService) Greet(name string) (string, error) {
+	return fmt.Sprintf("Hello, %s!", name), nil
+}
+
+func (s *MyService) IsEven(val int32) (bool, error) {
+	return val%2 == 0, nil
 }
 
 func main() {
