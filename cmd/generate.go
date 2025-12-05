@@ -300,8 +300,6 @@ func generateServer(config Config, dir string, modName string) error {
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 	"{{.ModName}}/generated/ipc"
 	"github.com/xll-gen/shm/go"
