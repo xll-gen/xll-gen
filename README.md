@@ -114,6 +114,45 @@ functions:
 2.  **Shared Memory**: Used for data transport.
 3.  **User Process**: Your Go application, which implements the logic defined in `main.go`.
 
+## Debugging in VS Code
+
+Since the architecture involves two processes (Excel and your Go server), debugging requires a multi-target setup.
+
+1.  **Prerequisites**: Install `golang.go` and `ms-vscode.cpptools` extensions.
+2.  **Configuration**: Create `.vscode/launch.json`:
+
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "1. Debug Go Server",
+            "type": "go",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.go",
+            "env": { "GOOS": "windows", "GOARCH": "amd64" }
+        },
+        {
+            "name": "2. Debug XLL (Excel)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+            "args": ["${workspaceFolder}/build/Debug/YOUR_PROJECT.xll"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "console": "externalTerminal"
+        }
+    ]
+}
+```
+
+**Note**: Adjust the `program` path to match your Excel installation and `args` to point to your built XLL.
+
+3.  **Workflow**:
+    1.  **Start Excel**: Run "2. Debug XLL (Excel)". This loads the XLL and initializes Shared Memory.
+    2.  **Start Go Server**: Run "1. Debug Go Server". It connects to the running XLL.
+    3.  **Test**: Enter a function in Excel (e.g., `=Add(1, 2)`).
+
 ## License
 
 GNU General Public License v3.0
