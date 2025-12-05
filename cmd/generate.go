@@ -66,6 +66,7 @@ type Function struct {
 	Category    string `yaml:"category"`
 	Shortcut    string `yaml:"shortcut"`
 	HelpTopic   string `yaml:"help_topic"`
+	Timeout     string `yaml:"timeout"`
 }
 
 type Arg struct {
@@ -364,6 +365,8 @@ func generateServer(config Config, dir string, modName string) error {
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 	"{{.ModName}}/generated/ipc"
 	"github.com/xll-gen/shm/go"
@@ -385,10 +388,11 @@ func Serve(handler XllService) {
 	defer client.Close()
 
 	// Configuration
-	timeout := 10 * time.Second
-	if t, err := time.ParseDuration("{{.ServerTimeout}}"); err == nil && t > 0 {
-		timeout = t
-	}
+	{{range .Functions}}
+	{{if .Timeout}}
+	timeout_{{.Name}}, _ := time.ParseDuration("{{.Timeout}}")
+	{{end}}
+	{{end}}
 
 	workerCount := 100
 	if n := {{.ServerWorkers}}; n > 0 {
@@ -409,11 +413,15 @@ func Serve(handler XllService) {
 		builder := flatbuffers.NewBuilder(0)
 		builder.Reset()
 
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		// Note: We cannot defer cancel() unconditionally because async jobs need the context.
-
 		switch msgId {
 {{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
+			{{if .Timeout}}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
+			{{else}}
+			ctx := context.Background()
+			cancel := func() {}
+			{{end}}
+
 			{{if .Async}}
 			// Async: Hand off to worker
 			reqCopy := make([]byte, len(req))
@@ -430,7 +438,6 @@ func Serve(handler XllService) {
 			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId)
 			{{end}}
 {{end}}		default:
-			cancel()
 			return 0
 		}
 	})
@@ -612,6 +619,7 @@ func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 	tmpl := `
 #include <windows.h>
 #include <string>
+#include <vector>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -625,20 +633,32 @@ std::thread g_worker;
 std::atomic<bool> g_running{false};
 
 // Utility: String Conversion
-std::string WStringToString(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
-    return strTo;
-}
-
 std::wstring StringToWString(const std::string& str) {
     if (str.empty()) return std::wstring();
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
     std::wstring wstrTo(size_needed, 0);
     MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
     return wstrTo;
+}
+
+// Optimization: Thread-local buffer for string conversion
+// Avoids allocating std::string for every conversion.
+thread_local std::vector<char> g_strBuf;
+
+const char* ConvertExcelString(const wchar_t* wstr) {
+    if (!wstr) return "";
+    size_t len = (size_t)wstr[0]; // Pascal string length
+    if (len == 0) return "";
+
+    // Ensure buffer space (UTF-8 max expansion is 4x)
+    size_t cap = len * 4 + 1;
+    if (g_strBuf.size() < cap) g_strBuf.resize(cap);
+
+    int n = WideCharToMultiByte(CP_UTF8, 0, wstr + 1, (int)len, g_strBuf.data(), (int)g_strBuf.size(), NULL, NULL);
+    if (n >= 0) g_strBuf[n] = '\0';
+    else g_strBuf[0] = '\0';
+
+    return g_strBuf.data();
 }
 
 // Guest Call Handler (Async Return)
@@ -748,15 +768,12 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 {{range $i, $fn := .Functions}}
 {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
-    flatbuffers::FlatBufferBuilder builder;
+    auto slot = g_host.GetZeroCopySlot();
+    flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
 
     {{range .Args}}
     {{if eq .Type "string"}}
-    std::wstring wstr_{{.Name}};
-    if ({{.Name}}) {
-        wstr_{{.Name}}.assign({{.Name}} + 1, (size_t){{.Name}}[0]);
-    }
-    auto {{.Name}}_off = builder.CreateString(WStringToString(wstr_{{.Name}}));
+    auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
     {{end}}
     {{end}}
 
@@ -774,8 +791,8 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
-    std::vector<uint8_t> response;
-    int ok = g_host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 11 $i}}, response);
+    // Zero-Copy Send (MsgId, Size)
+    int ok = slot.Send({{add 11 $i}}, builder.GetSize());
 
     if (ok < 0) {
         {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
@@ -784,7 +801,7 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
     {{if .Async}}
     return;
     {{else}}
-    auto resp = ipc::Get{{.Name}}Response(response.data());
+    auto resp = ipc::Get{{.Name}}Response(slot.GetRespBuffer());
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
     }

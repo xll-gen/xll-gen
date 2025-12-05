@@ -77,13 +77,11 @@ functions:
 	// This means either the code is fixed, or the generation logic changed completely.
 	// We should check for the expected correct pattern to be sure.
 
-	// Expected fix pattern (approximate):
-	// Construct wstring using length from msg[0]
-	// e.g., std::wstring(msg + 1, (size_t)msg[0])
+	// Expected fix pattern:
+	// Use helper ConvertExcelString(msg)
 	expectedSubstrings := []string{
-		"msg + 1",
-		"(size_t)msg[0]",
-		"std::wstring",
+		"ConvertExcelString(msg)",
+		"const char* ConvertExcelString(const wchar_t* wstr)", // Helper definition
 	}
 
 	for _, s := range expectedSubstrings {
