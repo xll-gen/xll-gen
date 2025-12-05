@@ -12,6 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var disablePidSuffix bool
+
 var generateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate Go and C++ code from xll.yaml",
@@ -24,6 +26,7 @@ var generateCmd = &cobra.Command{
 }
 
 func init() {
+	generateCmd.Flags().BoolVar(&disablePidSuffix, "no-pid-suffix", false, "Disable appending PID to SHM name")
 	rootCmd.AddCommand(generateCmd)
 }
 
@@ -39,7 +42,8 @@ type ProjectConfig struct {
 }
 
 type GenConfig struct {
-	Go GoConfig `yaml:"go"`
+	Go GoConfig      `yaml:"go"`
+	DisablePidSuffix bool `yaml:"disable_pid_suffix"`
 }
 
 type GoConfig struct {
@@ -146,7 +150,8 @@ func runGenerate() error {
 	fmt.Println("Generated server.go")
 
 	// 8. Generate xll_main.cpp
-	if err := generateCppMain(config, cppDir); err != nil {
+	shouldAppendPid := !config.Gen.DisablePidSuffix && !disablePidSuffix
+	if err := generateCppMain(config, cppDir, shouldAppendPid); err != nil {
 		return err
 	}
 	fmt.Println("Generated xll_main.cpp")
@@ -280,13 +285,22 @@ func generateServer(config Config, dir string, modName string) error {
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"{{.ModName}}/generated/ipc"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
 
 func Serve(handler XllService) {
-	client, err := shm.Connect("{{.ProjectName}}")
+	name := "{{.ProjectName}}"
+	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "-xll-shm=") {
+			name = strings.TrimPrefix(arg, "-xll-shm=")
+		}
+	}
+
+	client, err := shm.Connect(name)
 	if err != nil {
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
@@ -453,9 +467,10 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	return t.Execute(f, data)
 }
 
-func generateCppMain(config Config, dir string) error {
+func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 	tmpl := `
 #include <windows.h>
+#include <string>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -531,9 +546,16 @@ extern "C" {
 
 int __stdcall xlAutoOpen() {
     // 1024 slots, 1MB size, 16 guest slots
+    {{if .ShouldAppendPid}}
+    std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
+    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, 16)) {
+        return 0;
+    }
+    {{else}}
     if (!g_host.Init("{{.ProjectName}}", 1024, 1024*1024, 16)) {
         return 0;
     }
+    {{end}}
 
     g_running = true;
     g_worker = std::thread([]{
@@ -714,11 +736,13 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 	defer f.Close()
 
 	return t.Execute(f, struct {
-		ProjectName string
-		Functions []Function
+		ProjectName     string
+		Functions       []Function
+		ShouldAppendPid bool
 	}{
-		ProjectName: config.Project.Name,
-		Functions: config.Functions,
+		ProjectName:     config.Project.Name,
+		Functions:       config.Functions,
+		ShouldAppendPid: shouldAppendPid,
 	})
 }
 
