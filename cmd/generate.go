@@ -663,7 +663,7 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
         // We should free xRes if it was allocated by NewExcelString but xlAsyncReturn copies it.
         // xll::NewExcelString allocates via pool which needs explicit free if we own it.
         // For now we assume xlAsyncReturn copies and we should free.
-        xll::MemoryPool::Instance().Free(xRes);
+        xlAutoFree12(xRes);
         {{else if eq .Return "int"}}
         XLOPER12 xRes; xRes.xltype = xltypeInt; xRes.val.w = response->result();
         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
@@ -737,12 +737,6 @@ int __stdcall xlAutoClose() {
     if (g_worker.joinable()) g_worker.join();
     g_host.Shutdown();
     return 1;
-}
-
-void __stdcall xlAutoFree12(LPXLOPER12 px) {
-    if (px->xltype & xlbitDLLFree) {
-        xll::MemoryPool::Instance().Free(px);
-    }
 }
 
 {{range $i, $fn := .Functions}}
