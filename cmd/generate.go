@@ -12,6 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var disablePidSuffix bool
+
 var generateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate Go and C++ code from xll.yaml",
@@ -24,13 +26,20 @@ var generateCmd = &cobra.Command{
 }
 
 func init() {
+	generateCmd.Flags().BoolVar(&disablePidSuffix, "no-pid-suffix", false, "Disable appending PID to SHM name")
 	rootCmd.AddCommand(generateCmd)
 }
 
 type Config struct {
 	Project   ProjectConfig `yaml:"project"`
 	Gen       GenConfig     `yaml:"gen"`
+	Server    ServerConfig  `yaml:"server"`
 	Functions []Function    `yaml:"functions"`
+}
+
+type ServerConfig struct {
+	Timeout string `yaml:"timeout"`
+	Workers int    `yaml:"workers"`
 }
 
 type ProjectConfig struct {
@@ -39,7 +48,8 @@ type ProjectConfig struct {
 }
 
 type GenConfig struct {
-	Go GoConfig `yaml:"go"`
+	Go GoConfig      `yaml:"go"`
+	DisablePidSuffix bool `yaml:"disable_pid_suffix"`
 }
 
 type GoConfig struct {
@@ -146,7 +156,8 @@ func runGenerate() error {
 	fmt.Println("Generated server.go")
 
 	// 8. Generate xll_main.cpp
-	if err := generateCppMain(config, cppDir); err != nil {
+	shouldAppendPid := !config.Gen.DisablePidSuffix && !disablePidSuffix
+	if err := generateCppMain(config, cppDir, shouldAppendPid); err != nil {
 		return err
 	}
 	fmt.Println("Generated xll_main.cpp")
@@ -156,6 +167,12 @@ func runGenerate() error {
 		return err
 	}
 	fmt.Println("Generated CMakeLists.txt")
+
+	// 10. Generate Taskfile.yml
+	if err := generateTaskfile(config, "."); err != nil {
+		return err
+	}
+	fmt.Println("Generated Taskfile.yml")
 
 	fmt.Println("Done. Please run 'go mod tidy' to ensure dependencies are installed.")
 
@@ -229,8 +246,10 @@ table {{.Name}}Response {
 func generateInterface(config Config, dir string) error {
 	tmpl := `package {{.Package}}
 
+import "context"
+
 type XllService interface {
-{{range .Functions}}	{{.Name}}({{range .Args}}{{.Name}} {{lookupGoType .Type}}, {{end}}) ({{lookupGoType .Return}}, error)
+{{range .Functions}}	{{.Name}}(ctx context.Context, {{range .Args}}{{.Name}} {{lookupGoType .Type}}, {{end}}) ({{lookupGoType .Return}}, error)
 {{end}}}
 `
 	funcMap := template.FuncMap{
@@ -279,27 +298,77 @@ func generateServer(config Config, dir string, modName string) error {
 	tmpl := `package {{.Package}}
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"strings"
+	"time"
 	"{{.ModName}}/generated/ipc"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
 
 func Serve(handler XllService) {
-	client, err := shm.Connect("{{.ProjectName}}")
+	name := "{{.ProjectName}}"
+	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "-xll-shm=") {
+			name = strings.TrimPrefix(arg, "-xll-shm=")
+		}
+	}
+
+	client, err := shm.Connect(name)
 	if err != nil {
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
 	defer client.Close()
 
+	// Configuration
+	timeout := 10 * time.Second
+	if t, err := time.ParseDuration("{{.ServerTimeout}}"); err == nil && t > 0 {
+		timeout = t
+	}
+
+	workerCount := 100
+	if n := {{.ServerWorkers}}; n > 0 {
+		workerCount = n
+	}
+
+	// Worker Pool
+	jobQueue := make(chan func(), workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			for job := range jobQueue {
+				job()
+			}
+		}()
+	}
+
 	client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 		builder := flatbuffers.NewBuilder(0)
 		builder.Reset()
 
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		// Note: We cannot defer cancel() unconditionally because async jobs need the context.
+
 		switch msgId {
 {{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
-			return handle{{.Name}}(req, respBuf, handler, builder, client, msgId)
+			{{if .Async}}
+			// Async: Hand off to worker
+			reqCopy := make([]byte, len(req))
+			copy(reqCopy, req)
+
+			jobQueue <- func() {
+				defer cancel()
+				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId)
+			}
+			return 0
+			{{else}}
+			// Sync: Run inline
+			defer cancel()
+			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId)
+			{{end}}
 {{end}}		default:
+			cancel()
 			return 0
 		}
 	})
@@ -309,58 +378,66 @@ func Serve(handler XllService) {
 }
 
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32) int32 {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32) int32 {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
 	{{range .Args}}
+	{{if eq .Type "string"}}
+	arg_{{.Name}} := string(request.{{.Name|capitalize}}())
+	{{else}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}()
+	{{end}}
 	{{end}}
 
 	{{if .Async}}
 	// Async execution
 	handle := request.AsyncHandle()
-	go func() {
-		// Call handler
-		res, err := handler.{{.Name}}({{range .Args}}arg_{{.Name}}, {{end}})
 
-		b2 := flatbuffers.NewBuilder(0)
-		var errOffset flatbuffers.UOffsetT
-		if err != nil {
-			errOffset = b2.CreateString(err.Error())
-		}
+	if ctx.Err() != nil {
+		sendAsyncError{{.Name}}(client, msgId, handle, ctx.Err())
+		return 0
+	}
 
+	// Call handler
+	res, err := handler.{{.Name}}(ctx, {{range .Args}}arg_{{.Name}}, {{end}})
+
+	b2 := flatbuffers.NewBuilder(0)
+	var errOffset flatbuffers.UOffsetT
+	if err != nil {
+		errOffset = b2.CreateString(err.Error())
+	}
+
+	{{if eq .Return "string"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil {
+		resOffset = b2.CreateString(res)
+	}
+	{{end}}
+
+	ipc.{{.Name}}ResponseStart(b2)
+	ipc.{{.Name}}ResponseAddAsyncHandle(b2, handle)
+	if err != nil {
+		ipc.{{.Name}}ResponseAddError(b2, errOffset)
+	} else {
 		{{if eq .Return "string"}}
-		var resOffset flatbuffers.UOffsetT
-		if err == nil {
-			resOffset = b2.CreateString(res)
-		}
+		ipc.{{.Name}}ResponseAddResult(b2, resOffset)
+		{{else}}
+		ipc.{{.Name}}ResponseAddResult(b2, res)
 		{{end}}
+	}
+	root := ipc.{{.Name}}ResponseEnd(b2)
+	b2.Finish(root)
 
-		ipc.{{.Name}}ResponseStart(b2)
-		ipc.{{.Name}}ResponseAddAsyncHandle(b2, handle)
-		if err != nil {
-			ipc.{{.Name}}ResponseAddError(b2, errOffset)
-		} else {
-			{{if eq .Return "string"}}
-			ipc.{{.Name}}ResponseAddResult(b2, resOffset)
-			{{else}}
-			ipc.{{.Name}}ResponseAddResult(b2, res)
-			{{end}}
-		}
-		root := ipc.{{.Name}}ResponseEnd(b2)
-		b2.Finish(root)
-
-		// Send Guest Call
-		if _, err := client.SendGuestCall(b2.FinishedBytes(), msgId); err != nil {
-			fmt.Printf("Error sending guest call for {{.Name}}: %v\n", err)
-		}
-	}()
-	return 0 // Return immediately
+	// Send Guest Call
+	if _, err := client.SendGuestCall(b2.FinishedBytes(), msgId); err != nil {
+		fmt.Printf("Error sending guest call for {{.Name}}: %v\n", err)
+	}
+	return 0
 	{{else}}
 	// Sync execution
 	// Call handler
-	res, err := handler.{{.Name}}({{range .Args}}arg_{{.Name}}, {{end}})
+	res, err := handler.{{.Name}}(ctx, {{range .Args}}arg_{{.Name}}, {{end}})
 
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
@@ -389,7 +466,6 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	b.Finish(root)
 
 	// Copy to respBuf
-	// Check size
 	payload := b.FinishedBytes()
 	if len(payload) > len(respBuf) {
 		return 0 // Error: buffer too small
@@ -398,6 +474,19 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	return int32(len(payload))
 	{{end}}
 }
+
+{{if .Async}}
+func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, err error) {
+	b := flatbuffers.NewBuilder(0)
+	errOffset := b.CreateString(err.Error())
+	ipc.{{.Name}}ResponseStart(b)
+	ipc.{{.Name}}ResponseAddAsyncHandle(b, handle)
+	ipc.{{.Name}}ResponseAddError(b, errOffset)
+	root := ipc.{{.Name}}ResponseEnd(b)
+	b.Finish(root)
+	client.SendGuestCall(b.FinishedBytes(), msgId)
+}
+{{end}}
 {{end}}
 `
 	funcMap := template.FuncMap{
@@ -433,15 +522,19 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	}
 
 	data := struct {
-		Package     string
-		ModName     string
-		ProjectName string
-		Functions   []Function
+		Package       string
+		ModName       string
+		ProjectName   string
+		Functions     []Function
+		ServerTimeout string
+		ServerWorkers int
 	}{
-		Package:     pkg,
+		Package:       pkg,
 		ModName:     modName,
-		ProjectName: config.Project.Name,
-		Functions:   config.Functions,
+		ProjectName:   config.Project.Name,
+		Functions:     config.Functions,
+		ServerTimeout: config.Server.Timeout,
+		ServerWorkers: config.Server.Workers,
 	}
 
 	f, err := os.Create(filepath.Join(dir, "server.go"))
@@ -453,9 +546,10 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	return t.Execute(f, data)
 }
 
-func generateCppMain(config Config, dir string) error {
+func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 	tmpl := `
 #include <windows.h>
+#include <string>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -531,9 +625,16 @@ extern "C" {
 
 int __stdcall xlAutoOpen() {
     // 1024 slots, 1MB size, 16 guest slots
+    {{if .ShouldAppendPid}}
+    std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
+    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, 16)) {
+        return 0;
+    }
+    {{else}}
     if (!g_host.Init("{{.ProjectName}}", 1024, 1024*1024, 16)) {
         return 0;
     }
+    {{end}}
 
     g_running = true;
     g_worker = std::thread([]{
@@ -589,7 +690,11 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 
     {{range .Args}}
     {{if eq .Type "string"}}
-    auto {{.Name}}_off = builder.CreateString(WStringToString({{.Name}}));
+    std::wstring wstr_{{.Name}};
+    if ({{.Name}}) {
+        wstr_{{.Name}}.assign({{.Name}} + 1, (size_t){{.Name}}[0]);
+    }
+    auto {{.Name}}_off = builder.CreateString(WStringToString(wstr_{{.Name}}));
     {{end}}
     {{end}}
 
@@ -714,11 +819,13 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 	defer f.Close()
 
 	return t.Execute(f, struct {
-		ProjectName string
-		Functions []Function
+		ProjectName     string
+		Functions       []Function
+		ShouldAppendPid bool
 	}{
-		ProjectName: config.Project.Name,
-		Functions: config.Functions,
+		ProjectName:     config.Project.Name,
+		Functions:       config.Functions,
+		ShouldAppendPid: shouldAppendPid,
 	})
 }
 
@@ -768,6 +875,15 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   flatbuffers::flatbuffers
 )
 
+if(NOT MSVC)
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-march=native>
+    $<$<CONFIG:Release>:-flto>
+  )
+  target_link_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:-flto>)
+endif()
+
 set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".xll")
 `
 	t, err := template.New("cmake").Parse(tmpl)
@@ -776,6 +892,61 @@ set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".xll")
 	}
 
 	f, err := os.Create(filepath.Join(dir, "CMakeLists.txt"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return t.Execute(f, struct {
+		ProjectName string
+	}{
+		ProjectName: config.Project.Name,
+	})
+}
+
+func generateTaskfile(config Config, dir string) error {
+	tmpl := `version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    desc: Build both Go server and C++ XLL (Release)
+    cmds:
+      - task: build-go
+      - task: build-cpp
+
+  build-go:
+    desc: Build Go server
+    cmds:
+      - go build -o build/{{.ProjectName}}.exe main.go
+
+  build-cpp:
+    desc: Build C++ XLL (Release)
+    cmds:
+      - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build/cpp --config Release
+      - cmd: cmake -E copy build/cpp/Release/{{.ProjectName}}.xll build/{{.ProjectName}}.xll
+        ignore_error: true
+      - cmd: cmake -E copy build/cpp/{{.ProjectName}}.xll build/{{.ProjectName}}.xll
+        ignore_error: true
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cmd: cmake -E remove_directory build
+        ignore_error: true
+      - cmd: cmake -E remove_directory generated
+        ignore_error: true
+`
+	t, err := template.New("taskfile").Parse(tmpl)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(filepath.Join(dir, "Taskfile.yml"))
 	if err != nil {
 		return err
 	}
