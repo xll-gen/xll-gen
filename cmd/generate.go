@@ -187,11 +187,13 @@ func generateSchema(config Config, path string) error {
 table {{.Name}}Request {
   {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
   {{end}}
+  {{if .Async}}async_handle:ulong (id: {{len .Args}});{{end}}
 }
 
 table {{.Name}}Response {
   result:{{lookupSchemaType .Return}};
   error:string;
+  {{if .Async}}async_handle:ulong;{{end}}
 }
 {{end}}
 `
@@ -296,7 +298,7 @@ func Serve(handler XllService) {
 
 		switch msgId {
 {{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
-			return handle{{.Name}}(req, respBuf, handler, builder)
+			return handle{{.Name}}(req, respBuf, handler, builder, client, msgId)
 {{end}}		default:
 			return 0
 		}
@@ -306,8 +308,8 @@ func Serve(handler XllService) {
 	client.Wait()
 }
 
-{{range .Functions}}
-func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder) int32 {
+{{range $i, $fn := .Functions}}
+func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32) int32 {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
@@ -315,6 +317,48 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	arg_{{.Name}} := request.{{.Name|capitalize}}()
 	{{end}}
 
+	{{if .Async}}
+	// Async execution
+	handle := request.AsyncHandle()
+	go func() {
+		// Call handler
+		res, err := handler.{{.Name}}({{range .Args}}arg_{{.Name}}, {{end}})
+
+		b2 := flatbuffers.NewBuilder(0)
+		var errOffset flatbuffers.UOffsetT
+		if err != nil {
+			errOffset = b2.CreateString(err.Error())
+		}
+
+		{{if eq .Return "string"}}
+		var resOffset flatbuffers.UOffsetT
+		if err == nil {
+			resOffset = b2.CreateString(res)
+		}
+		{{end}}
+
+		ipc.{{.Name}}ResponseStart(b2)
+		ipc.{{.Name}}ResponseAddAsyncHandle(b2, handle)
+		if err != nil {
+			ipc.{{.Name}}ResponseAddError(b2, errOffset)
+		} else {
+			{{if eq .Return "string"}}
+			ipc.{{.Name}}ResponseAddResult(b2, resOffset)
+			{{else}}
+			ipc.{{.Name}}ResponseAddResult(b2, res)
+			{{end}}
+		}
+		root := ipc.{{.Name}}ResponseEnd(b2)
+		b2.Finish(root)
+
+		// Send Guest Call
+		if _, err := client.SendGuestCall(b2.FinishedBytes(), msgId); err != nil {
+			fmt.Printf("Error sending guest call for {{.Name}}: %v\n", err)
+		}
+	}()
+	return 0 // Return immediately
+	{{else}}
+	// Sync execution
 	// Call handler
 	res, err := handler.{{.Name}}({{range .Args}}arg_{{.Name}}, {{end}})
 
@@ -352,6 +396,7 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 	}
 	copy(respBuf, payload)
 	return int32(len(payload))
+	{{end}}
 }
 {{end}}
 `
@@ -411,12 +456,17 @@ func handle{{.Name}}(req []byte, respBuf []byte, handler XllService, b *flatbuff
 func generateCppMain(config Config, dir string) error {
 	tmpl := `
 #include <windows.h>
+#include <thread>
+#include <atomic>
+#include <chrono>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
-#include "shm/IPCHost.h"
+#include "shm/DirectHost.h"
 #include "schema_generated.h"
 
-shm::IPCHost g_host;
+shm::DirectHost g_host;
+std::thread g_worker;
+std::atomic<bool> g_running{false};
 
 // Utility: String Conversion
 std::string WStringToString(const std::wstring& wstr) {
@@ -435,12 +485,63 @@ std::wstring StringToWString(const std::string& str) {
     return wstrTo;
 }
 
+// Guest Call Handler (Async Return)
+int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
+    switch (msgId) {
+{{range $i, $fn := .Functions}}
+    {{if .Async}}
+    case {{add 11 $i}}: { // {{.Name}}
+        auto response = ipc::Get{{.Name}}Response(req);
+        LPXLOPER12 h = (LPXLOPER12)response->async_handle();
+
+        if (response->error() && response->error()->size() > 0) {
+            XLOPER12 xErr; xErr.xltype = xltypeErr; xErr.val.err = xlErrValue;
+            Excel12(xlAsyncReturn, 0, 2, h, &xErr);
+            return 0;
+        }
+
+        {{if eq .Return "string"}}
+        std::wstring wres = StringToWString(response->result()->str());
+        LPXLOPER12 xRes = xll::NewExcelString(wres.c_str());
+        Excel12(xlAsyncReturn, 0, 2, h, xRes);
+        // We should free xRes if it was allocated by NewExcelString but xlAsyncReturn copies it.
+        // xll::NewExcelString allocates via pool which needs explicit free if we own it.
+        // For now we assume xlAsyncReturn copies and we should free.
+        xll::MemoryPool::Instance().Free(xRes);
+        {{else if eq .Return "int"}}
+        XLOPER12 xRes; xRes.xltype = xltypeInt; xRes.val.w = response->result();
+        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
+        {{else if eq .Return "float"}}
+        XLOPER12 xRes; xRes.xltype = xltypeNum; xRes.val.num = response->result();
+        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
+        {{else if eq .Return "bool"}}
+        XLOPER12 xRes; xRes.xltype = xltypeBool; xRes.val.xbool = response->result() ? 1 : 0;
+        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
+        {{end}}
+        return 0;
+    }
+    {{end}}
+{{end}}
+    default:
+        return 0;
+    }
+}
+
 extern "C" {
 
 int __stdcall xlAutoOpen() {
-    if (!g_host.Init("{{.ProjectName}}", 1024)) {
+    // 1024 slots, 1MB size, 16 guest slots
+    if (!g_host.Init("{{.ProjectName}}", 1024, 1024*1024, 16)) {
         return 0;
     }
+
+    g_running = true;
+    g_worker = std::thread([]{
+        while(g_running) {
+             int n = g_host.ProcessGuestCalls(GuestHandler);
+             if (n == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    });
 
     static XLOPER12 xDll;
     Excel12(xlGetName, &xDll, 0);
@@ -450,15 +551,16 @@ int __stdcall xlAutoOpen() {
         Excel12(xlfRegister, 0, {{registerCount $fn}},
             &xDll,
             TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{lookupXllType .Return}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}$"),
+            TempStr12(L"{{if .Async}}>{{end}}{{lookupXllType .Return}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}$"),
             TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{joinArgNames .Args}}"),
+            TempStr12(L"{{joinArgNames $fn}}"),
             TempStr12(L"1"),
             TempStr12(L"{{withDefault .Category $.ProjectName}}"),
             TempStr12(L"{{.Shortcut}}"),
             TempStr12(L"{{.HelpTopic}}"),
             TempStr12(L"{{.Description}}"){{if .Args}},{{end}}
             {{range $j, $arg := .Args}}TempStr12(L"{{$arg.Description}}"){{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}
+            {{if .Async}}{{if .Args}},{{end}}TempStr12(L"Async Handle"){{end}}
         );
     }
 {{end}}
@@ -468,6 +570,8 @@ int __stdcall xlAutoOpen() {
 }
 
 int __stdcall xlAutoClose() {
+    g_running = false;
+    if (g_worker.joinable()) g_worker.join();
     g_host.Shutdown();
     return 1;
 }
@@ -479,7 +583,7 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 }
 
 {{range $i, $fn := .Functions}}
-{{lookupCppType .Return}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}) {
+{{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
     flatbuffers::FlatBufferBuilder builder;
 
@@ -497,16 +601,22 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
     reqBuilder.add_{{.Name}}({{.Name}});
     {{end}}
     {{end}}
+    {{if .Async}}
+    reqBuilder.add_async_handle((uint64_t)asyncHandle);
+    {{end}}
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
     std::vector<uint8_t> response;
-    bool ok = g_host.Call(builder.GetBufferPointer(), builder.GetSize(), response);
+    int ok = g_host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 11 $i}}, response);
 
-    if (!ok) {
-        return {{defaultErrorVal .Return}};
+    if (ok < 0) {
+        {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
     }
 
+    {{if .Async}}
+    return;
+    {{else}}
     auto resp = ipc::Get{{.Name}}Response(response.data());
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
@@ -518,6 +628,7 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
     {{else}}
     return resp->result();
     {{end}}
+    {{end}}
 }
 {{end}}
 
@@ -527,12 +638,19 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
 		"registerCount": func(f Function) int {
-			return 10 + len(f.Args)
+			c := 10 + len(f.Args)
+			if f.Async {
+				c++
+			}
+			return c
 		},
-		"joinArgNames": func(args []Arg) string {
+		"joinArgNames": func(f Function) string {
 			var names []string
-			for _, a := range args {
+			for _, a := range f.Args {
 				names = append(names, a.Name)
+			}
+			if f.Async {
+				names = append(names, "asyncHandle")
 			}
 			return strings.Join(names, ",")
 		},
