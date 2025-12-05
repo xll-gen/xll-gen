@@ -223,6 +223,21 @@ Starting in Excel 2007, Excel can perform multithreaded workbook recalculation. 
 To do this, append a `$` character to the end of the `pxTypeText` string.
 *   Example: `QJJ$` (Returns Value, takes two Ints, Thread-Safe).
 
+**Registration Arguments (Form 1)**
+The generator implements `xlfRegister` (Form 1) fully, passing:
+1.  `module_text` (DLL name)
+2.  `procedure` (Export name)
+3.  `type_text` (Type string, e.g., `QJJ$`)
+4.  `function_text` (Function name)
+5.  `argument_text` (Comma-separated argument names)
+6.  `macro_type` (1 = Function)
+7.  `category` (Default: Project Name)
+8.  `shortcut_text` (Optional)
+9.  `help_topic` (Optional)
+10. `function_help` (Description)
+11. `argument_help1` (Arg 1 Description)
+...
+
 ### 8.2 Memory Management
 
 Proper memory management is critical to prevent Excel crashes.

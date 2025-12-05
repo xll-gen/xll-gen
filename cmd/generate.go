@@ -53,6 +53,9 @@ type Function struct {
 	Return      string `yaml:"return"`
 	Volatile    bool   `yaml:"volatile"`
 	Async       bool   `yaml:"async"`
+	Category    string `yaml:"category"`
+	Shortcut    string `yaml:"shortcut"`
+	HelpTopic   string `yaml:"help_topic"`
 }
 
 type Arg struct {
@@ -444,14 +447,18 @@ int __stdcall xlAutoOpen() {
 
 {{range $i, $fn := .Functions}}
     {
-        Excel12(xlfRegister, 0, 1 + {{len .Args}} + 3,
+        Excel12(xlfRegister, 0, {{registerCount $fn}},
             &xDll,
             TempStr12(L"{{.Name}}"),
             TempStr12(L"{{lookupXllType .Return}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}$"),
             TempStr12(L"{{.Name}}"),
-            {{range .Args}}TempStr12(L"{{.Name}}"),{{end}}
+            TempStr12(L"{{joinArgNames .Args}}"),
             TempStr12(L"1"),
-            TempStr12(L"{{.Name}}")
+            TempStr12(L"{{withDefault .Category $.ProjectName}}"),
+            TempStr12(L"{{.Shortcut}}"),
+            TempStr12(L"{{.HelpTopic}}"),
+            TempStr12(L"{{.Description}}"){{if .Args}},{{end}}
+            {{range $j, $arg := .Args}}TempStr12(L"{{$arg.Description}}"){{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}
         );
     }
 {{end}}
@@ -519,6 +526,22 @@ void __stdcall xlAutoFree12(LPXLOPER12 px) {
 	funcMap := template.FuncMap{
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
+		"registerCount": func(f Function) int {
+			return 10 + len(f.Args)
+		},
+		"joinArgNames": func(args []Arg) string {
+			var names []string
+			for _, a := range args {
+				names = append(names, a.Name)
+			}
+			return strings.Join(names, ",")
+		},
+		"withDefault": func(val, def string) string {
+			if val == "" {
+				return def
+			}
+			return val
+		},
 		"lookupCppType": func(t string) string {
 			m := map[string]string{
 				"int":    "int32_t",
