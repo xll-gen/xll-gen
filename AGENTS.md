@@ -218,6 +218,11 @@ For types with multiple representation options, we stick to the following canoni
 
 **Note**: Do not use the legacy 8-bit string types (`C`, `D`, `F`, `G`), `XLOPER` (`P`, `R`), or legacy `FP` (`K`). Always use the wide-char / `12` variants (e.g., `FP12` / `K%`).
 
+**Thread Safety (`$`)**
+Starting in Excel 2007, Excel can perform multithreaded workbook recalculation. Unless there is a specific reason to not support it, **all generated functions should be registered as thread-safe**.
+To do this, append a `$` character to the end of the `pxTypeText` string.
+*   Example: `QJJ$` (Returns Value, takes two Ints, Thread-Safe).
+
 ### 8.2 Memory Management
 
 Proper memory management is critical to prevent Excel crashes.
@@ -252,6 +257,61 @@ When returning errors from the XLL (e.g., if the Go server is unreachable), retu
 | `xlErrField` | `2049` | Field error |
 | `xlErrCalc` | `2050` | Calculation error |
 
-## 9. Agent Guidelines
+## 9. Reference: Shared Memory (IPC)
+
+The `xll-gen/shm` library provides low-latency IPC. For maximum performance, we use **Zero-Copy** operations where possible, especially for FlatBuffers.
+
+### 9.1 Zero-Copy (C++ Host)
+
+Instead of building a FlatBuffer on the heap and copying it to the shared memory slot, we construct it directly in the slot's request buffer.
+
+```cpp
+// 1. Acquire a Zero-Copy Slot
+auto slot = host.GetZeroCopySlot();
+
+// 2. Build FlatBuffer directly in shared memory
+// slot.GetReqBuffer() returns the pointer to the buffer.
+// We pass it to the builder as the initial buffer.
+flatbuffers::FlatBufferBuilder builder(
+    slot.GetMaxReqSize(),
+    nullptr,
+    false,
+    slot.GetReqBuffer()
+);
+
+// ... build your object ...
+// auto offset = CreateMyRequest(builder, ...);
+// builder.Finish(offset);
+
+// 3. Send Request
+// Signals MSG_ID_FLATBUFFER (or user ID) and handles size internally.
+slot.SendFlatBuffer(builder.GetSize());
+
+// 4. Access Response Directly (Zero-Copy)
+// The response is available in the response buffer immediately after Send returns.
+uint8_t* respData = slot.GetRespBuffer();
+int32_t respSize = slot.GetRespSize();
+```
+
+### 9.2 Zero-Copy (Go Guest)
+
+The Go client handler receives a slice that points directly to the shared memory region. Reading from `req` is zero-copy.
+
+```go
+client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
+    // 'req' points to the shared memory slot payload.
+    // It is safe to read directly (e.g., using FlatBuffers GetRootAs...).
+
+    if msgId == shm.MsgIdFlatbuffer {
+        // processFlatBuffer(req)
+    }
+
+    // Write response to respBuf
+    // ...
+    return bytesWritten
+})
+```
+
+## 10. Agent Guidelines
 
 *   **Documentation Updates**: When modifying features or adding new capabilities, you must update the relevant documentation (e.g., `README.md`, `AGENTS.md`) to reflect the changes.
