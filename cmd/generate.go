@@ -678,11 +678,10 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
 
         {{if eq .Return "string"}}
         std::wstring wres = StringToWString(response->result()->str());
-        LPXLOPER12 xRes = xll::NewExcelString(wres.c_str());
+        LPXLOPER12 xRes = NewExcelString(wres.c_str());
         Excel12(xlAsyncReturn, 0, 2, h, xRes);
-        // We should free xRes if it was allocated by NewExcelString but xlAsyncReturn copies it.
-        // xll::NewExcelString allocates via pool which needs explicit free if we own it.
-        // For now we assume xlAsyncReturn copies and we should free.
+        // NewExcelString sets xlbitDLLFree, so we can use xlAutoFree12 to clean it up.
+        // This handles both the string buffer and returning the XLOPER12 to the pool.
         xlAutoFree12(xRes);
         {{else if eq .Return "int"}}
         XLOPER12 xRes; xRes.xltype = xltypeInt; xRes.val.w = response->result();
@@ -802,7 +801,7 @@ int __stdcall xlAutoClose() {
 
     {{if eq .Return "string"}}
     std::wstring wres = StringToWString(resp->result()->str());
-    return xll::NewExcelString(wres.c_str());
+    return NewExcelString(wres.c_str());
     {{else}}
     return resp->result();
     {{end}}
