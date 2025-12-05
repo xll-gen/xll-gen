@@ -193,3 +193,61 @@ The C++ code must bridge Excel's `XLOPER12` types to Flatbuffers.
 -   Support for Java/Node.js by adding `gen.java` or `gen.js` in `xll.yaml`.
 -   Hot reloading (Go server restart without unloading XLL).
 -   Async function support in Excel (handling long-running Go tasks).
+
+## 8. Reference: Excel Internals
+
+This section details the specific C API constructs used by the generated C++ code. It serves as the primary reference for agents generating registration and memory management logic.
+
+### 8.1 xlfRegister & Data Types (`pxTypeText`)
+
+When registering functions using `xlfRegister`, the `pxTypeText` string defines the return type and argument types. We exclusively use **XLOPER12** (Excel 2007+) types.
+
+**Canonical Type Codes**
+For types with multiple representation options, we stick to the following canonical choices to ensure consistency.
+
+| Data Type | Code | C type | Description |
+| :--- | :--- | :--- | :--- |
+| **Boolean** | `A` | `short` | 0=false, 1=true. |
+| **Double** | `B` | `double` | IEEE 8-byte floating point. |
+| **Int** | `J` | `int32_t` | 32-bit signed integer. |
+| **String** | `C%` | `const wchar_t *` | Null-terminated Unicode wide-character string. |
+| **Array (FP)** | `K%` | `FP12 *` | Floating-point array structure. Efficient for math. |
+| **Any (Value)** | `Q` | `XLOPER12 *` | Pointer to XLOPER12. Dereferences references (Pass by Value). |
+| **Any (Ref)** | `U` | `XLOPER12 *` | Pointer to XLOPER12. Allows references (Range). |
+| **Async** | `X` | `void *` | Async handle (Excel 2010+). |
+
+**Note**: Do not use the legacy 8-bit string types (`C`, `D`, `F`, `G`), `XLOPER` (`P`, `R`), or legacy `FP` (`K`). Always use the wide-char / `12` variants (e.g., `FP12` / `K%`).
+
+### 8.2 Memory Management
+
+Proper memory management is critical to prevent Excel crashes.
+
+**Rules:**
+1.  **Inputs are Read-Only**: Arguments passed to the XLL function must never be freed or modified (unless registered as modify-in-place, which we avoid for general safety).
+2.  **Returning DLL-Allocated Memory**: When the XLL returns an `XLOPER12` that points to memory allocated by the DLL (e.g., a string or array created via `malloc`/`new`):
+    -   Set `xltype` to `type | xlbitDLLFree`.
+    -   Implement the `xlAutoFree12` callback in the XLL.
+    -   Excel will call `xlAutoFree12` when it is done with the return value.
+3.  **xlAutoFree12**: This function must identify what to free. Typically, it checks if `xlbitDLLFree` is set, and then frees the pointer in `val.str` or `val.array.lparray`, and finally the `XLOPER12` pointer itself if it was dynamically allocated.
+4.  **Avoid xlbitXLFree**: This bit is reserved for memory allocated by Excel (e.g., return values from C API callbacks like `xlfGetName`). If you receive such memory, make a deep copy if you need to keep it, then call `xlFree`.
+
+### 8.3 Error Codes (`xlCVError`)
+
+When returning errors from the XLL (e.g., if the Go server is unreachable), return an `XLOPER12` with `xltype = xltypeErr` and one of the following integer codes.
+
+| Error Name | Value | Description |
+| :--- | :--- | :--- |
+| `xlErrNull` | `2000` | Null intersection |
+| `xlErrDiv0` | `2007` | Division by zero |
+| `xlErrValue` | `2015` | Invalid value |
+| `xlErrRef` | `2023` | Invalid reference |
+| `xlErrName` | `2029` | Invalid name |
+| `xlErrNum` | `2036` | Invalid number |
+| `xlErrNA` | `2042` | Value not available |
+| `xlErrGettingData` | `2043` | Getting Data (Async) |
+| `xlErrSpill` | `2045` | Spill error |
+| `xlErrConnect` | `2046` | Connection error |
+| `xlErrBlocked` | `2047` | Blocked error |
+| `xlErrUnknown` | `2048` | Unknown error |
+| `xlErrField` | `2049` | Field error |
+| `xlErrCalc` | `2050` | Calculation error |
