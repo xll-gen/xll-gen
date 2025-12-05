@@ -63,17 +63,27 @@ func checkCompiler() {
 func checkFlatc() {
 	fmt.Print("Checking for flatc... ")
 
+	path, err := EnsureFlatc()
+	if err != nil {
+		fmt.Println("NOT FOUND")
+		fmt.Printf("Failed to resolve flatc: %v\n", err)
+		return
+	}
+	fmt.Printf("Found (%s)\n", path)
+}
+
+// EnsureFlatc checks for flatc in PATH or Cache, and downloads it if missing.
+// It returns the absolute path to the flatc binary.
+func EnsureFlatc() (string, error) {
 	// 1. Check in PATH
 	if path, err := exec.LookPath("flatc"); err == nil {
-		fmt.Printf("Found in PATH (%s)\n", path)
-		return
+		return path, nil
 	}
 
 	// 2. Check in Cache
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
-		fmt.Printf("Error getting cache dir: %v\n", err)
-		return
+		return "", fmt.Errorf("error getting cache dir: %w", err)
 	}
 	binDir := filepath.Join(cacheDir, "xll-gen", "bin")
 	exeName := "flatc"
@@ -83,17 +93,16 @@ func checkFlatc() {
 	flatcPath := filepath.Join(binDir, exeName)
 
 	if _, err := os.Stat(flatcPath); err == nil {
-		fmt.Printf("Found in cache (%s)\n", flatcPath)
-		return
+		return flatcPath, nil
 	}
 
-	fmt.Println("NOT FOUND")
-	fmt.Println("Attempting to download flatc...")
+	// 3. Download
+	fmt.Println("flatc not found. Attempting to download...")
 	if err := downloadFlatc(binDir); err != nil {
-		fmt.Printf("Failed to download flatc: %v\n", err)
-	} else {
-		fmt.Printf("Successfully downloaded flatc to %s\n", binDir)
+		return "", err
 	}
+
+	return flatcPath, nil
 }
 
 type Release struct {
