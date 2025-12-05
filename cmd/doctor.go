@@ -85,7 +85,9 @@ func EnsureFlatc() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("error getting cache dir: %w", err)
 	}
-	binDir := filepath.Join(cacheDir, "xll-gen", "bin")
+	// Pin to specific version to match CMake configuration
+	const flatcVersion = "v25.9.23"
+	binDir := filepath.Join(cacheDir, "xll-gen", "bin", flatcVersion)
 	exeName := "flatc"
 	if runtime.GOOS == "windows" {
 		exeName += ".exe"
@@ -98,7 +100,7 @@ func EnsureFlatc() (string, error) {
 
 	// 3. Download
 	fmt.Println("flatc not found. Attempting to download...")
-	if err := downloadFlatc(binDir); err != nil {
+	if err := downloadFlatc(binDir, flatcVersion); err != nil {
 		return "", err
 	}
 
@@ -115,8 +117,9 @@ type Asset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-func downloadFlatc(destDir string) error {
-	resp, err := http.Get("https://api.github.com/repos/google/flatbuffers/releases/latest")
+func downloadFlatc(destDir string, version string) error {
+	url := "https://api.github.com/repos/google/flatbuffers/releases/tags/" + version
+	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to fetch releases: %w", err)
 	}
@@ -131,7 +134,7 @@ func downloadFlatc(destDir string) error {
 		return fmt.Errorf("failed to decode release info: %w", err)
 	}
 
-	fmt.Printf("Latest version: %s\n", release.TagName)
+	fmt.Printf("Version: %s\n", release.TagName)
 
 	var downloadURL string
 	var assetName string

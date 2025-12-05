@@ -1,0 +1,35 @@
+version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    desc: Build both Go server and C++ XLL (Release)
+    cmds:
+      - task: build-go
+      - task: build-cpp
+
+  build-go:
+    desc: Build Go server
+    cmds:
+      - go build -o build/MyTest.exe main.go
+
+  build-cpp:
+    desc: Build C++ XLL (Release)
+    cmds:
+      - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build/cpp --config Release
+      - cmd: cmake -E copy build/cpp/Release/MyTest.xll build/MyTest.xll
+        ignore_error: true
+      - cmd: cmake -E copy build/cpp/MyTest.xll build/MyTest.xll
+        ignore_error: true
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cmd: cmake -E remove_directory build
+        ignore_error: true
+      - cmd: cmake -E remove_directory generated
+        ignore_error: true
