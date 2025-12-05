@@ -251,3 +251,7 @@ When returning errors from the XLL (e.g., if the Go server is unreachable), retu
 | `xlErrUnknown` | `2048` | Unknown error |
 | `xlErrField` | `2049` | Field error |
 | `xlErrCalc` | `2050` | Calculation error |
+
+## 9. Agent Guidelines
+
+*   **Documentation Updates**: When modifying features or adding new capabilities, you must update the relevant documentation (e.g., `README.md`, `AGENTS.md`) to reflect the changes.
