@@ -284,6 +284,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 			return t
 		},
 		"lookupEventId": func(evtType string) int {
+			// Returns offset from User Start
 			if evtType == "CalculationEnded" {
 				return 1
 			}
@@ -430,6 +431,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 			return t
 		},
 		"lookupEventId": func(evtType string) int {
+			// Returns offset from User Start
 			if evtType == "CalculationEnded" { return 1 }
 			if evtType == "CalculationCanceled" { return 2 }
 			return 0
