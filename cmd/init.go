@@ -147,6 +147,7 @@ func main() {
 	// 3. Create .gitignore
 	gitIgnore := `build/
 generated/
+temp*/
 `
 	if err := os.WriteFile(filepath.Join(projectName, ".gitignore"), []byte(gitIgnore), 0644); err != nil {
 		return err
