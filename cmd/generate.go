@@ -227,10 +227,14 @@ table {{.Name}}Response {
 	funcMap := template.FuncMap{
 		"lookupSchemaType": func(t string) string {
 			m := map[string]string{
-				"int":    "int",
-				"float":  "double",
-				"string": "string",
-				"bool":   "bool",
+				"int":     "int",
+				"float":   "double",
+				"string":  "string",
+				"bool":    "bool",
+				"int?":    "ipc.types.Int",
+				"float?":  "ipc.types.Num",
+				"bool?":   "ipc.types.Bool",
+				"string?": "ipc.types.Str",
 			}
 			if v, ok := m[t]; ok {
 				return v
@@ -320,10 +324,14 @@ type XllService interface {
 	funcMap := template.FuncMap{
 		"lookupGoType": func(t string) string {
 			m := map[string]string{
-				"int":    "int32",
-				"float":  "float64",
-				"string": "string",
-				"bool":   "bool",
+				"int":     "int32",
+				"float":   "float64",
+				"string":  "string",
+				"bool":    "bool",
+				"int?":    "*int32",
+				"float?":  "*float64",
+				"bool?":   "*bool",
+				"string?": "*string",
 			}
 			if v, ok := m[t]; ok {
 				return v
@@ -454,6 +462,30 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{range .Args}}
 	{{if eq .Type "string"}}
 	arg_{{.Name}} := string(request.{{.Name|capitalize}}())
+	{{else if eq .Type "int?"}}
+	var arg_{{.Name}} *int32
+	if v := request.{{.Name|capitalize}}(nil); v != nil {
+		val := v.Val()
+		arg_{{.Name}} = &val
+	}
+	{{else if eq .Type "float?"}}
+	var arg_{{.Name}} *float64
+	if v := request.{{.Name|capitalize}}(nil); v != nil {
+		val := v.Val()
+		arg_{{.Name}} = &val
+	}
+	{{else if eq .Type "bool?"}}
+	var arg_{{.Name}} *bool
+	if v := request.{{.Name|capitalize}}(nil); v != nil {
+		val := v.Val()
+		arg_{{.Name}} = &val
+	}
+	{{else if eq .Type "string?"}}
+	var arg_{{.Name}} *string
+	if v := request.{{.Name|capitalize}}(nil); v != nil {
+		val := string(v.Val())
+		arg_{{.Name}} = &val
+	}
 	{{else}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}()
 	{{end}}
@@ -568,10 +600,14 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 		},
 		"lookupGoType": func(t string) string {
 			m := map[string]string{
-				"int":    "int32",
-				"float":  "float64",
-				"string": "string",
-				"bool":   "bool",
+				"int":     "int32",
+				"float":   "float64",
+				"string":  "string",
+				"bool":    "bool",
+				"int?":    "*int32",
+				"float?":  "*float64",
+				"bool?":   "*bool",
+				"string?": "*string",
 			}
 			if v, ok := m[t]; ok {
 				return v
@@ -599,7 +635,7 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 		ServerWorkers int
 	}{
 		Package:       pkg,
-		ModName:     modName,
+		ModName:       modName,
 		ProjectName:   config.Project.Name,
 		Functions:     config.Functions,
 		ServerTimeout: config.Server.Timeout,
@@ -767,6 +803,27 @@ int __stdcall xlAutoClose() {
     {{range .Args}}
     {{if eq .Type "string"}}
     auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
+    {{else if eq .Type "string?"}}
+    flatbuffers::Offset<ipc::types::Str> {{.Name}}_off = 0;
+    if ({{.Name}}) {
+        auto val_off = builder.CreateString(ConvertExcelString({{.Name}}));
+        {{.Name}}_off = ipc::types::CreateStr(builder, val_off);
+    }
+    {{else if eq .Type "int?"}}
+    flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
+    if ({{.Name}}) {
+        {{.Name}}_off = ipc::types::CreateInt(builder, *{{.Name}});
+    }
+    {{else if eq .Type "float?"}}
+    flatbuffers::Offset<ipc::types::Num> {{.Name}}_off = 0;
+    if ({{.Name}}) {
+        {{.Name}}_off = ipc::types::CreateNum(builder, *{{.Name}});
+    }
+    {{else if eq .Type "bool?"}}
+    flatbuffers::Offset<ipc::types::Bool> {{.Name}}_off = 0;
+    if ({{.Name}}) {
+        {{.Name}}_off = ipc::types::CreateBool(builder, (*{{.Name}} != 0));
+    }
     {{end}}
     {{end}}
 
@@ -774,6 +831,14 @@ int __stdcall xlAutoClose() {
     {{range .Args}}
     {{if eq .Type "string"}}
     reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "string?"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "int?"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "float?"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "bool?"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else}}
     reqBuilder.add_{{.Name}}({{.Name}});
     {{end}}
@@ -839,40 +904,48 @@ int __stdcall xlAutoClose() {
 		},
 		"lookupCppType": func(t string) string {
 			m := map[string]string{
-				"int":    "int32_t",
-				"float":  "double",
-				"string": "LPXLOPER12",
-				"bool":   "short",
+				"int":     "int32_t",
+				"float":   "double",
+				"string":  "LPXLOPER12",
+				"bool":    "short",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
 		},
 		"lookupArgCppType": func(t string) string {
 			m := map[string]string{
-				"int":    "int32_t",
-				"float":  "double",
-				"string": "const wchar_t*",
-				"bool":   "short",
+				"int":     "int32_t",
+				"float":   "double",
+				"string":  "const wchar_t*",
+				"bool":    "short",
+				"int?":    "int32_t*",
+				"float?":  "double*",
+				"bool?":   "short*",
+				"string?": "const wchar_t*",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
 		},
 		"lookupXllType": func(t string) string {
 			m := map[string]string{
-				"int":    "J",
-				"float":  "B",
-				"string": "Q",
-				"bool":   "A",
+				"int":     "J",
+				"float":   "B",
+				"string":  "Q",
+				"bool":    "A",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
 		},
 		"lookupArgXllType": func(t string) string {
 			m := map[string]string{
-				"int":    "J",
-				"float":  "B",
-				"string": "D%",
-				"bool":   "A",
+				"int":     "J",
+				"float":   "B",
+				"string":  "D%",
+				"bool":    "A",
+				"int?":    "N",
+				"float?":  "E",
+				"bool?":   "L",
+				"string?": "D%",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
