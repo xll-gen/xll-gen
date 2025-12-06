@@ -133,14 +133,37 @@ func runGenerate() error {
 	}
 	fmt.Println("Generated schema.fbs")
 
-	// 4. Run flatc
+	// 4. Get Module Name (Needed for Flatbuffers imports)
+	modName, err := getModuleName()
+	if err != nil {
+		return err
+	}
+	goModulePath := modName + "/generated"
+
+	// 5. Run flatc
 	flatcPath, err := EnsureFlatc()
 	if err != nil {
 		return err
 	}
 
-	// Generate Go code
-	cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "-o", genDir, schemaPath)
+	// Generate Go code for xltypes
+	cmd := exec.Command(flatcPath, "--go", "--go-module-name", goModulePath, "-o", genDir, xlTypesPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("flatc (go xltypes) failed: %w", err)
+	}
+
+	// Generate C++ code for xltypes
+	cmd = exec.Command(flatcPath, "--cpp", "-o", cppDir, xlTypesPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("flatc (cpp xltypes) failed: %w", err)
+	}
+
+	// Generate Go code for schema
+	cmd = exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "-o", genDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -156,12 +179,6 @@ func runGenerate() error {
 		return fmt.Errorf("flatc (cpp) failed: %w", err)
 	}
 	fmt.Println("Generated Flatbuffers C++ code")
-
-	// 5. Get Module Name
-	modName, err := getModuleName()
-	if err != nil {
-		return err
-	}
 
 	// 6. Generate interface.go
 	if err := generateInterface(config, genDir, modName); err != nil {
@@ -375,6 +392,9 @@ import (
 	"{{.ModName}}/generated/ipc/types"
 )
 
+// Force usage of ipc/types to avoid unused import error
+var _ = types.Bool{}
+
 type XllService interface {
 {{range .Functions}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *types.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}
@@ -448,6 +468,10 @@ import (
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
+
+// Force usage of time and ipc/types to avoid unused import error
+var _ = time.Now
+var _ = types.Bool{}
 
 func Serve(handler XllService) {
 	name := "{{.ProjectName}}"
@@ -660,6 +684,35 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	if err == nil {
 		resOffset = b2.CreateString(res)
 	}
+	{{else if eq .Return "int?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		types.IntStart(b2)
+		types.IntAddVal(b2, *res)
+		resOffset = types.IntEnd(b2)
+	}
+	{{else if eq .Return "float?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		types.NumStart(b2)
+		types.NumAddVal(b2, *res)
+		resOffset = types.NumEnd(b2)
+	}
+	{{else if eq .Return "bool?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		types.BoolStart(b2)
+		types.BoolAddVal(b2, *res)
+		resOffset = types.BoolEnd(b2)
+	}
+	{{else if eq .Return "string?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		valOff := b2.CreateString(*res)
+		types.StrStart(b2)
+		types.StrAddVal(b2, valOff)
+		resOffset = types.StrEnd(b2)
+	}
 	{{end}}
 
 	ipc.{{.Name}}ResponseStart(b2)
@@ -667,8 +720,10 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	if err != nil {
 		ipc.{{.Name}}ResponseAddError(b2, errOffset)
 	} else {
-		{{if eq .Return "string"}}
-		ipc.{{.Name}}ResponseAddResult(b2, resOffset)
+		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "string?")}}
+		if resOffset > 0 {
+			ipc.{{.Name}}ResponseAddResult(b2, resOffset)
+		}
 		{{else}}
 		ipc.{{.Name}}ResponseAddResult(b2, res)
 		{{end}}
@@ -697,14 +752,45 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	if err == nil {
 		resOffset = b.CreateString(res)
 	}
+	{{else if eq .Return "int?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		types.IntStart(b)
+		types.IntAddVal(b, *res)
+		resOffset = types.IntEnd(b)
+	}
+	{{else if eq .Return "float?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		types.NumStart(b)
+		types.NumAddVal(b, *res)
+		resOffset = types.NumEnd(b)
+	}
+	{{else if eq .Return "bool?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		types.BoolStart(b)
+		types.BoolAddVal(b, *res)
+		resOffset = types.BoolEnd(b)
+	}
+	{{else if eq .Return "string?"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil && res != nil {
+		valOff := b.CreateString(*res)
+		types.StrStart(b)
+		types.StrAddVal(b, valOff)
+		resOffset = types.StrEnd(b)
+	}
 	{{end}}
 
 	ipc.{{.Name}}ResponseStart(b)
 	if err != nil {
 		ipc.{{.Name}}ResponseAddError(b, errOffset)
 	} else {
-		{{if eq .Return "string"}}
-		ipc.{{.Name}}ResponseAddResult(b, resOffset)
+		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "string?")}}
+		if resOffset > 0 {
+			ipc.{{.Name}}ResponseAddResult(b, resOffset)
+		}
 		{{else}}
 		ipc.{{.Name}}ResponseAddResult(b, res)
 		{{end}}
@@ -1116,7 +1202,7 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
 {{range $i, $fn := .Functions}}
     {{if .Async}}
     case {{add 11 $i}}: { // {{.Name}}
-        auto response = ipc::Get{{.Name}}Response(req);
+        auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
         LPXLOPER12 h = (LPXLOPER12)response->async_handle();
 
         if (response->error() && response->error()->size() > 0) {
@@ -1332,7 +1418,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{if .Async}}
     return;
     {{else}}
-    auto resp = ipc::Get{{.Name}}Response(slot.GetRespBuffer());
+    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
     }
@@ -1518,7 +1604,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
   shm
-  flatbuffers::flatbuffers
+  flatbuffers
 )
 
 if(NOT MSVC)
