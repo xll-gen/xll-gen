@@ -8,8 +8,8 @@ import (
 	"text/template"
 
 	"github.com/spf13/cobra"
-	"xll-gen/pkg/assets"
-	"xll-gen/pkg/templates"
+	"xll-gen/internal/assets"
+	"xll-gen/internal/templates"
 )
 
 var initCmd = &cobra.Command{

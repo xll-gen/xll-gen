@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-	"xll-gen/pkg/config"
-	"xll-gen/pkg/generator"
+	"xll-gen/internal/config"
+	"xll-gen/internal/generator"
 )
 
 var disablePidSuffix bool

@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-	"xll-gen/pkg/config"
-	"xll-gen/pkg/templates"
+	"xll-gen/internal/config"
+	"xll-gen/internal/templates"
 )
 
 var simulateCmd = &cobra.Command{

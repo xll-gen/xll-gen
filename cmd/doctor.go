@@ -6,7 +6,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
-	"xll-gen/pkg/generator"
+	"xll-gen/internal/generator"
 )
 
 var doctorCmd = &cobra.Command{
