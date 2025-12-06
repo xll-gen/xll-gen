@@ -434,9 +434,18 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
     {{else if eq .Type "string?"}}
     flatbuffers::Offset<ipc::types::Str> {{.Name}}_off = 0;
-    if ({{.Name}}) {
-        auto val_off = builder.CreateString(ConvertExcelString({{.Name}}));
-        {{.Name}}_off = ipc::types::CreateStr(builder, val_off);
+    if ({{.Name}} && {{.Name}}->xltype != xltypeMissing && {{.Name}}->xltype != xltypeNil) {
+        if ({{.Name}}->xltype == xltypeStr) {
+             auto val_off = builder.CreateString(ConvertExcelString({{.Name}}->val.str));
+             {{.Name}}_off = ipc::types::CreateStr(builder, val_off);
+        } else {
+             XLOPER12 xStr;
+             if (Excel12(xlCoerce, &xStr, 2, {{.Name}}, TempInt12(xltypeStr)) == xlretSuccess) {
+                  auto val_off = builder.CreateString(ConvertExcelString(xStr.val.str));
+                  {{.Name}}_off = ipc::types::CreateStr(builder, val_off);
+                  Excel12(xlFree, 0, 1, &xStr);
+             }
+        }
     }
     {{else if eq .Type "int?"}}
     flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
