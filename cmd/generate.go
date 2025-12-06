@@ -74,6 +74,7 @@ type Function struct {
 	Shortcut    string `yaml:"shortcut"`
 	HelpTopic   string `yaml:"help_topic"`
 	Timeout     string `yaml:"timeout"`
+	Caller      bool   `yaml:"caller"`
 }
 
 type Arg struct {
@@ -163,7 +164,7 @@ func runGenerate() error {
 	}
 
 	// 6. Generate interface.go
-	if err := generateInterface(config, genDir); err != nil {
+	if err := generateInterface(config, genDir, modName); err != nil {
 		return err
 	}
 	fmt.Println("Generated interface.go")
@@ -237,6 +238,7 @@ table {{.Name}}Request {
   {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
   {{end}}
   {{if .Async}}async_handle:ulong (id: {{len .Args}});{{end}}
+  {{if .Caller}}caller:ipc.types.Range (id: {{add (len .Args) (boolToInt .Async)}});{{end}}
 }
 
 table {{.Name}}Response {
@@ -247,12 +249,20 @@ table {{.Name}}Response {
 {{end}}
 `
 	funcMap := template.FuncMap{
+		"add": func(a, b int) int { return a + b },
+		"boolToInt": func(b bool) int {
+			if b {
+				return 1
+			}
+			return 0
+		},
 		"lookupSchemaType": func(t string) string {
 			m := map[string]string{
 				"int":     "int",
 				"float":   "double",
 				"string":  "string",
 				"bool":    "bool",
+				"range":   "ipc.types.Range",
 				"int?":    "ipc.types.Int",
 				"float?":  "ipc.types.Num",
 				"bool?":   "ipc.types.Bool",
@@ -307,6 +317,18 @@ table Err { val: XlError = Null; }
 table AsyncHandle { val: ulong; }
 table Nil { }
 
+struct Rect {
+  row_first: int;
+  row_last: int;
+  col_first: int;
+  col_last: int;
+}
+
+table Range {
+  sheet_name: string;
+  refs: [Rect];
+}
+
 union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil }
 
 table Scalar {
@@ -325,7 +347,7 @@ table NumArray {
   data: [double];
 }
 
-union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Array, NumArray }
+union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Array, NumArray, Range }
 
 table Any {
   val: AnyValue;
@@ -334,13 +356,16 @@ table Any {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func generateInterface(config Config, dir string) error {
+func generateInterface(config Config, dir string, modName string) error {
 	tmpl := `package {{.Package}}
 
-import "context"
+import (
+	"context"
+	"{{.ModName}}/generated/ipc/types"
+)
 
 type XllService interface {
-{{range .Functions}}	{{.Name}}(ctx context.Context, {{range .Args}}{{.Name}} {{lookupGoType .Type}}, {{end}}) ({{lookupGoType .Return}}, error)
+{{range .Functions}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *types.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}
 {{range .Events}}	{{.Name}}(ctx context.Context) error
 {{end}}}
@@ -352,6 +377,7 @@ type XllService interface {
 				"float":   "float64",
 				"string":  "string",
 				"bool":    "bool",
+				"range":   "*types.Range",
 				"int?":    "*int32",
 				"float?":  "*float64",
 				"bool?":   "*bool",
@@ -376,10 +402,12 @@ type XllService interface {
 
 	data := struct {
 		Package   string
+		ModName   string
 		Functions []Function
 		Events    []Event
 	}{
 		Package:   pkg,
+		ModName:   modName,
 		Functions: config.Functions,
 		Events:    config.Events,
 	}
@@ -403,6 +431,7 @@ import (
 	"strings"
 	"time"
 	"{{.ModName}}/generated/ipc"
+	"{{.ModName}}/generated/ipc/types"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -521,9 +550,15 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		val := string(v.Val())
 		arg_{{.Name}} = &val
 	}
+	{{else if eq .Type "range"}}
+	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}()
 	{{end}}
+	{{end}}
+
+	{{if .Caller}}
+	caller := request.Caller(nil)
 	{{end}}
 
 	{{if .Async}}
@@ -536,7 +571,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	}
 
 	// Call handler
-	res, err := handler.{{.Name}}(ctx, {{range .Args}}arg_{{.Name}}, {{end}})
+	res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
 	b2 := flatbuffers.NewBuilder(0)
 	var errOffset flatbuffers.UOffsetT
@@ -573,7 +608,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{else}}
 	// Sync execution
 	// Call handler
-	res, err := handler.{{.Name}}(ctx, {{range .Args}}arg_{{.Name}}, {{end}})
+	res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
@@ -639,6 +674,7 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 				"float":   "float64",
 				"string":  "string",
 				"bool":    "bool",
+				"range":   "*types.Range",
 				"int?":    "*int32",
 				"float?":  "*float64",
 				"bool?":   "*bool",
@@ -754,6 +790,14 @@ std::wstring StringToWString(const std::string& str) {
     return wstrTo;
 }
 
+std::string WideToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return "";
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
 // Optimization: Thread-local buffer for string conversion
 // Avoids allocating std::string for every conversion.
 thread_local std::vector<char> g_strBuf;
@@ -772,6 +816,49 @@ const char* ConvertExcelString(const wchar_t* wstr) {
     else g_strBuf[0] = '\0';
 
     return g_strBuf.data();
+}
+
+std::wstring GetSheetName(LPXLOPER12 pxRef) {
+    if (!pxRef || (pxRef->xltype != xltypeRef && pxRef->xltype != xltypeSRef)) {
+        return L"";
+    }
+
+    XLOPER12 xRes;
+    int ret = Excel12(xlSheetNm, &xRes, 1, pxRef);
+    if (ret != xlretSuccess) return L"";
+
+    std::wstring result;
+    if (xRes.xltype == xltypeStr && xRes.val.str) {
+         size_t len = (size_t)xRes.val.str[0];
+         if (len > 0) {
+             result.assign(xRes.val.str + 1, len);
+         }
+    }
+    Excel12(xlFree, 0, 1, &xRes);
+    return result;
+}
+
+flatbuffers::Offset<ipc::types::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
+    if (!op) return 0;
+
+    std::vector<ipc::types::Rect> refs;
+    std::wstring sheetName = GetSheetName(op);
+
+    if (op->xltype == xltypeRef) {
+        if (op->val.mref.lpmref) {
+            for (WORD i = 0; i < op->val.mref.lpmref->count; ++i) {
+                const auto& r = op->val.mref.lpmref->reftbl[i];
+                refs.emplace_back(r.rwFirst, r.rwLast, r.colFirst, r.colLast);
+            }
+        }
+    } else if (op->xltype == xltypeSRef) {
+        const auto& r = op->val.sref.ref;
+        refs.emplace_back(r.rwFirst, r.rwLast, r.colFirst, r.colLast);
+    }
+
+    auto sheetNameOffset = builder.CreateString(WideToUtf8(sheetName));
+    auto refsOffset = builder.CreateVectorOfStructs(refs);
+    return ipc::types::CreateRange(builder, sheetNameOffset, refsOffset);
 }
 
 // Guest Call Handler (Async Return)
@@ -912,7 +999,22 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     if ({{.Name}}) {
         {{.Name}}_off = ipc::types::CreateBool(builder, (*{{.Name}} != 0));
     }
+    {{else if eq .Type "range"}}
+    auto {{.Name}}_off = ConvertRange({{.Name}}, builder);
     {{end}}
+    {{end}}
+
+    {{if .Caller}}
+    flatbuffers::Offset<ipc::types::Range> caller_off = 0;
+    {
+        XLOPER12 xCaller;
+        if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
+            caller_off = ConvertRange(&xCaller, builder);
+            if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
+                Excel12(xlFree, 0, 1, &xCaller);
+            }
+        }
+    }
     {{end}}
 
     ipc::{{.Name}}RequestBuilder reqBuilder(builder);
@@ -927,9 +1029,14 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else if eq .Type "bool?"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "range"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else}}
     reqBuilder.add_{{.Name}}({{.Name}});
     {{end}}
+    {{end}}
+    {{if .Caller}}
+    if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
     {{end}}
     {{if .Async}}
     reqBuilder.add_async_handle((uint64_t)asyncHandle);
@@ -996,6 +1103,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"float":   "double",
 				"string":  "LPXLOPER12",
 				"bool":    "short",
+				"range":   "LPXLOPER12",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -1006,6 +1114,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"float":   "double",
 				"string":  "const wchar_t*",
 				"bool":    "short",
+				"range":   "LPXLOPER12",
 				"int?":    "int32_t*",
 				"float?":  "double*",
 				"bool?":   "short*",
@@ -1020,6 +1129,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"float":   "B",
 				"string":  "Q",
 				"bool":    "A",
+				"range":   "U",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -1030,6 +1140,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"float":   "B",
 				"string":  "D%",
 				"bool":    "A",
+				"range":   "U",
 				"int?":    "N",
 				"float?":  "E",
 				"bool?":   "L",
