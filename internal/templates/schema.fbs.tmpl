@@ -7,7 +7,11 @@ table Chunk {
   total_size: uint;
   offset: uint;
   data: [ubyte];
+  msg_id: uint;
 }
+
+root_type Chunk;
+file_identifier "XCHN";
 
 table SetRefCacheRequest {
   key: string;
