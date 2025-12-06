@@ -250,6 +250,15 @@ func generateSchema(config Config, path string) error {
 
 namespace ipc;
 
+table SetRefCacheRequest {
+  key: string;
+  val: ipc.types.Any;
+}
+
+table SetRefCacheResponse {
+  ok: bool;
+}
+
 {{range .Functions}}
 table {{.Name}}Request {
   {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
@@ -280,6 +289,7 @@ table {{.Name}}Response {
 				"string":  "string",
 				"bool":    "bool",
 				"range":   "ipc.types.Range",
+				"any":     "ipc.types.Any",
 				"int?":    "ipc.types.Int",
 				"float?":  "ipc.types.Num",
 				"bool?":   "ipc.types.Bool",
@@ -333,6 +343,7 @@ table Str { val: string; }
 table Err { val: XlError = Null; }
 table AsyncHandle { val: ulong; }
 table Nil { }
+table RefCache { key: string; }
 
 struct Rect {
   row_first: int;
@@ -364,7 +375,7 @@ table NumArray {
   data: [double];
 }
 
-union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Array, NumArray, Range }
+union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Array, NumArray, Range, RefCache }
 
 table Any {
   val: AnyValue;
@@ -398,6 +409,7 @@ type XllService interface {
 				"string":  "string",
 				"bool":    "bool",
 				"range":   "*types.Range",
+				"any":     "*types.Any",
 				"int?":    "*int32",
 				"float?":  "*float64",
 				"bool?":   "*bool",
@@ -449,6 +461,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
@@ -473,6 +486,10 @@ func Serve(handler XllService) {
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
 	defer client.Close()
+
+	// Global Ref Cache
+	var refCacheMutex sync.RWMutex
+	refCache := make(map[string][]byte)
 
 	// Configuration
 	{{range .Functions}}
@@ -501,7 +518,44 @@ func Serve(handler XllService) {
 		builder.Reset()
 
 		switch msgId {
-{{range .Events}}		case {{lookupEventId .Type}}: // {{.Type}}
+		case 1: // CalculationEnded
+			refCacheMutex.Lock()
+			refCache = make(map[string][]byte)
+			refCacheMutex.Unlock()
+			{{if hasEvent "CalculationEnded" .Events}}
+			ctx := context.Background()
+			jobQueue <- func() {
+				if err := handler.OnCalculationEnded(ctx); err != nil {
+					fmt.Printf("Event handler OnCalculationEnded failed: %v\n", err)
+				}
+			}
+			{{end}}
+			return 0
+
+		case 3: // SetRefCache
+			reqObj := ipc.GetRootAsSetRefCacheRequest(req, 0)
+			key := string(reqObj.Key())
+
+			reqCopy := make([]byte, len(req))
+			copy(reqCopy, req)
+
+			refCacheMutex.Lock()
+			refCache[key] = reqCopy
+			refCacheMutex.Unlock()
+
+			ipc.SetRefCacheResponseStart(builder)
+			ipc.SetRefCacheResponseAddOk(builder, true)
+			root := ipc.SetRefCacheResponseEnd(builder)
+			builder.Finish(root)
+
+			payload := builder.FinishedBytes()
+			if len(payload) > len(respBuf) { return 0 }
+			copy(respBuf, payload)
+			return int32(len(payload))
+
+{{range .Events}}
+		{{if ne .Type "CalculationEnded"}}
+		case {{lookupEventId .Type}}: // {{.Type}}
 			ctx := context.Background()
 			jobQueue <- func() {
 				if err := handler.{{.Name}}(ctx); err != nil {
@@ -509,6 +563,7 @@ func Serve(handler XllService) {
 				}
 			}
 			return 0
+		{{end}}
 {{end}}
 {{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
 			{{if .Timeout}}
@@ -525,13 +580,13 @@ func Serve(handler XllService) {
 
 			jobQueue <- func() {
 				defer cancel()
-				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId)
+				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId, refCache, &refCacheMutex)
 			}
 			return 0
 			{{else}}
 			// Sync: Run inline
 			defer cancel()
-			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId)
+			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId, refCache, &refCacheMutex)
 			{{end}}
 {{end}}		default:
 			return 0
@@ -543,7 +598,7 @@ func Serve(handler XllService) {
 }
 
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32) int32 {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32, refCache map[string][]byte, refCacheMutex *sync.RWMutex) int32 {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
@@ -576,6 +631,27 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	}
 	{{else if eq .Type "range"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+	{{else if eq .Type "any"}}
+	var arg_{{.Name}} *types.Any
+	arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
+	if arg_{{.Name}}_raw != nil {
+		if arg_{{.Name}}_raw.ValType() == types.AnyValueRefCache {
+			var rc types.RefCache
+			init := new(flatbuffers.Table)
+			if arg_{{.Name}}_raw.Val(init) {
+				rc.Init(init.Bytes, init.Pos)
+				key := string(rc.Key())
+				refCacheMutex.RLock()
+				if data, ok := refCache[key]; ok {
+					cacheReq := ipc.GetRootAsSetRefCacheRequest(data, 0)
+					arg_{{.Name}} = cacheReq.Val(nil)
+				}
+				refCacheMutex.RUnlock()
+			}
+		} else {
+			arg_{{.Name}} = arg_{{.Name}}_raw
+		}
+	}
 	{{else}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}()
 	{{end}}
@@ -761,6 +837,7 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 				"string":  "string",
 				"bool":    "bool",
 				"range":   "*types.Range",
+				"any":     "*types.Any",
 				"int?":    "*int32",
 				"float?":  "*float64",
 				"bool?":   "*bool",
@@ -779,6 +856,14 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 				return 2
 			}
 			return 0
+		},
+		"hasEvent": func(name string, events []Event) bool {
+			for _, e := range events {
+				if e.Type == name {
+					return true
+				}
+			}
+			return false
 		},
 	}
 
@@ -827,6 +912,9 @@ func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <map>
+#include <mutex>
+#include <sstream>
 #include <wchar.h>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
@@ -836,6 +924,8 @@ func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 shm::DirectHost g_host;
 std::thread g_worker;
 std::atomic<bool> g_running{false};
+std::map<std::string, bool> g_sentRefCache;
+std::mutex g_refCacheMutex;
 
 // Helpers for registration
 LPXLOPER12 TempStr12(const wchar_t* txt) {
@@ -947,6 +1037,165 @@ flatbuffers::Offset<ipc::types::Range> ConvertRange(LPXLOPER12 op, flatbuffers::
     return ipc::types::CreateRange(builder, sheetNameOffset, refsOffset);
 }
 
+flatbuffers::Offset<ipc::types::Scalar> ConvertScalar(const XLOPER12& cell, flatbuffers::FlatBufferBuilder& builder) {
+    if (cell.xltype == xltypeNum) {
+        auto val = ipc::types::CreateNum(builder, cell.val.num);
+        return ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Num, val.Union());
+    } else if (cell.xltype == xltypeInt) {
+        auto val = ipc::types::CreateInt(builder, cell.val.w);
+        return ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Int, val.Union());
+    } else if (cell.xltype == xltypeBool) {
+        auto val = ipc::types::CreateBool(builder, cell.val.xbool);
+        return ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Bool, val.Union());
+    } else if (cell.xltype == xltypeStr) {
+        auto s = ConvertExcelString(cell.val.str);
+        auto sOff = builder.CreateString(s);
+        auto val = ipc::types::CreateStr(builder, sOff);
+        return ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Str, val.Union());
+    } else if (cell.xltype == xltypeErr) {
+        auto val = ipc::types::CreateErr(builder, (ipc::types::XlError)cell.val.err);
+        return ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Err, val.Union());
+    }
+    auto val = ipc::types::CreateNil(builder);
+    return ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Nil, val.Union());
+}
+
+flatbuffers::Offset<ipc::types::Any> ConvertMultiToAny(const XLOPER12& xMulti, flatbuffers::FlatBufferBuilder& builder) {
+    int rows = xMulti.val.array.rows;
+    int cols = xMulti.val.array.columns;
+    int count = rows * cols;
+
+    bool allNum = true;
+    for(int i=0; i<count; ++i) {
+        if (xMulti.val.array.lparray[i].xltype != xltypeNum) {
+            allNum = false;
+            break;
+        }
+    }
+
+    if (allNum) {
+        std::vector<double> data;
+        data.reserve(count);
+        for(int i=0; i<count; ++i) {
+            data.push_back(xMulti.val.array.lparray[i].val.num);
+        }
+        auto dataOff = builder.CreateVector(data);
+        auto arr = ipc::types::CreateNumArray(builder, rows, cols, dataOff);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_NumArray, arr.Union());
+    } else {
+        std::vector<flatbuffers::Offset<ipc::types::Scalar>> data;
+        data.reserve(count);
+        for(int i=0; i<count; ++i) {
+             data.push_back(ConvertScalar(xMulti.val.array.lparray[i], builder));
+        }
+        auto dataOff = builder.CreateVector(data);
+        auto arr = ipc::types::CreateArray(builder, rows, cols, dataOff);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Array, arr.Union());
+    }
+}
+
+flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
+    if (!op) {
+        auto nilVal = ipc::types::CreateNil(builder);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, nilVal.Union());
+    }
+
+    if (op->xltype == xltypeNum) {
+        auto val = ipc::types::CreateNum(builder, op->val.num);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Num, val.Union());
+    } else if (op->xltype == xltypeInt) {
+        auto val = ipc::types::CreateInt(builder, op->val.w);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Int, val.Union());
+    } else if (op->xltype == xltypeBool) {
+        auto val = ipc::types::CreateBool(builder, op->val.xbool);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Bool, val.Union());
+    } else if (op->xltype == xltypeStr) {
+        auto s = ConvertExcelString(op->val.str);
+        auto sOff = builder.CreateString(s);
+        auto val = ipc::types::CreateStr(builder, sOff);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Str, val.Union());
+    } else if (op->xltype == xltypeErr) {
+        auto val = ipc::types::CreateErr(builder, (ipc::types::XlError)op->val.err);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Err, val.Union());
+    } else if (op->xltype == xltypeMissing || op->xltype == xltypeNil) {
+        auto val = ipc::types::CreateNil(builder);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, val.Union());
+    } else if (op->xltype == xltypeRef || op->xltype == xltypeSRef) {
+        long rows = 0;
+        long cols = 0;
+        std::wstring sheetName = GetSheetName(op);
+        std::stringstream ss;
+        ss << WideToUtf8(sheetName) << "!";
+
+        if (op->xltype == xltypeRef) {
+             if (op->val.mref.lpmref) {
+                 for (WORD i = 0; i < op->val.mref.lpmref->count; ++i) {
+                     const auto& r = op->val.mref.lpmref->reftbl[i];
+                     rows += (r.rwLast - r.rwFirst + 1);
+                     if (i==0) cols = (r.colLast - r.colFirst + 1);
+                     ss << r.rwFirst << ":" << r.rwLast << ":" << r.colFirst << ":" << r.colLast << ";";
+                 }
+             }
+        } else {
+             const auto& r = op->val.sref.ref;
+             rows = r.rwLast - r.rwFirst + 1;
+             cols = r.colLast - r.colFirst + 1;
+             ss << r.rwFirst << ":" << r.rwLast << ":" << r.colFirst << ":" << r.colLast;
+        }
+
+        long totalCells = rows * cols;
+        std::string key = ss.str();
+
+        bool useCache = (totalCells > 100);
+
+        if (useCache) {
+             std::lock_guard<std::mutex> lock(g_refCacheMutex);
+             bool cached = g_sentRefCache[key];
+             if (!cached) {
+                  XLOPER12 xMulti;
+                  int ret = Excel12(xlCoerce, &xMulti, 2, op, TempInt12(xltypeMulti));
+                  if (ret == xlretSuccess) {
+                      auto slot = g_host.GetZeroCopySlot();
+                      flatbuffers::FlatBufferBuilder reqB(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
+
+                      auto anyOff = ConvertMultiToAny(xMulti, reqB);
+                      auto keyOff = reqB.CreateString(key);
+                      auto cacheReq = ipc::CreateSetRefCacheRequest(reqB, keyOff, anyOff);
+                      reqB.Finish(cacheReq);
+
+                      Excel12(xlFree, 0, 1, &xMulti);
+
+                      int ok = slot.Send(3, reqB.GetSize());
+                      if (ok >= 0) {
+                          auto resp = ipc::GetSetRefCacheResponse(slot.GetRespBuffer());
+                          if (resp && resp->ok()) {
+                              g_sentRefCache[key] = true;
+                              cached = true;
+                          }
+                      }
+                  }
+             }
+
+             if (cached) {
+                 auto keyOff = builder.CreateString(key);
+                 auto val = ipc::types::CreateRefCache(builder, keyOff);
+                 return ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, val.Union());
+             }
+        }
+
+        XLOPER12 xMulti;
+        int ret = Excel12(xlCoerce, &xMulti, 2, op, TempInt12(xltypeMulti));
+        if (ret == xlretSuccess) {
+             auto anyOff = ConvertMultiToAny(xMulti, builder);
+             Excel12(xlFree, 0, 1, &xMulti);
+             return anyOff;
+        }
+    }
+
+    auto nilVal = ipc::types::CreateNil(builder);
+    return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, nilVal.Union());
+}
+
 // Guest Call Handler (Async Return)
 int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
     switch (msgId) {
@@ -1017,6 +1266,14 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 {{range .Events}}
     Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Name}}"), TempInt12({{lookupEventCode .Type}}));
 {{end}}
+    {{if hasEvent "CalculationEnded" .Events}}
+    {{else}}
+    bool needCalcEnded = false;
+    {{range $i, $fn := .Functions}}{{range .Args}}{{if eq .Type "any"}}needCalcEnded=true;{{end}}{{end}}{{end}}
+    if (needCalcEnded) {
+         Excel12(xlEventRegister, 0, 2, TempStr12(L"CalculationEnded"), TempInt12(xleventCalculationEnded));
+    }
+    {{end}}
 
 {{range $i, $fn := .Functions}}
     {
@@ -1050,8 +1307,25 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
 
 {{range .Events}}
 __declspec(dllexport) void __stdcall {{.Name}}() {
+    {{if eq .Type "CalculationEnded"}}
+    {
+        std::lock_guard<std::mutex> lock(g_refCacheMutex);
+        g_sentRefCache.clear();
+    }
+    {{end}}
     auto slot = g_host.GetZeroCopySlot();
     slot.Send({{lookupEventId .Type}}, 0);
+}
+{{end}}
+{{if hasEvent "CalculationEnded" .Events}}
+{{else}}
+__declspec(dllexport) void __stdcall CalculationEnded() {
+    {
+        std::lock_guard<std::mutex> lock(g_refCacheMutex);
+        g_sentRefCache.clear();
+    }
+    auto slot = g_host.GetZeroCopySlot();
+    slot.Send(1, 0);
 }
 {{end}}
 
@@ -1087,6 +1361,8 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     }
     {{else if eq .Type "range"}}
     auto {{.Name}}_off = ConvertRange({{.Name}}, builder);
+    {{else if eq .Type "any"}}
+    auto {{.Name}}_off = ConvertAny({{.Name}}, builder);
     {{end}}
     {{end}}
 
@@ -1116,6 +1392,8 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{else if eq .Type "bool?"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else if eq .Type "range"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "any"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else}}
     reqBuilder.add_{{.Name}}({{.Name}});
@@ -1190,6 +1468,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"string":  "LPXLOPER12",
 				"bool":    "short",
 				"range":   "LPXLOPER12",
+				"any":     "LPXLOPER12",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -1201,6 +1480,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"string":  "const wchar_t*",
 				"bool":    "short",
 				"range":   "LPXLOPER12",
+				"any":     "LPXLOPER12",
 				"int?":    "int32_t*",
 				"float?":  "double*",
 				"bool?":   "short*",
@@ -1216,6 +1496,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"string":  "Q",
 				"bool":    "A",
 				"range":   "U",
+				"any":     "U",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -1227,6 +1508,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 				"string":  "D%",
 				"bool":    "A",
 				"range":   "U",
+				"any":     "U",
 				"int?":    "N",
 				"float?":  "E",
 				"bool?":   "L",
@@ -1244,6 +1526,14 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 			if evtType == "CalculationEnded" { return "xleventCalculationEnded"; }
 			if evtType == "CalculationCanceled" { return "xleventCalculationCanceled"; }
 			return "0";
+		},
+		"hasEvent": func(name string, events []Event) bool {
+			for _, e := range events {
+				if e.Type == name {
+					return true
+				}
+			}
+			return false
 		},
 		"defaultErrorVal": func(t string) string {
 			if t == "string" { return "NULL"; }
