@@ -18,6 +18,13 @@ import (
 var _ = time.Now
 var _ = types.Bool{}
 
+type chunkBuffer struct {
+	data      []byte
+	totalSize int
+	received  int
+	mutex     sync.Mutex
+}
+
 func Serve(handler XllService) {
 	name := "{{.ProjectName}}"
 	for _, arg := range os.Args {
@@ -35,6 +42,10 @@ func Serve(handler XllService) {
 	// Global Ref Cache
 	var refCacheMutex sync.RWMutex
 	refCache := make(map[string][]byte)
+
+	// Chunking Cache
+	var chunkCacheMutex sync.Mutex
+	chunkCache := make(map[uint64]*chunkBuffer)
 
 	// Configuration
 	{{range .Functions}}
@@ -97,6 +108,78 @@ func Serve(handler XllService) {
 			if len(payload) > len(respBuf) { return 0 }
 			copy(respBuf, payload)
 			return int32(len(payload))
+
+		case 4: // Chunk
+			reqObj := ipc.GetRootAsChunk(req, 0)
+			id := reqObj.Id()
+			total := int(reqObj.TotalSize())
+			offset := int(reqObj.Offset())
+			dataLen := reqObj.DataLength()
+
+			chunkCacheMutex.Lock()
+			buf, exists := chunkCache[id]
+			if !exists {
+				buf = &chunkBuffer{
+					data:      make([]byte, total),
+					totalSize: total,
+				}
+				chunkCache[id] = buf
+			}
+			chunkCacheMutex.Unlock()
+
+			buf.mutex.Lock()
+			if offset + dataLen <= len(buf.data) {
+				copy(buf.data[offset:], reqObj.DataBytes())
+				buf.received += dataLen
+			}
+
+			isComplete := buf.received >= buf.totalSize
+			buf.mutex.Unlock()
+
+			if isComplete {
+				chunkCacheMutex.Lock()
+				delete(chunkCache, id)
+				chunkCacheMutex.Unlock()
+
+				// Assuming the reassembled payload is a SetRefCacheRequest (MsgID 3)
+				// We process it directly here.
+				cacheReq := ipc.GetRootAsSetRefCacheRequest(buf.data, 0)
+				key := string(cacheReq.Key())
+
+				refCacheMutex.Lock()
+				refCache[key] = buf.data
+				refCacheMutex.Unlock()
+
+				ipc.SetRefCacheResponseStart(builder)
+				ipc.SetRefCacheResponseAddOk(builder, true)
+				root := ipc.SetRefCacheResponseEnd(builder)
+				builder.Finish(root)
+
+				payload := builder.FinishedBytes()
+				if len(payload) > len(respBuf) { return 0 }
+				copy(respBuf, payload)
+				return int32(len(payload))
+			}
+
+			// Acknowledge chunk
+			// Use SetRefCacheResponse with ok=false to mean "continue" or just empty?
+			// Client expects a response to proceed. We can send empty or basic OK.
+			// Reusing SetRefCacheResponse is convenient if C++ expects it, but
+			// C++ SendChunked knows it's getting intermediate responses.
+			// Let's just return a generic OK (true) but C++ will ignore it until the last one.
+			// Or better: just return 0 length (void) for intermediate?
+			// g_host.Send waits for response. If we return 0, it gets 0 bytes.
+			// Let's send a minimal response to confirm receipt.
+			ipc.SetRefCacheResponseStart(builder)
+			ipc.SetRefCacheResponseAddOk(builder, true) // Ack
+			root := ipc.SetRefCacheResponseEnd(builder)
+			builder.Finish(root)
+
+			payload := builder.FinishedBytes()
+			if len(payload) > len(respBuf) { return 0 }
+			copy(respBuf, payload)
+			return int32(len(payload))
+
 
 {{range .Events}}
 		{{if ne .Type "CalculationEnded"}}

@@ -1,5 +1,8 @@
 # xll-gen
 
+> **WARNING: EXPERIMENTAL SOFTWARE**
+> This tool is currently in an experimental stage and is not recommended for use in production environments.
+
 `xll-gen` is a CLI tool designed to facilitate the creation of Excel Add-ins (XLL) using an out-of-process architecture. It enables developers to write Excel extensions in Go (and potentially other languages) while bypassing the limitations of traditional DLLs by communicating via Shared Memory.
 
 ## Overview
@@ -81,12 +84,18 @@ task build
 
 If you don't have `task` installed, you can inspect `Taskfile.yml` to run the underlying `go build` and `cmake` commands manually.
 
-### 5. Simulation / Smoke Test (`simulate`)
+### 5. Regression Testing (`regtest`)
 
-For Linux users or CI environments without Excel, use the `simulate` command. It generates a "Mock Host" (C++) that loads your Go server and performs a basic connectivity test.
+For Linux users or CI environments without Excel, use the `regtest` command. It generates a "Mock Host" (C++) that loads your Go server and performs a regression test suite against it.
+
+**Note**: This command is hidden by default. To use it, you must build `xll-gen` with the `regtest` build tag.
 
 ```bash
-xll-gen simulate
+# Build xll-gen with regtest support
+go install -tags regtest
+
+# Run the regression test
+xll-gen regtest
 ```
 
 ## Configuration (`xll.yaml`)

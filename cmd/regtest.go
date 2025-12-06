@@ -1,3 +1,5 @@
+//go:build regtest
+
 package cmd
 
 import (
@@ -17,11 +19,11 @@ import (
 	"xll-gen/internal/templates"
 )
 
-var simulateCmd = &cobra.Command{
-	Use:   "simulate",
-	Short: "Run a smoke test simulation (Mock Host)",
+var regtestCmd = &cobra.Command{
+	Use:   "regtest",
+	Short: "Run a regression test simulation (Mock Host)",
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := runSimulate(); err != nil {
+		if err := runRegtest(); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -29,10 +31,10 @@ var simulateCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(simulateCmd)
+	rootCmd.AddCommand(regtestCmd)
 }
 
-func runSimulate() error {
+func runRegtest() error {
 	// 1. Check prerequisites
 	if _, err := exec.LookPath("cmake"); err != nil {
 		return fmt.Errorf("cmake not found. Please install CMake")
@@ -82,7 +84,7 @@ func runSimulate() error {
 
 	// 5. Generate Simulation Host
 	fmt.Println("[3/6] Generating Simulation Host...")
-	simDir := "temp_simulation"
+	simDir := "temp_regtest"
 	if err := os.MkdirAll(simDir, 0755); err != nil {
 		return err
 	}
@@ -95,7 +97,7 @@ func runSimulate() error {
 
 	// 6. Build Simulation Host
 	fmt.Println("[4/6] Building Simulation Host...")
-	// cmake -S temp_simulation -B temp_simulation/build
+	// cmake -S temp_regtest -B temp_regtest/build
 	cmakeConfig := exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"))
 	// Quiet output unless error
 	if out, err := cmakeConfig.CombinedOutput(); err != nil {
@@ -103,7 +105,7 @@ func runSimulate() error {
 		return fmt.Errorf("cmake config failed: %w", err)
 	}
 
-	// cmake --build temp_simulation/build --config Release
+	// cmake --build temp_regtest/build --config Release
 	cmakeBuild := exec.Command("cmake", "--build", filepath.Join(simDir, "build"), "--config", "Release")
 	if out, err := cmakeBuild.CombinedOutput(); err != nil {
 		fmt.Println(string(out))
@@ -206,7 +208,7 @@ func runSimulate() error {
 }
 
 func generateSimMain(cfg *config.Config, dir string) error {
-	tmplContent, err := templates.Get("sim_main.cpp.tmpl")
+	tmplContent, err := templates.Get("regtest_main.cpp.tmpl")
 	if err != nil {
 		return err
 	}
@@ -215,7 +217,7 @@ func generateSimMain(cfg *config.Config, dir string) error {
 		"add": func(a, b int) int { return a + b },
 	}
 
-	t, err := template.New("sim_main").Funcs(funcMap).Parse(tmplContent)
+	t, err := template.New("regtest_main").Funcs(funcMap).Parse(tmplContent)
 	if err != nil {
 		return err
 	}
@@ -230,12 +232,12 @@ func generateSimMain(cfg *config.Config, dir string) error {
 }
 
 func generateSimCMake(cfg *config.Config, dir string) error {
-	tmplContent, err := templates.Get("sim_CMakeLists.txt.tmpl")
+	tmplContent, err := templates.Get("regtest_CMakeLists.txt.tmpl")
 	if err != nil {
 		return err
 	}
 
-	t, err := template.New("sim_cmake").Parse(tmplContent)
+	t, err := template.New("regtest_cmake").Parse(tmplContent)
 	if err != nil {
 		return err
 	}
