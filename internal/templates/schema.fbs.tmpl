@@ -2,6 +2,11 @@ include "xltypes.fbs";
 
 namespace ipc;
 
+table Ack {
+  id: ulong;
+  ok: bool;
+}
+
 table Chunk {
   id: ulong;
   total_size: uint;
@@ -16,10 +21,6 @@ file_identifier "XCHN";
 table SetRefCacheRequest {
   key: string;
   val: ipc.types.Any;
-}
-
-table SetRefCacheResponse {
-  ok: bool;
 }
 
 {{range .Functions}}
