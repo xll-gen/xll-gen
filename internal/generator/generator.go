@@ -8,9 +8,9 @@ import (
 	"strings"
 	"text/template"
 
-	"xll-gen/pkg/assets"
-	"xll-gen/pkg/config"
-	"xll-gen/pkg/templates"
+	"xll-gen/internal/assets"
+	"xll-gen/internal/config"
+	"xll-gen/internal/templates"
 )
 
 type Options struct {
