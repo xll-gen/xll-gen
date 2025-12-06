@@ -139,8 +139,24 @@ func runGenerate() error {
 		return err
 	}
 
-	// Generate Go code
-	cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "-o", genDir, schemaPath)
+	// Generate Go code for xltypes
+	cmd := exec.Command(flatcPath, "--go", "-o", genDir, xlTypesPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("flatc (go xltypes) failed: %w", err)
+	}
+
+	// Generate C++ code for xltypes
+	cmd = exec.Command(flatcPath, "--cpp", "-o", cppDir, xlTypesPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("flatc (cpp xltypes) failed: %w", err)
+	}
+
+	// Generate Go code for schema
+	cmd = exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "-o", genDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -364,6 +380,9 @@ import (
 	"{{.ModName}}/generated/ipc/types"
 )
 
+// Force usage of ipc/types to avoid unused import error
+var _ = types.Bool{}
+
 type XllService interface {
 {{range .Functions}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *types.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}
@@ -435,6 +454,10 @@ import (
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
+
+// Force usage of time and ipc/types to avoid unused import error
+var _ = time.Now
+var _ = types.Bool{}
 
 func Serve(handler XllService) {
 	name := "{{.ProjectName}}"
@@ -1228,7 +1251,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
   shm
-  flatbuffers::flatbuffers
+  flatbuffers
 )
 
 if(NOT MSVC)
