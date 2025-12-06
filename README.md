@@ -14,18 +14,21 @@ Traditional Excel XLLs are DLLs that run inside the Excel process. This poses ch
 ## Features
 
 *   **Language Agnostic**: Logic runs out-of-process.
-*   **Wails-like Experience**: Simple CLI commands (`init`, `build`, etc.) to manage the project.
-*   **High Performance**: Low-latency IPC via Shared Memory.
+*   **Wails-like Experience**: Simple CLI commands (`init`, `generate`) to manage the project.
+*   **High Performance**: Low-latency IPC via Shared Memory (Zero-Copy support).
+*   **Rich Type Support**: Supports `int`, `float`, `string`, `bool`, `Any`, `Range` (XLOPER12), and `Async` functions.
 *   **Automatic Glue Code**: Generates the C++ XLL and Flatbuffers schemas automatically.
 *   **Environment Management**: Automatically manages dependencies like `flatc` (Flatbuffers compiler).
 
 ## Prerequisites
 
 *   **Go**: 1.24 or later.
+*   **CMake**: 3.14 or later.
 *   **C++ Compiler**:
     *   **Windows**: MSVC (`cl.exe`) or MinGW (`g++`/`gcc`).
     *   *Tip*: Install MinGW via winget: `winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`
 *   **Excel**: 2007 or later (for loading the XLL).
+*   **Task (Optional)**: [go-task](https://taskfile.dev/) is recommended for running build scripts.
 
 ## Installation
 
@@ -57,6 +60,7 @@ cd my-project
 This creates:
 *   `xll.yaml`: Project configuration.
 *   `main.go`: Your Go application entry point.
+*   `Taskfile.yml`: Build script.
 
 ### 3. Generate Code (`generate`)
 
@@ -66,12 +70,23 @@ Parse `xll.yaml` and generate the necessary C++ and Go code.
 xll-gen generate
 ```
 
-### 4. Build (`build`)
+### 4. Build (`task build`)
 
-Builds both the Go server and the C++ XLL.
+The generated project includes a `Taskfile.yml`. Use it to build both the Go server and the C++ XLL.
 
 ```bash
-xll-gen build
+# Builds both Go server and C++ XLL
+task build
+```
+
+If you don't have `task` installed, you can inspect `Taskfile.yml` to run the underlying `go build` and `cmake` commands manually.
+
+### 5. Simulation / Smoke Test (`simulate`)
+
+For Linux users or CI environments without Excel, use the `simulate` command. It generates a "Mock Host" (C++) that loads your Go server and performs a basic connectivity test.
+
+```bash
+xll-gen simulate
 ```
 
 ## Configuration (`xll.yaml`)
@@ -87,6 +102,10 @@ gen:
   go:
     package: "generated"
 
+server:
+  workers: 100       # Size of the worker pool for handling requests
+  timeout: "5s"      # Default timeout for requests
+
 functions:
   - name: "Add"
     description: "Adds two integers"
@@ -98,6 +117,8 @@ functions:
         type: "int"
         description: "Second number"
     return: "int"
+    category: "Math"
+    shortcut: "Ctrl+Shift+A"
 
   - name: "GetPrice"
     description: "Fetches price for a ticker"
@@ -106,6 +127,15 @@ functions:
         type: "string"
     return: "float"
     async: true
+    help_topic: "https://example.com/help/price"
+
+  - name: "ProcessRange"
+    description: "Accepts a range or value"
+    args:
+      - name: "input"
+        type: "any"
+    return: "string"
+    caller: true     # Helper to access calling cell info
 
 events:
   - type: "CalculationEnded"
