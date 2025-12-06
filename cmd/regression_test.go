@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -287,20 +290,33 @@ int main() {
         return 1;
     }
     cout << "READY" << endl;
-    this_thread::sleep_for(chrono::seconds(2)); // Wait for guest
 
     flatbuffers::FlatBufferBuilder builder(1024);
 
     // 1. EchoInt (ID 11)
     vector<int32_t> intCases = {0, 1, -1, 2147483647, (int32_t)-2147483648LL};
-    for (auto val : intCases) {
+    for (size_t i = 0; i < intCases.size(); ++i) {
+        auto val = intCases[i];
         builder.Reset();
         ipc::EchoIntRequestBuilder req(builder);
         req.add_val(val);
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 11, respBuf);
+        int sz = -1;
+
+        // Retry logic for the first request to allow Guest to connect
+        if (i == 0) {
+             auto startWait = chrono::steady_clock::now();
+             while(chrono::steady_clock::now() - startWait < chrono::seconds(30)) {
+                sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 11, respBuf);
+                if (sz >= 0) break;
+                this_thread::sleep_for(chrono::milliseconds(100));
+             }
+        } else {
+             sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 11, respBuf);
+        }
+
         if (sz < 0) { cerr << "Send failed for EchoInt " << val << endl; return 1; }
 
         auto resp = flatbuffers::GetRoot<ipc::EchoIntResponse>(respBuf.data());
@@ -636,7 +652,10 @@ int main() {
     }
 
 	mockCmd := exec.Command(mockBin)
-	mockCmd.Stdout = os.Stdout
+	mockStdout, err := mockCmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	mockCmd.Stderr = os.Stderr
 	if err := mockCmd.Start(); err != nil {
 		t.Fatal(err)
@@ -645,8 +664,24 @@ int main() {
 		if mockCmd.Process != nil { mockCmd.Process.Kill() }
 	}()
 
-    // Give Mock Host time to initialize SHM
-    time.Sleep(2 * time.Second)
+	// Wait for Mock Host to signal READY (SHM initialized)
+	readyCh := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(mockStdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println("[MOCK]", line)
+			if strings.Contains(line, "READY") {
+				close(readyCh)
+			}
+		}
+	}()
+
+	select {
+	case <-readyCh:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Mock Host timed out waiting for READY")
+	}
 
 	serverCmd := exec.Command(filepath.Join("build", serverBin), "-xll-shm=smoke_proj")
 	serverCmd.Stdout = os.Stdout
