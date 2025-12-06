@@ -11,6 +11,7 @@ import (
 	"xll-gen/internal/assets"
 	"xll-gen/internal/config"
 	"xll-gen/internal/templates"
+	"xll-gen/version"
 )
 
 type Options struct {
@@ -232,11 +233,13 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 		ModName   string
 		Functions []config.Function
 		Events    []config.Event
+		Version   string
 	}{
 		Package:   pkg,
 		ModName:   modName,
 		Functions: cfg.Functions,
 		Events:    cfg.Events,
+		Version:   version.Version,
 	}
 
 	f, err := os.Create(filepath.Join(dir, "interface.go"))
@@ -317,6 +320,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		Events        []config.Event
 		ServerTimeout string
 		ServerWorkers int
+		Version       string
 	}{
 		Package:       pkg,
 		ModName:       modName,
@@ -325,6 +329,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		Events:        cfg.Events,
 		ServerTimeout: cfg.Server.Timeout,
 		ServerWorkers: cfg.Server.Workers,
+		Version:       version.Version,
 	}
 
 	f, err := os.Create(filepath.Join(dir, "server.go"))
@@ -464,11 +469,13 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Functions       []config.Function
 		Events          []config.Event
 		ShouldAppendPid bool
+		Version         string
 	}{
 		ProjectName:     cfg.Project.Name,
 		Functions:       cfg.Functions,
 		Events:          cfg.Events,
 		ShouldAppendPid: shouldAppendPid,
+		Version:         version.Version,
 	})
 }
 
@@ -491,8 +498,10 @@ func generateCMake(cfg *config.Config, dir string) error {
 
 	return t.Execute(f, struct {
 		ProjectName string
+		Version     string
 	}{
 		ProjectName: cfg.Project.Name,
+		Version:     version.Version,
 	})
 }
 
@@ -515,7 +524,9 @@ func generateTaskfile(cfg *config.Config, dir string) error {
 
 	return t.Execute(f, struct {
 		ProjectName string
+		Version     string
 	}{
 		ProjectName: cfg.Project.Name,
+		Version:     version.Version,
 	})
 }
