@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"text/template"
 
 	"github.com/spf13/cobra"
+	"xll-gen/pkg/assets"
+	"xll-gen/pkg/templates"
 )
 
 var initCmd = &cobra.Command{
@@ -38,118 +41,17 @@ func runInit(projectName string) error {
 	}
 
 	// 1. Create xll.yaml
-	xllContent := `project:
-  name: "` + projectName + `"
-  version: "0.1.0"
-
-gen:
-  go:
-    package: "generated"
-
-server:
-  timeout: "10s"
-  workers: 100
-
-# Function Definitions
-# Supported types: int, float, string, bool
-functions:
-  # Simple integer addition
-  - name: "Add"
-    description: "Adds two integers"
-    category: "Math"
-    args:
-      - name: "a"
-        type: "int"
-        description: "First number"
-      - name: "b"
-        type: "int"
-        description: "Second number"
-    return: "int"
-
-  # Async function example
-  - name: "GetPrice"
-    description: "Fetches price for a ticker (Async simulation)"
-    category: "Finance"
-    args:
-      - name: "ticker"
-        type: "string"
-        description: "Stock Ticker"
-    return: "float"
-    async: true
-
-  # String manipulation
-  - name: "Greet"
-    description: "Returns a greeting message"
-    category: "Text"
-    args:
-      - name: "name"
-        type: "string"
-        description: "Name to greet"
-    return: "string"
-
-  # Boolean logic
-  - name: "IsEven"
-    description: "Checks if a number is even"
-    category: "Logic"
-    args:
-      - name: "val"
-        type: "int"
-        description: "Value to check"
-    return: "bool"
-`
-	if err := os.WriteFile(filepath.Join(projectName, "xll.yaml"), []byte(xllContent), 0644); err != nil {
+	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectName, "xll.yaml"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
 
 	// 2. Create main.go
-	mainContent := `package main
-
-import (
-	"context"
-	"fmt"
-	"` + projectName + `/generated"
-	"time"
-)
-
-type MyService struct{}
-
-func (s *MyService) Add(ctx context.Context, a int32, b int32) (int32, error) {
-	return a + b, nil
-}
-
-func (s *MyService) GetPrice(ctx context.Context, ticker string) (float64, error) {
-	// Simulate async work
-	select {
-	case <-time.After(100 * time.Millisecond):
-		return 123.45, nil
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	}
-}
-
-func (s *MyService) Greet(ctx context.Context, name string) (string, error) {
-	return fmt.Sprintf("Hello, %s!", name), nil
-}
-
-func (s *MyService) IsEven(ctx context.Context, val int32) (bool, error) {
-	return val%2 == 0, nil
-}
-
-func main() {
-	// Connects to SHM and starts processing
-	generated.Serve(&MyService{})
-}
-`
-	if err := os.WriteFile(filepath.Join(projectName, "main.go"), []byte(mainContent), 0644); err != nil {
+	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectName, "main.go"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
 
 	// 3. Create .gitignore
-	gitIgnore := `build/
-generated/
-temp*/
-`
-	if err := os.WriteFile(filepath.Join(projectName, ".gitignore"), []byte(gitIgnore), 0644); err != nil {
+	if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectName, ".gitignore"), nil); err != nil {
 		return err
 	}
 
@@ -169,7 +71,7 @@ temp*/
 		return err
 	}
 
-	for name, content := range assetsMap {
+	for name, content := range assets.AssetsMap {
 		if err := os.WriteFile(filepath.Join(includeDir, name), []byte(content), 0644); err != nil {
 			return err
 		}
@@ -182,4 +84,21 @@ temp*/
 	fmt.Println("  xll-gen build     # (Run this to build the project)")
 
 	return nil
+}
+
+func generateFileFromTemplate(tmplName, destPath string, data interface{}) error {
+	content, err := templates.Get(tmplName)
+	if err != nil {
+		return err
+	}
+	t, err := template.New(tmplName).Parse(content)
+	if err != nil {
+		return err
+	}
+	f, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return t.Execute(f, data)
 }

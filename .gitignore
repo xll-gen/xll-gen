@@ -28,4 +28,4 @@ go.work.sum
 xll-gen
 temp_project/
 build_cmake/
-temp*/
+temp_*/

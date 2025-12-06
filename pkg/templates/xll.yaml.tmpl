@@ -1,0 +1,58 @@
+project:
+  name: "{{.ProjectName}}"
+  version: "0.1.0"
+
+gen:
+  go:
+    package: "generated"
+
+server:
+  timeout: "10s"
+  workers: 100
+
+# Function Definitions
+# Supported types: int, float, string, bool
+functions:
+  # Simple integer addition
+  - name: "Add"
+    description: "Adds two integers"
+    category: "Math"
+    args:
+      - name: "a"
+        type: "int"
+        description: "First number"
+      - name: "b"
+        type: "int"
+        description: "Second number"
+    return: "int"
+
+  # Async function example
+  - name: "GetPrice"
+    description: "Fetches price for a ticker (Async simulation)"
+    category: "Finance"
+    args:
+      - name: "ticker"
+        type: "string"
+        description: "Stock Ticker"
+    return: "float"
+    async: true
+
+  # String manipulation
+  - name: "Greet"
+    description: "Returns a greeting message"
+    category: "Text"
+    args:
+      - name: "name"
+        type: "string"
+        description: "Name to greet"
+    return: "string"
+
+  # Boolean logic
+  - name: "IsEven"
+    description: "Checks if a number is even"
+    category: "Logic"
+    args:
+      - name: "val"
+        type: "int"
+        description: "Value to check"
+    return: "bool"

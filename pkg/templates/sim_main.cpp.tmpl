@@ -1,0 +1,130 @@
+
+#include <iostream>
+#include <vector>
+#include <thread>
+#include <chrono>
+#include "shm/DirectHost.h"
+#include "schema_generated.h"
+
+using namespace std;
+
+int main() {
+    shm::DirectHost host;
+    string shmName = "{{.Project.Name}}";
+
+    // Init SHM
+    if (!host.Init(shmName.c_str(), 1024, 1024*1024, 16)) {
+        cerr << "Failed to init SHM" << endl;
+        return 1;
+    }
+
+    cout << "READY" << endl;
+
+    // Wait for Guest to connect
+    cout << "Waiting for guest..." << endl;
+    auto start = chrono::steady_clock::now();
+    bool connected = false;
+
+    // We loop for a bit waiting for guest calls or just sleep?
+    // Guest connects, but Host doesn't know until Guest sends a message?
+    // No, standard SHM protocol usually doesn't have "Client Connected" event unless implemented.
+    // However, we are sending requests to Guest.
+    // We can just start sending. If Guest is not ready, it might miss it?
+    // Guest "Connect" just opens the SHM.
+    // Guest "Start" starts the loop.
+
+    // We'll give the guest a second to start up
+    this_thread::sleep_for(chrono::seconds(2));
+
+    cout << "Sending requests..." << endl;
+    int failures = 0;
+
+{{range $i, $fn := .Functions}}
+    {
+        cout << "Testing {{.Name}}..." << endl;
+        flatbuffers::FlatBufferBuilder builder(1024);
+
+        // Construct Request with default values
+        {{range .Args}}
+        {{if eq .Type "string"}}
+        auto {{.Name}}_off = builder.CreateString("test");
+        {{else if eq .Type "string?"}}
+        auto val_{{.Name}} = builder.CreateString("test");
+        auto {{.Name}}_off = ipc::types::CreateStr(builder, val_{{.Name}});
+        {{else if eq .Type "range"}}
+        // Skip range for smoke test
+        flatbuffers::Offset<ipc::types::Range> {{.Name}}_off(0);
+        {{else if eq .Type "int?"}}
+        auto {{.Name}}_off = ipc::types::CreateInt(builder, 1);
+        {{else if eq .Type "float?"}}
+        auto {{.Name}}_off = ipc::types::CreateNum(builder, 1.0);
+        {{else if eq .Type "bool?"}}
+        auto {{.Name}}_off = ipc::types::CreateBool(builder, true);
+        {{end}}
+        {{end}}
+
+        ipc::{{.Name}}RequestBuilder reqBuilder(builder);
+        {{range .Args}}
+        {{if eq .Type "string"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "string?"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "int"}}
+        reqBuilder.add_{{.Name}}(1);
+        {{else if eq .Type "float"}}
+        reqBuilder.add_{{.Name}}(1.0);
+        {{else if eq .Type "bool"}}
+        reqBuilder.add_{{.Name}}(true);
+        {{else if eq .Type "range"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "int?"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "float?"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "bool?"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{end}}
+        {{end}}
+
+        {{if .Async}}
+        // Async requires handle. Host must provide it?
+        // In real XLL, Excel provides it.
+        // We simulate it by passing a dummy pointer (address of something).
+        uint64_t dummyHandle = 12345ULL + {{$i}}; // Random unique
+        reqBuilder.add_async_handle(dummyHandle);
+        {{end}}
+
+        auto req = reqBuilder.Finish();
+        builder.Finish(req);
+
+        // Send
+        vector<uint8_t> respBuf;
+        int size = host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 11 $i}}, respBuf);
+        if (size < 0) {
+            cerr << "  Send failed!" << endl;
+            failures++;
+        } else {
+            {{if .Async}}
+            cout << "  Async Request sent." << endl;
+            auto start_wait = chrono::steady_clock::now();
+            while(chrono::steady_clock::now() - start_wait < chrono::seconds(1)) {
+                host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t msgId) -> int32_t {
+                    return 0;
+                });
+                this_thread::sleep_for(chrono::milliseconds(10));
+            }
+            {{else}}
+            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf.data());
+            if (resp->error() && resp->error()->size() > 0) {
+                 cout << "  Got Error: " << resp->error()->str() << endl;
+            } else {
+                 cout << "  Success" << endl;
+            }
+            {{end}}
+        }
+    }
+{{end}}
+
+    if (failures > 0) return 1;
+    return 0;
+}
