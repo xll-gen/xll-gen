@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRegression(t *testing.T) {
@@ -84,6 +85,20 @@ functions:
     args: [{name: "val", type: "int"}]
     return: "int"
     async: true
+
+  # Any & Range
+  - name: "CheckAny"
+    args: [{name: "val", type: "any"}]
+    return: "string"
+  - name: "CheckRange"
+    args: [{name: "val", type: "range"}]
+    return: "string"
+
+  # Timeout
+  - name: "TimeoutFunc"
+    args: [{name: "val", type: "int"}]
+    return: "int"
+    timeout: "100ms"
 `
 	if err := os.WriteFile("xll.yaml", []byte(xllYaml), 0644); err != nil {
 		t.Fatal(err)
@@ -99,9 +114,12 @@ functions:
 
 import (
 	"context"
+	"fmt"
 	"smoke_proj/generated"
 	"smoke_proj/generated/ipc/types"
     "time"
+
+	flatbuffers "github.com/google/flatbuffers/go"
 )
 
 // Force usage
@@ -123,6 +141,69 @@ func (s *Service) AsyncEchoInt(ctx context.Context, val int32) (int32, error) {
     time.Sleep(10 * time.Millisecond)
     return val, nil
 }
+
+func (s *Service) TimeoutFunc(ctx context.Context, val int32) (int32, error) {
+    select {
+    case <-time.After(500 * time.Millisecond):
+        return val, nil
+    case <-ctx.Done():
+        // Return fallback value on timeout
+        return -1, nil
+    }
+}
+
+func (s *Service) CheckAny(ctx context.Context, val *types.Any) (string, error) {
+    if val == nil { return "Nil", nil }
+    var tbl flatbuffers.Table
+    if !val.Val(&tbl) { return "Unknown", nil }
+
+    switch val.ValType() {
+    case types.AnyValueInt:
+        var t types.Int
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("Int:%d", t.Val()), nil
+    case types.AnyValueNum:
+        var t types.Num
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("Num:%.1f", t.Val()), nil
+    case types.AnyValueStr:
+        var t types.Str
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("Str:%s", string(t.Val())), nil
+    case types.AnyValueBool:
+        var t types.Bool
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("Bool:%v", t.Val()), nil
+    case types.AnyValueErr:
+        var t types.Err
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("Err:%d", t.Val()), nil
+    case types.AnyValueNil:
+        return "Nil", nil
+    case types.AnyValueNumArray:
+        var t types.NumArray
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("NumArray:%dx%d", t.Rows(), t.Cols()), nil
+    case types.AnyValueArray:
+        var t types.Array
+        t.Init(tbl.Bytes, tbl.Pos)
+        return fmt.Sprintf("Array:%dx%d", t.Rows(), t.Cols()), nil
+    }
+    return "Unknown", nil
+}
+
+func (s *Service) CheckRange(ctx context.Context, val *types.Range) (string, error) {
+    if val == nil { return "Nil", nil }
+    sheet := string(val.SheetName())
+    if val.RefsLength() > 0 {
+        var r types.Rect
+        if val.Refs(&r, 0) {
+             return fmt.Sprintf("Range:%s!%d:%d:%d:%d", sheet, r.RowFirst(), r.RowLast(), r.ColFirst(), r.ColLast()), nil
+        }
+    }
+    return "RangeEmpty", nil
+}
+
 
 func main() {
     generated.Serve(&Service{})
@@ -298,6 +379,82 @@ int main() {
         if (resp->result()) { cerr << "Expected null" << endl; return 1; }
     }
 
+    // 6. EchoFloatOpt (ID 16)
+    // Case: Value
+    {
+        builder.Reset();
+        auto valOff = ipc::types::CreateNum(builder, 3.14);
+        ipc::EchoFloatOptRequestBuilder req(builder);
+        req.add_val(valOff);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 16, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::EchoFloatOptResponse>(respBuf.data());
+        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
+        if (std::abs(resp->result()->val() - 3.14) > 0.001) { cerr << "FloatOpt mismatch" << endl; return 1; }
+    }
+    // Case: Null
+    {
+        builder.Reset();
+        ipc::EchoFloatOptRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 16, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::EchoFloatOptResponse>(respBuf.data());
+        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
+    }
+
+    // 7. EchoStringOpt (ID 17)
+    // Case: Value
+    {
+        builder.Reset();
+        auto sOff = builder.CreateString("opt");
+        auto valOff = ipc::types::CreateStr(builder, sOff);
+        ipc::EchoStringOptRequestBuilder req(builder);
+        req.add_val(valOff);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 17, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::EchoStringOptResponse>(respBuf.data());
+        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
+        ASSERT_STREQ("opt", resp->result()->val()->str(), "EchoStringOpt Val");
+    }
+    // Case: Null
+    {
+        builder.Reset();
+        ipc::EchoStringOptRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 17, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::EchoStringOptResponse>(respBuf.data());
+        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
+    }
+
+    // 8. EchoBoolOpt (ID 18)
+    // Case: Value
+    {
+        builder.Reset();
+        auto valOff = ipc::types::CreateBool(builder, true);
+        ipc::EchoBoolOptRequestBuilder req(builder);
+        req.add_val(valOff);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 18, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::EchoBoolOptResponse>(respBuf.data());
+        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
+        ASSERT_EQ(true, resp->result()->val(), "EchoBoolOpt Val");
+    }
+    // Case: Null
+    {
+        builder.Reset();
+        ipc::EchoBoolOptRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 18, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::EchoBoolOptResponse>(respBuf.data());
+        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
+    }
+
     // 9. AsyncEchoInt (ID 19)
     {
         builder.Reset();
@@ -330,6 +487,117 @@ int main() {
             this_thread::sleep_for(chrono::milliseconds(10));
         }
         if (!gotCallback) { cerr << "Async callback missing" << endl; return 1; }
+    }
+
+    // 10. CheckAny (ID 20)
+    // Int
+    {
+        builder.Reset();
+        auto val = ipc::types::CreateInt(builder, 10);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Int, val.Union());
+        ipc::CheckAnyRequestBuilder req(builder);
+        req.add_val(any);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 20, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("Int:10", resp->result()->str(), "CheckAny Int");
+    }
+    // Str
+    {
+        builder.Reset();
+        auto s = builder.CreateString("hello");
+        auto val = ipc::types::CreateStr(builder, s);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Str, val.Union());
+        ipc::CheckAnyRequestBuilder req(builder);
+        req.add_val(any);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 20, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("Str:hello", resp->result()->str(), "CheckAny Str");
+    }
+    // Num
+    {
+        builder.Reset();
+        auto val = ipc::types::CreateNum(builder, 1.5);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Num, val.Union());
+        ipc::CheckAnyRequestBuilder req(builder);
+        req.add_val(any);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 20, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("Num:1.5", resp->result()->str(), "CheckAny Num");
+    }
+
+    // NumArray
+    {
+        builder.Reset();
+        std::vector<double> data = {1.1, 2.2};
+        auto dataOff = builder.CreateVector(data);
+        auto arr = ipc::types::CreateNumArray(builder, 1, 2, dataOff);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_NumArray, arr.Union());
+        ipc::CheckAnyRequestBuilder req(builder);
+        req.add_val(any);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 20, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("NumArray:1x2", resp->result()->str(), "CheckAny NumArray");
+    }
+
+    // Array
+    {
+        builder.Reset();
+        auto val1 = ipc::types::CreateInt(builder, 1);
+        auto s1 = ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Int, val1.Union());
+        auto val2 = ipc::types::CreateBool(builder, true);
+        auto s2 = ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Bool, val2.Union());
+
+        std::vector<flatbuffers::Offset<ipc::types::Scalar>> data = {s1, s2};
+        auto dataOff = builder.CreateVector(data);
+        auto arr = ipc::types::CreateArray(builder, 1, 2, dataOff);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Array, arr.Union());
+
+        ipc::CheckAnyRequestBuilder req(builder);
+        req.add_val(any);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 20, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("Array:1x2", resp->result()->str(), "CheckAny Array");
+    }
+
+    // 11. CheckRange (ID 21)
+    {
+        builder.Reset();
+        auto sOff = builder.CreateString("Sheet1");
+        std::vector<ipc::types::Rect> refs = { {1,1,1,1} };
+        auto refsOff = builder.CreateVectorOfStructs(refs);
+        auto rangeVal = ipc::types::CreateRange(builder, sOff, refsOff);
+        ipc::CheckRangeRequestBuilder req(builder);
+        req.add_val(rangeVal);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 21, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::CheckRangeResponse>(respBuf.data());
+        ASSERT_STREQ("Range:Sheet1!1:1:1:1", resp->result()->str(), "CheckRange");
+    }
+
+    // 12. TimeoutFunc (ID 22)
+    {
+        builder.Reset();
+        ipc::TimeoutFuncRequestBuilder req(builder);
+        req.add_val(10);
+        builder.Finish(req.Finish());
+
+        vector<uint8_t> respBuf;
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 22, respBuf);
+        auto resp = flatbuffers::GetRoot<ipc::TimeoutFuncResponse>(respBuf.data());
+
+        // Timeout now returns -1 instead of error
+        ASSERT_EQ(-1, resp->result(), "TimeoutFunc");
     }
 
     cout << "PASSED" << endl;
@@ -376,6 +644,9 @@ int main() {
 	defer func() {
 		if mockCmd.Process != nil { mockCmd.Process.Kill() }
 	}()
+
+    // Give Mock Host time to initialize SHM
+    time.Sleep(2 * time.Second)
 
 	serverCmd := exec.Command(filepath.Join("build", serverBin), "-xll-shm=smoke_proj")
 	serverCmd.Stdout = os.Stdout
