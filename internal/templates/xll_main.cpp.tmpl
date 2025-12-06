@@ -10,6 +10,7 @@
 #include <mutex>
 #include <sstream>
 #include <wchar.h>
+#include <random>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
 #include "shm/DirectHost.h"
@@ -106,6 +107,33 @@ std::wstring GetSheetName(LPXLOPER12 pxRef) {
     }
     Excel12(xlFree, 0, 1, &xRes);
     return result;
+}
+
+// Chunking helper
+int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf) {
+    // Thread-safe random number generation
+    thread_local std::mt19937_64 rng(std::random_device{}());
+    thread_local std::uniform_int_distribution<uint64_t> dist;
+    uint64_t transferId = dist(rng);
+
+    const size_t chunkSize = 950 * 1024; // 950KB
+    size_t offset = 0;
+
+    while (offset < size) {
+        size_t len = std::min(chunkSize, size - offset);
+
+        flatbuffers::FlatBufferBuilder b(1024 + len); // Approx
+        auto dataOff = b.CreateVector(data + offset, len);
+        auto chunk = ipc::CreateChunk(b, transferId, (uint32_t)size, (uint32_t)offset, dataOff);
+        b.Finish(chunk);
+
+        // MsgID 4 for Chunk
+        int ok = g_host.Send(b.GetBufferPointer(), b.GetSize(), 4, respBuf);
+        if (ok < 0) return ok; // Fail
+
+        offset += len;
+    }
+    return 1; // Success
 }
 
 flatbuffers::Offset<ipc::types::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
@@ -259,7 +287,13 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                       Excel12(xlFree, 0, 1, &xMulti);
 
                       std::vector<uint8_t> respBuf;
-                      int ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), 3, respBuf);
+                      int ok;
+                      if (reqB.GetSize() > 950 * 1024) {
+                          ok = SendChunked(reqB.GetBufferPointer(), reqB.GetSize(), respBuf);
+                      } else {
+                          ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), 3, respBuf);
+                      }
+
                       if (ok >= 0 && !respBuf.empty()) {
                           auto resp = ipc::GetSetRefCacheResponse(respBuf.data());
                           if (resp && resp->ok()) {
