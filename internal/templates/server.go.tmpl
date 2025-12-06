@@ -74,7 +74,7 @@ func Serve(handler XllService) {
 		builder.Reset()
 
 		switch msgId {
-		case 1: // CalculationEnded
+		case shm.MsgIdUserStart + 1: // CalculationEnded
 			refCacheMutex.Lock()
 			refCache = make(map[string][]byte)
 			refCacheMutex.Unlock()
@@ -88,7 +88,7 @@ func Serve(handler XllService) {
 			{{end}}
 			return 0
 
-		case 3: // SetRefCache
+		case shm.MsgIdUserStart + 3: // SetRefCache
 			reqObj := ipc.GetRootAsSetRefCacheRequest(req, 0)
 			key := string(reqObj.Key())
 
@@ -109,7 +109,7 @@ func Serve(handler XllService) {
 			copy(respBuf, payload)
 			return int32(len(payload))
 
-		case 4: // Chunk
+		case shm.MsgIdUserStart + 4: // Chunk
 			reqObj := ipc.GetRootAsChunk(req, 0)
 			id := reqObj.Id()
 			total := int(reqObj.TotalSize())
@@ -183,7 +183,7 @@ func Serve(handler XllService) {
 
 {{range .Events}}
 		{{if ne .Type "CalculationEnded"}}
-		case {{lookupEventId .Type}}: // {{.Type}}
+		case shm.MsgIdUserStart + {{lookupEventId .Type}}: // {{.Type}}
 			ctx := context.Background()
 			jobQueue <- func() {
 				if err := handler.{{.Name}}(ctx); err != nil {
@@ -193,7 +193,7 @@ func Serve(handler XllService) {
 			return 0
 		{{end}}
 {{end}}
-{{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}		case shm.MsgIdUserStart + {{add 10 $i}}: // {{.Name}}
 			{{if .Timeout}}
 			ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
 			{{else}}
