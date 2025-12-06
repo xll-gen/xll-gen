@@ -24,6 +24,7 @@ go.work.sum
 # env file
 .env
 
-*.logxll-gen
+*.log
+xll-gen
 temp_project/
 build_cmake/
