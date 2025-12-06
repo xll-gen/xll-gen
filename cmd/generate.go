@@ -549,7 +549,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{if eq .Return "string"}}
 	var resOffset flatbuffers.UOffsetT
 	if err == nil {
-		resOffset = b2.CreateString(res)
+		resOffset = b.CreateString(res)
 	}
 	{{end}}
 
