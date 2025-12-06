@@ -248,8 +248,7 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                   XLOPER12 xMulti;
                   int ret = Excel12(xlCoerce, &xMulti, 2, op, TempInt12(xltypeMulti));
                   if (ret == xlretSuccess) {
-                      auto slot = g_host.GetZeroCopySlot();
-                      flatbuffers::FlatBufferBuilder reqB(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
+                      flatbuffers::FlatBufferBuilder reqB(1024);
 
                       auto anyOff = ConvertMultiToAny(xMulti, reqB);
                       auto keyOff = reqB.CreateString(key);
@@ -258,9 +257,10 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
 
                       Excel12(xlFree, 0, 1, &xMulti);
 
-                      int ok = slot.Send(3, reqB.GetSize());
-                      if (ok >= 0) {
-                          auto resp = ipc::GetSetRefCacheResponse(slot.GetRespBuffer());
+                      std::vector<uint8_t> respBuf;
+                      int ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), 3, respBuf);
+                      if (ok >= 0 && !respBuf.empty()) {
+                          auto resp = ipc::GetSetRefCacheResponse(respBuf.data());
                           if (resp && resp->ok()) {
                               g_sentRefCache[key] = true;
                               cached = true;
