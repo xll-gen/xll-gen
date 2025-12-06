@@ -928,6 +928,13 @@ std::map<std::string, bool> g_sentRefCache;
 std::mutex g_refCacheMutex;
 
 // Helpers for registration
+static XLOPER12 g_xlErrValue;
+
+void InitXlErrValue() {
+    g_xlErrValue.xltype = xltypeErr;
+    g_xlErrValue.val.err = xlErrValue;
+}
+
 LPXLOPER12 TempStr12(const wchar_t* txt) {
     static XLOPER12 xOp[10];
     static int i = 0;
@@ -1252,6 +1259,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     }
     {{end}}
 
+    InitXlErrValue();
     g_running = true;
     g_worker = std::thread([]{
         while(g_running) {
@@ -1537,6 +1545,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 		},
 		"defaultErrorVal": func(t string) string {
 			if t == "string" { return "NULL"; }
+            if t == "any" || t == "range" { return "&g_xlErrValue"; }
 			return "0";
 		},
 	}
