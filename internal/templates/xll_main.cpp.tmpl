@@ -124,7 +124,7 @@ int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf)
 
         flatbuffers::FlatBufferBuilder b(1024 + len); // Approx
         auto dataOff = b.CreateVector(data + offset, len);
-        auto chunk = ipc::CreateChunk(b, transferId, (uint32_t)size, (uint32_t)offset, dataOff);
+        auto chunk = ipc::CreateChunk(b, transferId, (uint32_t)size, (uint32_t)offset, dataOff, 3);
         b.Finish(chunk);
 
         // MsgID 4 for Chunk
@@ -134,6 +134,33 @@ int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf)
         offset += len;
     }
     return 1; // Success
+}
+
+const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqSize) {
+    int ok = slot.Send(reqMsgId, reqSize);
+    if (ok < 0) return nullptr;
+
+    if (slot.GetRespMsgId() == 4 || ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) {
+        thread_local std::vector<uint8_t> buf;
+        buf.clear();
+
+        while(true) {
+            auto chunk = ipc::GetChunk(slot.GetRespBuffer());
+            auto data = chunk->data();
+            buf.insert(buf.end(), data->begin(), data->end());
+
+            if (buf.size() >= chunk->total_size()) return buf.data();
+
+            flatbuffers::FlatBufferBuilder b(128, nullptr, false, slot.GetReqBuffer());
+            auto empty = b.CreateVector<uint8_t>(nullptr, 0);
+            auto ack = ipc::CreateChunk(b, chunk->id(), 0, 0, empty, 0);
+            b.Finish(ack);
+
+            if (slot.Send(4, b.GetSize()) < 0) return nullptr;
+            if (slot.GetRespMsgId() != 4 && !ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) return nullptr;
+        }
+    }
+    return slot.GetRespBuffer();
 }
 
 flatbuffers::Offset<ipc::types::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
@@ -327,6 +354,31 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
 // Guest Call Handler (Async Return)
 int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
     switch (msgId) {
+    case 4: { // Chunk
+        static std::map<uint64_t, std::vector<uint8_t>> asyncChunks;
+        auto chunk = ipc::GetChunk(req);
+        auto id = chunk->id();
+        auto data = chunk->data();
+
+        std::vector<uint8_t>& buf = asyncChunks[id];
+        if (buf.empty()) buf.reserve(chunk->total_size());
+
+        buf.insert(buf.end(), data->begin(), data->end());
+
+        if (buf.size() >= chunk->total_size()) {
+             uint32_t originalMsgId = chunk->msg_id();
+             std::vector<uint8_t> fullPayload = buf;
+             asyncChunks.erase(id);
+             return GuestHandler(fullPayload.data(), resp, originalMsgId);
+        }
+
+        flatbuffers::FlatBufferBuilder ackB(64);
+        auto emptyData = ackB.CreateVector<uint8_t>(nullptr, 0);
+        auto ack = ipc::CreateChunk(ackB, id, 0, 0, emptyData, 0);
+        ackB.Finish(ack);
+        memcpy(resp, ackB.GetBufferPointer(), ackB.GetSize());
+        return ackB.GetSize();
+    }
 {{range $i, $fn := .Functions}}
     {{if .Async}}
     case {{add 11 $i}}: { // {{.Name}}
@@ -537,16 +589,15 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     builder.Finish(req);
 
     // Zero-Copy Send (MsgId, Size)
-    int ok = slot.Send({{add 11 $i}}, builder.GetSize());
-
-    if (ok < 0) {
-        {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
-    }
-
     {{if .Async}}
+    int ok = slot.Send({{add 11 $i}}, builder.GetSize());
+    if (ok < 0) return;
     return;
     {{else}}
-    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
+    const uint8_t* respBuf = ReceiveChunked(slot, {{add 11 $i}}, builder.GetSize());
+    if (!respBuf) return {{defaultErrorVal .Return}};
+
+    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf);
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
     }

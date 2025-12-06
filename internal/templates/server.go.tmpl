@@ -4,6 +4,7 @@ package {{.Package}}
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -19,10 +20,19 @@ var _ = time.Now
 var _ = types.Bool{}
 
 type chunkBuffer struct {
-	data      []byte
-	totalSize int
-	received  int
-	mutex     sync.Mutex
+	data       []byte
+	totalSize  int
+	received   int
+	mutex      sync.Mutex
+	lastAccess time.Time
+}
+
+type outgoingChunk struct {
+	data       []byte
+	offset     int
+	id         uint64
+	msgId      uint32
+	lastAccess time.Time
 }
 
 func Serve(handler XllService) {
@@ -46,6 +56,33 @@ func Serve(handler XllService) {
 	// Chunking Cache
 	var chunkCacheMutex sync.Mutex
 	chunkCache := make(map[uint64]*chunkBuffer)
+
+	// Outgoing Chunks
+	var outgoingChunksMutex sync.Mutex
+	outgoingChunks := make(map[uint64]*outgoingChunk)
+
+	// Cleanup Ticker
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		for range ticker.C {
+			now := time.Now()
+			chunkCacheMutex.Lock()
+			for id, buf := range chunkCache {
+				if now.Sub(buf.lastAccess) > 60*time.Second {
+					delete(chunkCache, id)
+				}
+			}
+			chunkCacheMutex.Unlock()
+
+			outgoingChunksMutex.Lock()
+			for id, buf := range outgoingChunks {
+				if now.Sub(buf.lastAccess) > 60*time.Second {
+					delete(outgoingChunks, id)
+				}
+			}
+			outgoingChunksMutex.Unlock()
+		}
+	}()
 
 	// Configuration
 	{{range .Functions}}
@@ -116,15 +153,66 @@ func Serve(handler XllService) {
 			offset := int(reqObj.Offset())
 			dataLen := reqObj.DataLength()
 
+			// Check if this is an Ack (Empty data) requesting next chunk
+			if dataLen == 0 {
+				outgoingChunksMutex.Lock()
+				out, exists := outgoingChunks[id]
+				if !exists {
+					outgoingChunksMutex.Unlock()
+					return 0
+				}
+				out.lastAccess = time.Now()
+
+				// Send next chunk
+				const chunkSize = 950 * 1024
+				remaining := len(out.data) - out.offset
+				currentSize := chunkSize
+				if remaining < chunkSize {
+					currentSize = remaining
+				}
+
+				if currentSize <= 0 {
+					// Done
+					delete(outgoingChunks, id)
+					outgoingChunksMutex.Unlock()
+					return 0
+				}
+
+				builder.Reset()
+				dataOff := builder.CreateByteVector(out.data[out.offset : out.offset+currentSize])
+				ipc.ChunkStart(builder)
+				ipc.ChunkAddId(builder, id)
+				ipc.ChunkAddTotalSize(builder, uint32(len(out.data)))
+				ipc.ChunkAddOffset(builder, uint32(out.offset))
+				ipc.ChunkAddData(builder, dataOff)
+				ipc.ChunkAddMsgId(builder, out.msgId) // Original MsgID
+				root := ipc.ChunkEnd(builder)
+				builder.FinishWithFileIdentifier(root, []byte("XCHN"))
+
+				out.offset += currentSize
+				if out.offset >= len(out.data) {
+					delete(outgoingChunks, id)
+				}
+				outgoingChunksMutex.Unlock()
+
+				payload := builder.FinishedBytes()
+				if len(payload) > len(respBuf) { return 0 } // Should not happen if chunk size < 1MB
+				copy(respBuf, payload)
+				return int32(len(payload))
+			}
+
+			// Incoming Chunk (Host -> Guest)
 			chunkCacheMutex.Lock()
 			buf, exists := chunkCache[id]
 			if !exists {
 				buf = &chunkBuffer{
-					data:      make([]byte, total),
-					totalSize: total,
+					data:       make([]byte, total),
+					totalSize:  total,
+					lastAccess: time.Now(),
 				}
 				chunkCache[id] = buf
 			}
+			buf.lastAccess = time.Now()
 			chunkCacheMutex.Unlock()
 
 			buf.mutex.Lock()
@@ -141,35 +229,31 @@ func Serve(handler XllService) {
 				delete(chunkCache, id)
 				chunkCacheMutex.Unlock()
 
-				// Assuming the reassembled payload is a SetRefCacheRequest (MsgID 3)
-				// We process it directly here.
-				cacheReq := ipc.GetRootAsSetRefCacheRequest(buf.data, 0)
-				key := string(cacheReq.Key())
+				// Reassembled
+				payloadMsgId := reqObj.MsgId()
+				if payloadMsgId == 3 { // SetRefCacheRequest
+					cacheReq := ipc.GetRootAsSetRefCacheRequest(buf.data, 0)
+					key := string(cacheReq.Key())
 
-				refCacheMutex.Lock()
-				refCache[key] = buf.data
-				refCacheMutex.Unlock()
+					refCacheMutex.Lock()
+					refCache[key] = buf.data
+					refCacheMutex.Unlock()
 
-				ipc.SetRefCacheResponseStart(builder)
-				ipc.SetRefCacheResponseAddOk(builder, true)
-				root := ipc.SetRefCacheResponseEnd(builder)
-				builder.Finish(root)
+					ipc.SetRefCacheResponseStart(builder)
+					ipc.SetRefCacheResponseAddOk(builder, true)
+					root := ipc.SetRefCacheResponseEnd(builder)
+					builder.Finish(root)
 
-				payload := builder.FinishedBytes()
-				if len(payload) > len(respBuf) { return 0 }
-				copy(respBuf, payload)
-				return int32(len(payload))
+					payload := builder.FinishedBytes()
+					if len(payload) > len(respBuf) { return 0 }
+					copy(respBuf, payload)
+					return int32(len(payload))
+				}
+				// Handle other message types if needed
+				return 0
 			}
 
 			// Acknowledge chunk
-			// Use SetRefCacheResponse with ok=false to mean "continue" or just empty?
-			// Client expects a response to proceed. We can send empty or basic OK.
-			// Reusing SetRefCacheResponse is convenient if C++ expects it, but
-			// C++ SendChunked knows it's getting intermediate responses.
-			// Let's just return a generic OK (true) but C++ will ignore it until the last one.
-			// Or better: just return 0 length (void) for intermediate?
-			// g_host.Send waits for response. If we return 0, it gets 0 bytes.
-			// Let's send a minimal response to confirm receipt.
 			ipc.SetRefCacheResponseStart(builder)
 			ipc.SetRefCacheResponseAddOk(builder, true) // Ack
 			root := ipc.SetRefCacheResponseEnd(builder)
@@ -208,13 +292,13 @@ func Serve(handler XllService) {
 
 			jobQueue <- func() {
 				defer cancel()
-				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId, refCache, &refCacheMutex)
+				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
 			}
 			return 0
 			{{else}}
 			// Sync: Run inline
 			defer cancel()
-			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId, refCache, &refCacheMutex)
+			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
 			{{end}}
 {{end}}		default:
 			return 0
@@ -226,7 +310,7 @@ func Serve(handler XllService) {
 }
 
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32, refCache map[string][]byte, refCacheMutex *sync.RWMutex) int32 {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) int32 {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
@@ -429,7 +513,45 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	// Copy to respBuf
 	payload := b.FinishedBytes()
 	if len(payload) > len(respBuf) {
-		return 0 // Error: buffer too small
+		// Chunking needed
+		transferId := uint64(rand.Int63())
+
+		outgoingChunksMutex.Lock()
+		outgoingChunks[transferId] = &outgoingChunk{
+			data:       make([]byte, len(payload)),
+			id:         transferId,
+			msgId:      msgId,
+			lastAccess: time.Now(),
+		}
+		copy(outgoingChunks[transferId].data, payload)
+
+		out := outgoingChunks[transferId]
+		const chunkSize = 950 * 1024
+		currentSize := chunkSize
+		if len(out.data) < chunkSize {
+			currentSize = len(out.data)
+		}
+
+		b.Reset()
+		dataOff := b.CreateByteVector(out.data[0:currentSize])
+		ipc.ChunkStart(b)
+		ipc.ChunkAddId(b, transferId)
+		ipc.ChunkAddTotalSize(b, uint32(len(out.data)))
+		ipc.ChunkAddOffset(b, 0)
+		ipc.ChunkAddData(b, dataOff)
+		ipc.ChunkAddMsgId(b, msgId)
+		root := ipc.ChunkEnd(b)
+		b.FinishWithFileIdentifier(root, []byte("XCHN"))
+
+		out.offset = currentSize
+		outgoingChunksMutex.Unlock()
+
+		payload = b.FinishedBytes()
+		if len(payload) > len(respBuf) {
+			return 0 // Fatal: Chunk header overhead made it > 1MB?
+		}
+		copy(respBuf, payload)
+		return int32(len(payload))
 	}
 	copy(respBuf, payload)
 	return int32(len(payload))
