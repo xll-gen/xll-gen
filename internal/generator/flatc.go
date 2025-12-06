@@ -16,9 +16,18 @@ import (
 // EnsureFlatc checks for flatc in PATH or Cache, and downloads it if missing.
 // It returns the absolute path to the flatc binary.
 func EnsureFlatc() (string, error) {
+	// Pin to specific version to match CMake configuration
+	const flatcVersion = "v25.9.23"
+	requiredVersion := strings.TrimPrefix(flatcVersion, "v")
+
 	// 1. Check in PATH
 	if path, err := exec.LookPath("flatc"); err == nil {
-		return path, nil
+		if ver, err := getFlatcVersion(path); err == nil {
+			if ver == requiredVersion {
+				return path, nil
+			}
+			fmt.Printf("Note: System flatc found at %s but is version %s (required %s). Ignoring.\n", path, ver, requiredVersion)
+		}
 	}
 
 	// 2. Check in Cache
@@ -26,8 +35,6 @@ func EnsureFlatc() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("error getting cache dir: %w", err)
 	}
-	// Pin to specific version to match CMake configuration
-	const flatcVersion = "v25.9.23"
 	binDir := filepath.Join(cacheDir, "xll-gen", "bin", flatcVersion)
 	exeName := "flatc"
 	if runtime.GOOS == "windows" {
@@ -46,6 +53,20 @@ func EnsureFlatc() (string, error) {
 	}
 
 	return flatcPath, nil
+}
+
+func getFlatcVersion(path string) (string, error) {
+	cmd := exec.Command(path, "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	// Expected: "flatc version 25.9.23"
+	parts := strings.Fields(string(out))
+	if len(parts) >= 3 && parts[0] == "flatc" && parts[1] == "version" {
+		return parts[2], nil
+	}
+	return "", fmt.Errorf("unknown version format: %q", out)
 }
 
 type release struct {
