@@ -2,6 +2,13 @@ include "xltypes.fbs";
 
 namespace ipc;
 
+table Chunk {
+  id: ulong;
+  total_size: uint;
+  offset: uint;
+  data: [ubyte];
+}
+
 table SetRefCacheRequest {
   key: string;
   val: ipc.types.Any;
