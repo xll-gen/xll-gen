@@ -1,5 +1,8 @@
 # xll-gen
 
+> **WARNING: EXPERIMENTAL SOFTWARE**
+> This tool is currently in an experimental stage and is not recommended for use in production environments.
+
 `xll-gen` is a CLI tool designed to facilitate the creation of Excel Add-ins (XLL) using an out-of-process architecture. It enables developers to write Excel extensions in Go (and potentially other languages) while bypassing the limitations of traditional DLLs by communicating via Shared Memory.
 
 ## Overview
