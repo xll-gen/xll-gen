@@ -106,6 +106,11 @@ functions:
         type: "string"
     return: "float"
     async: true
+
+events:
+  - type: "CalculationEnded"
+    name: "OnCalculationEnded"
+    description: "Called when Excel calculation ends"
 ```
 
 ## Architecture

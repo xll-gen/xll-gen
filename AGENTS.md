@@ -274,6 +274,22 @@ When returning errors from the XLL (e.g., if the Go server is unreachable), retu
 | `xlErrField` | `2049` | Field error |
 | `xlErrCalc` | `2050` | Calculation error |
 
+### 8.4 Event Handlers
+
+Starting with Excel 2010, `xlEventRegister` allows XLLs to register for specific system events, primarily to manage the lifecycle of asynchronous user-defined functions (UDFs).
+
+**Supported Events:**
+*   `CalculationEnded` (Code 1): Raised when Excel completes a calculation cycle. Useful for freeing resources allocated during async calculations.
+*   `CalculationCanceled` (Code 2): Raised when the user interrupts the calculation (e.g., via ESC). The XLL should abort pending async activities.
+
+**Configuration (`xll.yaml`):**
+```yaml
+events:
+  - type: "CalculationEnded"
+    name: "OnCalculationEnded"
+```
+This generates a corresponding C++ handler that forwards the event to the Go server (void return, no arguments).
+
 ## 9. Reference: Shared Memory (IPC)
 
 The `xll-gen/shm` library provides low-latency IPC. For maximum performance, we use **Zero-Copy** operations where possible, especially for FlatBuffers.

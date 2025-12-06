@@ -35,6 +35,13 @@ type Config struct {
 	Gen       GenConfig     `yaml:"gen"`
 	Server    ServerConfig  `yaml:"server"`
 	Functions []Function    `yaml:"functions"`
+	Events    []Event       `yaml:"events"`
+}
+
+type Event struct {
+	Type        string `yaml:"type"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
 }
 
 type ServerConfig struct {
@@ -85,6 +92,10 @@ func runGenerate() error {
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("failed to parse xll.yaml: %w", err)
+	}
+
+	if err := validateConfig(config); err != nil {
+		return err
 	}
 
 	fmt.Printf("Generating code for project: %s\n", config.Project.Name)
@@ -199,6 +210,17 @@ func getModuleName() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("module name not found in go.mod")
+}
+
+func validateConfig(config Config) error {
+	seenEvents := make(map[string]bool)
+	for _, evt := range config.Events {
+		if seenEvents[evt.Type] {
+			return fmt.Errorf("duplicate event type: %s", evt.Type)
+		}
+		seenEvents[evt.Type] = true
+	}
+	return nil
 }
 
 // ----------------------------------------------------------------------------
@@ -319,6 +341,8 @@ import "context"
 
 type XllService interface {
 {{range .Functions}}	{{.Name}}(ctx context.Context, {{range .Args}}{{.Name}} {{lookupGoType .Type}}, {{end}}) ({{lookupGoType .Return}}, error)
+{{end}}
+{{range .Events}}	{{.Name}}(ctx context.Context) error
 {{end}}}
 `
 	funcMap := template.FuncMap{
@@ -353,9 +377,11 @@ type XllService interface {
 	data := struct {
 		Package   string
 		Functions []Function
+		Events    []Event
 	}{
 		Package:   pkg,
 		Functions: config.Functions,
+		Events:    config.Events,
 	}
 
 	f, err := os.Create(filepath.Join(dir, "interface.go"))
@@ -422,6 +448,15 @@ func Serve(handler XllService) {
 		builder.Reset()
 
 		switch msgId {
+{{range .Events}}		case {{lookupEventId .Type}}: // {{.Type}}
+			ctx := context.Background()
+			jobQueue <- func() {
+				if err := handler.{{.Name}}(ctx); err != nil {
+					fmt.Printf("Event handler {{.Name}} failed: %v\n", err)
+				}
+			}
+			return 0
+{{end}}
 {{range $i, $fn := .Functions}}		case {{add 11 $i}}: // {{.Name}}
 			{{if .Timeout}}
 			ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
@@ -614,6 +649,15 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 			}
 			return t
 		},
+		"lookupEventId": func(evtType string) int {
+			if evtType == "CalculationEnded" {
+				return 1
+			}
+			if evtType == "CalculationCanceled" {
+				return 2
+			}
+			return 0
+		},
 	}
 
 	t, err := template.New("server").Funcs(funcMap).Parse(tmpl)
@@ -631,6 +675,7 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 		ModName       string
 		ProjectName   string
 		Functions     []Function
+		Events        []Event
 		ServerTimeout string
 		ServerWorkers int
 	}{
@@ -638,6 +683,7 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, er
 		ModName:       modName,
 		ProjectName:   config.Project.Name,
 		Functions:     config.Functions,
+		Events:        config.Events,
 		ServerTimeout: config.Server.Timeout,
 		ServerWorkers: config.Server.Workers,
 	}
@@ -659,6 +705,7 @@ func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <wchar.h>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
 #include "shm/DirectHost.h"
@@ -667,6 +714,36 @@ func generateCppMain(config Config, dir string, shouldAppendPid bool) error {
 shm::DirectHost g_host;
 std::thread g_worker;
 std::atomic<bool> g_running{false};
+
+// Helpers for registration
+LPXLOPER12 TempStr12(const wchar_t* txt) {
+    static XLOPER12 xOp[10];
+    static int i = 0;
+    i = (i + 1) % 10;
+    LPXLOPER12 op = &xOp[i];
+
+    op->xltype = xltypeStr;
+    static wchar_t strBuf[10][256];
+    size_t len = 0;
+    if (txt) len = wcslen(txt);
+    if (len > 255) len = 255;
+
+    strBuf[i][0] = (wchar_t)len;
+    if (len > 0) wmemcpy(strBuf[i]+1, txt, len);
+
+    op->val.str = strBuf[i];
+    return op;
+}
+
+LPXLOPER12 TempInt12(int val) {
+    static XLOPER12 xOp[10];
+    static int i = 0;
+    i = (i + 1) % 10;
+    LPXLOPER12 op = &xOp[i];
+    op->xltype = xltypeInt;
+    op->val.w = val;
+    return op;
+}
 
 // Utility: String Conversion
 std::wstring StringToWString(const std::string& str) {
@@ -740,7 +817,7 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
 
 extern "C" {
 
-int __stdcall xlAutoOpen() {
+__declspec(dllexport) int __stdcall xlAutoOpen() {
     // 1024 slots, 1MB size, 16 guest slots
     {{if .ShouldAppendPid}}
     std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
@@ -763,6 +840,10 @@ int __stdcall xlAutoOpen() {
 
     static XLOPER12 xDll;
     Excel12(xlGetName, &xDll, 0);
+
+{{range .Events}}
+    Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Name}}"), TempInt12({{lookupEventCode .Type}}));
+{{end}}
 
 {{range $i, $fn := .Functions}}
     {
@@ -787,15 +868,22 @@ int __stdcall xlAutoOpen() {
     return 1;
 }
 
-int __stdcall xlAutoClose() {
+__declspec(dllexport) int __stdcall xlAutoClose() {
     g_running = false;
     if (g_worker.joinable()) g_worker.join();
     g_host.Shutdown();
     return 1;
 }
 
+{{range .Events}}
+__declspec(dllexport) void __stdcall {{.Name}}() {
+    auto slot = g_host.GetZeroCopySlot();
+    slot.Send({{lookupEventId .Type}}, 0);
+}
+{{end}}
+
 {{range $i, $fn := .Functions}}
-{{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+__declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
     auto slot = g_host.GetZeroCopySlot();
     flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
@@ -950,6 +1038,16 @@ int __stdcall xlAutoClose() {
 			if v, ok := m[t]; ok { return v }
 			return t
 		},
+		"lookupEventId": func(evtType string) int {
+			if evtType == "CalculationEnded" { return 1 }
+			if evtType == "CalculationCanceled" { return 2 }
+			return 0
+		},
+		"lookupEventCode": func(evtType string) string {
+			if evtType == "CalculationEnded" { return "xleventCalculationEnded"; }
+			if evtType == "CalculationCanceled" { return "xleventCalculationCanceled"; }
+			return "0";
+		},
 		"defaultErrorVal": func(t string) string {
 			if t == "string" { return "NULL"; }
 			return "0";
@@ -966,10 +1064,12 @@ int __stdcall xlAutoClose() {
 	return t.Execute(f, struct {
 		ProjectName     string
 		Functions       []Function
+		Events          []Event
 		ShouldAppendPid bool
 	}{
 		ProjectName:     config.Project.Name,
 		Functions:       config.Functions,
+		Events:          config.Events,
 		ShouldAppendPid: shouldAppendPid,
 	})
 }
