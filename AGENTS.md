@@ -352,4 +352,4 @@ client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 
 ## 11. Development Workflow
 
-*   **Temporary Projects**: Use directories starting with `temp` (e.g., `temp_verify`, `temp_test`) for creating temporary test projects. These are git-ignored to prevent accidental commits of artifacts.
+*   **Temporary Projects**: Use directories starting with `temp_` (e.g., `temp_verify`, `temp_test`) for creating temporary test projects. These are git-ignored to prevent accidental commits of artifacts.

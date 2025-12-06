@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+	"xll-gen/pkg/config"
+	"xll-gen/pkg/templates"
 )
 
 var simulateCmd = &cobra.Command{
@@ -38,6 +40,7 @@ func runSimulate() error {
 
 	// 2. Run Generate
 	fmt.Println("[1/6] Running generate...")
+	// Calling runGenerate from generate.go (in same package)
 	if err := runGenerate(); err != nil {
 		return err
 	}
@@ -47,8 +50,8 @@ func runSimulate() error {
 	if err != nil {
 		return fmt.Errorf("failed to read xll.yaml: %w", err)
 	}
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	var cfg config.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("failed to parse xll.yaml: %w", err)
 	}
 
@@ -60,7 +63,7 @@ func runSimulate() error {
 		return fmt.Errorf("go mod tidy failed: %w", err)
 	}
 
-	serverBinName := config.Project.Name
+	serverBinName := cfg.Project.Name
 	if runtime.GOOS == "windows" {
 		serverBinName += ".exe"
 	}
@@ -83,16 +86,16 @@ func runSimulate() error {
 	if err := os.MkdirAll(simDir, 0755); err != nil {
 		return err
 	}
-	if err := generateSimMain(config, simDir); err != nil {
+	if err := generateSimMain(&cfg, simDir); err != nil {
 		return err
 	}
-	if err := generateSimCMake(config, simDir); err != nil {
+	if err := generateSimCMake(&cfg, simDir); err != nil {
 		return err
 	}
 
 	// 6. Build Simulation Host
 	fmt.Println("[4/6] Building Simulation Host...")
-	// cmake -S simulation -B simulation/build
+	// cmake -S temp_simulation -B temp_simulation/build
 	cmakeConfig := exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"))
 	// Quiet output unless error
 	if out, err := cmakeConfig.CombinedOutput(); err != nil {
@@ -100,7 +103,7 @@ func runSimulate() error {
 		return fmt.Errorf("cmake config failed: %w", err)
 	}
 
-	// cmake --build simulation/build --config Release
+	// cmake --build temp_simulation/build --config Release
 	cmakeBuild := exec.Command("cmake", "--build", filepath.Join(simDir, "build"), "--config", "Release")
 	if out, err := cmakeBuild.CombinedOutput(); err != nil {
 		fmt.Println(string(out))
@@ -153,7 +156,7 @@ func runSimulate() error {
 
 	// Start Go Server
 	fmt.Println("[6/6] Starting Go Server...")
-	serverCmd := exec.Command(serverPath, "-xll-shm="+config.Project.Name)
+	serverCmd := exec.Command(serverPath, "-xll-shm="+cfg.Project.Name)
 	serverCmd.Stdout = os.Stdout
 	serverCmd.Stderr = os.Stderr
 	if err := serverCmd.Start(); err != nil {
@@ -202,143 +205,17 @@ func runSimulate() error {
 	return nil
 }
 
-func generateSimMain(config Config, dir string) error {
-	tmpl := `
-#include <iostream>
-#include <vector>
-#include <thread>
-#include <chrono>
-#include "shm/DirectHost.h"
-#include "schema_generated.h"
+func generateSimMain(cfg *config.Config, dir string) error {
+	tmplContent, err := templates.Get("sim_main.cpp.tmpl")
+	if err != nil {
+		return err
+	}
 
-using namespace std;
-
-int main() {
-    shm::DirectHost host;
-    string shmName = "{{.Project.Name}}";
-
-    // Init SHM
-    if (!host.Init(shmName.c_str(), 1024, 1024*1024, 16)) {
-        cerr << "Failed to init SHM" << endl;
-        return 1;
-    }
-
-    cout << "READY" << endl;
-
-    // Wait for Guest to connect
-    cout << "Waiting for guest..." << endl;
-    auto start = chrono::steady_clock::now();
-    bool connected = false;
-
-    // We loop for a bit waiting for guest calls or just sleep?
-    // Guest connects, but Host doesn't know until Guest sends a message?
-    // No, standard SHM protocol usually doesn't have "Client Connected" event unless implemented.
-    // However, we are sending requests to Guest.
-    // We can just start sending. If Guest is not ready, it might miss it?
-    // Guest "Connect" just opens the SHM.
-    // Guest "Start" starts the loop.
-
-    // We'll give the guest a second to start up
-    this_thread::sleep_for(chrono::seconds(2));
-
-    cout << "Sending requests..." << endl;
-    int failures = 0;
-
-{{range $i, $fn := .Functions}}
-    {
-        cout << "Testing {{.Name}}..." << endl;
-        flatbuffers::FlatBufferBuilder builder(1024);
-
-        // Construct Request with default values
-        {{range .Args}}
-        {{if eq .Type "string"}}
-        auto {{.Name}}_off = builder.CreateString("test");
-        {{else if eq .Type "string?"}}
-        auto val_{{.Name}} = builder.CreateString("test");
-        auto {{.Name}}_off = ipc::types::CreateStr(builder, val_{{.Name}});
-        {{else if eq .Type "range"}}
-        // Skip range for smoke test
-        flatbuffers::Offset<ipc::types::Range> {{.Name}}_off(0);
-        {{else if eq .Type "int?"}}
-        auto {{.Name}}_off = ipc::types::CreateInt(builder, 1);
-        {{else if eq .Type "float?"}}
-        auto {{.Name}}_off = ipc::types::CreateNum(builder, 1.0);
-        {{else if eq .Type "bool?"}}
-        auto {{.Name}}_off = ipc::types::CreateBool(builder, true);
-        {{end}}
-        {{end}}
-
-        ipc::{{.Name}}RequestBuilder reqBuilder(builder);
-        {{range .Args}}
-        {{if eq .Type "string"}}
-        reqBuilder.add_{{.Name}}({{.Name}}_off);
-        {{else if eq .Type "string?"}}
-        reqBuilder.add_{{.Name}}({{.Name}}_off);
-        {{else if eq .Type "int"}}
-        reqBuilder.add_{{.Name}}(1);
-        {{else if eq .Type "float"}}
-        reqBuilder.add_{{.Name}}(1.0);
-        {{else if eq .Type "bool"}}
-        reqBuilder.add_{{.Name}}(true);
-        {{else if eq .Type "range"}}
-        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-        {{else if eq .Type "int?"}}
-        reqBuilder.add_{{.Name}}({{.Name}}_off);
-        {{else if eq .Type "float?"}}
-        reqBuilder.add_{{.Name}}({{.Name}}_off);
-        {{else if eq .Type "bool?"}}
-        reqBuilder.add_{{.Name}}({{.Name}}_off);
-        {{end}}
-        {{end}}
-
-        {{if .Async}}
-        // Async requires handle. Host must provide it?
-        // In real XLL, Excel provides it.
-        // We simulate it by passing a dummy pointer (address of something).
-        uint64_t dummyHandle = 12345ULL + {{$i}}; // Random unique
-        reqBuilder.add_async_handle(dummyHandle);
-        {{end}}
-
-        auto req = reqBuilder.Finish();
-        builder.Finish(req);
-
-        // Send
-        vector<uint8_t> respBuf;
-        int size = host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 11 $i}}, respBuf);
-        if (size < 0) {
-            cerr << "  Send failed!" << endl;
-            failures++;
-        } else {
-            {{if .Async}}
-            cout << "  Async Request sent." << endl;
-            auto start_wait = chrono::steady_clock::now();
-            while(chrono::steady_clock::now() - start_wait < chrono::seconds(1)) {
-                host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t msgId) -> int32_t {
-                    return 0;
-                });
-                this_thread::sleep_for(chrono::milliseconds(10));
-            }
-            {{else}}
-            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf.data());
-            if (resp->error() && resp->error()->size() > 0) {
-                 cout << "  Got Error: " << resp->error()->str() << endl;
-            } else {
-                 cout << "  Success" << endl;
-            }
-            {{end}}
-        }
-    }
-{{end}}
-
-    if (failures > 0) return 1;
-    return 0;
-}
-`
 	funcMap := template.FuncMap{
 		"add": func(a, b int) int { return a + b },
 	}
 
-	t, err := template.New("sim_main").Funcs(funcMap).Parse(tmpl)
+	t, err := template.New("sim_main").Funcs(funcMap).Parse(tmplContent)
 	if err != nil {
 		return err
 	}
@@ -349,49 +226,16 @@ int main() {
 	}
 	defer f.Close()
 
-	return t.Execute(f, config)
+	return t.Execute(f, cfg)
 }
 
-func generateSimCMake(config Config, dir string) error {
-	tmpl := `cmake_minimum_required(VERSION 3.14)
-project(mock_host LANGUAGES CXX)
+func generateSimCMake(cfg *config.Config, dir string) error {
+	tmplContent, err := templates.Get("sim_CMakeLists.txt.tmpl")
+	if err != nil {
+		return err
+	}
 
-set(CMAKE_CXX_STANDARD 17)
-
-include(FetchContent)
-
-# Flatbuffers
-FetchContent_Declare(
-  flatbuffers
-  GIT_REPOSITORY https://github.com/google/flatbuffers.git
-  GIT_TAG v25.9.23
-)
-FetchContent_MakeAvailable(flatbuffers)
-
-# SHM
-FetchContent_Declare(
-  shm
-  GIT_REPOSITORY https://github.com/xll-gen/shm.git
-  GIT_TAG main
-)
-FetchContent_MakeAvailable(shm)
-
-if(NOT TARGET shm)
-  add_library(shm INTERFACE)
-  target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
-endif()
-
-add_executable(mock_host main.cpp)
-
-# Include generated headers from main project
-target_include_directories(mock_host PRIVATE ../generated/cpp)
-
-target_link_libraries(mock_host PRIVATE
-  shm
-  flatbuffers
-)
-`
-	t, err := template.New("sim_cmake").Parse(tmpl)
+	t, err := template.New("sim_cmake").Parse(tmplContent)
 	if err != nil {
 		return err
 	}
@@ -402,5 +246,5 @@ target_link_libraries(mock_host PRIVATE
 	}
 	defer f.Close()
 
-	return t.Execute(f, config)
+	return t.Execute(f, cfg)
 }

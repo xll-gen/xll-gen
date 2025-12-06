@@ -1,0 +1,15 @@
+package {{.Package}}
+
+import (
+	"context"
+	"{{.ModName}}/generated/ipc/types"
+)
+
+// Force usage of ipc/types to avoid unused import error
+var _ = types.Bool{}
+
+type XllService interface {
+{{range .Functions}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *types.Range{{end}}) ({{lookupGoType .Return}}, error)
+{{end}}
+{{range .Events}}	{{.Name}}(ctx context.Context) error
+{{end}}}

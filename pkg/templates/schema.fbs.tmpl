@@ -1,0 +1,27 @@
+include "xltypes.fbs";
+
+namespace ipc;
+
+table SetRefCacheRequest {
+  key: string;
+  val: ipc.types.Any;
+}
+
+table SetRefCacheResponse {
+  ok: bool;
+}
+
+{{range .Functions}}
+table {{.Name}}Request {
+  {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
+  {{end}}
+  {{if .Async}}async_handle:ulong (id: {{len .Args}});{{end}}
+  {{if .Caller}}caller:ipc.types.Range (id: {{add (len .Args) (boolToInt .Async)}});{{end}}
+}
+
+table {{.Name}}Response {
+  result:{{lookupSchemaType .Return}};
+  error:string;
+  {{if .Async}}async_handle:ulong;{{end}}
+}
+{{end}}
