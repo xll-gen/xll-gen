@@ -115,11 +115,11 @@ func Serve(handler XllService) {
 		}()
 	}
 
-	client.Handle(func(req []byte, respBuf []byte, msgId uint32) (int32, shm.MsgType) {
+	client.Handle(func(req []byte, respBuf []byte, msgId shm.MsgType) (int32, shm.MsgType) {
 		builder := flatbuffers.NewBuilder(0)
 		builder.Reset()
 
-		switch msgId {
+		switch uint32(msgId) {
 		case MSG_CALCULATION_ENDED: // 130
 			refCacheMutex.Lock()
 			refCache = make(map[string][]byte)
@@ -335,7 +335,7 @@ func Serve(handler XllService) {
 }
 
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) (int32, shm.MsgType) {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId shm.MsgType, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
@@ -487,7 +487,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{if eq .Return "string"}}
 	var resOffset flatbuffers.UOffsetT
 	if err == nil {
-		resOffset = b2.CreateString(res)
+		resOffset = b.CreateString(res)
 	}
 	{{else if eq .Return "int?"}}
 	var resOffset flatbuffers.UOffsetT
@@ -545,7 +545,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		outgoingChunks[transferId] = &outgoingChunk{
 			data:       make([]byte, len(payload)),
 			id:         transferId,
-			msgId:      msgId,
+			msgId:      uint32(msgId),
 			lastAccess: time.Now(),
 		}
 		copy(outgoingChunks[transferId].data, payload)
@@ -564,7 +564,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		ipc.ChunkAddTotalSize(b, uint32(len(out.data)))
 		ipc.ChunkAddOffset(b, 0)
 		ipc.ChunkAddData(b, dataOff)
-		ipc.ChunkAddMsgId(b, msgId)
+		ipc.ChunkAddMsgId(b, uint32(msgId))
 		root := ipc.ChunkEnd(b)
 		b.FinishWithFileIdentifier(root, []byte("XCHN"))
 
@@ -579,12 +579,12 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		return int32(len(payload)), MSG_CHUNK
 	}
 	copy(respBuf, payload)
-	return int32(len(payload)), shm.MsgType(msgId)
+	return int32(len(payload)), msgId
 	{{end}}
 }
 
 {{if .Async}}
-func sendAsyncError{{.Name}}(client *shm.Client, msgId uint32, handle uint64, err error) {
+func sendAsyncError{{.Name}}(client *shm.Client, msgId shm.MsgType, handle uint64, err error) {
 	b := flatbuffers.NewBuilder(0)
 	errOffset := b.CreateString(err.Error())
 	ipc.{{.Name}}ResponseStart(b)
