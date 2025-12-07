@@ -468,14 +468,21 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
-    // 1024 slots, 1MB size, 16 guest slots
+    // Determine worker count
+    int workers = {{.Server.Workers}};
+    if (workers <= 0) {
+        workers = std::thread::hardware_concurrency();
+        if (workers == 0) workers = 16; // Fallback
+    }
+
+    // 1024 queue items, 1MB buffer size per slot
     {{if .ShouldAppendPid}}
     std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
     {{else}}
     std::string shmName = "{{.ProjectName}}";
     {{end}}
 
-    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, 16)) {
+    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers)) {
         return 0;
     }
 
