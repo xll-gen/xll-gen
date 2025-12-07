@@ -44,19 +44,19 @@ table Scalar {
   val: ScalarValue;
 }
 
-table Array {
+table Grid {
   rows: int;
   cols: int;
   data: [Scalar];
 }
 
-table NumArray {
+table NumGrid {
   rows: int;
   cols: int;
   data: [double];
 }
 
-union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Array, NumArray, Range, RefCache }
+union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Grid, NumGrid, Range, RefCache }
 
 table Any {
   val: AnyValue;

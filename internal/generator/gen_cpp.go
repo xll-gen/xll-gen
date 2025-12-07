@@ -51,6 +51,8 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"bool":    "short",
 				"range":   "LPXLOPER12",
 				"any":     "LPXLOPER12",
+				"grid":    "LPXLOPER12",
+				"numgrid": "FP12*",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -63,6 +65,8 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"bool":    "short",
 				"range":   "LPXLOPER12",
 				"any":     "LPXLOPER12",
+				"grid":    "LPXLOPER12",
+				"numgrid": "FP12*",
 				"int?":    "int32_t*",
 				"float?":  "double*",
 				"bool?":   "short*",
@@ -79,6 +83,8 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"bool":    "A",
 				"range":   "U",
 				"any":     "U",
+				"grid":    "U",
+				"numgrid": "K%",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -91,6 +97,8 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"bool":    "A",
 				"range":   "U",
 				"any":     "U",
+				"grid":    "U",
+				"numgrid": "K%",
 				"int?":    "N",
 				"float?":  "E",
 				"bool?":   "L",

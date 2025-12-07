@@ -276,8 +276,8 @@ flatbuffers::Offset<ipc::types::Any> ConvertMultiToAny(const XLOPER12& xMulti, f
             data.push_back(xMulti.val.array.lparray[i].val.num);
         }
         auto dataOff = builder.CreateVector(data);
-        auto arr = ipc::types::CreateNumArray(builder, rows, cols, dataOff);
-        return ipc::types::CreateAny(builder, ipc::types::AnyValue_NumArray, arr.Union());
+        auto arr = ipc::types::CreateNumGrid(builder, rows, cols, dataOff);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_NumGrid, arr.Union());
     } else {
         std::vector<flatbuffers::Offset<ipc::types::Scalar>> data;
         data.reserve(count);
@@ -285,9 +285,39 @@ flatbuffers::Offset<ipc::types::Any> ConvertMultiToAny(const XLOPER12& xMulti, f
              data.push_back(ConvertScalar(xMulti.val.array.lparray[i], builder));
         }
         auto dataOff = builder.CreateVector(data);
-        auto arr = ipc::types::CreateArray(builder, rows, cols, dataOff);
-        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Array, arr.Union());
+        auto arr = ipc::types::CreateGrid(builder, rows, cols, dataOff);
+        return ipc::types::CreateAny(builder, ipc::types::AnyValue_Grid, arr.Union());
     }
+}
+
+flatbuffers::Offset<ipc::types::NumGrid> ConvertNumGrid(FP12* fp, flatbuffers::FlatBufferBuilder& builder) {
+    if (!fp) return 0;
+    int rows = fp->rows;
+    int cols = fp->columns;
+    int count = rows * cols;
+    std::vector<double> data(count);
+    for(int i=0; i<count; ++i) data[i] = fp->array[i];
+    auto dataOff = builder.CreateVector(data);
+    return ipc::types::CreateNumGrid(builder, rows, cols, dataOff);
+}
+
+flatbuffers::Offset<ipc::types::Grid> ConvertGrid(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
+    if (!op) return 0;
+    XLOPER12 xMulti;
+    int ret = Excel12(xlCoerce, &xMulti, 2, op, TempInt12(xltypeMulti));
+    if (ret != xlretSuccess) return 0;
+
+    int rows = xMulti.val.array.rows;
+    int cols = xMulti.val.array.columns;
+    int count = rows * cols;
+    std::vector<flatbuffers::Offset<ipc::types::Scalar>> data;
+    data.reserve(count);
+    for(int i=0; i<count; ++i) {
+         data.push_back(ConvertScalar(xMulti.val.array.lparray[i], builder));
+    }
+    Excel12(xlFree, 0, 1, &xMulti);
+    auto dataOff = builder.CreateVector(data);
+    return ipc::types::CreateGrid(builder, rows, cols, dataOff);
 }
 
 flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
@@ -684,6 +714,10 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     }
     {{else if eq .Type "range"}}
     auto {{.Name}}_off = ConvertRange({{.Name}}, builder);
+    {{else if eq .Type "grid"}}
+    auto {{.Name}}_off = ConvertGrid({{.Name}}, builder);
+    {{else if eq .Type "numgrid"}}
+    auto {{.Name}}_off = ConvertNumGrid({{.Name}}, builder);
     {{else if eq .Type "any"}}
     auto {{.Name}}_off = ConvertAny({{.Name}}, builder);
     {{end}}
@@ -715,6 +749,10 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{else if eq .Type "bool?"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else if eq .Type "range"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "grid"}}
+    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+    {{else if eq .Type "numgrid"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else if eq .Type "any"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
