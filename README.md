@@ -41,6 +41,8 @@ cd xll-gen
 go install
 ```
 
+For a step-by-step guide on creating your first project, see the [Tutorial](TUTORIAL.md).
+
 ## Usage
 
 ### 1. Environment Check (`doctor`)
