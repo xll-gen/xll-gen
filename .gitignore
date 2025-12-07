@@ -29,3 +29,4 @@ xll-gen
 temp_project/
 build_cmake/
 temp_*/
+build/
