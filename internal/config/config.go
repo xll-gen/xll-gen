@@ -19,8 +19,15 @@ type Event struct {
 }
 
 type ServerConfig struct {
-	Timeout string `yaml:"timeout"`
-	Workers int    `yaml:"workers"`
+	Timeout string        `yaml:"timeout"`
+	Workers int           `yaml:"workers"`
+	Launch  *LaunchConfig `yaml:"launch"`
+}
+
+type LaunchConfig struct {
+	Enabled *bool  `yaml:"enabled"`
+	Command string `yaml:"command"`
+	Cwd     string `yaml:"cwd"`
 }
 
 type ProjectConfig struct {
@@ -66,4 +73,13 @@ func Validate(config *Config) error {
 		seenEvents[evt.Type] = true
 	}
 	return nil
+}
+
+func ApplyDefaults(config *Config) {
+	if config.Server.Launch != nil {
+		if config.Server.Launch.Enabled == nil {
+			t := true
+			config.Server.Launch.Enabled = &t
+		}
+	}
 }

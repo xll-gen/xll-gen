@@ -41,6 +41,8 @@ func runGenerate() error {
 		return fmt.Errorf("failed to parse xll.yaml: %w", err)
 	}
 
+	config.ApplyDefaults(&cfg)
+
 	if err := config.Validate(&cfg); err != nil {
 		return err
 	}

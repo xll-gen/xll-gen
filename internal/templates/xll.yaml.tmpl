@@ -9,6 +9,10 @@ gen:
 server:
   timeout: "10s"
   workers: 100
+  # launch:
+  #   enabled: true
+  #   command: "./{{.ProjectName}}.exe" # Optional: default to project executable
+  #   cwd: "." # Optional: default to XLL directory
 
 # Function Definitions
 # Supported types: int, float, string, bool
