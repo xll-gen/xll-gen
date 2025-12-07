@@ -19,6 +19,15 @@ import (
 var _ = time.Now
 var _ = types.Bool{}
 
+const (
+	MSG_ACK                  = 2
+	MSG_CHUNK                = 128
+	MSG_SETREFCACHE          = 129
+	MSG_CALCULATION_ENDED    = 130
+	MSG_CALCULATION_CANCELED = 131
+	MSG_USER_START           = 132
+)
+
 type chunkBuffer struct {
 	data       []byte
 	totalSize  int
@@ -106,12 +115,12 @@ func Serve(handler XllService) {
 		}()
 	}
 
-	client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
+	client.Handle(func(req []byte, respBuf []byte, msgId uint32) (int32, shm.MsgType) {
 		builder := flatbuffers.NewBuilder(0)
 		builder.Reset()
 
 		switch msgId {
-		case shm.MsgIdUserStart + 1: // CalculationEnded
+		case MSG_CALCULATION_ENDED: // 130
 			refCacheMutex.Lock()
 			refCache = make(map[string][]byte)
 			refCacheMutex.Unlock()
@@ -123,9 +132,20 @@ func Serve(handler XllService) {
 				}
 			}
 			{{end}}
-			return 0
+			return 0, 0
 
-		case shm.MsgIdUserStart + 3: // SetRefCache
+		case MSG_CALCULATION_CANCELED: // 131
+			{{if hasEvent "CalculationCanceled" .Events}}
+			ctx := context.Background()
+			jobQueue <- func() {
+				if err := handler.OnCalculationCanceled(ctx); err != nil {
+					fmt.Printf("Event handler OnCalculationCanceled failed: %v\n", err)
+				}
+			}
+			{{end}}
+			return 0, 0
+
+		case MSG_SETREFCACHE: // 129
 			reqObj := ipc.GetRootAsSetRefCacheRequest(req, 0)
 			key := string(reqObj.Key())
 
@@ -136,72 +156,74 @@ func Serve(handler XllService) {
 			refCache[key] = reqCopy
 			refCacheMutex.Unlock()
 
-			ipc.SetRefCacheResponseStart(builder)
-			ipc.SetRefCacheResponseAddOk(builder, true)
-			root := ipc.SetRefCacheResponseEnd(builder)
+			// Send Ack (MsgID 2)
+			ipc.AckStart(builder)
+			ipc.AckAddOk(builder, true)
+			root := ipc.AckEnd(builder)
 			builder.Finish(root)
 
 			payload := builder.FinishedBytes()
-			if len(payload) > len(respBuf) { return 0 }
+			if len(payload) > len(respBuf) { return 0, 0 }
 			copy(respBuf, payload)
-			return int32(len(payload))
+			return int32(len(payload)), MSG_ACK
 
-		case shm.MsgIdUserStart + 4: // Chunk
+		case MSG_ACK: // 2 (Ack for outgoing chunk)
+			reqObj := ipc.GetRootAsAck(req, 0)
+			id := reqObj.Id()
+			// ok := reqObj.Ok() // Assuming true means "give me next"
+
+			outgoingChunksMutex.Lock()
+			out, exists := outgoingChunks[id]
+			if !exists {
+				outgoingChunksMutex.Unlock()
+				return 0, 0
+			}
+			out.lastAccess = time.Now()
+
+			// Send next chunk
+			const chunkSize = 950 * 1024
+			remaining := len(out.data) - out.offset
+			currentSize := chunkSize
+			if remaining < chunkSize {
+				currentSize = remaining
+			}
+
+			if currentSize <= 0 {
+				// Done
+				delete(outgoingChunks, id)
+				outgoingChunksMutex.Unlock()
+				return 0, 0
+			}
+
+			builder.Reset()
+			dataOff := builder.CreateByteVector(out.data[out.offset : out.offset+currentSize])
+			ipc.ChunkStart(builder)
+			ipc.ChunkAddId(builder, id)
+			ipc.ChunkAddTotalSize(builder, uint32(len(out.data)))
+			ipc.ChunkAddOffset(builder, uint32(out.offset))
+			ipc.ChunkAddData(builder, dataOff)
+			ipc.ChunkAddMsgId(builder, out.msgId) // Original MsgID
+			root := ipc.ChunkEnd(builder)
+			builder.FinishWithFileIdentifier(root, []byte("XCHN"))
+
+			out.offset += currentSize
+			if out.offset >= len(out.data) {
+				delete(outgoingChunks, id)
+			}
+			outgoingChunksMutex.Unlock()
+
+			payload := builder.FinishedBytes()
+			if len(payload) > len(respBuf) { return 0, 0 }
+			copy(respBuf, payload)
+			return int32(len(payload)), MSG_CHUNK
+
+		case MSG_CHUNK: // 128 (Incoming Chunk)
 			reqObj := ipc.GetRootAsChunk(req, 0)
 			id := reqObj.Id()
 			total := int(reqObj.TotalSize())
 			offset := int(reqObj.Offset())
 			dataLen := reqObj.DataLength()
 
-			// Check if this is an Ack (Empty data) requesting next chunk
-			if dataLen == 0 {
-				outgoingChunksMutex.Lock()
-				out, exists := outgoingChunks[id]
-				if !exists {
-					outgoingChunksMutex.Unlock()
-					return 0
-				}
-				out.lastAccess = time.Now()
-
-				// Send next chunk
-				const chunkSize = 950 * 1024
-				remaining := len(out.data) - out.offset
-				currentSize := chunkSize
-				if remaining < chunkSize {
-					currentSize = remaining
-				}
-
-				if currentSize <= 0 {
-					// Done
-					delete(outgoingChunks, id)
-					outgoingChunksMutex.Unlock()
-					return 0
-				}
-
-				builder.Reset()
-				dataOff := builder.CreateByteVector(out.data[out.offset : out.offset+currentSize])
-				ipc.ChunkStart(builder)
-				ipc.ChunkAddId(builder, id)
-				ipc.ChunkAddTotalSize(builder, uint32(len(out.data)))
-				ipc.ChunkAddOffset(builder, uint32(out.offset))
-				ipc.ChunkAddData(builder, dataOff)
-				ipc.ChunkAddMsgId(builder, out.msgId) // Original MsgID
-				root := ipc.ChunkEnd(builder)
-				builder.FinishWithFileIdentifier(root, []byte("XCHN"))
-
-				out.offset += currentSize
-				if out.offset >= len(out.data) {
-					delete(outgoingChunks, id)
-				}
-				outgoingChunksMutex.Unlock()
-
-				payload := builder.FinishedBytes()
-				if len(payload) > len(respBuf) { return 0 } // Should not happen if chunk size < 1MB
-				copy(respBuf, payload)
-				return int32(len(payload))
-			}
-
-			// Incoming Chunk (Host -> Guest)
 			chunkCacheMutex.Lock()
 			buf, exists := chunkCache[id]
 			if !exists {
@@ -231,7 +253,7 @@ func Serve(handler XllService) {
 
 				// Reassembled
 				payloadMsgId := reqObj.MsgId()
-				if payloadMsgId == 3 { // SetRefCacheRequest
+				if payloadMsgId == MSG_SETREFCACHE { // 129
 					cacheReq := ipc.GetRootAsSetRefCacheRequest(buf.data, 0)
 					key := string(cacheReq.Key())
 
@@ -239,45 +261,47 @@ func Serve(handler XllService) {
 					refCache[key] = buf.data
 					refCacheMutex.Unlock()
 
-					ipc.SetRefCacheResponseStart(builder)
-					ipc.SetRefCacheResponseAddOk(builder, true)
-					root := ipc.SetRefCacheResponseEnd(builder)
+					// Final Ack
+					ipc.AckStart(builder)
+					ipc.AckAddOk(builder, true)
+					root := ipc.AckEnd(builder)
 					builder.Finish(root)
 
 					payload := builder.FinishedBytes()
-					if len(payload) > len(respBuf) { return 0 }
+					if len(payload) > len(respBuf) { return 0, 0 }
 					copy(respBuf, payload)
-					return int32(len(payload))
+					return int32(len(payload)), MSG_ACK
 				}
 				// Handle other message types if needed
-				return 0
+				return 0, 0
 			}
 
-			// Acknowledge chunk
-			ipc.SetRefCacheResponseStart(builder)
-			ipc.SetRefCacheResponseAddOk(builder, true) // Ack
-			root := ipc.SetRefCacheResponseEnd(builder)
+			// Acknowledge this chunk to request next
+			ipc.AckStart(builder)
+			ipc.AckAddId(builder, id)
+			ipc.AckAddOk(builder, true)
+			root := ipc.AckEnd(builder)
 			builder.Finish(root)
 
 			payload := builder.FinishedBytes()
-			if len(payload) > len(respBuf) { return 0 }
+			if len(payload) > len(respBuf) { return 0, 0 }
 			copy(respBuf, payload)
-			return int32(len(payload))
+			return int32(len(payload)), MSG_ACK
 
 
 {{range .Events}}
-		{{if ne .Type "CalculationEnded"}}
-		case shm.MsgIdUserStart + {{lookupEventId .Type}}: // {{.Type}}
+		{{if and (ne .Type "CalculationEnded") (ne .Type "CalculationCanceled")}}
+		case {{lookupEventId .Type}}: // {{.Type}}
 			ctx := context.Background()
 			jobQueue <- func() {
 				if err := handler.{{.Name}}(ctx); err != nil {
 					fmt.Printf("Event handler {{.Name}} failed: %v\n", err)
 				}
 			}
-			return 0
+			return 0, 0
 		{{end}}
 {{end}}
-{{range $i, $fn := .Functions}}		case shm.MsgIdUserStart + {{add 10 $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}		case {{add 132 $i}}: // {{.Name}}
 			{{if .Timeout}}
 			ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
 			{{else}}
@@ -294,14 +318,15 @@ func Serve(handler XllService) {
 				defer cancel()
 				handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, msgId, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
 			}
-			return 0
+			return 0, 0
 			{{else}}
 			// Sync: Run inline
 			defer cancel()
-			return handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
+			len, respId := handle{{.Name}}(ctx, req, respBuf, handler, builder, client, msgId, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
+			return len, respId
 			{{end}}
 {{end}}		default:
-			return 0
+			return 0, 0
 		}
 	})
 
@@ -310,7 +335,7 @@ func Serve(handler XllService) {
 }
 
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) int32 {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId uint32, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 
 	// Extract args
@@ -379,7 +404,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 
 	if ctx.Err() != nil {
 		sendAsyncError{{.Name}}(client, msgId, handle, ctx.Err())
-		return 0
+		return 0, 0
 	}
 
 	// Call handler
@@ -447,7 +472,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	if _, err := client.SendGuestCall(b2.FinishedBytes(), msgId); err != nil {
 		fmt.Printf("Error sending guest call for {{.Name}}: %v\n", err)
 	}
-	return 0
+	return 0, 0
 	{{else}}
 	// Sync execution
 	// Call handler
@@ -462,7 +487,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{if eq .Return "string"}}
 	var resOffset flatbuffers.UOffsetT
 	if err == nil {
-		resOffset = b.CreateString(res)
+		resOffset = b2.CreateString(res)
 	}
 	{{else if eq .Return "int?"}}
 	var resOffset flatbuffers.UOffsetT
@@ -548,13 +573,13 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 
 		payload = b.FinishedBytes()
 		if len(payload) > len(respBuf) {
-			return 0 // Fatal: Chunk header overhead made it > 1MB?
+			return 0, 0 // Fatal: Chunk header overhead made it > 1MB?
 		}
 		copy(respBuf, payload)
-		return int32(len(payload))
+		return int32(len(payload)), MSG_CHUNK
 	}
 	copy(respBuf, payload)
-	return int32(len(payload))
+	return int32(len(payload)), shm.MsgType(msgId)
 	{{end}}
 }
 

@@ -17,6 +17,14 @@
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
 
+// System Message IDs
+#define MSG_ACK 2
+#define MSG_CHUNK 128
+#define MSG_SETREFCACHE 129
+#define MSG_CALCULATION_ENDED 130
+#define MSG_CALCULATION_CANCELED 131
+#define MSG_USER_START 132
+
 shm::DirectHost g_host;
 std::thread g_worker;
 std::atomic<bool> g_running{false};
@@ -125,12 +133,26 @@ int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf)
 
         flatbuffers::FlatBufferBuilder b(1024 + len); // Approx
         auto dataOff = b.CreateVector(data + offset, len);
-        auto chunk = ipc::CreateChunk(b, transferId, (uint32_t)size, (uint32_t)offset, dataOff, 3);
+        // MSG_SETREFCACHE is 129
+        auto chunk = ipc::CreateChunk(b, transferId, (uint32_t)size, (uint32_t)offset, dataOff, MSG_SETREFCACHE);
         b.Finish(chunk);
 
-        // MsgID 4 for Chunk
-        int ok = g_host.Send(b.GetBufferPointer(), b.GetSize(), MSG_ID_USER_START + 4, respBuf);
+        // MsgID 128 for Chunk
+        int ok = g_host.Send(b.GetBufferPointer(), b.GetSize(), MSG_CHUNK, respBuf);
         if (ok < 0) return ok; // Fail
+
+        // Response must be Ack (MsgID 2)
+        // Since DirectHost.Send is copy-based, respBuf contains the response.
+        // But SendChunked usage in ConvertAny implies we check 'ok' and respBuf.
+        // If it's a chunk, we expect Ack(2) with ok=true
+        if (respBuf.empty()) return -1;
+        // NOTE: shm::DirectHost::Send returns the msgId of response or negative error.
+        // Wait, DirectHost::Send signature: int Send(req, reqSize, reqMsgId, &respBuf)
+        // It returns msgId of response.
+        if (ok != MSG_ACK) return -1; // Expecting Ack
+
+        auto ack = ipc::GetAck(respBuf.data());
+        if (!ack || !ack->ok()) return -1;
 
         offset += len;
     }
@@ -141,7 +163,7 @@ const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqS
     int ok = slot.Send(reqMsgId, reqSize);
     if (ok < 0) return nullptr;
 
-    if (slot.GetRespMsgId() == 4 || ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) {
+    if (slot.GetRespMsgId() == MSG_CHUNK || ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) {
         thread_local std::vector<uint8_t> buf;
         buf.clear();
 
@@ -152,13 +174,13 @@ const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqS
 
             if (buf.size() >= chunk->total_size()) return buf.data();
 
+            // Request next chunk via Ack (MsgID 2)
             flatbuffers::FlatBufferBuilder b(128, nullptr, false, slot.GetReqBuffer());
-            auto empty = b.CreateVector<uint8_t>(nullptr, 0);
-            auto ack = ipc::CreateChunk(b, chunk->id(), 0, 0, empty, 0);
+            auto ack = ipc::CreateAck(b, chunk->id(), true);
             b.Finish(ack);
 
-            if (slot.Send(4, b.GetSize()) < 0) return nullptr;
-            if (slot.GetRespMsgId() != 4 && !ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) return nullptr;
+            if (slot.Send(MSG_ACK, b.GetSize()) < 0) return nullptr;
+            if (slot.GetRespMsgId() != MSG_CHUNK && !ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) return nullptr;
         }
     }
     return slot.GetRespBuffer();
@@ -319,12 +341,13 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                       if (reqB.GetSize() > 950 * 1024) {
                           ok = SendChunked(reqB.GetBufferPointer(), reqB.GetSize(), respBuf);
                       } else {
-                          ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), MSG_ID_USER_START + 3, respBuf);
+                          // MSG_SETREFCACHE (129)
+                          ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), MSG_SETREFCACHE, respBuf);
                       }
 
-                      if (ok >= 0 && !respBuf.empty()) {
-                          auto resp = ipc::GetSetRefCacheResponse(respBuf.data());
-                          if (resp && resp->ok()) {
+                      if (ok == MSG_ACK && !respBuf.empty()) {
+                          auto ack = ipc::GetAck(respBuf.data());
+                          if (ack && ack->ok()) {
                               g_sentRefCache[key] = true;
                               cached = true;
                           }
@@ -355,7 +378,7 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
 // Guest Call Handler (Async Return)
 int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
     switch (msgId) {
-    case 4: { // Chunk
+    case MSG_CHUNK: { // Chunk (128)
         static std::map<uint64_t, std::vector<uint8_t>> asyncChunks;
         auto chunk = ipc::GetChunk(req);
         auto id = chunk->id();
@@ -373,16 +396,16 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
              return GuestHandler(fullPayload.data(), resp, originalMsgId);
         }
 
+        // Send Ack (MsgID 2) to request next
         flatbuffers::FlatBufferBuilder ackB(64);
-        auto emptyData = ackB.CreateVector<uint8_t>(nullptr, 0);
-        auto ack = ipc::CreateChunk(ackB, id, 0, 0, emptyData, 0);
+        auto ack = ipc::CreateAck(ackB, id, true);
         ackB.Finish(ack);
         memcpy(resp, ackB.GetBufferPointer(), ackB.GetSize());
         return ackB.GetSize();
     }
 {{range $i, $fn := .Functions}}
     {{if .Async}}
-    case MSG_ID_USER_START + {{add 10 $i}}: { // {{.Name}}
+    case {{add 132 $i}}: { // {{.Name}}
         auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
         LPXLOPER12 h = (LPXLOPER12)response->async_handle();
 
@@ -493,9 +516,15 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         std::lock_guard<std::mutex> lock(g_refCacheMutex);
         g_sentRefCache.clear();
     }
-    {{end}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_ID_USER_START + {{lookupEventId .Type}}, 0);
+    slot.Send(MSG_CALCULATION_ENDED, 0);
+    {{else if eq .Type "CalculationCanceled"}}
+    auto slot = g_host.GetZeroCopySlot();
+    slot.Send(MSG_CALCULATION_CANCELED, 0);
+    {{else}}
+    auto slot = g_host.GetZeroCopySlot();
+    slot.Send({{lookupEventId .Type}}, 0);
+    {{end}}
 }
 {{end}}
 {{if hasEvent "CalculationEnded" .Events}}
@@ -506,7 +535,7 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_ID_USER_START + 1, 0);
+    slot.Send(MSG_CALCULATION_ENDED, 0);
 }
 {{end}}
 
@@ -591,11 +620,11 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 
     // Zero-Copy Send (MsgId, Size)
     {{if .Async}}
-    int ok = slot.Send(MSG_ID_USER_START + {{add 10 $i}}, builder.GetSize());
+    int ok = slot.Send({{add 132 $i}}, builder.GetSize());
     if (ok < 0) return;
     return;
     {{else}}
-    const uint8_t* respBuf = ReceiveChunked(slot, MSG_ID_USER_START + {{add 10 $i}}, builder.GetSize());
+    const uint8_t* respBuf = ReceiveChunked(slot, {{add 132 $i}}, builder.GetSize());
     if (!respBuf) return {{defaultErrorVal .Return}};
 
     auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf);
