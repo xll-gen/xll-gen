@@ -68,14 +68,14 @@ func (s *Service) CheckAny(ctx context.Context, val *types.Any) (string, error) 
         return fmt.Sprintf("Err:%d", t.Val()), nil
     case types.AnyValueNil:
         return "Nil", nil
-    case types.AnyValueNumArray:
-        var t types.NumArray
+    case types.AnyValueNumGrid:
+        var t types.NumGrid
         t.Init(tbl.Bytes, tbl.Pos)
-        return fmt.Sprintf("NumArray:%dx%d", t.Rows(), t.Cols()), nil
-    case types.AnyValueArray:
-        var t types.Array
+        return fmt.Sprintf("NumGrid:%dx%d", t.Rows(), t.Cols()), nil
+    case types.AnyValueGrid:
+        var t types.Grid
         t.Init(tbl.Bytes, tbl.Pos)
-        return fmt.Sprintf("Array:%dx%d", t.Rows(), t.Cols()), nil
+        return fmt.Sprintf("Grid:%dx%d", t.Rows(), t.Cols()), nil
     }
     return "Unknown", nil
 }

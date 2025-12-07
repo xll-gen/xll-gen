@@ -286,23 +286,23 @@ int main() {
         ASSERT_STREQ("Num:1.5", resp->result()->str(), "CheckAny Num");
     }
 
-    // NumArray
+    // NumGrid
     {
         builder.Reset();
         std::vector<double> data = {1.1, 2.2};
         auto dataOff = builder.CreateVector(data);
-        auto arr = ipc::types::CreateNumArray(builder, 1, 2, dataOff);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_NumArray, arr.Union());
+        auto arr = ipc::types::CreateNumGrid(builder, 1, 2, dataOff);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_NumGrid, arr.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
         host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
-        ASSERT_STREQ("NumArray:1x2", resp->result()->str(), "CheckAny NumArray");
+        ASSERT_STREQ("NumGrid:1x2", resp->result()->str(), "CheckAny NumGrid");
     }
 
-    // Array
+    // Grid
     {
         builder.Reset();
         auto val1 = ipc::types::CreateInt(builder, 1);
@@ -312,8 +312,8 @@ int main() {
 
         std::vector<flatbuffers::Offset<ipc::types::Scalar>> data = {s1, s2};
         auto dataOff = builder.CreateVector(data);
-        auto arr = ipc::types::CreateArray(builder, 1, 2, dataOff);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Array, arr.Union());
+        auto arr = ipc::types::CreateGrid(builder, 1, 2, dataOff);
+        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Grid, arr.Union());
 
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
@@ -321,7 +321,7 @@ int main() {
         vector<uint8_t> respBuf;
         host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
-        ASSERT_STREQ("Array:1x2", resp->result()->str(), "CheckAny Array");
+        ASSERT_STREQ("Grid:1x2", resp->result()->str(), "CheckAny Grid");
     }
 
     // 11. CheckRange (ID 21)

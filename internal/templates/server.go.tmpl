@@ -369,6 +369,10 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	}
 	{{else if eq .Type "range"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+	{{else if eq .Type "grid"}}
+	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+	{{else if eq .Type "numgrid"}}
+	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "any"}}
 	var arg_{{.Name}} *types.Any
 	arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
