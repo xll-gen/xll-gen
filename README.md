@@ -209,21 +209,40 @@ Create or update `.vscode/launch.json` with the following configurations.
                     "ignoreFailures": true
                 }
             ]
+        },
+        {
+            "name": "Attach to Go Server",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": 0
         }
     ]
 }
 ```
 
-### Debugging Steps
+### Option 1: Manual Start (Recommended for Development)
+This method is best when you disable auto-launch in `xll.yaml`.
 
-1.  **Build the project**: Run `task build` to ensure the XLL is up to date.
+1.  **Build the project**: Run `task build`.
 2.  **Start Excel (C++ Debugger)**:
     *   Select **Debug XLL (MSVC)** or **Debug XLL (MinGW/GDB)** depending on your compiler.
     *   Press `F5`. Excel will launch and load your XLL.
 3.  **Start Go Server**:
     *   Select **Debug Go Server**.
     *   Press `F5`. The server will start and connect to the shared memory host (Excel).
-4.  **Verify**: Type a function in Excel (e.g., `=Add(1, 2)`). You can now set breakpoints in both `main.go` and your C++ code.
+4.  **Verify**: Type a function in Excel (e.g., `=Add(1, 2)`). You can now set breakpoints in `main.go`.
+
+### Option 2: Auto-Launch (Attach Debugger)
+If you have enabled auto-launch in `xll.yaml` (`server.launch.enabled: true`), the Go server starts automatically when Excel loads the XLL. To debug it:
+
+1.  **Build the project**: Run `task build`.
+2.  **Start Excel**: Open Excel normally or use the **Debug XLL** configuration.
+3.  **Attach Debugger**:
+    *   Select **Attach to Go Server** in VS Code.
+    *   Press `F5`.
+    *   Select the running Go process (e.g., `my-project.exe`) from the list.
+4.  **Verify**: Set breakpoints in `main.go` and trigger a function in Excel.
 
 ## License
 
