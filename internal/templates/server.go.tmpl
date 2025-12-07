@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"runtime"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
 	"github.com/xll-gen/shm/go"
@@ -100,7 +101,7 @@ func Serve(handler XllService) {
 	{{end}}
 	{{end}}
 
-	workerCount := 100
+	workerCount := runtime.NumCPU()
 	if n := {{.ServerWorkers}}; n > 0 {
 		workerCount = n
 	}

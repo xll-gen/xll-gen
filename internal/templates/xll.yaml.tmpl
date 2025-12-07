@@ -8,7 +8,7 @@ gen:
 
 server:
   timeout: "10s"
-  workers: 100
+  workers: 0 # 0 means use runtime.NumCPU()
   # launch:
   #   enabled: true
   #   command: "./{{.ProjectName}}.exe" # Optional: default to project executable
