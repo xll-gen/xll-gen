@@ -11,6 +11,7 @@
 #include <sstream>
 #include <wchar.h>
 #include <random>
+#include <iostream>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
 #include "shm/DirectHost.h"
@@ -30,6 +31,18 @@ std::thread g_worker;
 std::atomic<bool> g_running{false};
 std::map<std::string, bool> g_sentRefCache;
 std::mutex g_refCacheMutex;
+
+// Global Process Handle (for auto-launched server)
+HANDLE g_hChildProcess = NULL;
+HINSTANCE g_hModule = NULL;
+
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        g_hModule = hinstDLL;
+        DisableThreadLibraryCalls(hinstDLL);
+    }
+    return TRUE;
+}
 
 // Helpers for registration
 LPXLOPER12 TempStr12(const wchar_t* txt) {
@@ -116,6 +129,17 @@ std::wstring GetSheetName(LPXLOPER12 pxRef) {
     }
     Excel12(xlFree, 0, 1, &xRes);
     return result;
+}
+
+std::wstring GetXllDir() {
+    wchar_t path[MAX_PATH];
+    if (GetModuleFileNameW(g_hModule, path, MAX_PATH) == 0) return L"";
+    std::wstring p(path);
+    size_t pos = p.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        return p.substr(0, pos);
+    }
+    return L".";
 }
 
 // Chunking helper
@@ -447,14 +471,13 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     // 1024 slots, 1MB size, 16 guest slots
     {{if .ShouldAppendPid}}
     std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
+    {{else}}
+    std::string shmName = "{{.ProjectName}}";
+    {{end}}
+
     if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, 16)) {
         return 0;
     }
-    {{else}}
-    if (!g_host.Init("{{.ProjectName}}", 1024, 1024*1024, 16)) {
-        return 0;
-    }
-    {{end}}
 
     g_running = true;
     g_worker = std::thread([]{
@@ -498,6 +521,83 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     }
 {{end}}
 
+{{if .Server.Launch}}
+{{if derefBool .Server.Launch.Enabled}}
+    // Launch Logic
+    {
+        std::wstring xllDir = GetXllDir();
+
+        // Resolve CWD
+        std::wstring cwd = xllDir;
+        {{if .Server.Launch.Cwd}}
+        std::string cfgCwd = "{{.Server.Launch.Cwd}}";
+        if (cfgCwd != ".") {
+            std::wstring wCwd = StringToWString(cfgCwd);
+            bool isAbs = (wCwd.find(L":") != std::wstring::npos || (wCwd.size() > 1 && wCwd[0] == L'\\' && wCwd[1] == L'\\'));
+            if (isAbs) {
+                cwd = wCwd;
+            } else {
+                cwd = xllDir + L"\\" + wCwd;
+            }
+        }
+        {{end}}
+
+        // Resolve Command
+        std::wstring exePath = xllDir + L"\\{{.ProjectName}}.exe";
+        {{if .Server.Launch.Command}}
+        std::string cfgCmd = "{{.Server.Launch.Command}}";
+        std::wstring wCmd = StringToWString(cfgCmd);
+        bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
+        if (isCmdAbs) {
+            exePath = wCmd;
+        } else {
+             if (cfgCmd.find("./") == 0 || cfgCmd.find(".\\") == 0) {
+                 exePath = cwd + L"\\" + wCmd.substr(2);
+            } else {
+                 exePath = cwd + L"\\" + wCmd;
+            }
+        }
+        {{end}}
+
+        // Append SHM Flag (Quote the executable path to handle spaces)
+        std::wstring cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);
+
+        // Setup Log File
+        std::wstring logPath = cwd + L"\\xll_launch.log";
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+        sa.bInheritHandle = TRUE;
+        sa.lpSecurityDescriptor = NULL;
+
+        HANDLE hLog = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+        if (hLog != INVALID_HANDLE_VALUE) {
+            STARTUPINFOW si;
+            ZeroMemory(&si, sizeof(si));
+            si.cb = sizeof(si);
+            si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdOutput = hLog;
+            si.hStdError = hLog;
+            si.hStdInput = NULL;
+
+            PROCESS_INFORMATION pi;
+            ZeroMemory(&pi, sizeof(pi));
+
+            // Need mutable string for CreateProcess
+            std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+            cmdBuf.push_back(0);
+
+            if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, 0, NULL, cwd.c_str(), &si, &pi)) {
+                g_hChildProcess = pi.hProcess;
+                CloseHandle(pi.hThread);
+            }
+
+            CloseHandle(hLog);
+        }
+    }
+{{end}}
+{{end}}
+
     Excel12(xlFree, 0, 1, &xDll);
     return 1;
 }
@@ -506,6 +606,12 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
     g_running = false;
     if (g_worker.joinable()) g_worker.join();
     g_host.Shutdown();
+
+    if (g_hChildProcess) {
+        TerminateProcess(g_hChildProcess, 0);
+        CloseHandle(g_hChildProcess);
+        g_hChildProcess = NULL;
+    }
     return 1;
 }
 

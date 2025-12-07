@@ -453,6 +453,10 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 			if t == "string" { return "NULL"; }
 			return "0";
 		},
+		"derefBool": func(b *bool) bool {
+			if b == nil { return false }
+			return *b
+		},
 	}
 
 	t, err := template.New("cpp").Funcs(funcMap).Parse(tmplContent)
@@ -470,12 +474,14 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		ProjectName     string
 		Functions       []config.Function
 		Events          []config.Event
+		Server          config.ServerConfig
 		ShouldAppendPid bool
 		Version         string
 	}{
 		ProjectName:     cfg.Project.Name,
 		Functions:       cfg.Functions,
 		Events:          cfg.Events,
+		Server:          cfg.Server,
 		ShouldAppendPid: shouldAppendPid,
 		Version:         version.Version,
 	})
