@@ -76,10 +76,10 @@ void ExecuteCommands(const ipc::CalculationEndedResponse* resp) {
 }
 
 // Guest Call Handler (Async Return)
-int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
+int32_t GuestHandler(const uint8_t* req, int32_t msgId, uint8_t* resp, uint32_t size, uint32_t timeoutMs) {
     switch (msgId) {
     case MSG_CHUNK: { // Chunk (128)
-        return HandleChunk(req, resp, GuestHandler);
+        return HandleChunk(req, msgId, resp, size, timeoutMs, GuestHandler);
     }
 {{range $i, $fn := .Functions}}
     {{if .Async}}

@@ -68,7 +68,7 @@ const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqS
     return slot.GetRespBuffer();
 }
 
-int32_t HandleChunk(const uint8_t* req, uint8_t* resp, GuestHandlerFunc handler) {
+int32_t HandleChunk(const uint8_t* req, int32_t msgId, uint8_t* resp, uint32_t size, uint32_t timeoutMs, GuestHandlerFunc handler) {
     static std::map<uint64_t, std::vector<uint8_t>> asyncChunks;
     auto chunk = ipc::GetChunk(req);
     auto id = chunk->id();
@@ -83,7 +83,8 @@ int32_t HandleChunk(const uint8_t* req, uint8_t* resp, GuestHandlerFunc handler)
             uint32_t originalMsgId = chunk->msg_id();
             std::vector<uint8_t> fullPayload = buf;
             asyncChunks.erase(id);
-            return handler(fullPayload.data(), resp, originalMsgId);
+            // Recursive call with reassembled payload
+            return handler(fullPayload.data(), (int32_t)originalMsgId, resp, (uint32_t)fullPayload.size(), timeoutMs);
     }
 
     // Send Ack (MsgID 2) to request next
