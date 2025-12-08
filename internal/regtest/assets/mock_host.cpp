@@ -332,7 +332,7 @@ int main() {
         ASSERT_EQ(-1, resp->result(), "TimeoutFunc");
     }
 
-    // 13. CalculationEnded Commands
+    // 13. CalculationEnded Commands - Set (ID 143)
     {
         // 1. Call ScheduleCmd (ID 143)
         builder.Reset();
@@ -344,11 +344,10 @@ int main() {
         ASSERT_EQ(1, resp->result(), "ScheduleCmd");
 
         // 2. Send CalculationEnded (ID 130)
-        // Send empty payload (or 0 size)
         vector<uint8_t> eventBuf;
         if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
 
-        // 3. Verify Response contains commands
+        // 3. Verify Response contains SetCommand
         if (eventBuf.empty()) { cerr << "Expected commands in CalcEnded response" << endl; return 1; }
         auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
 
@@ -365,6 +364,71 @@ int main() {
         auto val = setCmd->value();
         ASSERT_EQ(ipc::types::AnyValue_Int, val->val_type(), "SetCommand ValType");
         ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
+    }
+
+    // 14. CalculationEnded Commands - Format (ID 144)
+    {
+        // 1. Call ScheduleFormatCmd (ID 144)
+        builder.Reset();
+        ipc::ScheduleFormatCmdRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 144, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::ScheduleFormatCmdResponse>(respBuf.data());
+        ASSERT_EQ(1, resp->result(), "ScheduleFormatCmd");
+
+        // 2. Send CalculationEnded
+        vector<uint8_t> eventBuf;
+        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+
+        // 3. Verify Response contains FormatCommand
+        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        if (eventResp->commands()->size() != 1) { cerr << "Expected 1 format command" << endl; return 1; }
+
+        auto wrapper = eventResp->commands()->Get(0);
+        if (wrapper->cmd_type() != ipc::Command_FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
+
+        auto fmtCmd = static_cast<const ipc::FormatCommand*>(wrapper->cmd());
+        auto rng = fmtCmd->target();
+        ASSERT_STREQ("Sheet1", rng->sheet_name()->str(), "FormatCommand Sheet");
+
+        ASSERT_STREQ("General", fmtCmd->format()->str(), "FormatCommand Format");
+    }
+
+    // 15. CalculationEnded Commands - Multi (ID 145)
+    {
+        // 1. Call ScheduleMultiCmd (ID 145)
+        builder.Reset();
+        ipc::ScheduleMultiCmdRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 145, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::ScheduleMultiCmdResponse>(respBuf.data());
+        ASSERT_EQ(2, resp->result(), "ScheduleMultiCmd");
+
+        // 2. Send CalculationEnded
+        vector<uint8_t> eventBuf;
+        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+
+        // 3. Verify Response contains 2 commands (Set, Format)
+        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        if (eventResp->commands()->size() != 2) { cerr << "Expected 2 commands" << endl; return 1; }
+
+        // First: Set
+        {
+            auto wrapper = eventResp->commands()->Get(0);
+            if (wrapper->cmd_type() != ipc::Command_SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
+            auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+            auto val = setCmd->value();
+            ASSERT_EQ(200, val->val_as_Int()->val(), "Multi SetCommand Val");
+        }
+        // Second: Format
+        {
+            auto wrapper = eventResp->commands()->Get(1);
+            if (wrapper->cmd_type() != ipc::Command_FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
+            auto fmtCmd = static_cast<const ipc::FormatCommand*>(wrapper->cmd());
+            ASSERT_STREQ("Number", fmtCmd->format()->str(), "Multi FormatCommand Format");
+        }
     }
 
     cout << "PASSED" << endl;

@@ -57,7 +57,13 @@ functions:
     return: "int"
     timeout: "100ms"
 
-  # Schedule Command
+  # Schedule Commands
   - name: "ScheduleCmd"
+    args: []
+    return: "int"
+  - name: "ScheduleFormatCmd"
+    args: []
+    return: "int"
+  - name: "ScheduleMultiCmd"
     args: []
     return: "int"

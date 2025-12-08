@@ -146,6 +146,72 @@ func (s *Service) ScheduleCmd(ctx context.Context) (int32, error) {
     return 1, nil
 }
 
+func (s *Service) ScheduleFormatCmd(ctx context.Context) (int32, error) {
+    // Schedule Format Sheet1!1:1:1:1 = "General"
+    b := flatbuffers.NewBuilder(0)
+
+    sOff := b.CreateString("Sheet1")
+    types.RangeStartRefsVector(b, 1)
+    types.CreateRect(b, 1, 1, 1, 1)
+    refsOff := b.EndVector(1)
+    types.RangeStart(b)
+    types.RangeAddSheetName(b, sOff)
+    types.RangeAddRefs(b, refsOff)
+    rOff := types.RangeEnd(b)
+    b.Finish(rOff)
+    r := types.GetRootAsRange(b.FinishedBytes(), 0)
+
+    generated.ScheduleFormat(r, "General")
+    return 1, nil
+}
+
+func (s *Service) ScheduleMultiCmd(ctx context.Context) (int32, error) {
+    // 1. Set 200
+    {
+        b := flatbuffers.NewBuilder(0)
+        sOff := b.CreateString("Sheet1")
+        types.RangeStartRefsVector(b, 1)
+        types.CreateRect(b, 0, 0, 0, 0)
+        refsOff := b.EndVector(1)
+        types.RangeStart(b)
+        types.RangeAddSheetName(b, sOff)
+        types.RangeAddRefs(b, refsOff)
+        rOff := types.RangeEnd(b)
+        b.Finish(rOff)
+        r := types.GetRootAsRange(b.FinishedBytes(), 0)
+
+        b2 := flatbuffers.NewBuilder(0)
+        types.IntStart(b2)
+        types.IntAddVal(b2, 200)
+        iOff := types.IntEnd(b2)
+        types.AnyStart(b2)
+        types.AnyAddValType(b2, types.AnyValueInt)
+        types.AnyAddVal(b2, iOff)
+        aOff := types.AnyEnd(b2)
+        b2.Finish(aOff)
+        v := types.GetRootAsAny(b2.FinishedBytes(), 0)
+        generated.ScheduleSet(r, v)
+    }
+
+    // 2. Format "Number"
+    {
+        b := flatbuffers.NewBuilder(0)
+        sOff := b.CreateString("Sheet1")
+        types.RangeStartRefsVector(b, 1)
+        types.CreateRect(b, 0, 0, 0, 0)
+        refsOff := b.EndVector(1)
+        types.RangeStart(b)
+        types.RangeAddSheetName(b, sOff)
+        types.RangeAddRefs(b, refsOff)
+        rOff := types.RangeEnd(b)
+        b.Finish(rOff)
+        r := types.GetRootAsRange(b.FinishedBytes(), 0)
+        generated.ScheduleFormat(r, "Number")
+    }
+
+    return 2, nil
+}
+
 func (s *Service) OnCalculationEnded(ctx context.Context) error {
     return nil
 }
