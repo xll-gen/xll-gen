@@ -166,10 +166,42 @@ functions:
 | `grid` | Generic 2D Array | `*types.Grid` | `Array` |
 | `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
 
+## Command Scheduling
+
+You can schedule Excel commands (like `xlSet` or formatting) to run after the calculation cycle ends. This is useful for modifying cells or formatting, which is restricted during function execution.
+
+1.  Register the `CalculationEnded` event in `xll.yaml`.
+2.  In your UDF or event handler, use `generated.ScheduleSet` or `generated.ScheduleFormat`.
+
+```go
+func (s *Service) OnCalculationEnded(ctx context.Context) error {
+    // Schedule setting cell A1 to 100
+    // generated.ScheduleSet(targetRange, value)
+    return nil
+}
+```
+
+### Supported Types
+
+1.  **Excel Process**: Loads the generated XLL (C++).
+2.  **Shared Memory**: Used for data transport.
+3.  **User Process**: Your Go application, which implements the logic defined in `main.go`.
+
 ## CLI Reference
 
 ### `init <name>`
 Scaffolds a new project structure.
+
+| Type | Description | Go Type | Excel Type |
+| :--- | :--- | :--- | :--- |
+| `int` | 32-bit Integer | `int32` | `int` |
+| `float` | 64-bit Float | `float64` | `double` |
+| `bool` | Boolean | `bool` | `boolean` |
+| `string` | Unicode String | `string` | `string` |
+| `any` | Any Value (Scalar/Array) | `*types.Any` | `CheckRange/Variant` |
+| `range` | Reference to a range | `*types.Range` | `Reference` |
+| `grid` | Generic 2D Array | `*types.Grid` | `Array` |
+| `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
 
 ### `generate`
 Generates C++ and Go source code based on `xll.yaml`.

@@ -288,7 +288,13 @@ events:
   - type: "CalculationEnded"
     name: "OnCalculationEnded"
 ```
-This generates a corresponding C++ handler that forwards the event to the Go server (void return, no arguments).
+This generates a corresponding C++ handler that forwards the event to the Go server.
+
+**Command Scheduling**:
+The Go server allows scheduling Excel commands to be executed by the C++ XLL during the `CalculationEnded` event.
+*   The Go server maintains a queue of commands (`ScheduleSet`, `ScheduleFormat`).
+*   When `CalculationEnded` is triggered, the Go server serializes these commands into the response.
+*   The C++ XLL receives the response and executes the commands using `xlSet` and `xlcFormatNumber`.
 
 ## 9. Reference: Shared Memory (IPC)
 

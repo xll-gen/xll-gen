@@ -43,6 +43,38 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     return TRUE;
 }
 
+void ExecuteCommands(const ipc::CalculationEndedResponse* resp) {
+    if (!resp || !resp->commands()) return;
+    auto wrappers = resp->commands();
+    for (auto it = wrappers->begin(); it != wrappers->end(); ++it) {
+        if (it->cmd_type() == ipc::Command_SetCommand) {
+            auto cmd = static_cast<const ipc::SetCommand*>(it->cmd());
+            LPXLOPER12 xRef = RangeToXLOPER12(cmd->target());
+            LPXLOPER12 xVal = AnyToXLOPER12(cmd->value());
+            if (xRef && xVal) {
+                Excel12(xlSet, 0, 2, xRef, xVal);
+            }
+            if (xRef) xlAutoFree12(xRef);
+            if (xVal) xlAutoFree12(xVal);
+        } else if (it->cmd_type() == ipc::Command_FormatCommand) {
+            auto cmd = static_cast<const ipc::FormatCommand*>(it->cmd());
+            XLOPER12 xOldSel;
+            if (Excel12(xlfSelection, &xOldSel, 0) == xlretSuccess) {
+                 LPXLOPER12 xRef = RangeToXLOPER12(cmd->target());
+                 if (xRef) {
+                     Excel12(xlcSelect, 0, 1, xRef);
+                     std::string fmt = cmd->format()->str();
+                     std::wstring wfmt = StringToWString(fmt);
+                     Excel12(xlcFormatNumber, 0, 1, TempStr12(wfmt.c_str()));
+                     Excel12(xlcSelect, 0, 1, &xOldSel);
+                     xlAutoFree12(xRef);
+                 }
+                 Excel12(xlFree, 0, 1, &xOldSel);
+            }
+        }
+    }
+}
+
 // Guest Call Handler (Async Return)
 int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
     switch (msgId) {
@@ -252,7 +284,12 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(0, MSG_CALCULATION_ENDED); // Send takes (size, msgType, timeout)
+    if (slot.Send(0, MSG_CALCULATION_ENDED, 2000)) {
+         if (slot.GetRespSize() > 0) {
+             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(slot.GetRespBuffer());
+             ExecuteCommands(resp);
+         }
+    }
     {{else if eq .Type "CalculationCanceled"}}
     auto slot = g_host.GetZeroCopySlot();
     slot.Send(0, MSG_CALCULATION_CANCELED);
@@ -270,7 +307,12 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(0, MSG_CALCULATION_ENDED);
+    if (slot.Send(0, MSG_CALCULATION_ENDED, 2000)) {
+         if (slot.GetRespSize() > 0) {
+             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(slot.GetRespBuffer());
+             ExecuteCommands(resp);
+         }
+    }
 }
 {{end}}
 
