@@ -10,7 +10,7 @@ var MockHostCpp string
 //go:embed assets/xll.yaml
 var XllYaml string
 
-//go:embed assets/server.go
+//go:embed assets/server.go.txt
 var ServerGo string
 
 //go:embed assets/CMakeLists.txt
