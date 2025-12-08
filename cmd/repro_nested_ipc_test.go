@@ -32,27 +32,22 @@ func TestRepro_NestedIPC_Corruption(t *testing.T) {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
-	// 4. Verify xll_main.cpp content
-	content, err := os.ReadFile(filepath.Join("generated", "cpp", "xll_main.cpp"))
+	// 4. Verify ConvertAny content in include/xll_converters.cpp
+	content, err := os.ReadFile(filepath.Join("generated", "cpp", "include", "xll_converters.cpp"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("Could not read xll_converters.cpp: ", err)
 	}
 	code := string(content)
 
 	// Extract ConvertAny body
 	startMarker := "flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {"
-	endMarker := "// Guest Call Handler"
 
 	idx := strings.Index(code, startMarker)
 	if idx == -1 {
-		t.Fatal("ConvertAny function not found in generated code")
+		t.Fatal("ConvertAny function not found in generated xll_converters.cpp")
 	}
 
 	body := code[idx:]
-	endIdx := strings.Index(body, endMarker)
-	if endIdx != -1 {
-		body = body[:endIdx]
-	}
 
 	// Check for usage of g_host.GetZeroCopySlot() inside ConvertAny
 	// This is the BUG: Using the same zero-copy slot recursively corrupts the buffer.
