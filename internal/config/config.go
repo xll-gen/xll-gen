@@ -110,7 +110,8 @@ type Arg struct {
 	Description string `yaml:"description"`
 }
 
-// Validate checks the configuration for errors, such as duplicate event types.
+// Validate checks the configuration for errors, such as duplicate event types
+// or unsupported argument types.
 //
 // Parameters:
 //   - config: The Config object to validate.
@@ -125,6 +126,18 @@ func Validate(config *Config) error {
 		}
 		seenEvents[evt.Type] = true
 	}
+
+	for _, fn := range config.Functions {
+		if fn.Return == "string?" {
+			return fmt.Errorf("function '%s': return type 'string?' is not supported", fn.Name)
+		}
+		for _, arg := range fn.Args {
+			if arg.Type == "string?" {
+				return fmt.Errorf("function '%s' argument '%s': type 'string?' is not supported (Excel passes empty strings for missing arguments, preventing reliable null detection)", fn.Name, arg.Name)
+			}
+		}
+	}
+
 	return nil
 }
 
