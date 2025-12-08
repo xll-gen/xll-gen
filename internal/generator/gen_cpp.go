@@ -63,9 +63,6 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"any":     "LPXLOPER12",
 				"grid":    "LPXLOPER12",
 				"numgrid": "FP12*",
-				"int?":    "LPXLOPER12",
-				"float?":  "LPXLOPER12",
-				"bool?":   "LPXLOPER12",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -97,9 +94,6 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"any":     "U",
 				"grid":    "U",
 				"numgrid": "K%",
-				"int?":    "Q",
-				"float?":  "Q",
-				"bool?":   "Q",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -141,7 +135,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 			return false
 		},
 		"defaultErrorVal": func(t string) string {
-			if t == "string" || t == "any" || t == "range" || t == "grid" || t == "int?" || t == "float?" || t == "bool?" {
+			if t == "string" || t == "any" || t == "range" || t == "grid" {
 				return "&g_xlErrValue";
 			}
 			return "0";

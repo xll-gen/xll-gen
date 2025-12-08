@@ -109,36 +109,6 @@ int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
         {{else if eq .Return "bool"}}
         XLOPER12 xRes; xRes.xltype = xltypeBool; xRes.val.xbool = response->result() ? 1 : 0;
         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-        {{else if eq .Return "int?"}}
-        auto res = response->result();
-        XLOPER12 xRes;
-        if (res) {
-            xRes.xltype = xltypeInt;
-            xRes.val.w = res->value();
-        } else {
-            xRes.xltype = xltypeNil;
-        }
-        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-        {{else if eq .Return "float?"}}
-        auto res = response->result();
-        XLOPER12 xRes;
-        if (res) {
-            xRes.xltype = xltypeNum;
-            xRes.val.num = res->value();
-        } else {
-            xRes.xltype = xltypeNil;
-        }
-        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-        {{else if eq .Return "bool?"}}
-        auto res = response->result();
-        XLOPER12 xRes;
-        if (res) {
-            xRes.xltype = xltypeBool;
-            xRes.val.xbool = res->value() ? 1 : 0;
-        } else {
-            xRes.xltype = xltypeNil;
-        }
-        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
         {{end}}
         return 0;
     }
@@ -448,36 +418,6 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{if eq .Return "string"}}
     std::wstring wres = StringToWString(resp->result()->str());
     return NewExcelString(wres.c_str());
-    {{else if eq .Return "int?"}}
-    auto res = resp->result();
-    LPXLOPER12 xRes = NewXLOPER12();
-    if (res) {
-        xRes->xltype = xltypeInt | xlbitDLLFree;
-        xRes->val.w = res->value();
-    } else {
-        xRes->xltype = xltypeNil | xlbitDLLFree;
-    }
-    return xRes;
-    {{else if eq .Return "float?"}}
-    auto res = resp->result();
-    LPXLOPER12 xRes = NewXLOPER12();
-    if (res) {
-        xRes->xltype = xltypeNum | xlbitDLLFree;
-        xRes->val.num = res->value();
-    } else {
-        xRes->xltype = xltypeNil | xlbitDLLFree;
-    }
-    return xRes;
-    {{else if eq .Return "bool?"}}
-    auto res = resp->result();
-    LPXLOPER12 xRes = NewXLOPER12();
-    if (res) {
-        xRes->xltype = xltypeBool | xlbitDLLFree;
-        xRes->val.xbool = res->value() ? 1 : 0;
-    } else {
-        xRes->xltype = xltypeNil | xlbitDLLFree;
-    }
-    return xRes;
     {{else}}
     return resp->result();
     {{end}}
