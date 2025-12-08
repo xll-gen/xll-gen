@@ -27,8 +27,26 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 			wantError: "type 'string?' is not supported",
 		},
 		{
+			name:      "double argument (should be float)",
+			fnArgs:    []Arg{{Name: "a", Type: "double"}},
+			fnReturn:  "int",
+			wantError: "type 'double' is not supported",
+		},
+		{
+			name:      "int? argument (allowed)",
+			fnArgs:    []Arg{{Name: "a", Type: "int?"}},
+			fnReturn:  "int",
+			wantError: "",
+		},
+		{
+			name:      "int? return (rejected)",
+			fnArgs:    []Arg{{Name: "a", Type: "int"}},
+			fnReturn:  "int?",
+			wantError: "type 'int?' is not supported",
+		},
+		{
 			name:      "valid types",
-			fnArgs:    []Arg{{Name: "a", Type: "string"}, {Name: "b", Type: "int?"}},
+			fnArgs:    []Arg{{Name: "a", Type: "string"}, {Name: "b", Type: "int?"}, {Name: "c", Type: "range"}, {Name: "d", Type: "numgrid"}},
 			fnReturn:  "bool",
 			wantError: "",
 		},

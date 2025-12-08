@@ -122,8 +122,7 @@ int main() {
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoIntOptResponse>(respBuf.data());
-        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
-        ASSERT_EQ(123, resp->result()->val(), "EchoIntOpt Val");
+        ASSERT_EQ(123, resp->result(), "EchoIntOpt Val");
     }
     // Case: Null
     {
@@ -133,7 +132,7 @@ int main() {
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoIntOptResponse>(respBuf.data());
-        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
+        ASSERT_EQ(-999, resp->result(), "EchoIntOpt Null");
     }
 
     // 6. EchoFloatOpt (ID 137)
@@ -147,8 +146,7 @@ int main() {
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoFloatOptResponse>(respBuf.data());
-        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
-        if (std::abs(resp->result()->val() - 3.14) > 0.001) { cerr << "FloatOpt mismatch" << endl; return 1; }
+        if (std::abs(resp->result() - 3.14) > 0.001) { cerr << "FloatOpt mismatch" << endl; return 1; }
     }
     // Case: Null
     {
@@ -158,7 +156,7 @@ int main() {
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoFloatOptResponse>(respBuf.data());
-        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
+        if (std::abs(resp->result() - (-999.0)) > 0.001) { cerr << "FloatOpt Null mismatch" << endl; return 1; }
     }
 
     // 8. EchoBoolOpt (ID 138)
@@ -172,8 +170,7 @@ int main() {
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoBoolOptResponse>(respBuf.data());
-        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
-        ASSERT_EQ(true, resp->result()->val(), "EchoBoolOpt Val");
+        ASSERT_EQ(true, resp->result(), "EchoBoolOpt Val");
     }
     // Case: Null
     {
@@ -183,7 +180,7 @@ int main() {
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoBoolOptResponse>(respBuf.data());
-        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
+        ASSERT_EQ(false, resp->result(), "EchoBoolOpt Null");
     }
 
     // 9. AsyncEchoInt (ID 139)
