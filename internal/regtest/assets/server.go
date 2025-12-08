@@ -114,7 +114,6 @@ func (s *Service) CheckRange(ctx context.Context, val *types.Range) (string, err
 	return "RangeEmpty", nil
 }
 
-<<<<<<< HEAD
 func (s *Service) ScheduleCmd(ctx context.Context) (int32, error) {
     // Schedule Set Sheet1!0:0:0:0 = 100
     b := flatbuffers.NewBuilder(0)
@@ -151,8 +150,6 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
     return nil
 }
 
-=======
->>>>>>> origin/main
 func main() {
-	generated.Serve(&Service{})
+	  generated.Serve(&Service{})
 }
