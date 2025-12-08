@@ -125,7 +125,9 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 			return false
 		},
 		"defaultErrorVal": func(t string) string {
-			if t == "string" { return "NULL"; }
+			if t == "string" || t == "any" || t == "range" || t == "grid" {
+				return "&g_xlErrValue";
+			}
 			return "0";
 		},
 		"derefBool": func(b *bool) bool {
