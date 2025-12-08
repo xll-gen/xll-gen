@@ -33,7 +33,6 @@ func generateSchema(cfg *config.Config, path string) error {
 				"int?":    "ipc.types.Int",
 				"float?":  "ipc.types.Num",
 				"bool?":   "ipc.types.Bool",
-				"string?": "ipc.types.Str",
 			}
 			if v, ok := m[t]; ok {
 				return v

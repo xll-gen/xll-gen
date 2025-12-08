@@ -361,12 +361,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		val := v.Val()
 		arg_{{.Name}} = &val
 	}
-	{{else if eq .Type "string?"}}
-	var arg_{{.Name}} *string
-	if v := request.{{.Name|capitalize}}(nil); v != nil {
-		val := string(v.Val())
-		arg_{{.Name}} = &val
-	}
 	{{else if eq .Type "range"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "grid"}}
@@ -447,14 +441,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		types.BoolAddVal(b2, *res)
 		resOffset = types.BoolEnd(b2)
 	}
-	{{else if eq .Return "string?"}}
-	var resOffset flatbuffers.UOffsetT
-	if err == nil && res != nil {
-		valOff := b2.CreateString(*res)
-		types.StrStart(b2)
-		types.StrAddVal(b2, valOff)
-		resOffset = types.StrEnd(b2)
-	}
 	{{end}}
 
 	ipc.{{.Name}}ResponseStart(b2)
@@ -462,7 +448,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	if err != nil {
 		ipc.{{.Name}}ResponseAddError(b2, errOffset)
 	} else {
-		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "string?")}}
+		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?")}}
 		if resOffset > 0 {
 			ipc.{{.Name}}ResponseAddResult(b2, resOffset)
 		}
@@ -515,21 +501,13 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		types.BoolAddVal(b, *res)
 		resOffset = types.BoolEnd(b)
 	}
-	{{else if eq .Return "string?"}}
-	var resOffset flatbuffers.UOffsetT
-	if err == nil && res != nil {
-		valOff := b.CreateString(*res)
-		types.StrStart(b)
-		types.StrAddVal(b, valOff)
-		resOffset = types.StrEnd(b)
-	}
 	{{end}}
 
 	ipc.{{.Name}}ResponseStart(b)
 	if err != nil {
 		ipc.{{.Name}}ResponseAddError(b, errOffset)
 	} else {
-		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "string?")}}
+		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?")}}
 		if resOffset > 0 {
 			ipc.{{.Name}}ResponseAddResult(b, resOffset)
 		}

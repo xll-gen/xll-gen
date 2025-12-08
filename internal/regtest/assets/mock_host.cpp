@@ -159,33 +159,7 @@ int main() {
         if (resp->result()) { cerr << "Expected null" << endl; return 1; }
     }
 
-    // 7. EchoStringOpt (ID 17)
-    // Case: Value
-    {
-        builder.Reset();
-        auto sOff = builder.CreateString("opt");
-        auto valOff = ipc::types::CreateStr(builder, sOff);
-        ipc::EchoStringOptRequestBuilder req(builder);
-        req.add_val(valOff);
-        builder.Finish(req.Finish());
-        vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf) < 0) return 1;
-        auto resp = flatbuffers::GetRoot<ipc::EchoStringOptResponse>(respBuf.data());
-        if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
-        ASSERT_STREQ("opt", resp->result()->val()->str(), "EchoStringOpt Val");
-    }
-    // Case: Null
-    {
-        builder.Reset();
-        ipc::EchoStringOptRequestBuilder req(builder);
-        builder.Finish(req.Finish());
-        vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf) < 0) return 1;
-        auto resp = flatbuffers::GetRoot<ipc::EchoStringOptResponse>(respBuf.data());
-        if (resp->result()) { cerr << "Expected null" << endl; return 1; }
-    }
-
-    // 8. EchoBoolOpt (ID 18)
+    // 8. EchoBoolOpt (ID 17) -- Reordered ID
     // Case: Value
     {
         builder.Reset();
@@ -194,7 +168,7 @@ int main() {
         req.add_val(valOff);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 139, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoBoolOptResponse>(respBuf.data());
         if (!resp->result()) { cerr << "Expected value" << endl; return 1; }
         ASSERT_EQ(true, resp->result()->val(), "EchoBoolOpt Val");
@@ -205,12 +179,12 @@ int main() {
         ipc::EchoBoolOptRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 139, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoBoolOptResponse>(respBuf.data());
         if (resp->result()) { cerr << "Expected null" << endl; return 1; }
     }
 
-    // 9. AsyncEchoInt (ID 19)
+    // 9. AsyncEchoInt (ID 18) -- Reordered ID
     {
         builder.Reset();
         ipc::AsyncEchoIntRequestBuilder req(builder);
@@ -219,7 +193,7 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 139, respBuf);
         if (sz < 0) return 1;
 
         // Async returns immediately with void
@@ -229,8 +203,8 @@ int main() {
         auto start = chrono::steady_clock::now();
         while(chrono::steady_clock::now() - start < chrono::seconds(2)) {
             host.ProcessGuestCalls([&](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t msgId) -> int32_t {
-                // Check MsgID = 140
-                if (msgId == 140) {
+                // Check MsgID = 139
+                if (msgId == 139) {
                      auto response = flatbuffers::GetRoot<ipc::AsyncEchoIntResponse>(req);
                      if (response->async_handle() == 999 && response->result() == 42) {
                          gotCallback = true;
@@ -244,7 +218,7 @@ int main() {
         if (!gotCallback) { cerr << "Async callback missing" << endl; return 1; }
     }
 
-    // 10. CheckAny (ID 20)
+    // 10. CheckAny (ID 19) -- Reordered ID
     // Int
     {
         builder.Reset();
@@ -254,7 +228,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Int:10", resp->result()->str(), "CheckAny Int");
     }
@@ -268,7 +242,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Str:hello", resp->result()->str(), "CheckAny Str");
     }
@@ -281,7 +255,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Num:1.5", resp->result()->str(), "CheckAny Num");
     }
@@ -297,7 +271,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("NumGrid:1x2", resp->result()->str(), "CheckAny NumGrid");
     }
@@ -319,12 +293,12 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Grid:1x2", resp->result()->str(), "CheckAny Grid");
     }
 
-    // 11. CheckRange (ID 21)
+    // 11. CheckRange (ID 20) -- Reordered ID
     {
         builder.Reset();
         auto sOff = builder.CreateString("Sheet1");
@@ -335,12 +309,12 @@ int main() {
         req.add_val(rangeVal);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 142, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckRangeResponse>(respBuf.data());
         ASSERT_STREQ("Range:Sheet1!1:1:1:1", resp->result()->str(), "CheckRange");
     }
 
-    // 12. TimeoutFunc (ID 22)
+    // 12. TimeoutFunc (ID 21) -- Reordered ID
     {
         builder.Reset();
         ipc::TimeoutFuncRequestBuilder req(builder);
@@ -348,7 +322,7 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 143, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 142, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::TimeoutFuncResponse>(respBuf.data());
 
         // Timeout now returns -1 instead of error

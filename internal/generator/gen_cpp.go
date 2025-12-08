@@ -70,7 +70,6 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"int?":    "int32_t*",
 				"float?":  "double*",
 				"bool?":   "short*",
-				"string?": "const wchar_t*",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -102,7 +101,6 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"int?":    "N",
 				"float?":  "E",
 				"bool?":   "L",
-				"string?": "D%",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t

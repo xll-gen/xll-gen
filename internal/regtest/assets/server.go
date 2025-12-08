@@ -22,7 +22,6 @@ func (s *Service) EchoBool(ctx context.Context, val bool) (bool, error) { return
 
 func (s *Service) EchoIntOpt(ctx context.Context, val *int32) (*int32, error) { return val, nil }
 func (s *Service) EchoFloatOpt(ctx context.Context, val *float64) (*float64, error) { return val, nil }
-func (s *Service) EchoStringOpt(ctx context.Context, val *string) (*string, error) { return val, nil }
 func (s *Service) EchoBoolOpt(ctx context.Context, val *bool) (*bool, error) { return val, nil }
 
 func (s *Service) AsyncEchoInt(ctx context.Context, val int32) (int32, error) {
