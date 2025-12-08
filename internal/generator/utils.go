@@ -7,6 +7,13 @@ import (
 
 // parseDurationToMs parses a duration string (e.g. "2s", "500ms") and returns milliseconds as int.
 // Returns defaultVal if parsing fails or string is empty.
+//
+// Parameters:
+//   - s: The duration string to parse.
+//   - defaultVal: The value to return if parsing fails.
+//
+// Returns:
+//   - int: The duration in milliseconds.
 func parseDurationToMs(s string, defaultVal int) int {
 	if s == "" {
 		return defaultVal

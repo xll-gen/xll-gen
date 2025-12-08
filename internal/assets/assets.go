@@ -5,11 +5,16 @@ import (
 	"io/fs"
 )
 
+// assetsFS embeds all files in the files/ directory.
+//
 //go:embed files/*
 var assetsFS embed.FS
 
+// AssetsMap holds the content of all embedded assets, keyed by filename.
+// It is populated during package initialization.
 var AssetsMap = make(map[string]string)
 
+// init walks the embedded filesystem and populates AssetsMap.
 func init() {
 	// Populate AssetsMap from embedded files
 	// The root is "files"

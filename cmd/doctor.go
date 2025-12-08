@@ -9,6 +9,7 @@ import (
 	"xll-gen/internal/generator"
 )
 
+// doctorCmd represents the doctor command.
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check for necessary dependencies and tools",
@@ -27,6 +28,7 @@ func init() {
 	rootCmd.AddCommand(doctorCmd)
 }
 
+// checkCompiler verifies if a suitable C++ compiler (MSVC or MinGW) is available in the system PATH.
 func checkCompiler() {
 	fmt.Print("Checking for C++ compiler... ")
 
@@ -54,6 +56,7 @@ func checkCompiler() {
 	}
 }
 
+// checkFlatc verifies if the FlatBuffers compiler (flatc) is available and downloads it if missing.
 func checkFlatc() {
 	fmt.Print("Checking for flatc... ")
 

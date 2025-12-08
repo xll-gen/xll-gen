@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// TestRunInit verifies that the init command correctly scaffolds a new project with
+// the expected file structure.
 func TestRunInit(t *testing.T) {
 	// Create a temp dir for testing
 	tempDir, err := os.MkdirTemp("", "xll-gen-test")

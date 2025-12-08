@@ -10,6 +10,15 @@ import (
 	"xll-gen/version"
 )
 
+// generateTaskfile creates a Taskfile.yml for the project.
+// It uses the project name and version from the configuration to populate the build tasks.
+//
+// Parameters:
+//   - cfg: The project configuration.
+//   - dir: The directory where the file should be generated.
+//
+// Returns:
+//   - error: An error if the file creation or template execution fails.
 func generateTaskfile(cfg *config.Config, dir string) error {
 	tmplContent, err := templates.Get("Taskfile.yml.tmpl")
 	if err != nil {
