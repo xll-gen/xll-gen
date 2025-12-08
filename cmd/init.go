@@ -73,7 +73,18 @@ func runInit(projectName string) error {
 		return fmt.Errorf("failed to run go mod init: %w", err)
 	}
 
-	// 5. Create generated assets (C++ common files)
+	// 5. Run go mod tidy
+	// This ensures go.sum is created and the module is in a consistent state,
+	// even if dependencies (like shm) aren't imported yet.
+	cmdTidy := exec.Command("go", "mod", "tidy")
+	cmdTidy.Dir = projectName
+	cmdTidy.Stdout = os.Stdout
+	cmdTidy.Stderr = os.Stderr
+	if err := cmdTidy.Run(); err != nil {
+		return fmt.Errorf("failed to run go mod tidy: %w", err)
+	}
+
+	// 6. Create generated assets (C++ common files)
 	// We put them in generated/cpp/include
 	includeDir := filepath.Join(projectName, "generated", "cpp", "include")
 	if err := os.MkdirAll(includeDir, 0755); err != nil {
