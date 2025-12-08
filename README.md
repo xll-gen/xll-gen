@@ -1,5 +1,7 @@
 # xll-gen
 
+![cover](cover.png)
+
 > **WARNING: EXPERIMENTAL SOFTWARE**
 > This tool is currently in an experimental stage and is not recommended for use in production environments.
 
