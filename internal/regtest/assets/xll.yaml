@@ -67,3 +67,6 @@ functions:
   - name: "ScheduleMultiCmd"
     args: []
     return: "int"
+  - name: "ScheduleMassive"
+    args: []
+    return: "int"

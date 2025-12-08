@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <vector>
 #include <thread>
@@ -35,7 +34,7 @@ int main() {
 
     flatbuffers::FlatBufferBuilder builder(1024);
 
-    // 1. EchoInt (ID 11)
+    // 1. EchoInt (ID 132)
     vector<int32_t> intCases = {0, 1, -1, 2147483647, (int32_t)-2147483648LL};
     for (size_t i = 0; i < intCases.size(); ++i) {
         auto val = intCases[i];
@@ -66,7 +65,7 @@ int main() {
         ASSERT_EQ(val, resp->result(), "EchoInt");
     }
 
-    // 2. EchoFloat (ID 12)
+    // 2. EchoFloat (ID 133)
     vector<double> floatCases = {0.0, 1.5, -999.99};
     for (auto val : floatCases) {
         builder.Reset();
@@ -81,7 +80,7 @@ int main() {
         if (std::abs(val - resp->result()) > 0.0001) { cerr << "Float mismatch" << endl; return 1; }
     }
 
-    // 3. EchoString (ID 13)
+    // 3. EchoString (ID 134)
     vector<string> strCases = {"test", "", "Hello World"};
     for (auto val : strCases) {
         builder.Reset();
@@ -97,7 +96,7 @@ int main() {
         ASSERT_STREQ(val, resp->result()->str(), "EchoString");
     }
 
-    // 4. EchoBool (ID 14)
+    // 4. EchoBool (ID 135)
     vector<bool> boolCases = {true, false};
     for (auto val : boolCases) {
         builder.Reset();
@@ -112,7 +111,7 @@ int main() {
         ASSERT_EQ(val, resp->result(), "EchoBool");
     }
 
-    // 5. EchoIntOpt (ID 15)
+    // 5. EchoIntOpt (ID 136)
     // Case: Value
     {
         builder.Reset();
@@ -137,7 +136,7 @@ int main() {
         if (resp->result()) { cerr << "Expected null" << endl; return 1; }
     }
 
-    // 6. EchoFloatOpt (ID 16)
+    // 6. EchoFloatOpt (ID 137)
     // Case: Value
     {
         builder.Reset();
@@ -162,7 +161,7 @@ int main() {
         if (resp->result()) { cerr << "Expected null" << endl; return 1; }
     }
 
-    // 8. EchoBoolOpt (ID 17) -- Reordered ID
+    // 8. EchoBoolOpt (ID 138)
     // Case: Value
     {
         builder.Reset();
@@ -187,7 +186,7 @@ int main() {
         if (resp->result()) { cerr << "Expected null" << endl; return 1; }
     }
 
-    // 9. AsyncEchoInt (ID 18) -- Reordered ID
+    // 9. AsyncEchoInt (ID 139)
     {
         builder.Reset();
         ipc::AsyncEchoIntRequestBuilder req(builder);
@@ -221,7 +220,7 @@ int main() {
         if (!gotCallback) { cerr << "Async callback missing" << endl; return 1; }
     }
 
-    // 10. CheckAny (ID 19) -- Reordered ID
+    // 10. CheckAny (ID 140)
     // Int
     {
         builder.Reset();
@@ -301,7 +300,7 @@ int main() {
         ASSERT_STREQ("Grid:1x2", resp->result()->str(), "CheckAny Grid");
     }
 
-    // 11. CheckRange (ID 20) -- Reordered ID
+    // 11. CheckRange (ID 141)
     {
         builder.Reset();
         auto sOff = builder.CreateString("Sheet1");
@@ -317,7 +316,7 @@ int main() {
         ASSERT_STREQ("Range:Sheet1!1:1:1:1", resp->result()->str(), "CheckRange");
     }
 
-    // 12. TimeoutFunc (ID 21) -- Reordered ID
+    // 12. TimeoutFunc (ID 142)
     {
         builder.Reset();
         ipc::TimeoutFuncRequestBuilder req(builder);
@@ -429,6 +428,47 @@ int main() {
             auto fmtCmd = static_cast<const ipc::FormatCommand*>(wrapper->cmd());
             ASSERT_STREQ("Number", fmtCmd->format()->str(), "Multi FormatCommand Format");
         }
+    }
+
+    // 16. ScheduleMassive (ID 146)
+    {
+        // 1. Call ScheduleMassive
+        builder.Reset();
+        ipc::ScheduleMassiveRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 146, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::ScheduleMassiveResponse>(respBuf.data());
+        ASSERT_EQ(100, resp->result(), "ScheduleMassive");
+
+        // 2. Send CalculationEnded
+        vector<uint8_t> eventBuf;
+        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+
+        // 3. Verify Response
+        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        if (!eventResp->commands()) { cerr << "No commands list for Massive" << endl; return 1; }
+
+        int cmdCount = eventResp->commands()->size();
+        if (cmdCount != 4) {
+            cerr << "Expected 4 commands for massive checkerboard, got " << cmdCount << endl;
+            return 1;
+        }
+
+        int count100 = 0;
+        int count200 = 0;
+
+        for (unsigned int i=0; i<eventResp->commands()->size(); ++i) {
+             auto wrapper = eventResp->commands()->Get(i);
+             if (wrapper->cmd_type() == ipc::Command_SetCommand) {
+                 auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+                 auto val = setCmd->value()->val_as_Int()->val();
+                 if (val == 100) count100++;
+                 else if (val == 200) count200++;
+             }
+        }
+        ASSERT_EQ(2, count100, "Count 100 commands");
+        ASSERT_EQ(2, count200, "Count 200 commands");
     }
 
     cout << "PASSED" << endl;
