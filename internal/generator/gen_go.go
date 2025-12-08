@@ -11,6 +11,16 @@ import (
 	"xll-gen/version"
 )
 
+// generateInterface generates the Go interface definition (interface.go).
+// This interface defines the contract that the user's Go code must implement.
+//
+// Parameters:
+//   - cfg: The project configuration.
+//   - dir: The directory where the file should be generated.
+//   - modName: The Go module name of the project.
+//
+// Returns:
+//   - error: An error if generation fails.
 func generateInterface(cfg *config.Config, dir string, modName string) error {
 	tmplContent, err := templates.Get("interface.go.tmpl")
 	if err != nil {
@@ -72,6 +82,16 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 	return t.Execute(f, data)
 }
 
+// generateServer generates the Go server implementation (server.go).
+// It includes the main loop, IPC handling, and dispatching to the user's handler.
+//
+// Parameters:
+//   - cfg: The project configuration.
+//   - dir: The directory where the file should be generated.
+//   - modName: The Go module name of the project.
+//
+// Returns:
+//   - error: An error if generation fails.
 func generateServer(cfg *config.Config, dir string, modName string) error {
 	tmplContent, err := templates.Get("server.go.tmpl")
 	if err != nil {

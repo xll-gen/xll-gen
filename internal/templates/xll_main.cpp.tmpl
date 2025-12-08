@@ -28,10 +28,17 @@ std::atomic<bool> g_running{false};
 HANDLE g_hChildProcess = NULL;
 HINSTANCE g_hModule = NULL;
 
+// Global Error Value for Returns
+static XLOPER12 g_xlErrValue;
+
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
         g_hModule = hinstDLL;
         DisableThreadLibraryCalls(hinstDLL);
+
+        // Initialize global error
+        g_xlErrValue.xltype = xltypeErr;
+        g_xlErrValue.val.err = xlErrValue;
     }
     return TRUE;
 }

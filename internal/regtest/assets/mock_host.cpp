@@ -22,6 +22,9 @@ using namespace std;
     } \
 }
 
+// main is the entry point for the mock host.
+// It initializes shared memory, acts as the Excel process, sends various requests to the Go server,
+// and verifies the responses.
 int main() {
     shm::DirectHost host;
     if (!host.Init("smoke_proj", 1024, 1024*1024, 16)) {

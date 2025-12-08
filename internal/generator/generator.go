@@ -10,10 +10,23 @@ import (
 	"xll-gen/internal/config"
 )
 
+// Options contains optional flags for the code generation process.
 type Options struct {
+	// DisablePidSuffix, if true, overrides the configuration to disable PID suffixes.
+	// This is useful for deterministic testing.
 	DisablePidSuffix bool
 }
 
+// Generate orchestrates the entire code generation process.
+// It creates directories, generates schemas, runs flatc, and generates Go and C++ source code.
+//
+// Parameters:
+//   - cfg: The project configuration parsed from xll.yaml.
+//   - modName: The Go module name of the project.
+//   - opts: Additional generation options.
+//
+// Returns:
+//   - error: An error if any step of the generation fails.
 func Generate(cfg *config.Config, modName string, opts Options) error {
 	fmt.Printf("Generating code for project: %s\n", cfg.Project.Name)
 

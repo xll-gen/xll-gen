@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TestRepro_NestedIPC_Corruption verifies that the nested IPC call in ConvertAny
+// does not incorrectly reuse the global zero-copy slot, which would cause corruption.
 func TestRepro_NestedIPC_Corruption(t *testing.T) {
 	// 1. Setup temp dir
 	tempDir := t.TempDir()

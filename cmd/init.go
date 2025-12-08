@@ -12,6 +12,7 @@ import (
 	"xll-gen/internal/templates"
 )
 
+// initCmd represents the init command.
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
 	Short: "Initialize a new xll-gen project",
@@ -29,6 +30,14 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+// runInit scaffolds a new project directory with the specified name.
+// It creates configuration files, the main Go entry point, and initial assets.
+//
+// Parameters:
+//   - projectName: The name of the project (and directory) to create.
+//
+// Returns:
+//   - error: An error if the directory already exists or file creation fails.
 func runInit(projectName string) error {
 	fmt.Printf("Initializing project %s...\n", projectName)
 
@@ -86,6 +95,15 @@ func runInit(projectName string) error {
 	return nil
 }
 
+// generateFileFromTemplate creates a file at destPath using the specified template and data.
+//
+// Parameters:
+//   - tmplName: The name of the template file to use.
+//   - destPath: The path where the generated file should be written.
+//   - data: The data object to pass to the template.
+//
+// Returns:
+//   - error: An error if the template cannot be read or executed.
 func generateFileFromTemplate(tmplName, destPath string, data interface{}) error {
 	content, err := templates.Get(tmplName)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"xll-gen/internal/templates"
 )
 
+// regtestCmd represents the regtest command.
 var regtestCmd = &cobra.Command{
 	Use:   "regtest",
 	Short: "Run a regression test simulation (Mock Host)",
@@ -34,6 +35,11 @@ func init() {
 	rootCmd.AddCommand(regtestCmd)
 }
 
+// runRegtest orchestrates the regression testing process.
+// It builds the Go server, generates a C++ mock host, and runs a simulation to verify IPC.
+//
+// Returns:
+//   - error: An error if any step of the test suite fails.
 func runRegtest() error {
 	// 1. Check prerequisites
 	if _, err := exec.LookPath("cmake"); err != nil {
@@ -207,6 +213,14 @@ func runRegtest() error {
 	return nil
 }
 
+// generateSimMain generates the C++ main file for the simulation host.
+//
+// Parameters:
+//   - cfg: The project configuration.
+//   - dir: The directory where the file should be generated.
+//
+// Returns:
+//   - error: An error if generation fails.
 func generateSimMain(cfg *config.Config, dir string) error {
 	tmplContent, err := templates.Get("regtest_main.cpp.tmpl")
 	if err != nil {
@@ -231,6 +245,7 @@ func generateSimMain(cfg *config.Config, dir string) error {
 	return t.Execute(f, cfg)
 }
 
+// generateSimCMake generates the CMakeLists.txt for the simulation host.
 func generateSimCMake(cfg *config.Config, dir string) error {
 	tmplContent, err := templates.Get("regtest_CMakeLists.txt.tmpl")
 	if err != nil {

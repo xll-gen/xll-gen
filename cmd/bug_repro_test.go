@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+// TestGenerate_Fixes verifies that specific bugs (duplicate xlAutoFree12, usage of internal MemoryPool)
+// are not present in the generated code.
 func TestGenerate_Fixes(t *testing.T) {
 	// 1. Setup temp dir
 	tempDir, err := os.MkdirTemp("", "xll-bug-repro")
@@ -28,21 +30,21 @@ func TestGenerate_Fixes(t *testing.T) {
 	}
 	flatcPath := filepath.Join(binDir, flatcName)
 
-    script := "#!/bin/sh\necho mock flatc\n"
-    if err := os.WriteFile(flatcPath, []byte(script), 0755); err != nil {
-        t.Fatal(err)
-    }
+	script := "#!/bin/sh\necho mock flatc\n"
+	if err := os.WriteFile(flatcPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Update PATH
 	oldPath := os.Getenv("PATH")
-	os.Setenv("PATH", binDir + string(os.PathListSeparator) + oldPath)
+	os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
 	defer os.Setenv("PATH", oldPath)
 
 	// Change WD
 	origWd, _ := os.Getwd()
 	if err := os.Chdir(tempDir); err != nil {
-        t.Fatal(err)
-    }
+		t.Fatal(err)
+	}
 	defer os.Chdir(origWd)
 
 	// 2. Init
@@ -77,9 +79,9 @@ func TestGenerate_Fixes(t *testing.T) {
 		t.Errorf("xll_main.cpp should NOT use xll::MemoryPool (internal class)")
 	}
 
-    // Check that we DO call xlAutoFree12 for async strings
-    // Look for: xlAutoFree12(xRes);
-    // Since valid code is not generated yet, we won't see it.
-    // But we can assert we want to see it eventually?
-    // For now, let's just assert bugs are gone.
+	// Check that we DO call xlAutoFree12 for async strings
+	// Look for: xlAutoFree12(xRes);
+	// Since valid code is not generated yet, we won't see it.
+	// But we can assert we want to see it eventually?
+	// For now, let's just assert bugs are gone.
 }

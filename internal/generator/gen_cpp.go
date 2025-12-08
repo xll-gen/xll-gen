@@ -11,6 +11,16 @@ import (
 	"xll-gen/version"
 )
 
+// generateCppMain generates the C++ entry point (xll_main.cpp) for the XLL.
+// It populates the template with function registrations, event handlers, and IPC logic.
+//
+// Parameters:
+//   - cfg: The project configuration.
+//   - dir: The directory where the file should be generated.
+//   - shouldAppendPid: Whether to append the process ID to the shared memory name.
+//
+// Returns:
+//   - error: An error if generation fails.
 func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error {
 	tmplContent, err := templates.Get("xll_main.cpp.tmpl")
 	if err != nil {
@@ -125,7 +135,9 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 			return false
 		},
 		"defaultErrorVal": func(t string) string {
-			if t == "string" { return "NULL"; }
+			if t == "string" || t == "any" || t == "range" || t == "grid" {
+				return "&g_xlErrValue";
+			}
 			return "0";
 		},
 		"derefBool": func(b *bool) bool {
@@ -165,6 +177,15 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 	})
 }
 
+// generateCMake generates the CMakeLists.txt build file.
+// It configures the C++ build system for the XLL, including dependencies.
+//
+// Parameters:
+//   - cfg: The project configuration.
+//   - dir: The directory where the file should be generated.
+//
+// Returns:
+//   - error: An error if generation fails.
 func generateCMake(cfg *config.Config, dir string) error {
 	tmplContent, err := templates.Get("CMakeLists.txt.tmpl")
 	if err != nil {

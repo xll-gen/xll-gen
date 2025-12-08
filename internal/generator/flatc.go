@@ -13,8 +13,13 @@ import (
 	"strings"
 )
 
-// EnsureFlatc checks for flatc in PATH or Cache, and downloads it if missing.
-// It returns the absolute path to the flatc binary.
+// EnsureFlatc checks for the presence of the 'flatc' compiler.
+// It searches in the system PATH and the user's cache directory.
+// If not found, it attempts to download the correct version from GitHub.
+//
+// Returns:
+//   - string: The absolute path to the flatc executable.
+//   - error: An error if flatc cannot be found or downloaded.
 func EnsureFlatc() (string, error) {
 	// Pin to specific version to match CMake configuration
 	const flatcVersion = "v25.9.23"
@@ -55,6 +60,14 @@ func EnsureFlatc() (string, error) {
 	return flatcPath, nil
 }
 
+// getFlatcVersion extracts the version string from the flatc binary.
+//
+// Parameters:
+//   - path: The path to the flatc executable.
+//
+// Returns:
+//   - string: The version string (e.g., "25.9.23").
+//   - error: An error if the version cannot be determined.
 func getFlatcVersion(path string) (string, error) {
 	cmd := exec.Command(path, "--version")
 	out, err := cmd.Output()
@@ -79,6 +92,14 @@ type asset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
+// downloadFlatc downloads and extracts the flatc binary from GitHub.
+//
+// Parameters:
+//   - destDir: The directory to extract the binary to.
+//   - version: The version tag to download (e.g., "v25.9.23").
+//
+// Returns:
+//   - error: An error if download or extraction fails.
 func downloadFlatc(destDir string, version string) error {
 	url := "https://api.github.com/repos/google/flatbuffers/releases/tags/" + version
 	resp, err := http.Get(url)

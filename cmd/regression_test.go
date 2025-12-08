@@ -13,6 +13,10 @@ import (
 	"xll-gen/internal/regtest"
 )
 
+// TestRegression runs an end-to-end regression test.
+// It builds a Go server, generates a C++ mock host, and simulates IPC communication
+// to verify correctness of data passing.
+// This test is skipped in short mode.
 func TestRegression(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping regression test in short mode")
@@ -66,7 +70,9 @@ func TestRegression(t *testing.T) {
 
 	// 7. Build Go Server
 	serverBin := "smoke_proj"
-	if runtime.GOOS == "windows" { serverBin += ".exe" }
+	if runtime.GOOS == "windows" {
+		serverBin += ".exe"
+	}
 	if err := os.MkdirAll("build", 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -104,17 +110,17 @@ func TestRegression(t *testing.T) {
 	mockBin := filepath.Join(simDir, "build", "mock_host")
 	if runtime.GOOS == "windows" {
 		if _, err := os.Stat(mockBin + ".exe"); os.IsNotExist(err) {
-			 mockBin = filepath.Join(simDir, "build", "Release", "mock_host.exe")
+			mockBin = filepath.Join(simDir, "build", "Release", "mock_host.exe")
 		} else {
-			 mockBin += ".exe"
+			mockBin += ".exe"
 		}
 	} else {
-        // Linux/Mac
-        if _, err := os.Stat(mockBin); os.IsNotExist(err) {
-             // Maybe it is in ./mock_host if cmake didn't use Release folder?
-             // Standard cmake puts it in build/mock_host
-        }
-    }
+		// Linux/Mac
+		if _, err := os.Stat(mockBin); os.IsNotExist(err) {
+			// Maybe it is in ./mock_host if cmake didn't use Release folder?
+			// Standard cmake puts it in build/mock_host
+		}
+	}
 
 	mockCmd := exec.Command(mockBin)
 	mockStdout, err := mockCmd.StdoutPipe()
@@ -126,7 +132,9 @@ func TestRegression(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		if mockCmd.Process != nil { mockCmd.Process.Kill() }
+		if mockCmd.Process != nil {
+			mockCmd.Process.Kill()
+		}
 	}()
 
 	// Wait for Mock Host to signal READY (SHM initialized)
@@ -155,7 +163,9 @@ func TestRegression(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		 if serverCmd.Process != nil { serverCmd.Process.Kill() }
+		if serverCmd.Process != nil {
+			serverCmd.Process.Kill()
+		}
 	}()
 
 	if err := mockCmd.Wait(); err != nil {
