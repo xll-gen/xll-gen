@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 	"runtime"
+	"sort"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
 	"github.com/xll-gen/shm/go"
@@ -55,7 +56,57 @@ var (
 	cmdQueue     []queuedCommand
 )
 
+// Optimization Structures
+type Cell struct {
+	Row int32
+	Col int32
+}
+
+type mergedRect struct {
+	r1, r2, c1, c2 int32
+}
+
+type ScalarValue struct {
+	Type types.AnyValue
+	Num  float64
+	Int  int32
+	Bool bool
+	Str  string
+	Err  int16
+}
+
+var (
+	bufferedSets      = make(map[string]map[Cell]ScalarValue)
+	bufferedFormats   = make(map[string]map[Cell]string)
+	bufferLock        sync.Mutex
+)
+
 func ScheduleSet(r *types.Range, v *types.Any) {
+	scalar, ok := toScalar(v)
+	if ok {
+		sheet := string(r.SheetName())
+		bufferLock.Lock()
+		if bufferedSets[sheet] == nil {
+			bufferedSets[sheet] = make(map[Cell]ScalarValue)
+		}
+
+		l := r.RefsLength()
+		for i := 0; i < l; i++ {
+			var rect types.Rect
+			if r.Refs(&rect, i) {
+				for row := rect.RowFirst(); row <= rect.RowLast(); row++ {
+					for col := rect.ColFirst(); col <= rect.ColLast(); col++ {
+						bufferedSets[sheet][Cell{row, col}] = scalar
+					}
+				}
+			}
+		}
+		bufferLock.Unlock()
+		return
+	}
+
+	flushBuffers()
+
 	b := flatbuffers.NewBuilder(0)
 	rOff := cloneRange(b, r)
 	vOff := cloneAny(b, v)
@@ -72,19 +123,239 @@ func ScheduleSet(r *types.Range, v *types.Any) {
 }
 
 func ScheduleFormat(r *types.Range, fmtStr string) {
-	b := flatbuffers.NewBuilder(0)
-	rOff := cloneRange(b, r)
-	fOff := b.CreateString(fmtStr)
+	sheet := string(r.SheetName())
+	bufferLock.Lock()
+	if bufferedFormats[sheet] == nil {
+		bufferedFormats[sheet] = make(map[Cell]string)
+	}
 
-	ipc.FormatCommandStart(b)
-	ipc.FormatCommandAddTarget(b, rOff)
-	ipc.FormatCommandAddFormat(b, fOff)
-	root := ipc.FormatCommandEnd(b)
-	b.Finish(root)
+	l := r.RefsLength()
+	for i := 0; i < l; i++ {
+		var rect types.Rect
+		if r.Refs(&rect, i) {
+			for row := rect.RowFirst(); row <= rect.RowLast(); row++ {
+				for col := rect.ColFirst(); col <= rect.ColLast(); col++ {
+					bufferedFormats[sheet][Cell{row, col}] = fmtStr
+				}
+			}
+		}
+	}
+	bufferLock.Unlock()
+}
 
-	cmdQueueLock.Lock()
-	cmdQueue = append(cmdQueue, queuedCommand{1, b.FinishedBytes()})
-	cmdQueueLock.Unlock()
+func flushBuffers() {
+	bufferLock.Lock()
+	defer bufferLock.Unlock()
+
+	// Process Sets
+	for sheet, cells := range bufferedSets {
+		byVal := make(map[ScalarValue][]Cell)
+		for cell, val := range cells {
+			byVal[val] = append(byVal[val], cell)
+		}
+
+		for val, cellList := range byVal {
+			rects := greedyMesh(cellList)
+
+			// Chunk by 32
+			for i := 0; i < len(rects); i += 32 {
+				end := i + 32
+				if end > len(rects) { end = len(rects) }
+				batch := rects[i:end]
+
+				b := flatbuffers.NewBuilder(0)
+				sOff := b.CreateString(sheet)
+
+				types.RangeStartRefsVector(b, len(batch))
+				for j := len(batch) - 1; j >= 0; j-- {
+					types.CreateRect(b, batch[j].r1, batch[j].r2, batch[j].c1, batch[j].c2)
+				}
+				refsOff := b.EndVector(len(batch))
+
+				types.RangeStart(b)
+				types.RangeAddSheetName(b, sOff)
+				types.RangeAddRefs(b, refsOff)
+				rOff := types.RangeEnd(b)
+
+				vOff := createScalarAny(b, val)
+
+				ipc.SetCommandStart(b)
+				ipc.SetCommandAddTarget(b, rOff)
+				ipc.SetCommandAddValue(b, vOff)
+				uOff := ipc.SetCommandEnd(b)
+				b.Finish(uOff)
+
+				cmdQueueLock.Lock()
+				cmdQueue = append(cmdQueue, queuedCommand{0, b.FinishedBytes()})
+				cmdQueueLock.Unlock()
+			}
+		}
+		delete(bufferedSets, sheet)
+	}
+
+	// Process Formats
+	for sheet, cells := range bufferedFormats {
+		byFmt := make(map[string][]Cell)
+		for cell, fmt := range cells {
+			byFmt[fmt] = append(byFmt[fmt], cell)
+		}
+
+		for fmt, cellList := range byFmt {
+			rects := greedyMesh(cellList)
+
+			for i := 0; i < len(rects); i += 32 {
+				end := i + 32
+				if end > len(rects) { end = len(rects) }
+				batch := rects[i:end]
+
+				b := flatbuffers.NewBuilder(0)
+				sOff := b.CreateString(sheet)
+
+				types.RangeStartRefsVector(b, len(batch))
+				for j := len(batch) - 1; j >= 0; j-- {
+					types.CreateRect(b, batch[j].r1, batch[j].r2, batch[j].c1, batch[j].c2)
+				}
+				refsOff := b.EndVector(len(batch))
+
+				types.RangeStart(b)
+				types.RangeAddSheetName(b, sOff)
+				types.RangeAddRefs(b, refsOff)
+				rOff := types.RangeEnd(b)
+
+				fOff := b.CreateString(fmt)
+
+				ipc.FormatCommandStart(b)
+				ipc.FormatCommandAddTarget(b, rOff)
+				ipc.FormatCommandAddFormat(b, fOff)
+				uOff := ipc.FormatCommandEnd(b)
+				b.Finish(uOff)
+
+				cmdQueueLock.Lock()
+				cmdQueue = append(cmdQueue, queuedCommand{1, b.FinishedBytes()})
+				cmdQueueLock.Unlock()
+			}
+		}
+		delete(bufferedFormats, sheet)
+	}
+}
+
+func greedyMesh(cells []Cell) []mergedRect {
+	if len(cells) == 0 { return nil }
+
+	sort.Slice(cells, func(i, j int) bool {
+		if cells[i].Row != cells[j].Row {
+			return cells[i].Row < cells[j].Row
+		}
+		return cells[i].Col < cells[j].Col
+	})
+
+	grid := make(map[Cell]bool, len(cells))
+	for _, c := range cells {
+		grid[c] = true
+	}
+
+	var rects []mergedRect
+	visited := make(map[Cell]bool, len(cells))
+
+	for _, c := range cells {
+		if visited[c] { continue }
+
+		rFirst, cFirst := c.Row, c.Col
+		rLast, cLast := rFirst, cFirst
+
+		// Expand Width
+		for {
+			nextCol := cLast + 1
+			if grid[Cell{rFirst, nextCol}] && !visited[Cell{rFirst, nextCol}] {
+				cLast = nextCol
+			} else {
+				break
+			}
+		}
+
+		// Expand Height
+		for {
+			nextRow := rLast + 1
+			canExpand := true
+			for col := cFirst; col <= cLast; col++ {
+				if !grid[Cell{nextRow, col}] || visited[Cell{nextRow, col}] {
+					canExpand = false
+					break
+				}
+			}
+			if canExpand {
+				rLast = nextRow
+			} else {
+				break
+			}
+		}
+
+		for r := rFirst; r <= rLast; r++ {
+			for c := cFirst; c <= cLast; c++ {
+				visited[Cell{r, c}] = true
+			}
+		}
+
+		rects = append(rects, mergedRect{rFirst, rLast, cFirst, cLast})
+	}
+	return rects
+}
+
+func toScalar(v *types.Any) (ScalarValue, bool) {
+	if v == nil { return ScalarValue{}, false }
+	var tbl flatbuffers.Table
+	if !v.Val(&tbl) { return ScalarValue{}, false }
+
+	switch v.ValType() {
+	case types.AnyValueInt:
+		var t types.Int; t.Init(tbl.Bytes, tbl.Pos)
+		return ScalarValue{Type: types.AnyValueInt, Int: t.Val()}, true
+	case types.AnyValueNum:
+		var t types.Num; t.Init(tbl.Bytes, tbl.Pos)
+		return ScalarValue{Type: types.AnyValueNum, Num: t.Val()}, true
+	case types.AnyValueBool:
+		var t types.Bool; t.Init(tbl.Bytes, tbl.Pos)
+		return ScalarValue{Type: types.AnyValueBool, Bool: t.Val()}, true
+	case types.AnyValueStr:
+		var t types.Str; t.Init(tbl.Bytes, tbl.Pos)
+		return ScalarValue{Type: types.AnyValueStr, Str: string(t.Val())}, true
+	case types.AnyValueErr:
+		var t types.Err; t.Init(tbl.Bytes, tbl.Pos)
+		return ScalarValue{Type: types.AnyValueErr, Err: int16(t.Val())}, true
+	}
+	return ScalarValue{}, false
+}
+
+func createScalarAny(b *flatbuffers.Builder, val ScalarValue) flatbuffers.UOffsetT {
+	var uOff flatbuffers.UOffsetT
+	switch val.Type {
+	case types.AnyValueInt:
+		types.IntStart(b)
+		types.IntAddVal(b, val.Int)
+		uOff = types.IntEnd(b)
+	case types.AnyValueNum:
+		types.NumStart(b)
+		types.NumAddVal(b, val.Num)
+		uOff = types.NumEnd(b)
+	case types.AnyValueBool:
+		types.BoolStart(b)
+		types.BoolAddVal(b, val.Bool)
+		uOff = types.BoolEnd(b)
+	case types.AnyValueStr:
+		sOff := b.CreateString(val.Str)
+		types.StrStart(b)
+		types.StrAddVal(b, sOff)
+		uOff = types.StrEnd(b)
+	case types.AnyValueErr:
+		types.ErrStart(b)
+		types.ErrAddVal(b, types.XlError(val.Err))
+		uOff = types.ErrEnd(b)
+	}
+
+	types.AnyStart(b)
+	types.AnyAddValType(b, val.Type)
+	types.AnyAddVal(b, uOff)
+	return types.AnyEnd(b)
 }
 
 func Serve(handler XllService) {
@@ -203,6 +474,12 @@ func Serve(handler XllService) {
 				cmdQueueLock.Lock()
 				cmdQueue = nil
 				cmdQueueLock.Unlock()
+
+				// Clear optimization buffers
+				bufferLock.Lock()
+				bufferedSets = make(map[string]map[Cell]ScalarValue)
+				bufferedFormats = make(map[string]map[Cell]string)
+				bufferLock.Unlock()
 
 				{{if hasEvent "CalculationCanceled" .Events}}
 				ctx := context.Background()
@@ -637,6 +914,7 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId shm.MsgType, handle uint6
 {{end}}
 
 func flushCommands() []byte {
+    flushBuffers()
 	cmdQueueLock.Lock()
 	defer cmdQueueLock.Unlock()
 

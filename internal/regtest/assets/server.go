@@ -212,6 +212,44 @@ func (s *Service) ScheduleMultiCmd(ctx context.Context) (int32, error) {
     return 2, nil
 }
 
+func (s *Service) ScheduleMassive(ctx context.Context) (int32, error) {
+    // 10x10 Checkerboard
+    for r := 0; r < 10; r++ {
+        for c := 0; c < 10; c++ {
+            val := int32(100)
+            if (r+c)%2 == 0 {
+                val = 200
+            }
+
+            b := flatbuffers.NewBuilder(0)
+            sOff := b.CreateString("Sheet1")
+            types.RangeStartRefsVector(b, 1)
+            types.CreateRect(b, int32(10+r), int32(10+r), int32(10+c), int32(10+c))
+            refsOff := b.EndVector(1)
+            types.RangeStart(b)
+            types.RangeAddSheetName(b, sOff)
+            types.RangeAddRefs(b, refsOff)
+            rOff := types.RangeEnd(b)
+            b.Finish(rOff)
+            rng := types.GetRootAsRange(b.FinishedBytes(), 0)
+
+            b2 := flatbuffers.NewBuilder(0)
+            types.IntStart(b2)
+            types.IntAddVal(b2, val)
+            iOff := types.IntEnd(b2)
+            types.AnyStart(b2)
+            types.AnyAddValType(b2, types.AnyValueInt)
+            types.AnyAddVal(b2, iOff)
+            aOff := types.AnyEnd(b2)
+            b2.Finish(aOff)
+            v := types.GetRootAsAny(b2.FinishedBytes(), 0)
+
+            generated.ScheduleSet(rng, v)
+        }
+    }
+    return 100, nil
+}
+
 func (s *Service) OnCalculationEnded(ctx context.Context) error {
     return nil
 }
