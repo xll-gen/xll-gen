@@ -194,17 +194,6 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
 ### `init <name>`
 Scaffolds a new project structure.
 
-| Type | Description | Go Type | Excel Type |
-| :--- | :--- | :--- | :--- |
-| `int` | 32-bit Integer | `int32` | `int` |
-| `float` | 64-bit Float | `float64` | `double` |
-| `bool` | Boolean | `bool` | `boolean` |
-| `string` | Unicode String | `string` | `string` |
-| `any` | Any Value (Scalar/Array) | `*types.Any` | `CheckRange/Variant` |
-| `range` | Reference to a range | `*types.Range` | `Reference` |
-| `grid` | Generic 2D Array | `*types.Grid` | `Array` |
-| `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
-
 ### `generate`
 Generates C++ and Go source code based on `xll.yaml`.
 *   **--no-pid-suffix**: Disables appending the PID to the Shared Memory name (useful for testing).
