@@ -250,3 +250,5 @@ If you have enabled auto-launch in `xll.yaml` (`server.launch.enabled: true`), t
 ## License
 
 GNU General Public License v3.0
+
+**Note**: Excel SDK files are subject to a separate license.
