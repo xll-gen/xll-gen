@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TestGenerateStringArgRepro verifies that string arguments (Excel type D%) are correctly
+// handled in the generated C++ code, specifically using ConvertExcelString helper.
 func TestGenerateStringArgRepro(t *testing.T) {
 	// 1. Setup temp dir
 	tempDir, err := os.MkdirTemp("", "xll-gen-string-repro")

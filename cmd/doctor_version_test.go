@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// TestFlatbuffersVersionConsistency ensures that the flatc version pinned in the Go code
+// matches the version defined in the CMake template.
 func TestFlatbuffersVersionConsistency(t *testing.T) {
 	// 1. Extract version from internal/generator/flatc.go
 	// Since we are running from cmd/, we need to go up one level

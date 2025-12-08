@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// TestGenerate runs a full generation cycle in a temporary directory and verifies that
+// all expected files are created and no legacy files exist.
 func TestGenerate(t *testing.T) {
 	// 1. Setup temp dir
 	tempDir, err := os.MkdirTemp("", "xll-gen-test")
