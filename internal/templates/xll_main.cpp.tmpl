@@ -21,19 +21,8 @@
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
 
-// System Message IDs
-#define MSG_ACK 2
-#define MSG_CHUNK 128
-#define MSG_SETREFCACHE 129
-#define MSG_CALCULATION_ENDED 130
-#define MSG_CALCULATION_CANCELED 131
-#define MSG_USER_START 132
-
-shm::DirectHost g_host;
 std::thread g_worker;
 std::atomic<bool> g_running{false};
-std::map<std::string, bool> g_sentRefCache;
-std::mutex g_refCacheMutex;
 
 // Global Process Handle (for auto-launched server)
 HANDLE g_hChildProcess = NULL;
@@ -51,13 +40,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
     switch (msgId) {
     case MSG_CHUNK: { // Chunk (128)
-        std::vector<uint8_t> fullPayload;
-        uint32_t originalMsgId = 0;
-        size_t bytesWritten = 0;
-        if (HandleAsyncChunk(req, resp, fullPayload, originalMsgId, bytesWritten)) {
-             return GuestHandler(fullPayload.data(), resp, originalMsgId);
-        }
-        return (int32_t)bytesWritten;
+        return HandleChunk(req, resp, GuestHandler);
     }
 {{range $i, $fn := .Functions}}
     {{if .Async}}
@@ -262,13 +245,13 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_CALCULATION_ENDED, 0);
+    slot.Send(0, MSG_CALCULATION_ENDED); // Send takes (size, msgType, timeout)
     {{else if eq .Type "CalculationCanceled"}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_CALCULATION_CANCELED, 0);
+    slot.Send(0, MSG_CALCULATION_CANCELED);
     {{else}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send({{lookupEventId .Type}}, 0);
+    slot.Send(0, {{lookupEventId .Type}});
     {{end}}
 }
 {{end}}
@@ -280,7 +263,7 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_CALCULATION_ENDED, 0);
+    slot.Send(0, MSG_CALCULATION_ENDED);
 }
 {{end}}
 
@@ -293,12 +276,6 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{range .Args}}
     {{if eq .Type "string"}}
     auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
-    {{else if eq .Type "string?"}}
-    flatbuffers::Offset<ipc::types::Str> {{.Name}}_off = 0;
-    if ({{.Name}}) {
-        auto val_off = builder.CreateString(ConvertExcelString({{.Name}}));
-        {{.Name}}_off = ipc::types::CreateStr(builder, val_off);
-    }
     {{else if eq .Type "int?"}}
     flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
     if ({{.Name}}) {
@@ -342,8 +319,6 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{range .Args}}
     {{if eq .Type "string"}}
     reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "string?"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else if eq .Type "int?"}}
     if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
     {{else if eq .Type "float?"}}
@@ -371,13 +346,19 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
-    // Zero-Copy Send (MsgId, Size)
+    // Zero-Copy Send (Size, MsgId, Timeout)
     {{if .Async}}
-    int ok = slot.Send({{add 132 $i}}, builder.GetSize());
-    if (ok < 0) return;
+    // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
+    {{ $ackTimeout := parseTimeout .Timeout 0 }}
+    {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
+    bool ok = slot.Send(builder.GetSize(), {{add 132 $i}}, {{ $ackTimeout }});
+    if (!ok) return;
     return;
     {{else}}
-    const uint8_t* respBuf = ReceiveChunked(slot, {{add 132 $i}}, builder.GetSize());
+    // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
+    {{ $syncTimeout := parseTimeout .Timeout 0 }}
+    {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
+    const uint8_t* respBuf = ReceiveChunked(slot, {{add 132 $i}}, builder.GetSize(), {{ $syncTimeout }});
     if (!respBuf) return {{defaultErrorVal .Return}};
 
     auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf);

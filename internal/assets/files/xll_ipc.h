@@ -1,11 +1,10 @@
-#ifndef XLL_IPC_H
-#define XLL_IPC_H
-
+#pragma once
+#include <windows.h>
 #include <vector>
-#include <cstdint>
 #include <map>
+#include <mutex>
+#include <functional>
 #include "shm/DirectHost.h"
-#include "shm/IPCUtils.h"
 
 // System Message IDs
 #define MSG_ACK 2
@@ -15,14 +14,17 @@
 #define MSG_CALCULATION_CANCELED 131
 #define MSG_USER_START 132
 
-// Sends data in chunks if it exceeds the slot limit.
-// Uses DirectHost::Send (copy-based) because it might be called inside a ZeroCopy context (SetRefCache).
-int SendChunked(shm::DirectHost& host, const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf);
+// Global IPC Objects
+extern shm::DirectHost g_host;
+extern std::map<std::string, bool> g_sentRefCache;
+extern std::mutex g_refCacheMutex;
 
-// Receives chunked data from a ZeroCopySlot.
-const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqSize);
+// Chunking Helpers
+int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf, uint32_t timeoutMs);
+const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqSize, uint32_t timeoutMs);
 
-// Reassembles chunks for async returns
-bool HandleAsyncChunk(const uint8_t* req, uint8_t* resp, std::vector<uint8_t>& fullPayload, uint32_t& originalMsgId, size_t& bytesWritten);
+// Guest Handler Type
+typedef int32_t (*GuestHandlerFunc)(const uint8_t* req, uint8_t* resp, uint32_t msgId);
 
-#endif // XLL_IPC_H
+// Handle Chunk Request in Guest
+int32_t HandleChunk(const uint8_t* req, uint8_t* resp, GuestHandlerFunc handler);

@@ -19,9 +19,10 @@ type Event struct {
 }
 
 type ServerConfig struct {
-	Timeout string        `yaml:"timeout"`
-	Workers int           `yaml:"workers"`
-	Launch  *LaunchConfig `yaml:"launch"`
+	Timeout         string        `yaml:"timeout"`
+	AsyncAckTimeout string        `yaml:"async_ack_timeout"`
+	Workers         int           `yaml:"workers"`
+	Launch          *LaunchConfig `yaml:"launch"`
 }
 
 type LaunchConfig struct {
