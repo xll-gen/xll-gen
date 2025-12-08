@@ -1,4 +1,5 @@
 #pragma once
+#include <windows.h>
 #include "xlcall.h"
 #include "schema_generated.h"
 #include <flatbuffers/flatbuffers.h>
