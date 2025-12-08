@@ -79,14 +79,22 @@ functions:
 
 	// Expected fix pattern:
 	// Use helper ConvertExcelString(msg)
-	expectedSubstrings := []string{
-		"ConvertExcelString(msg)",
-		"const char* ConvertExcelString(const wchar_t* wstr)", // Helper definition
+	expectedCall := "ConvertExcelString(msg)"
+
+	if !strings.Contains(content, expectedCall) {
+		t.Errorf("Generated code missing expected fix part: %s", expectedCall)
 	}
 
-	for _, s := range expectedSubstrings {
-		if !strings.Contains(content, s) {
-			t.Errorf("Generated code missing expected fix part: %s", s)
-		}
+	// Helper definition is now in include/xll_utility.cpp
+	utilityPath := filepath.Join("generated", "cpp", "include", "xll_utility.cpp")
+	utilBytes, err := os.ReadFile(utilityPath)
+	if err != nil {
+		t.Fatal("Could not read generated xll_utility.cpp: ", err)
+	}
+	utilContent := string(utilBytes)
+
+	expectedDef := "const char* ConvertExcelString(const wchar_t* wstr)"
+	if !strings.Contains(utilContent, expectedDef) {
+		t.Errorf("Helper function definition missing in xll_utility.cpp: %s", expectedDef)
 	}
 }
