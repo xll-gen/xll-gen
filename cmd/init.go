@@ -8,7 +8,9 @@ import (
 	"text/template"
 
 	"github.com/spf13/cobra"
-	"xll-gen/internal/assets"
+	"gopkg.in/yaml.v3"
+	"xll-gen/internal/config"
+	"xll-gen/internal/generator"
 	"xll-gen/internal/templates"
 )
 
@@ -73,34 +75,56 @@ func runInit(projectName string) error {
 		return fmt.Errorf("failed to run go mod init: %w", err)
 	}
 
-	// 5. Run go mod tidy
-	// This ensures go.sum is created and the module is in a consistent state,
-	// even if dependencies (like shm) aren't imported yet.
+	// 5. Generate code and run go mod tidy
+	// We need to change directory to the project folder for generation and tidy
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if err := os.Chdir(projectName); err != nil {
+		return err
+	}
+	defer func() {
+		// Restore original working directory
+		_ = os.Chdir(cwd)
+	}()
+
+	// Read and parse xll.yaml
+	data, err := os.ReadFile("xll.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to read xll.yaml: %w", err)
+	}
+
+	var cfg config.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("failed to parse xll.yaml: %w", err)
+	}
+
+	config.ApplyDefaults(&cfg)
+
+	if err := config.Validate(&cfg); err != nil {
+		return err
+	}
+
+	// Run generator
+	// We use the project name as the module name since we just ran 'go mod init <projectName>'
+	opts := generator.Options{}
+	if err := generator.Generate(&cfg, projectName, opts); err != nil {
+		return fmt.Errorf("failed to generate code: %w", err)
+	}
+
+	// Run go mod tidy
+	fmt.Println("Running 'go mod tidy'...")
 	cmdTidy := exec.Command("go", "mod", "tidy")
-	cmdTidy.Dir = projectName
 	cmdTidy.Stdout = os.Stdout
 	cmdTidy.Stderr = os.Stderr
 	if err := cmdTidy.Run(); err != nil {
 		return fmt.Errorf("failed to run go mod tidy: %w", err)
 	}
 
-	// 6. Create generated assets (C++ common files)
-	// We put them in generated/cpp/include
-	includeDir := filepath.Join(projectName, "generated", "cpp", "include")
-	if err := os.MkdirAll(includeDir, 0755); err != nil {
-		return err
-	}
-
-	for name, content := range assets.AssetsMap {
-		if err := os.WriteFile(filepath.Join(includeDir, name), []byte(content), 0644); err != nil {
-			return err
-		}
-	}
-
 	fmt.Printf("Project %s initialized successfully!\n", projectName)
 	fmt.Println("Next steps:")
 	fmt.Printf("  cd %s\n", projectName)
-	fmt.Println("  xll-gen generate  # (Run this to generate code)")
 	fmt.Println("  xll-gen build     # (Run this to build the project)")
 
 	return nil
