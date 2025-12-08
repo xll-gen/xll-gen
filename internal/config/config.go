@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Config represents the top-level configuration structure parsed from xll.yaml.
@@ -110,6 +111,33 @@ type Arg struct {
 	Description string `yaml:"description"`
 }
 
+// validArgTypes is the set of allowed argument types in xll.yaml.
+var validArgTypes = map[string]bool{
+	"int":     true,
+	"float":   true,
+	"string":  true,
+	"bool":    true,
+	"range":   true,
+	"grid":    true,
+	"numgrid": true,
+	"any":     true,
+	"int?":    true,
+	"float?":  true,
+	"bool?":   true,
+}
+
+// validReturnTypes is the set of allowed return types in xll.yaml.
+var validReturnTypes = map[string]bool{
+	"int":     true,
+	"float":   true,
+	"string":  true,
+	"bool":    true,
+	"range":   true,
+	"grid":    true,
+	"numgrid": true,
+	"any":     true,
+}
+
 // Validate checks the configuration for errors, such as duplicate event types
 // or unsupported argument types.
 //
@@ -128,17 +156,25 @@ func Validate(config *Config) error {
 	}
 
 	for _, fn := range config.Functions {
-		if fn.Return == "string?" {
-			return fmt.Errorf("function '%s': return type 'string?' is not supported", fn.Name)
+		if !validReturnTypes[fn.Return] {
+			return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 		}
 		for _, arg := range fn.Args {
-			if arg.Type == "string?" {
-				return fmt.Errorf("function '%s' argument '%s': type 'string?' is not supported (Excel passes empty strings for missing arguments, preventing reliable null detection)", fn.Name, arg.Name)
+			if !validArgTypes[arg.Type] {
+				return fmt.Errorf("function '%s' argument '%s': type '%s' is not supported (allowed: %s)", fn.Name, arg.Name, arg.Type, allowedTypesList(validArgTypes))
 			}
 		}
 	}
 
 	return nil
+}
+
+func allowedTypesList(m map[string]bool) string {
+	var keys []string
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return strings.Join(keys, ", ")
 }
 
 // ApplyDefaults sets default values for configuration fields that are missing.
