@@ -134,6 +134,9 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 			if b == nil { return false }
 			return *b
 		},
+		"parseTimeout": func(s string, defaultMs int) int {
+			return parseDurationToMs(s, defaultMs)
+		},
 	}
 
 	t, err := template.New("cpp").Funcs(funcMap).Parse(tmplContent)

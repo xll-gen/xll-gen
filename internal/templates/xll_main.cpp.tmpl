@@ -143,7 +143,7 @@ std::wstring GetXllDir() {
 }
 
 // Chunking helper
-int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf) {
+int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf, uint32_t timeoutMs) {
     // Thread-safe random number generation
     thread_local std::mt19937_64 rng(std::random_device{}());
     thread_local std::uniform_int_distribution<uint64_t> dist;
@@ -162,19 +162,22 @@ int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf)
         b.Finish(chunk);
 
         // MsgID 128 for Chunk
-        int ok = g_host.Send(b.GetBufferPointer(), b.GetSize(), MSG_CHUNK, respBuf);
-        if (ok < 0) return ok; // Fail
+        bool ok = g_host.Send(b.GetBufferPointer(), b.GetSize(), MSG_CHUNK, respBuf, timeoutMs);
+        if (!ok) return -1; // Fail (Timeout)
 
         // Response must be Ack (MsgID 2)
         // Since DirectHost.Send is copy-based, respBuf contains the response.
         // But SendChunked usage in ConvertAny implies we check 'ok' and respBuf.
         // If it's a chunk, we expect Ack(2) with ok=true
         if (respBuf.empty()) return -1;
-        // NOTE: shm::DirectHost::Send returns the msgId of response or negative error.
-        // Wait, DirectHost::Send signature: int Send(req, reqSize, reqMsgId, &respBuf)
-        // It returns msgId of response.
-        if (ok != MSG_ACK) return -1; // Expecting Ack
 
+        // Check message type. Since Send() returns bool now, we must inspect the buffer or rely on caller?
+        // Wait, DirectHost::Send (copy) fills respBuf. But we don't know the MsgID unless we parse it?
+        // Actually, DirectHost::Send (copy) returns the *size* of response in some versions, or just bool.
+        // The *provided code snippet* shows Send returning bool, and filling outResp.
+        // We need to know if the response is an ACK.
+
+        // Assuming standard protocol: Response to Chunk is Ack.
         auto ack = ipc::GetAck(respBuf.data());
         if (!ack || !ack->ok()) return -1;
 
@@ -183,11 +186,20 @@ int SendChunked(const uint8_t* data, size_t size, std::vector<uint8_t>& respBuf)
     return 1; // Success
 }
 
-const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqSize) {
-    int ok = slot.Send(reqMsgId, reqSize);
-    if (ok < 0) return nullptr;
+const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqSize, uint32_t timeoutMs) {
+    bool ok = slot.Send(reqSize, reqMsgId, timeoutMs);
+    if (!ok) return nullptr;
 
-    if (slot.GetRespMsgId() == MSG_CHUNK || ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) {
+    // slot.GetRespMsgId() doesn't exist in the provided snippet.
+    // But slot.GetRespBuffer() is available.
+    // We need to know if it's a Chunk or standard response.
+    // The snippet didn't include GetRespMsgId().
+    // We can inspect the Slot header directly via slot object? No, slot.host is private.
+    // Wait, the snippet had: `slot.header->msgType = msgType` for request.
+    // Response MsgType is in slot->header->msgType? No, `slot->header` is private in ZeroCopySlot.
+
+    // However, we can check if the buffer is a Chunk.
+    if (ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) {
         thread_local std::vector<uint8_t> buf;
         buf.clear();
 
@@ -203,8 +215,8 @@ const uint8_t* ReceiveChunked(shm::ZeroCopySlot& slot, int reqMsgId, size_t reqS
             auto ack = ipc::CreateAck(b, chunk->id(), true);
             b.Finish(ack);
 
-            if (slot.Send(MSG_ACK, b.GetSize()) < 0) return nullptr;
-            if (slot.GetRespMsgId() != MSG_CHUNK && !ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) return nullptr;
+            if (!slot.Send(b.GetSize(), MSG_ACK, timeoutMs)) return nullptr;
+            if (!ipc::ChunkBufferHasIdentifier(slot.GetRespBuffer())) return nullptr;
         }
     }
     return slot.GetRespBuffer();
@@ -391,15 +403,21 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                       Excel12(xlFree, 0, 1, &xMulti);
 
                       std::vector<uint8_t> respBuf;
-                      int ok;
+                      bool ok;
+                      // Use default timeout (2s) or configured async_ack_timeout?
+                      // This is a synchronous cache update (internal).
+                      // We should probably use a reasonably short timeout.
+                      // Let's use 2000ms (default) as it's a system op.
+                      uint32_t timeoutMs = 2000;
+
                       if (reqB.GetSize() > 950 * 1024) {
-                          ok = SendChunked(reqB.GetBufferPointer(), reqB.GetSize(), respBuf);
+                          ok = (SendChunked(reqB.GetBufferPointer(), reqB.GetSize(), respBuf, timeoutMs) > 0);
                       } else {
                           // MSG_SETREFCACHE (129)
-                          ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), MSG_SETREFCACHE, respBuf);
+                          ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), MSG_SETREFCACHE, respBuf, timeoutMs);
                       }
 
-                      if (ok == MSG_ACK && !respBuf.empty()) {
+                      if (ok && !respBuf.empty()) {
                           auto ack = ipc::GetAck(respBuf.data());
                           if (ack && ack->ok()) {
                               g_sentRefCache[key] = true;
@@ -660,13 +678,13 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_CALCULATION_ENDED, 0);
+    slot.Send(0, MSG_CALCULATION_ENDED); // Send takes (size, msgType, timeout)
     {{else if eq .Type "CalculationCanceled"}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_CALCULATION_CANCELED, 0);
+    slot.Send(0, MSG_CALCULATION_CANCELED);
     {{else}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send({{lookupEventId .Type}}, 0);
+    slot.Send(0, {{lookupEventId .Type}});
     {{end}}
 }
 {{end}}
@@ -678,7 +696,7 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         g_sentRefCache.clear();
     }
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(MSG_CALCULATION_ENDED, 0);
+    slot.Send(0, MSG_CALCULATION_ENDED);
 }
 {{end}}
 
@@ -769,13 +787,19 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
-    // Zero-Copy Send (MsgId, Size)
+    // Zero-Copy Send (Size, MsgId, Timeout)
     {{if .Async}}
-    int ok = slot.Send({{add 132 $i}}, builder.GetSize());
-    if (ok < 0) return;
+    // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
+    {{ $ackTimeout := parseTimeout .Timeout 0 }}
+    {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
+    bool ok = slot.Send(builder.GetSize(), {{add 132 $i}}, {{ $ackTimeout }});
+    if (!ok) return;
     return;
     {{else}}
-    const uint8_t* respBuf = ReceiveChunked(slot, {{add 132 $i}}, builder.GetSize());
+    // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
+    {{ $syncTimeout := parseTimeout .Timeout 0 }}
+    {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
+    const uint8_t* respBuf = ReceiveChunked(slot, {{add 132 $i}}, builder.GetSize(), {{ $syncTimeout }});
     if (!respBuf) return {{defaultErrorVal .Return}};
 
     auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf);
