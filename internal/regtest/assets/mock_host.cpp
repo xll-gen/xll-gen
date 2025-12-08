@@ -329,6 +329,41 @@ int main() {
         ASSERT_EQ(-1, resp->result(), "TimeoutFunc");
     }
 
+    // 13. CalculationEnded Commands
+    {
+        // 1. Call ScheduleCmd (ID 143)
+        builder.Reset();
+        ipc::ScheduleCmdRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 143, respBuf) < 0) return 1;
+        auto resp = flatbuffers::GetRoot<ipc::ScheduleCmdResponse>(respBuf.data());
+        ASSERT_EQ(1, resp->result(), "ScheduleCmd");
+
+        // 2. Send CalculationEnded (ID 130)
+        // Send empty payload (or 0 size)
+        vector<uint8_t> eventBuf;
+        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+
+        // 3. Verify Response contains commands
+        if (eventBuf.empty()) { cerr << "Expected commands in CalcEnded response" << endl; return 1; }
+        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+
+        if (!eventResp->commands()) { cerr << "No commands list" << endl; return 1; }
+        if (eventResp->commands()->size() != 1) { cerr << "Expected 1 command" << endl; return 1; }
+
+        auto wrapper = eventResp->commands()->Get(0);
+        if (wrapper->cmd_type() != ipc::Command_SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
+
+        auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+        auto rng = setCmd->target();
+        ASSERT_STREQ("Sheet1", rng->sheet_name()->str(), "SetCommand Sheet");
+
+        auto val = setCmd->value();
+        ASSERT_EQ(ipc::types::AnyValue_Int, val->val_type(), "SetCommand ValType");
+        ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
+    }
+
     cout << "PASSED" << endl;
     return 0;
 }

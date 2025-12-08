@@ -1,6 +1,7 @@
 #include "xll_converters.h"
 #include "xll_utility.h"
 #include "xll_ipc.h"
+#include "xll_mem.h"
 #include <sstream>
 
 std::wstring GetSheetName(LPXLOPER12 pxRef) {
@@ -241,4 +242,196 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
 
     auto nilVal = ipc::types::CreateNil(builder);
     return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, val.Union());
+}
+
+LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
+    if (!any) return NewXLOPER12(); // Nil
+
+    switch (any->val_type()) {
+    case ipc::types::AnyValue_Num: {
+        LPXLOPER12 x = NewXLOPER12();
+        x->xltype = xltypeNum;
+        x->val.num = any->val_as_Num()->val();
+        return x;
+    }
+    case ipc::types::AnyValue_Int: {
+        LPXLOPER12 x = NewXLOPER12();
+        x->xltype = xltypeInt;
+        x->val.w = any->val_as_Int()->val();
+        return x;
+    }
+    case ipc::types::AnyValue_Bool: {
+        LPXLOPER12 x = NewXLOPER12();
+        x->xltype = xltypeBool;
+        x->val.xbool = any->val_as_Bool()->val() ? 1 : 0;
+        return x;
+    }
+    case ipc::types::AnyValue_Str: {
+        std::string s = any->val_as_Str()->val()->str();
+        return NewExcelString(StringToWString(s));
+    }
+    case ipc::types::AnyValue_Err: {
+        LPXLOPER12 x = NewXLOPER12();
+        x->xltype = xltypeErr;
+        x->val.err = (int)any->val_as_Err()->val();
+        return x;
+    }
+    case ipc::types::AnyValue_NumGrid: {
+        auto g = any->val_as_NumGrid();
+        int rows = g->rows();
+        int cols = g->cols();
+        int count = rows * cols;
+        auto data = g->data();
+        if (data->size() != count) return NewXLOPER12(); // Error
+
+        LPXLOPER12 x = NewXLOPER12();
+        x->xltype = xltypeMulti | xlbitDLLFree;
+        x->val.array.rows = rows;
+        x->val.array.columns = cols;
+        x->val.array.lparray = new XLOPER12[count];
+        std::memset(x->val.array.lparray, 0, count * sizeof(XLOPER12));
+
+        for(int i=0; i<count; ++i) {
+            x->val.array.lparray[i].xltype = xltypeNum;
+            x->val.array.lparray[i].val.num = data->Get(i);
+        }
+        return x;
+    }
+    case ipc::types::AnyValue_Grid: {
+        auto g = any->val_as_Grid();
+        int rows = g->rows();
+        int cols = g->cols();
+        int count = rows * cols;
+        auto data = g->data();
+        if (data->size() != count) return NewXLOPER12(); // Error
+
+        LPXLOPER12 x = NewXLOPER12();
+        x->xltype = xltypeMulti | xlbitDLLFree;
+        x->val.array.rows = rows;
+        x->val.array.columns = cols;
+        x->val.array.lparray = new XLOPER12[count];
+        std::memset(x->val.array.lparray, 0, count * sizeof(XLOPER12));
+
+        // Recursively convert elements
+        for(int i=0; i<count; ++i) {
+            auto scalar = data->Get(i);
+            // ConvertScalar inverse...
+            // Wait, Grid in flatbuffers contains Scalars (which are a Union of simple types)
+            // Scalar is NOT Any. Scalar has val_type: Num, Int, Str, Bool, Err, Nil.
+            // We need ScalarToXLOPER logic here.
+
+            auto& cell = x->val.array.lparray[i];
+
+            switch (scalar->val_type()) {
+                case ipc::types::ScalarValue_Num:
+                    cell.xltype = xltypeNum;
+                    cell.val.num = scalar->val_as_Num()->val();
+                    break;
+                case ipc::types::ScalarValue_Int:
+                    cell.xltype = xltypeInt;
+                    cell.val.w = scalar->val_as_Int()->val();
+                    break;
+                case ipc::types::ScalarValue_Bool:
+                    cell.xltype = xltypeBool;
+                    cell.val.xbool = scalar->val_as_Bool()->val() ? 1 : 0;
+                    break;
+                case ipc::types::ScalarValue_Str: {
+                    std::string s = scalar->val_as_Str()->val()->str();
+                    // We need to allocate string buffer
+                    cell.xltype = xltypeStr | xlbitDLLFree; // Wait, xlAutoFree12 logic
+                    // In xlAutoFree12 for xltypeMulti, we check if elem->xltype & xltypeStr.
+                    // If so, we delete elem->val.str.
+                    // So we must allocate it with new wchar_t[].
+                    std::wstring ws = StringToWString(s);
+                    auto pascal = WStringToPascalString(ws);
+                    cell.val.str = new wchar_t[pascal.size()];
+                    std::memcpy(cell.val.str, pascal.data(), pascal.size() * sizeof(wchar_t));
+                    break;
+                }
+                case ipc::types::ScalarValue_Err:
+                    cell.xltype = xltypeErr;
+                    cell.val.err = (int)scalar->val_as_Err()->val();
+                    break;
+                default:
+                    cell.xltype = xltypeNil;
+            }
+        }
+        return x;
+    }
+    default:
+        return NewXLOPER12();
+    }
+}
+
+LPXLOPER12 RangeToXLOPER12(const ipc::types::Range* range) {
+    if (!range) return nullptr;
+
+    auto refs = range->refs();
+    if (!refs || refs->size() == 0) return nullptr;
+
+    std::wstring sheetName = StringToWString(range->sheet_name()->str());
+    DWORD idSheet = 0;
+    bool hasSheet = false;
+
+    if (!sheetName.empty()) {
+        XLOPER12 xName;
+        xName.xltype = xltypeStr;
+        // Need pascal string, use TempStr12 logic or create one on stack
+        // TempStr12 uses a ring buffer, safe for short term use in Excel12 call.
+        // But we are in converters.
+        // Let's use xll_utility.h TempStr12.
+
+        XLOPER12 xId;
+        int ret = Excel12(xlSheetId, &xId, 1, TempStr12(sheetName.c_str()));
+        if (ret == xlretSuccess && (xId.xltype == xltypeRef)) {
+            idSheet = xId.val.mref.idSheet;
+            hasSheet = true;
+            Excel12(xlFree, 0, 1, &xId);
+        }
+    }
+
+    LPXLOPER12 x = NewXLOPER12();
+    // If we have a sheet ID or multiple refs, use xltypeRef
+    // If no sheet ID and single ref, can use xltypeSRef?
+    // Safer to use xltypeRef if we can, but xltypeRef requires idSheet.
+    // If we don't have idSheet, we should use SRef for current sheet.
+
+    if (!hasSheet) {
+        if (refs->size() == 1) {
+            x->xltype = xltypeSRef;
+            const auto& r = refs->Get(0);
+            x->val.sref.count = 1;
+            x->val.sref.ref.rwFirst = r->row_first();
+            x->val.sref.ref.rwLast = r->row_last();
+            x->val.sref.ref.colFirst = r->col_first();
+            x->val.sref.ref.colLast = r->col_last();
+            return x;
+        } else {
+             // Multiple refs without sheet ID?
+             // Use current sheet ID.
+             XLOPER12 xId;
+             int ret = Excel12(xlSheetId, &xId, 0); // Active sheet?
+             if (ret == xlretSuccess && (xId.xltype == xltypeRef)) {
+                  idSheet = xId.val.mref.idSheet;
+                  hasSheet = true;
+                  Excel12(xlFree, 0, 1, &xId);
+             }
+        }
+    }
+
+    // Construct xltypeRef
+    x->xltype = xltypeRef | xlbitDLLFree;
+    x->val.mref.lpmref = (LPXLMREF) new char[sizeof(XLMREF) + sizeof(XLREF12) * refs->size()];
+    x->val.mref.lpmref->count = (WORD)refs->size();
+    x->val.mref.idSheet = idSheet;
+
+    for(size_t i=0; i<refs->size(); ++i) {
+        const auto& r = refs->Get((flatbuffers::uoffset_t)i);
+        x->val.mref.lpmref->reftbl[i].rwFirst = r->row_first();
+        x->val.mref.lpmref->reftbl[i].rwLast = r->row_last();
+        x->val.mref.lpmref->reftbl[i].colFirst = r->col_first();
+        x->val.mref.lpmref->reftbl[i].colLast = r->col_last();
+    }
+
+    return x;
 }

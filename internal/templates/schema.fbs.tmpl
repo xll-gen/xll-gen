@@ -15,12 +15,29 @@ table Chunk {
   msg_id: uint;
 }
 
-root_type Chunk;
-file_identifier "XCHN";
-
 table SetRefCacheRequest {
   key: string;
   val: ipc.types.Any;
+}
+
+table SetCommand {
+  target: ipc.types.Range;
+  value: ipc.types.Any;
+}
+
+table FormatCommand {
+  target: ipc.types.Range;
+  format: string;
+}
+
+union Command { SetCommand, FormatCommand }
+
+table CommandWrapper {
+  cmd: Command;
+}
+
+table CalculationEndedResponse {
+  commands: [CommandWrapper];
 }
 
 {{range .Functions}}

@@ -45,6 +45,48 @@ type outgoingChunk struct {
 	lastAccess time.Time
 }
 
+// Command Queue
+type queuedCommand struct {
+	cmdType int // 0: Set, 1: Format
+	data    []byte
+}
+var (
+	cmdQueueLock sync.Mutex
+	cmdQueue     []queuedCommand
+)
+
+func ScheduleSet(r *types.Range, v *types.Any) {
+	b := flatbuffers.NewBuilder(0)
+	rOff := cloneRange(b, r)
+	vOff := cloneAny(b, v)
+
+	ipc.SetCommandStart(b)
+	ipc.SetCommandAddTarget(b, rOff)
+	ipc.SetCommandAddValue(b, vOff)
+	root := ipc.SetCommandEnd(b)
+	b.Finish(root)
+
+	cmdQueueLock.Lock()
+	cmdQueue = append(cmdQueue, queuedCommand{0, b.FinishedBytes()})
+	cmdQueueLock.Unlock()
+}
+
+func ScheduleFormat(r *types.Range, fmtStr string) {
+	b := flatbuffers.NewBuilder(0)
+	rOff := cloneRange(b, r)
+	fOff := b.CreateString(fmtStr)
+
+	ipc.FormatCommandStart(b)
+	ipc.FormatCommandAddTarget(b, rOff)
+	ipc.FormatCommandAddFormat(b, fOff)
+	root := ipc.FormatCommandEnd(b)
+	b.Finish(root)
+
+	cmdQueueLock.Lock()
+	cmdQueue = append(cmdQueue, queuedCommand{1, b.FinishedBytes()})
+	cmdQueueLock.Unlock()
+}
+
 func Serve(handler XllService) {
 	name := "{{.ProjectName}}"
 	for _, arg := range os.Args {
@@ -125,17 +167,40 @@ func Serve(handler XllService) {
 			refCacheMutex.Lock()
 			refCache = make(map[string][]byte)
 			refCacheMutex.Unlock()
+
 			{{if hasEvent "CalculationEnded" .Events}}
-			ctx := context.Background()
+			var wg sync.WaitGroup
+			wg.Add(1)
 			jobQueue <- func() {
-				if err := handler.OnCalculationEnded(ctx); err != nil {
+				defer wg.Done()
+				if err := handler.OnCalculationEnded(context.Background()); err != nil {
 					fmt.Printf("Event handler OnCalculationEnded failed: %v\n", err)
 				}
 			}
+			wg.Wait()
 			{{end}}
+
+			respBytes := flushCommands()
+			if len(respBytes) > 0 {
+				if len(respBytes) > len(respBuf) {
+					// Chunking for Commands?
+					// Reuse logic?
+					// For now, assume it fits or fail gracefully.
+					// TODO: Implement chunking for responses > 1MB
+					fmt.Printf("Warning: CalculationEnded response too large (%d)\n", len(respBytes))
+					return 0, 0
+				}
+				copy(respBuf, respBytes)
+				return int32(len(respBytes)), MSG_CALCULATION_ENDED
+			}
 			return 0, 0
 
 		case MSG_CALCULATION_CANCELED: // 131
+			// Clear queue
+			cmdQueueLock.Lock()
+			cmdQueue = nil
+			cmdQueueLock.Unlock()
+
 			{{if hasEvent "CalculationCanceled" .Events}}
 			ctx := context.Background()
 			jobQueue <- func() {
@@ -335,9 +400,11 @@ func Serve(handler XllService) {
 	client.Wait()
 }
 
+// ... handle functions ...
 {{range $i, $fn := .Functions}}
 func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgId shm.MsgType, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
+	_ = request
 
 	// Extract args
 	{{range .Args}}
@@ -364,6 +431,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{else if eq .Type "range"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "grid"}}
+	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+	{{else if eq .Type "numgrid"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "numgrid"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
@@ -579,3 +648,154 @@ func sendAsyncError{{.Name}}(client *shm.Client, msgId shm.MsgType, handle uint6
 }
 {{end}}
 {{end}}
+
+func flushCommands() []byte {
+	cmdQueueLock.Lock()
+	defer cmdQueueLock.Unlock()
+
+	if len(cmdQueue) == 0 {
+		return nil
+	}
+
+	b := flatbuffers.NewBuilder(0)
+
+	wrappers := make([]flatbuffers.UOffsetT, len(cmdQueue))
+
+	for i, c := range cmdQueue {
+		var uOff flatbuffers.UOffsetT
+		var uType ipc.Command
+
+		if c.cmdType == 0 {
+			cmd := ipc.GetRootAsSetCommand(c.data, 0)
+			rOff := cloneRange(b, cmd.Target(nil))
+			vOff := cloneAny(b, cmd.Value(nil))
+
+			ipc.SetCommandStart(b)
+			ipc.SetCommandAddTarget(b, rOff)
+			ipc.SetCommandAddValue(b, vOff)
+			uOff = ipc.SetCommandEnd(b)
+			uType = ipc.CommandSetCommand
+		} else {
+			cmd := ipc.GetRootAsFormatCommand(c.data, 0)
+			rOff := cloneRange(b, cmd.Target(nil))
+			fOff := b.CreateString(string(cmd.Format()))
+
+			ipc.FormatCommandStart(b)
+			ipc.FormatCommandAddTarget(b, rOff)
+			ipc.FormatCommandAddFormat(b, fOff)
+			uOff = ipc.FormatCommandEnd(b)
+			uType = ipc.CommandFormatCommand
+		}
+
+		ipc.CommandWrapperStart(b)
+		ipc.CommandWrapperAddCmdType(b, uType)
+		ipc.CommandWrapperAddCmd(b, uOff)
+		wrappers[i] = ipc.CommandWrapperEnd(b)
+	}
+
+	ipc.CalculationEndedResponseStartCommandsVector(b, len(wrappers))
+	for i := len(wrappers) - 1; i >= 0; i-- {
+		b.PrependUOffsetT(wrappers[i])
+	}
+	cmdsOff := b.EndVector(len(wrappers))
+
+	ipc.CalculationEndedResponseStart(b)
+	ipc.CalculationEndedResponseAddCommands(b, cmdsOff)
+	root := ipc.CalculationEndedResponseEnd(b)
+	b.Finish(root)
+
+	cmdQueue = nil
+	return b.FinishedBytes()
+}
+
+func cloneRange(b *flatbuffers.Builder, r *types.Range) flatbuffers.UOffsetT {
+	if r == nil { return 0 }
+	s := r.SheetName()
+	sOff := b.CreateString(string(s))
+
+	l := r.RefsLength()
+	types.RangeStartRefsVector(b, l)
+	for i := l - 1; i >= 0; i-- {
+		obj := new(types.Rect)
+		if r.Refs(obj, i) {
+			types.CreateRect(b, obj.RowFirst(), obj.RowLast(), obj.ColFirst(), obj.ColLast())
+		}
+	}
+	refsOff := b.EndVector(l)
+
+	types.RangeStart(b)
+	types.RangeAddSheetName(b, sOff)
+	types.RangeAddRefs(b, refsOff)
+	return types.RangeEnd(b)
+}
+
+func cloneAny(b *flatbuffers.Builder, a *types.Any) flatbuffers.UOffsetT {
+	if a == nil { return 0 }
+	var uOff flatbuffers.UOffsetT
+	t := a.ValType()
+
+    var tbl flatbuffers.Table
+    if a.Val(&tbl) {
+        switch t {
+        case types.AnyValueNum:
+            var val types.Num
+            val.Init(tbl.Bytes, tbl.Pos)
+            types.NumStart(b)
+            types.NumAddVal(b, val.Val())
+            uOff = types.NumEnd(b)
+        case types.AnyValueInt:
+            var val types.Int
+            val.Init(tbl.Bytes, tbl.Pos)
+            types.IntStart(b)
+            types.IntAddVal(b, val.Val())
+            uOff = types.IntEnd(b)
+        case types.AnyValueBool:
+            var val types.Bool
+            val.Init(tbl.Bytes, tbl.Pos)
+            types.BoolStart(b)
+            types.BoolAddVal(b, val.Val())
+            uOff = types.BoolEnd(b)
+        case types.AnyValueStr:
+            var val types.Str
+            val.Init(tbl.Bytes, tbl.Pos)
+            sOff := b.CreateString(string(val.Val()))
+            types.StrStart(b)
+            types.StrAddVal(b, sOff)
+            uOff = types.StrEnd(b)
+        case types.AnyValueErr:
+            var val types.Err
+            val.Init(tbl.Bytes, tbl.Pos)
+            types.ErrStart(b)
+            types.ErrAddVal(b, val.Val())
+            uOff = types.ErrEnd(b)
+        case types.AnyValueNumGrid:
+            var val types.NumGrid
+            val.Init(tbl.Bytes, tbl.Pos)
+            l := val.DataLength()
+            types.NumGridStartDataVector(b, l)
+            for i := l - 1; i >= 0; i-- {
+                b.PrependFloat64(val.Data(i))
+            }
+            dataOff := b.EndVector(l)
+
+            types.NumGridStart(b)
+            types.NumGridAddRows(b, val.Rows())
+            types.NumGridAddCols(b, val.Cols())
+            types.NumGridAddData(b, dataOff)
+            uOff = types.NumGridEnd(b)
+        // Missing: Grid, RefCache (simplified)
+        default:
+            // Nil
+            types.NilStart(b)
+            uOff = types.NilEnd(b)
+        }
+    } else {
+        types.NilStart(b)
+        uOff = types.NilEnd(b)
+    }
+
+	types.AnyStart(b)
+	types.AnyAddValType(b, t)
+	types.AnyAddVal(b, uOff)
+	return types.AnyEnd(b)
+}

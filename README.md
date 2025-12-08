@@ -155,6 +155,21 @@ events:
     description: "Called when Excel calculation ends"
 ```
 
+## Command Scheduling
+
+You can schedule Excel commands (like `xlSet` or formatting) to run after the calculation cycle ends. This is useful for modifying cells or formatting, which is restricted during function execution.
+
+1.  Register the `CalculationEnded` event in `xll.yaml`.
+2.  In your UDF or event handler, use `generated.ScheduleSet` or `generated.ScheduleFormat`.
+
+```go
+func (s *Service) OnCalculationEnded(ctx context.Context) error {
+    // Schedule setting cell A1 to 100
+    // generated.ScheduleSet(targetRange, value)
+    return nil
+}
+```
+
 ## Architecture
 
 1.  **Excel Process**: Loads the generated XLL (C++).

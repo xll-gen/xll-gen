@@ -2,6 +2,10 @@ project:
   name: "smoke_proj"
   version: "0.1.0"
 
+events:
+  - type: CalculationEnded
+    name: OnCalculationEnded
+
 gen:
   go:
     package: "generated"
@@ -52,3 +56,8 @@ functions:
     args: [{name: "val", type: "int"}]
     return: "int"
     timeout: "100ms"
+
+  # Schedule Command
+  - name: "ScheduleCmd"
+    args: []
+    return: "int"
