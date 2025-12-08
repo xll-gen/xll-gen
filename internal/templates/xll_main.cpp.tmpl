@@ -292,10 +292,10 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
     }
     {{else if eq .Type "CalculationCanceled"}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(0, MSG_CALCULATION_CANCELED);
+    slot.Send(0, MSG_CALCULATION_CANCELED, 2000);
     {{else}}
     auto slot = g_host.GetZeroCopySlot();
-    slot.Send(0, {{lookupEventId .Type}});
+    slot.Send(0, {{lookupEventId .Type}}, 2000);
     {{end}}
 }
 {{end}}
