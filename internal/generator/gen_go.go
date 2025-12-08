@@ -31,7 +31,6 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 				"int?":    "*int32",
 				"float?":  "*float64",
 				"bool?":   "*bool",
-				"string?": "*string",
 			}
 			if v, ok := m[t]; ok {
 				return v
@@ -100,7 +99,6 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 				"int?":    "*int32",
 				"float?":  "*float64",
 				"bool?":   "*bool",
-				"string?": "*string",
 			}
 			if v, ok := m[t]; ok {
 				return v
