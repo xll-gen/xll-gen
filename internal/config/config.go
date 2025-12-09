@@ -121,9 +121,6 @@ var validArgTypes = map[string]bool{
 	"grid":    true,
 	"numgrid": true,
 	"any":     true,
-	"int?":    true,
-	"float?":  true,
-	"bool?":   true,
 }
 
 // validReturnTypes is the set of allowed return types in xll.yaml.
@@ -161,6 +158,10 @@ func Validate(config *Config) error {
 		}
 		for _, arg := range fn.Args {
 			if !validArgTypes[arg.Type] {
+				// Special error message for nullable scalar types
+				if strings.HasSuffix(arg.Type, "?") {
+					return fmt.Errorf("function '%s' argument '%s': type '%s' is not supported (optional scalars are not supported by Excel API; use 'any' or 'scalar' instead)", fn.Name, arg.Name, arg.Type)
+				}
 				return fmt.Errorf("function '%s' argument '%s': type '%s' is not supported (allowed: %s)", fn.Name, arg.Name, arg.Type, allowedTypesList(validArgTypes))
 			}
 		}

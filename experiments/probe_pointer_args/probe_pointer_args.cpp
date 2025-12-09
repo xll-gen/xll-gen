@@ -70,10 +70,7 @@ LPXLOPER12 TempStr12(const wchar_t* txt) {
 
 extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeString(const wchar_t* s) {
     wchar_t buf[256];
-    if (s == NULL) {
-        swprintf(buf, 256, L"Ptr: 0x%p (NULL)", s);
-        return NewExcelString(buf);
-    }
+    // Note: s is never NULL for D% arguments, even for empty cells (pointer to empty string).
     size_t len = (size_t)s[0];
     if (len > 128) len = 128; // Cap for display
 
@@ -93,10 +90,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeString(const wchar_t*
 
 extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeIntPtr(int* p) {
     wchar_t buf[256];
-    if (p == NULL) {
-        swprintf(buf, 256, L"Ptr: 0x%p (NULL)", p);
-        return NewExcelString(buf);
-    }
+    // Note: p is never NULL for N arguments. Empty cells are passed as valid pointers to 0.
     signed long val = (signed long)*p;
 
     #ifdef _MSC_VER
@@ -110,10 +104,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeIntPtr(int* p) {
 
 extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeDoublePtr(double* p) {
     wchar_t buf[256];
-    if (p == NULL) {
-        swprintf(buf, 256, L"Ptr: 0x%p (NULL)", p);
-        return NewExcelString(buf);
-    }
+    // Note: p is never NULL for E arguments. Empty cells are passed as valid pointers to 0.0.
     double val = *p;
 
     #ifdef _MSC_VER
