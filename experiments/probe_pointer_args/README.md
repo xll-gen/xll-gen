@@ -15,13 +15,16 @@ This experiment revealed several key behaviors in how Excel's C API handles poin
 
 1.  **No `NULL` for Empty Cells**: When passing a cell reference to a function expecting a pointer type (`D%`, `N`, `E`), an empty cell does *not* result in a `NULL` pointer. Instead, Excel passes a valid pointer to a representation of an "empty" value:
     *   For `D%` (string pointer), it's a pointer to a length-prefixed empty string (`""`).
-    *   For `N` and `E` (number pointers), it's a pointer to a `double` with a value of `0.0`.
+    *   For `N` and `E` (number pointers), it's a pointer to a value of `0` (or `0.0`).
 
-2.  **`N` and `E` Types Require `double*`**: Both `N` (number pointer) and `E` (double pointer) argument types in the registration string require the C++ function signature to be `double*`. Excel passes a pointer to a 64-bit floating-point number for all numeric pointer types. Attempting to use `int*` or `long*` will lead to misinterpreting the memory and reading incorrect values.
+2.  **Correct Type Mapping**:
+    *   **Type `N`** passes a pointer to a 32-bit signed integer (`int32_t*` or `long*` on Windows). It is *not* a `double*` as some older documentation might suggest.
+    *   **Type `E`** passes a pointer to a 64-bit floating-point number (`double*`).
 
-3.  **Memory Reuse**: Excel's calculation engine may reuse the same memory buffer for pointer arguments across multiple function calls. The tests showed that several calls to `ProbeIntPtr` and `ProbeDoublePtr` received the exact same pointer address, with Excel updating the value at that address before each call.
+3.  **Implication for Optional Arguments**: Because Excel passes a valid pointer to a zero value for empty cells, **pointer types (`N`, `E`, `L`) cannot be used to detect missing or empty arguments reliably**. You cannot distinguish between an empty cell and a cell explicitly containing `0`.
+    *   **Conclusion**: To handle optional arguments or detect empty cells, you must use type `Q` or `U` (`XLOPER12`) or `Any`, which allows checking for `xltypeMissing` or `xltypeNil`.
 
-4.  **Floating-Point to Integer Casting**: When converting the `double` value received from a number pointer to an integer type (`int` or `long`), direct C-style casting (`(long)double_val`) can be unreliable. Due to floating-point representation inaccuracies (e.g., `1.0` being stored as `0.999...`), the truncation inherent in the cast can result in an off-by-one error (e.g., yielding `0` instead of `1`). A more robust method is to `round()` the value to the nearest whole number before casting.
+4.  **Memory Reuse**: Excel's calculation engine may reuse the same memory buffer for pointer arguments across multiple function calls. The tests showed that several calls to `ProbeIntPtr` and `ProbeDoublePtr` received the exact same pointer address, with Excel updating the value at that address before each call.
 
 ## Functions
 

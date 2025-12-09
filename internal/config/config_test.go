@@ -18,7 +18,7 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 				{Name: "arg1", Type: "string?"},
 			},
 			fnReturn:  "string",
-			wantError: "type 'string?' is not supported",
+			wantError: "optional scalars are not supported",
 		},
 		{
 			name:      "string? return",
@@ -33,10 +33,16 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 			wantError: "type 'double' is not supported",
 		},
 		{
-			name:      "int? argument (allowed)",
+			name:      "int? argument (rejected)",
 			fnArgs:    []Arg{{Name: "a", Type: "int?"}},
 			fnReturn:  "int",
-			wantError: "",
+			wantError: "optional scalars are not supported",
+		},
+		{
+			name:      "float? argument (rejected)",
+			fnArgs:    []Arg{{Name: "a", Type: "float?"}},
+			fnReturn:  "int",
+			wantError: "optional scalars are not supported",
 		},
 		{
 			name:      "int? return (rejected)",
@@ -46,7 +52,7 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 		},
 		{
 			name:      "valid types",
-			fnArgs:    []Arg{{Name: "a", Type: "string"}, {Name: "b", Type: "int?"}, {Name: "c", Type: "range"}, {Name: "d", Type: "numgrid"}},
+			fnArgs:    []Arg{{Name: "a", Type: "string"}, {Name: "b", Type: "any"}, {Name: "c", Type: "range"}, {Name: "d", Type: "numgrid"}},
 			fnReturn:  "bool",
 			wantError: "",
 		},
