@@ -15,16 +15,6 @@ table Chunk {
   msg_type: uint;
 }
 
-table AsyncResult {
-  handle: ulong;
-  result: ipc.types.Any;
-  error: string;
-}
-
-table BatchAsyncResponse {
-  results: [AsyncResult];
-}
-
 table SetRefCacheRequest {
   key: string;
   val: ipc.types.Any;
@@ -48,6 +38,16 @@ table CommandWrapper {
 
 table CalculationEndedResponse {
   commands: [CommandWrapper];
+}
+
+table AsyncResult {
+  handle: ulong;
+  result: ipc.types.AnyValue;
+  error: string;
+}
+
+table BatchAsyncResponse {
+  results: [AsyncResult];
 }
 
 {{range .Functions}}

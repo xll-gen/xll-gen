@@ -117,17 +117,22 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return
-    // We expect: if (!slot->Send(...)) { return &g_xlErrValue; }
+    // We expect: if (!slot.Send(...)) { return &g_xlErrValue; }
     // The message ID for TestStr (first function) should be 132.
-    expectedFix := "if (!slot->Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }"
+    expectedFix := "if (!slot.Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }"
     if !strings.Contains(content, expectedFix) {
         t.Logf("Generated content:\n%s", content)
         t.Fatalf("Could not find expected fix pattern: '%s'", expectedFix)
     }
 
     // Check TestInt should return 0 (MsgID 133)
-    expectedIntFix := "if (!slot->Send(builder.GetSize(), 133, 2000)) {\n        return 0;\n    }"
+    expectedIntFix := "if (!slot.Send(builder.GetSize(), 133, 2000)) {\n        return 0;\n    }"
     if !strings.Contains(content, expectedIntFix) {
          t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
+    }
+
+    // Check for memmove usage (for SHMAllocator back-to-front correction)
+    if !strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
+        t.Fatal("Expected memmove to align buffer to start")
     }
 }

@@ -137,15 +137,9 @@ int main() {
         auto start = chrono::steady_clock::now();
         int spin = 0;
         while(chrono::steady_clock::now() - start < chrono::seconds(2)) {
-<<<<<<< HEAD
-            int n = host.ProcessGuestCalls([&](const uint8_t* req, uint32_t msgType, uint8_t* resp, uint32_t size, uint32_t timeoutMs) -> int32_t {
-                // Check MsgType = 139
-                if (msgType == 139) {
-=======
             int n = host.ProcessGuestCalls([&](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
                 // Check MsgID = 136
                 if (msgId == 136) {
->>>>>>> origin/main
                      auto response = flatbuffers::GetRoot<ipc::AsyncEchoIntResponse>(req);
                      if (response->async_handle() == 999 && response->result() == 42) {
                          gotCallback = true;
