@@ -131,8 +131,8 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
          t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
     }
 
-    // Check for memcpy usage
-    if !strings.Contains(content, "std::memcpy(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
-        t.Fatal("Expected memcpy to shared memory buffer")
+    // Check for memmove usage (for SHMAllocator back-to-front correction)
+    if !strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
+        t.Fatal("Expected memmove to align buffer to start")
     }
 }

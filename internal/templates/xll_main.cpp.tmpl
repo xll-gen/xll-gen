@@ -33,6 +33,28 @@ HINSTANCE g_hModule = NULL;
 // Global Error Value for Returns
 static XLOPER12 g_xlErrValue;
 
+// Custom Allocator for FlatBuffers to use Shared Memory
+class SHMAllocator : public flatbuffers::Allocator {
+private:
+    uint8_t* buffer_;
+    size_t size_;
+
+public:
+    SHMAllocator(uint8_t* buffer, size_t size)
+        : buffer_(buffer), size_(size) {}
+
+    uint8_t* allocate(size_t size) override {
+        if (size > size_) {
+            return nullptr;
+        }
+        return buffer_;
+    }
+
+    void deallocate(uint8_t* p, size_t size) override {
+        // Shared Memory, do nothing
+    }
+};
+
 // Helper for creating string XLOPER12 without pool (for batching)
 // We cannot use the global ObjectPool because xlAsyncReturn with xltypeMulti
 // requires a contiguous array of XLOPER12 structs, while the pool provides
@@ -468,8 +490,8 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
     auto slot = g_host.GetZeroCopySlot();
-
-    flatbuffers::FlatBufferBuilder builder(1024);
+    SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
+    flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
 
     {{range .Args}}
     {{if eq .Type "string"}}
@@ -544,11 +566,12 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
-    // Copy to Shared Memory
-    if (builder.GetSize() > slot.GetMaxReqSize()) {
-        {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
+    // Ensure data is at the start of the buffer if needed
+    // FlatBuffers builds back-to-front. If the result pointer is not at the start
+    // of our SHM buffer, we need to move it.
+    if (builder.GetBufferPointer() != slot.GetReqBuffer()) {
+        std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());
     }
-    std::memcpy(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());
 
     // Zero-Copy Send (Size, MsgId, Timeout)
     {{if .Async}}
