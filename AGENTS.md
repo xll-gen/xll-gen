@@ -218,6 +218,11 @@ For types with multiple representation options, we stick to the following canoni
 | **Any (Ref)** | `U` | `XLOPER12 *` | Pointer to XLOPER12. Allows references (Range). |
 | **Async** | `X` | `void *` | Async handle (Excel 2010+). |
 
+**Strict Value Policy:**
+We do **not** use optional/nullable scalar pointer types (e.g., `int?` -> `N` (int*), `float?` -> `E` (double*), `bool?` -> `L` (short*)).
+*   **Reason**: Excel passes a valid pointer to a zero value (0, 0.0, false) for empty cells, making it impossible to distinguish between an explicit zero and a missing argument.
+*   **Solution**: Users requiring optional inputs must use `any` (or `scalar`), which receives the raw `XLOPER12`. The generated code or user logic can then check `xltypeMissing` or empty variants.
+
 **Note**: Do not use the legacy 8-bit string types (`C`, `D`, `F`, `G`), `XLOPER` (`P`, `R`), or legacy `FP` (`K`). Always use the wide-char / `12` variants (e.g., `FP12` / `K%`).
 
 **Thread Safety (`$`)**

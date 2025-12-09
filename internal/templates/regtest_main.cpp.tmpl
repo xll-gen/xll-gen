@@ -108,7 +108,7 @@ int main() {
             cout << "  Async Request sent." << endl;
             auto start_wait = chrono::steady_clock::now();
             while(chrono::steady_clock::now() - start_wait < chrono::seconds(1)) {
-                host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t msgId) -> int32_t {
+                host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
                     return 0;
                 });
                 this_thread::sleep_for(chrono::milliseconds(10));

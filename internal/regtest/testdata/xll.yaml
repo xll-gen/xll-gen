@@ -1,0 +1,72 @@
+project:
+  name: "smoke_proj"
+  version: "0.1.0"
+
+events:
+  - type: CalculationEnded
+    name: OnCalculationEnded
+
+gen:
+  go:
+    package: "generated"
+
+server:
+  workers: 10
+  timeout: "5s"
+
+functions:
+  - name: "EchoInt"
+    args: [{name: "val", type: "int"}]
+    return: "int"
+  - name: "EchoFloat"
+    args: [{name: "val", type: "float"}]
+    return: "float"
+  - name: "EchoString"
+    args: [{name: "val", type: "string"}]
+    return: "string"
+  - name: "EchoBool"
+    args: [{name: "val", type: "bool"}]
+    return: "bool"
+
+  # Nullables
+  - name: "EchoIntOpt"
+    args: [{name: "val", type: "int?"}]
+    return: "int"
+  - name: "EchoFloatOpt"
+    args: [{name: "val", type: "float?"}]
+    return: "float"
+  - name: "EchoBoolOpt"
+    args: [{name: "val", type: "bool?"}]
+    return: "bool"
+  - name: "AsyncEchoInt"
+    args: [{name: "val", type: "int"}]
+    return: "int"
+    async: true
+
+  # Any & Range
+  - name: "CheckAny"
+    args: [{name: "val", type: "any"}]
+    return: "string"
+  - name: "CheckRange"
+    args: [{name: "val", type: "range"}]
+    return: "string"
+
+  # Timeout
+  - name: "TimeoutFunc"
+    args: [{name: "val", type: "int"}]
+    return: "int"
+    timeout: "100ms"
+
+  # Schedule Commands
+  - name: "ScheduleCmd"
+    args: []
+    return: "int"
+  - name: "ScheduleFormatCmd"
+    args: []
+    return: "int"
+  - name: "ScheduleMultiCmd"
+    args: []
+    return: "int"
+  - name: "ScheduleMassive"
+    args: []
+    return: "int"

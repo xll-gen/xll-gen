@@ -4,14 +4,14 @@ import (
 	_ "embed"
 )
 
-//go:embed assets/mock_host.cpp.in
+//go:embed testdata/mock_host.cpp
 var MockHostCpp string
 
-//go:embed assets/xll.yaml
+//go:embed testdata/xll.yaml
 var XllYaml string
 
-//go:embed assets/server.go.in
+//go:embed testdata/server.go
 var ServerGo string
 
-//go:embed assets/CMakeLists.txt
+//go:embed testdata/CMakeLists.txt
 var CMakeLists string

@@ -1,0 +1,6 @@
+﻿=ProbeString(B1),abc,"Ptr: 0x0000022691245b90 | Val: ""abc"""
+=ProbeString(B2),,"Ptr: 0x0000022691245b98 | Val: """""
+=ProbeIntPtr(B3),1,Ptr: 0x0000022691245b18 | Val: 1 (Valid)
+=ProbeIntPtr(B4),,Ptr: 0x0000022691245b18 | Val: 0 (Valid)
+=ProbeDoublePtr(B5),1.001,Ptr: 0x0000022691245b18 | Val: 1.001000 (Valid)
+=ProbeDoublePtr(B6),,Ptr: 0x0000022691245b18 | Val: 0.000000 (Valid)
