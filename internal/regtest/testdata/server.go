@@ -28,30 +28,6 @@ func (s *Service) EchoString(ctx context.Context, val string) (string, error) { 
 // EchoBool returns the input boolean.
 func (s *Service) EchoBool(ctx context.Context, val bool) (bool, error) { return val, nil }
 
-// EchoIntOpt returns the input optional integer.
-func (s *Service) EchoIntOpt(ctx context.Context, val *int32) (int32, error) {
-	if val == nil {
-		return -999, nil
-	}
-	return *val, nil
-}
-
-// EchoFloatOpt returns the input optional float.
-func (s *Service) EchoFloatOpt(ctx context.Context, val *float64) (float64, error) {
-	if val == nil {
-		return -999.0, nil
-	}
-	return *val, nil
-}
-
-// EchoBoolOpt returns the input optional boolean.
-func (s *Service) EchoBoolOpt(ctx context.Context, val *bool) (bool, error) {
-	if val == nil {
-		return false, nil
-	}
-	return *val, nil
-}
-
 // AsyncEchoInt waits briefly and returns the input integer, simulating async work.
 func (s *Service) AsyncEchoInt(ctx context.Context, val int32) (int32, error) {
 	time.Sleep(10 * time.Millisecond)

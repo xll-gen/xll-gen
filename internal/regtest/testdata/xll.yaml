@@ -28,16 +28,6 @@ functions:
     args: [{name: "val", type: "bool"}]
     return: "bool"
 
-  # Nullables
-  - name: "EchoIntOpt"
-    args: [{name: "val", type: "int?"}]
-    return: "int"
-  - name: "EchoFloatOpt"
-    args: [{name: "val", type: "float?"}]
-    return: "float"
-  - name: "EchoBoolOpt"
-    args: [{name: "val", type: "bool?"}]
-    return: "bool"
   - name: "AsyncEchoInt"
     args: [{name: "val", type: "int"}]
     return: "int"
