@@ -285,9 +285,9 @@ LPXLOPER12 GridToXLOPER12(const ipc::types::Grid* g) {
             case ipc::types::ScalarValue_Str: {
                 std::string s = scalar->val_as_Str()->val()->str();
                 std::wstring ws = StringToWString(s);
-                auto pascal = WStringToPascalString(ws);
-                cell.val.str = new wchar_t[pascal.size()];
-                std::memcpy(cell.val.str, pascal.data(), pascal.size() * sizeof(wchar_t));
+                auto pascalStr = WStringToPascalString(ws);
+                cell.val.str = new wchar_t[pascalStr.size()];
+                std::memcpy(cell.val.str, pascalStr.data(), pascalStr.size() * sizeof(wchar_t));
                 cell.xltype = xltypeStr | xlbitDLLFree;
                 break;
             }
