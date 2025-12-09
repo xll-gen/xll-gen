@@ -76,7 +76,16 @@ func runInit(projectName string, force bool) error {
 		return err
 	}
 
-	// 4. Initialize go module
+	// 4. Create .vscode/launch.json
+	vscodeDir := filepath.Join(projectName, ".vscode")
+	if err := os.MkdirAll(vscodeDir, 0755); err != nil {
+		return err
+	}
+	if err := generateFileFromTemplate("launch.json.tmpl", filepath.Join(vscodeDir, "launch.json"), struct{ ProjectName string }{projectName}); err != nil {
+		return err
+	}
+
+	// 5. Initialize go module
 	cmd := exec.Command("go", "mod", "init", projectName)
 	cmd.Dir = projectName
 	cmd.Stdout = os.Stdout
@@ -85,7 +94,7 @@ func runInit(projectName string, force bool) error {
 		return fmt.Errorf("failed to run go mod init: %w", err)
 	}
 
-	// 5. Generate code and run go mod tidy
+	// 6. Generate code and run go mod tidy
 	// We need to change directory to the project folder for generation and tidy
 	cwd, err := os.Getwd()
 	if err != nil {
