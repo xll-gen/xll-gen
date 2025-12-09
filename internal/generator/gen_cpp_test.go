@@ -122,7 +122,10 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
     expectedFix := "if (!slot.Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }"
     if !strings.Contains(content, expectedFix) {
         t.Logf("Generated content:\n%s", content)
-        t.Fatalf("Could not find expected fix pattern: '%s'", expectedFix)
+        t.Fatal("Could not find expected Send failure check")
+    }
+    if !strings.Contains(content, "return &g_xlErrValue;") {
+         t.Fatal("Expected return &g_xlErrValue on error")
     }
 
     // Check TestInt should return 0 (MsgID 133)
