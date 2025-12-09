@@ -15,7 +15,7 @@ tasks:
   build-go:
     desc: Build Go server
     cmds:
-      - go build -ldflags="-H=windowsgui" -o build/{{.ProjectName}}.exe main.go
+      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
 
   build-cpp:
     desc: Build C++ XLL (Release)
