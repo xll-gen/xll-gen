@@ -18,6 +18,7 @@
 #include "include/xll_utility.h"
 #include "include/xll_ipc.h"
 #include "include/xll_converters.h"
+#include "include/PascalString.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -467,9 +468,8 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
     auto slot = g_host.GetZeroCopySlot();
-    if (!slot) {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
 
-    flatbuffers::FlatBufferBuilder builder(slot->GetMaxReqSize(), nullptr, false, slot->GetReqBuffer());
+    flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
 
     {{range .Args}}
     {{if eq .Type "string"}}
@@ -549,17 +549,17 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
     {{ $ackTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-    slot->Send(builder.GetSize(), {{add 132 $i}}, {{ $ackTimeout }});
+    slot.Send(builder.GetSize(), {{add 132 $i}}, {{ $ackTimeout }});
     return;
     {{else}}
     // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
     {{ $syncTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-    if (!slot->Send(builder.GetSize(), {{add 132 $i}}, {{ $syncTimeout }})) {
+    if (!slot.Send(builder.GetSize(), {{add 132 $i}}, {{ $syncTimeout }})) {
         return {{defaultErrorVal .Return}};
     }
 
-    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot->GetRespBuffer());
+    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
     }
