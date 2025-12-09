@@ -127,12 +127,13 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::string shmName = "{{.ProjectName}}";
     {{end}}
 
-    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers)) {
+    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers + 2)) {
         return 0;
     }
 
     g_running = true;
     g_worker = std::thread([]{
+        int spin = 0;
         while(g_running) {
              int n = g_host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
                  switch (msgId) {
@@ -171,7 +172,18 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                          return 0;
                  }
               });
-              if (n == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+              if (n == 0) {
+                  if (spin < 1000) {
+                      std::this_thread::yield();
+                      spin++;
+                  } else {
+                      Sleep(1);
+                      spin = 0;
+                  }
+              } else {
+                  spin = 0;
+              }
         }
     });
 
