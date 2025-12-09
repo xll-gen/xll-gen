@@ -39,8 +39,10 @@ func generateTaskfile(cfg *config.Config, dir string) error {
 	return t.Execute(f, struct {
 		ProjectName string
 		Version     string
+		Embed       config.EmbedConfig
 	}{
 		ProjectName: cfg.Project.Name,
 		Version:     version.Version,
+		Embed:       cfg.Build.Embed,
 	})
 }
