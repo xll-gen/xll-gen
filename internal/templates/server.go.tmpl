@@ -1110,68 +1110,177 @@ func cloneAny(b *flatbuffers.Builder, a *types.Any) flatbuffers.UOffsetT {
 	var uOff flatbuffers.UOffsetT
 	t := a.ValType()
 
-    var tbl flatbuffers.Table
-    if a.Val(&tbl) {
-        switch t {
-        case types.AnyValueNum:
-            var val types.Num
-            val.Init(tbl.Bytes, tbl.Pos)
-            types.NumStart(b)
-            types.NumAddVal(b, val.Val())
-            uOff = types.NumEnd(b)
-        case types.AnyValueInt:
-            var val types.Int
-            val.Init(tbl.Bytes, tbl.Pos)
-            types.IntStart(b)
-            types.IntAddVal(b, val.Val())
-            uOff = types.IntEnd(b)
-        case types.AnyValueBool:
-            var val types.Bool
-            val.Init(tbl.Bytes, tbl.Pos)
-            types.BoolStart(b)
-            types.BoolAddVal(b, val.Val())
-            uOff = types.BoolEnd(b)
-        case types.AnyValueStr:
-            var val types.Str
-            val.Init(tbl.Bytes, tbl.Pos)
-            sOff := b.CreateString(string(val.Val()))
-            types.StrStart(b)
-            types.StrAddVal(b, sOff)
-            uOff = types.StrEnd(b)
-        case types.AnyValueErr:
-            var val types.Err
-            val.Init(tbl.Bytes, tbl.Pos)
-            types.ErrStart(b)
-            types.ErrAddVal(b, val.Val())
-            uOff = types.ErrEnd(b)
-        case types.AnyValueNumGrid:
-            var val types.NumGrid
-            val.Init(tbl.Bytes, tbl.Pos)
-            l := val.DataLength()
-            types.NumGridStartDataVector(b, l)
-            for i := l - 1; i >= 0; i-- {
-                b.PrependFloat64(val.Data(i))
-            }
-            dataOff := b.EndVector(l)
+	var tbl flatbuffers.Table
+	if a.Val(&tbl) {
+		switch t {
+		case types.AnyValueNum:
+			var val types.Num
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.NumStart(b)
+			types.NumAddVal(b, val.Val())
+			uOff = types.NumEnd(b)
+		case types.AnyValueInt:
+			var val types.Int
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.IntStart(b)
+			types.IntAddVal(b, val.Val())
+			uOff = types.IntEnd(b)
+		case types.AnyValueBool:
+			var val types.Bool
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.BoolStart(b)
+			types.BoolAddVal(b, val.Val())
+			uOff = types.BoolEnd(b)
+		case types.AnyValueStr:
+			var val types.Str
+			val.Init(tbl.Bytes, tbl.Pos)
+			sOff := b.CreateString(string(val.Val()))
+			types.StrStart(b)
+			types.StrAddVal(b, sOff)
+			uOff = types.StrEnd(b)
+		case types.AnyValueErr:
+			var val types.Err
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.ErrStart(b)
+			types.ErrAddVal(b, val.Val())
+			uOff = types.ErrEnd(b)
+		case types.AnyValueNumGrid:
+			var val types.NumGrid
+			val.Init(tbl.Bytes, tbl.Pos)
+			l := val.DataLength()
+			types.NumGridStartDataVector(b, l)
+			for i := l - 1; i >= 0; i-- {
+				b.PrependFloat64(val.Data(i))
+			}
+			dataOff := b.EndVector(l)
 
-            types.NumGridStart(b)
-            types.NumGridAddRows(b, val.Rows())
-            types.NumGridAddCols(b, val.Cols())
-            types.NumGridAddData(b, dataOff)
-            uOff = types.NumGridEnd(b)
-        // Missing: Grid, RefCache (simplified)
-        default:
-            // Nil
-            types.NilStart(b)
-            uOff = types.NilEnd(b)
-        }
-    } else {
-        types.NilStart(b)
-        uOff = types.NilEnd(b)
-    }
+			types.NumGridStart(b)
+			types.NumGridAddRows(b, val.Rows())
+			types.NumGridAddCols(b, val.Cols())
+			types.NumGridAddData(b, dataOff)
+			uOff = types.NumGridEnd(b)
+		case types.AnyValueGrid:
+			var val types.Grid
+			val.Init(tbl.Bytes, tbl.Pos)
+			uOff = cloneGrid(b, &val)
+		case types.AnyValueRange:
+			var val types.Range
+			val.Init(tbl.Bytes, tbl.Pos)
+			uOff = cloneRange(b, &val)
+		case types.AnyValueRefCache:
+			var val types.RefCache
+			val.Init(tbl.Bytes, tbl.Pos)
+			kOff := b.CreateString(string(val.Key()))
+			types.RefCacheStart(b)
+			types.RefCacheAddKey(b, kOff)
+			uOff = types.RefCacheEnd(b)
+		case types.AnyValueAsyncHandle:
+			var val types.AsyncHandle
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.AsyncHandleStart(b)
+			types.AsyncHandleAddVal(b, val.Val())
+			uOff = types.AsyncHandleEnd(b)
+		default:
+			// Nil
+			types.NilStart(b)
+			uOff = types.NilEnd(b)
+		}
+	} else {
+		types.NilStart(b)
+		uOff = types.NilEnd(b)
+	}
 
 	types.AnyStart(b)
 	types.AnyAddValType(b, t)
 	types.AnyAddVal(b, uOff)
 	return types.AnyEnd(b)
+}
+
+func cloneGrid(b *flatbuffers.Builder, g *types.Grid) flatbuffers.UOffsetT {
+	if g == nil {
+		return 0
+	}
+	l := g.DataLength()
+	offsets := make([]flatbuffers.UOffsetT, l)
+	for i := 0; i < l; i++ {
+		var s types.Scalar
+		if g.Data(&s, i) {
+			offsets[i] = cloneScalar(b, &s)
+		}
+	}
+
+	types.GridStartDataVector(b, l)
+	for i := l - 1; i >= 0; i-- {
+		b.PrependUOffsetT(offsets[i])
+	}
+	dataOff := b.EndVector(l)
+
+	types.GridStart(b)
+	types.GridAddRows(b, g.Rows())
+	types.GridAddCols(b, g.Cols())
+	types.GridAddData(b, dataOff)
+	return types.GridEnd(b)
+}
+
+func cloneScalar(b *flatbuffers.Builder, s *types.Scalar) flatbuffers.UOffsetT {
+	if s == nil {
+		return 0
+	}
+
+	var uOff flatbuffers.UOffsetT
+	t := s.ValType()
+
+	var tbl flatbuffers.Table
+	if s.Val(&tbl) {
+		switch t {
+		case types.ScalarValueInt:
+			var val types.Int
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.IntStart(b)
+			types.IntAddVal(b, val.Val())
+			uOff = types.IntEnd(b)
+		case types.ScalarValueNum:
+			var val types.Num
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.NumStart(b)
+			types.NumAddVal(b, val.Val())
+			uOff = types.NumEnd(b)
+		case types.ScalarValueBool:
+			var val types.Bool
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.BoolStart(b)
+			types.BoolAddVal(b, val.Val())
+			uOff = types.BoolEnd(b)
+		case types.ScalarValueStr:
+			var val types.Str
+			val.Init(tbl.Bytes, tbl.Pos)
+			sOff := b.CreateString(string(val.Val()))
+			types.StrStart(b)
+			types.StrAddVal(b, sOff)
+			uOff = types.StrEnd(b)
+		case types.ScalarValueErr:
+			var val types.Err
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.ErrStart(b)
+			types.ErrAddVal(b, val.Val())
+			uOff = types.ErrEnd(b)
+		case types.ScalarValueAsyncHandle:
+			var val types.AsyncHandle
+			val.Init(tbl.Bytes, tbl.Pos)
+			types.AsyncHandleStart(b)
+			types.AsyncHandleAddVal(b, val.Val())
+			uOff = types.AsyncHandleEnd(b)
+		default:
+			types.NilStart(b)
+			uOff = types.NilEnd(b)
+		}
+	} else {
+		types.NilStart(b)
+		uOff = types.NilEnd(b)
+	}
+
+	types.ScalarStart(b)
+	types.ScalarAddValType(b, t)
+	types.ScalarAddVal(b, uOff)
+	return types.ScalarEnd(b)
 }
