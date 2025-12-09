@@ -60,24 +60,24 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return
-    // We expect: if (!respBuf) return &g_xlErrValue;
+    // We expect: if (size <= 0) return &g_xlErrValue;
 
-    expectedFix := "if (!respBuf) return &g_xlErrValue;"
+    expectedFix := "if (size <= 0) return &g_xlErrValue;"
     if !strings.Contains(content, expectedFix) {
         t.Logf("Generated content:\n%s", content)
         t.Fatalf("Could not find expected fix pattern: '%s'", expectedFix)
     }
 
     // Check TestAny and TestGrid too
-    expectedFixAny := "if (!respBuf) return &g_xlErrValue;"
+    expectedFixAny := "if (size <= 0) return &g_xlErrValue;"
     if strings.Count(content, expectedFixAny) < 3 {
          t.Fatalf("Expected at least 3 occurrences of return &g_xlErrValue (string, any, grid)")
     }
 
     // Check TestInt should return 0
-    // "if (!respBuf) return 0;"
+    // "if (size <= 0) return 0;"
     // We need to be careful with context matching, but simplistic check helps
-    if !strings.Contains(content, "if (!respBuf) return 0;") {
+    if !strings.Contains(content, "if (size <= 0) return 0;") {
          t.Fatalf("Expected int return 0 on error")
     }
 

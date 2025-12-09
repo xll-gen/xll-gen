@@ -38,6 +38,8 @@ func generateSchema(cfg *config.Config, path string) error {
 				"string":  "string",
 				"bool":    "bool",
 				"range":   "ipc.types.Range",
+				"grid":    "ipc.types.Grid",
+				"numgrid": "ipc.types.NumGrid",
 				"any":     "ipc.types.Any",
 				"int?":    "ipc.types.Int",
 				"float?":  "ipc.types.Num",

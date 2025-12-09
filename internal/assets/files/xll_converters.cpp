@@ -207,19 +207,9 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                       std::vector<uint8_t> respBuf;
                       uint32_t timeoutMs = 2000;
 
-                      bool ok;
-                      if (reqB.GetSize() > 950 * 1024) {
-                          ok = (SendChunked(reqB.GetBufferPointer(), reqB.GetSize(), respBuf, timeoutMs) > 0);
-                      } else {
-                          ok = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), MSG_SETREFCACHE, respBuf, timeoutMs);
-                      }
-
-                      if (ok && !respBuf.empty()) {
-                          auto ack = ipc::GetAck(respBuf.data());
-                          if (ack && ack->ok()) {
-                              g_sentRefCache[key] = true;
-                              cached = true;
-                          }
+                      if (g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), MSG_SETREFCACHE, respBuf, 2000) > 0) {
+                          g_sentRefCache[key] = true;
+                          cached = true;
                       }
                   }
              }
@@ -241,7 +231,7 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
     }
 
     auto nilVal = ipc::types::CreateNil(builder);
-    return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, val.Union());
+    return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, nilVal.Union());
 }
 
 LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
@@ -421,7 +411,7 @@ LPXLOPER12 RangeToXLOPER12(const ipc::types::Range* range) {
 
     // Construct xltypeRef
     x->xltype = xltypeRef | xlbitDLLFree;
-    x->val.mref.lpmref = (LPXLMREF) new char[sizeof(XLMREF) + sizeof(XLREF12) * refs->size()];
+    x->val.mref.lpmref = (LPXLMREF12) new char[sizeof(XLMREF12) + sizeof(XLREF12) * refs->size()];
     x->val.mref.lpmref->count = (WORD)refs->size();
     x->val.mref.idSheet = idSheet;
 

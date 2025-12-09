@@ -77,9 +77,6 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"any":     "LPXLOPER12",
 				"grid":    "LPXLOPER12",
 				"numgrid": "FP12*",
-				"int?":    "int32_t*",
-				"float?":  "double*",
-				"bool?":   "short*",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t
@@ -108,9 +105,6 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 				"any":     "U",
 				"grid":    "U",
 				"numgrid": "K%",
-				"int?":    "N",
-				"float?":  "E",
-				"bool?":   "L",
 			}
 			if v, ok := m[t]; ok { return v }
 			return t

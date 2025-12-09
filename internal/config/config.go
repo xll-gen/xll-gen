@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Config represents the top-level configuration structure parsed from xll.yaml.
@@ -110,7 +111,32 @@ type Arg struct {
 	Description string `yaml:"description"`
 }
 
-// Validate checks the configuration for errors, such as duplicate event types.
+// validArgTypes is the set of allowed argument types in xll.yaml.
+var validArgTypes = map[string]bool{
+	"int":     true,
+	"float":   true,
+	"string":  true,
+	"bool":    true,
+	"range":   true,
+	"grid":    true,
+	"numgrid": true,
+	"any":     true,
+}
+
+// validReturnTypes is the set of allowed return types in xll.yaml.
+var validReturnTypes = map[string]bool{
+	"int":     true,
+	"float":   true,
+	"string":  true,
+	"bool":    true,
+	"range":   true,
+	"grid":    true,
+	"numgrid": true,
+	"any":     true,
+}
+
+// Validate checks the configuration for errors, such as duplicate event types
+// or unsupported argument types.
 //
 // Parameters:
 //   - config: The Config object to validate.
@@ -125,7 +151,31 @@ func Validate(config *Config) error {
 		}
 		seenEvents[evt.Type] = true
 	}
+
+	for _, fn := range config.Functions {
+		if !validReturnTypes[fn.Return] {
+			return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
+		}
+		for _, arg := range fn.Args {
+			if !validArgTypes[arg.Type] {
+				// Special error message for nullable scalar types
+				if strings.HasSuffix(arg.Type, "?") {
+					return fmt.Errorf("function '%s' argument '%s': type '%s' is not supported (optional scalars are not supported by Excel API; use 'any' or 'scalar' instead)", fn.Name, arg.Name, arg.Type)
+				}
+				return fmt.Errorf("function '%s' argument '%s': type '%s' is not supported (allowed: %s)", fn.Name, arg.Name, arg.Type, allowedTypesList(validArgTypes))
+			}
+		}
+	}
+
 	return nil
+}
+
+func allowedTypesList(m map[string]bool) string {
+	var keys []string
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return strings.Join(keys, ", ")
 }
 
 // ApplyDefaults sets default values for configuration fields that are missing.
