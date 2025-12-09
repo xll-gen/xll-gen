@@ -68,6 +68,13 @@ type pendingAsyncResult struct {
 var (
 	// Channel for async results (buffer size 1024 to absorb bursts)
 	asyncResultQueue = make(chan pendingAsyncResult, 1024)
+
+	// Builder Pool to reduce GC pressure
+	builderPool = sync.Pool{
+		New: func() interface{} {
+			return flatbuffers.NewBuilder(1024)
+		},
+	}
 )
 
 // Optimization Structures
@@ -377,7 +384,9 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 		return
 	}
 
-	b := flatbuffers.NewBuilder(1024)
+	b := builderPool.Get().(*flatbuffers.Builder)
+	b.Reset()
+	defer builderPool.Put(b)
 
 	resultOffsets := make([]flatbuffers.UOffsetT, len(batch))
 
@@ -551,8 +560,9 @@ func Serve(handler XllService) {
 
         var dispatch func(data []byte, mType shm.MsgType) (int32, shm.MsgType)
         dispatch = func(data []byte, mType shm.MsgType) (int32, shm.MsgType) {
-             builder := flatbuffers.NewBuilder(0)
+             builder := builderPool.Get().(*flatbuffers.Builder)
              builder.Reset()
+             defer builderPool.Put(builder)
 
              switch uint32(mType) {
              case MSG_CALCULATION_ENDED:
