@@ -15,17 +15,13 @@ tasks:
   build-go:
     desc: Build Go server
     cmds:
-      - go build -o build/{{.ProjectName}}.exe main.go
+      - go build -ldflags="-H=windowsgui" -o build/{{.ProjectName}}.exe main.go
 
   build-cpp:
     desc: Build C++ XLL (Release)
     cmds:
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
       - cmake --build build/cpp --config Release
-      - cmd: cmake -E copy build/cpp/Release/{{.ProjectName}}.xll build/{{.ProjectName}}.xll
-        ignore_error: true
-      - cmd: cmake -E copy build/cpp/{{.ProjectName}}.xll build/{{.ProjectName}}.xll
-        ignore_error: true
 
   clean:
     desc: Clean build artifacts

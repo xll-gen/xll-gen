@@ -1,4 +1,5 @@
 #include "xll_converters.h"
+#include "PascalString.h"
 #include "xll_utility.h"
 #include "xll_ipc.h"
 #include "xll_mem.h"
