@@ -14,6 +14,8 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
 // Flatbuffers -> Excel
 LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any);
 LPXLOPER12 RangeToXLOPER12(const ipc::types::Range* range);
+LPXLOPER12 GridToXLOPER12(const ipc::types::Grid* grid);
+FP12* NumGridToFP12(const ipc::types::NumGrid* grid);
 
 // Helper for internal use (also exported if needed)
 std::wstring GetSheetName(LPXLOPER12 pxRef);

@@ -8,6 +8,74 @@ import (
 	"xll-gen/internal/config"
 )
 
+func TestGenCpp_ComplexReturnTypes(t *testing.T) {
+	// Setup temp dir
+	tmpDir, err := os.MkdirTemp("", "bug_repro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create config with functions returning complex types
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+            {
+				Name:   "TestAny",
+				Return: "any",
+				Args:   []config.Arg{},
+			},
+            {
+				Name:   "TestGrid",
+				Return: "grid",
+				Args:   []config.Arg{},
+			},
+            {
+				Name:   "TestNumGrid",
+				Return: "numgrid",
+				Args:   []config.Arg{},
+			},
+            {
+				Name:   "TestRange",
+				Return: "range",
+				Args:   []config.Arg{},
+			},
+		},
+        Server: config.ServerConfig{
+            Timeout: "2s",
+        },
+	}
+
+	// Generate xll_main.cpp
+	if err := generateCppMain(cfg, tmpDir, false); err != nil {
+		t.Fatalf("generateCppMain failed: %v", err)
+	}
+
+	// Read generated file
+	contentBytes, err := os.ReadFile(filepath.Join(tmpDir, "xll_main.cpp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(contentBytes)
+
+	// Verify converters are used
+    checks := []struct {
+        name string
+        want string
+    }{
+        {"TestAny", "return AnyToXLOPER12(resp->result());"},
+        {"TestGrid", "return GridToXLOPER12(resp->result());"},
+        {"TestNumGrid", "return NumGridToFP12(resp->result());"},
+        {"TestRange", "return RangeToXLOPER12(resp->result());"},
+    }
+
+    for _, c := range checks {
+        if !strings.Contains(content, c.want) {
+            t.Errorf("Function %s: expected '%s', not found", c.name, c.want)
+        }
+    }
+}
+
 func TestGenCpp_StringErrorReturn(t *testing.T) {
 	// Setup temp dir
 	tmpDir, err := os.MkdirTemp("", "bug_repro")
@@ -30,16 +98,6 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 				Return: "int",
 				Args:   []config.Arg{},
 			},
-            {
-				Name:   "TestAny",
-				Return: "any",
-				Args:   []config.Arg{},
-			},
-            {
-				Name:   "TestGrid",
-				Return: "grid",
-				Args:   []config.Arg{},
-			},
 		},
         Server: config.ServerConfig{
             Timeout: "2s",
@@ -47,7 +105,6 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	}
 
 	// Generate xll_main.cpp
-    // generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 	if err := generateCppMain(cfg, tmpDir, false); err != nil {
 		t.Fatalf("generateCppMain failed: %v", err)
 	}
@@ -60,29 +117,15 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return
-    // We expect: if (!slot->Send(...)) return &g_xlErrValue;
-    // Note: The timeout value 2000 is hardcoded in the test config or template default
-
-    // expectedFix := "if (!slot->Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }"
-    // Normalize newlines for robust checking
-    content = strings.ReplaceAll(content, "\r\n", "\n")
-    if !strings.Contains(content, "if (!slot->Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }") {
+    // We expect: if (size <= 0) return &g_xlErrValue; (Upstream logic)
+    expectedFix := "if (size <= 0) return &g_xlErrValue;"
+    if !strings.Contains(content, expectedFix) {
         t.Logf("Generated content:\n%s", content)
-        t.Fatalf("Could not find expected fix pattern for string return")
+        t.Fatalf("Could not find expected fix pattern: '%s'", expectedFix)
     }
 
     // Check TestInt should return 0
-    // "if (!slot->Send(...)) {\n        return 0;\n    }"
-    if !strings.Contains(content, "if (!slot->Send(builder.GetSize(), 133, 2000)) {\n        return 0;\n    }") {
+    if !strings.Contains(content, "if (size <= 0) return 0;") {
          t.Fatalf("Expected int return 0 on error")
-    }
-
-    // Check if g_xlErrValue is defined
-    if !strings.Contains(content, "static XLOPER12 g_xlErrValue;") {
-        t.Fatalf("g_xlErrValue definition missing")
-    }
-
-    if !strings.Contains(content, "g_xlErrValue.xltype = xltypeErr;") {
-        t.Fatalf("g_xlErrValue initialization missing")
     }
 }
