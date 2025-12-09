@@ -28,6 +28,12 @@ func (s *Service) EchoString(ctx context.Context, val string) (string, error) { 
 // EchoBool returns the input boolean.
 func (s *Service) EchoBool(ctx context.Context, val bool) (bool, error) { return val, nil }
 
+// AsyncEchoInt waits briefly and returns the input integer, simulating async work.
+func (s *Service) AsyncEchoInt(ctx context.Context, val int32) (int32, error) {
+	time.Sleep(10 * time.Millisecond)
+	return val, nil
+}
+
 // TimeoutFunc waits for 500ms, which exceeds the configured timeout, returning -1 on cancellation.
 func (s *Service) TimeoutFunc(ctx context.Context, val int32) (int32, error) {
 	select {
