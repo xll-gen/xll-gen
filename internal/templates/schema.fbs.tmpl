@@ -40,6 +40,16 @@ table CalculationEndedResponse {
   commands: [CommandWrapper];
 }
 
+table AsyncResult {
+  handle: ulong;
+  result: ipc.types.AnyValue;
+  error: string;
+}
+
+table BatchAsyncResponse {
+  results: [AsyncResult];
+}
+
 {{range .Functions}}
 table {{.Name}}Request {
   {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
