@@ -117,9 +117,10 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return
-    // We expect: if (!slot->Send(...)) return &g_xlErrValue; (Upstream logic)
-    // Note: The template now uses boolean return from Send (true=success)
-    if !strings.Contains(content, "if (!slot->Send(builder.GetSize(), 132, 2000)) {") {
+    // We expect: if (!slot->Send(...)) { return &g_xlErrValue; }
+    // The message ID for TestStr (first function) should be 132.
+    expectedFix := "if (!slot->Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }"
+    if !strings.Contains(content, expectedFix) {
         t.Logf("Generated content:\n%s", content)
         t.Fatal("Could not find expected Send failure check")
     }
@@ -127,11 +128,9 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
          t.Fatal("Expected return &g_xlErrValue on error")
     }
 
-    // Check TestInt should return 0
-    if !strings.Contains(content, "if (!slot->Send(builder.GetSize(), 133, 2000)) {") {
-         t.Fatal("Could not find expected Send failure check for TestInt")
-    }
-    if !strings.Contains(content, "return 0;") {
-         t.Fatal("Expected return 0 on error for TestInt")
+    // Check TestInt should return 0 (MsgID 133)
+    expectedIntFix := "if (!slot->Send(builder.GetSize(), 133, 2000)) {\n        return 0;\n    }"
+    if !strings.Contains(content, expectedIntFix) {
+         t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
     }
 }
