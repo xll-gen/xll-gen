@@ -9,10 +9,10 @@ gen:
 server:
   timeout: "10s"
   workers: 0 # 0 means use runtime.NumCPU()
-  # launch:
-  #   enabled: true
-  #   command: "./{{.ProjectName}}.exe" # Optional: default to project executable
-  #   cwd: "." # Optional: default to XLL directory
+  launch:
+    enabled: true
+    command: "./{{.ProjectName}}.exe" # Optional: default to project executable
+    cwd: "." # Optional: default to XLL directory
 
 # Function Definitions
 # Supported types: int, float, string, bool

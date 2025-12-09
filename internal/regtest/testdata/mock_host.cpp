@@ -49,10 +49,17 @@ int main() {
         // Retry logic for the first request to allow Guest to connect
         if (i == 0) {
              auto startWait = chrono::steady_clock::now();
+             int spin = 0;
              while(chrono::steady_clock::now() - startWait < chrono::seconds(30)) {
                 sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 132, respBuf);
                 if (sz >= 0) break;
-                this_thread::sleep_for(chrono::milliseconds(100));
+                if (spin < 1000) {
+                    this_thread::yield();
+                    spin++;
+                } else {
+                    this_thread::sleep_for(chrono::milliseconds(1));
+                    spin = 0;
+                }
              }
         } else {
              sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 132, respBuf);
@@ -200,8 +207,9 @@ int main() {
         // Wait for callback
         bool gotCallback = false;
         auto start = chrono::steady_clock::now();
+        int spin = 0;
         while(chrono::steady_clock::now() - start < chrono::seconds(2)) {
-            host.ProcessGuestCalls([&](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
+            int n = host.ProcessGuestCalls([&](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
                 // Check MsgID = 139
                 if (msgId == 139) {
                      auto response = flatbuffers::GetRoot<ipc::AsyncEchoIntResponse>(req);
@@ -212,7 +220,18 @@ int main() {
                 return 0;
             });
             if (gotCallback) break;
-            this_thread::sleep_for(chrono::milliseconds(10));
+
+            if (n == 0) {
+                if (spin < 1000) {
+                    this_thread::yield();
+                    spin++;
+                } else {
+                    this_thread::sleep_for(chrono::milliseconds(1));
+                    spin = 0;
+                }
+            } else {
+                spin = 0;
+            }
         }
         if (!gotCallback) { cerr << "Async callback missing" << endl; return 1; }
     }

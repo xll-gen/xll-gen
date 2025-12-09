@@ -127,12 +127,13 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::string shmName = "{{.ProjectName}}";
     {{end}}
 
-    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers)) {
+    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers + 2)) {
         return 0;
     }
 
     g_running = true;
     g_worker = std::thread([]{
+        int spin = 0;
         while(g_running) {
              int n = g_host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
                  switch (msgId) {
@@ -171,7 +172,18 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                          return 0;
                  }
               });
-              if (n == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+              if (n == 0) {
+                  if (spin < 1000) {
+                      std::this_thread::yield();
+                      spin++;
+                  } else {
+                      Sleep(1);
+                      spin = 0;
+                  }
+              } else {
+                  spin = 0;
+              }
         }
     });
 
@@ -342,7 +354,10 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 {{range $i, $fn := .Functions}}
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
-    flatbuffers::FlatBufferBuilder builder(1024);
+    auto slot = g_host.GetZeroCopySlot();
+    if (!slot) {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
+
+    flatbuffers::FlatBufferBuilder builder(slot->GetMaxReqSize(), nullptr, false, slot->GetReqBuffer());
 
     {{range .Args}}
     {{if eq .Type "string"}}
@@ -422,18 +437,17 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
     {{ $ackTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-    std::vector<uint8_t> respBuf;
-    g_host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 132 $i}}, respBuf, {{ $ackTimeout }});
+    slot->Send(builder.GetSize(), {{add 132 $i}}, {{ $ackTimeout }});
     return;
     {{else}}
     // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
     {{ $syncTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-    std::vector<uint8_t> respBuf;
-    int size = g_host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 132 $i}}, respBuf, {{ $syncTimeout }});
-    if (size <= 0) return {{defaultErrorVal .Return}};
+    if (!slot->Send(builder.GetSize(), {{add 132 $i}}, {{ $syncTimeout }})) {
+        return {{defaultErrorVal .Return}};
+    }
 
-    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf.data());
+    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot->GetRespBuffer());
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
     }

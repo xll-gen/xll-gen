@@ -42,7 +42,13 @@ int main() {
 {{range $i, $fn := .Functions}}
     {
         cout << "Testing {{.Name}}..." << endl;
-        flatbuffers::FlatBufferBuilder builder(1024);
+        auto slot = host.GetZeroCopySlot();
+        if (!slot) {
+             cerr << "  Failed to acquire slot!" << endl;
+             failures++;
+             continue;
+        }
+        flatbuffers::FlatBufferBuilder builder(slot->GetMaxReqSize(), nullptr, false, slot->GetReqBuffer());
 
         // Construct Request with default values
         {{range .Args}}
@@ -98,9 +104,7 @@ int main() {
         builder.Finish(req);
 
         // Send
-        vector<uint8_t> respBuf;
-        int size = host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 11 $i}}, respBuf);
-        if (size < 0) {
+        if (!slot->Send(builder.GetSize(), {{add 11 $i}}, 2000)) {
             cerr << "  Send failed!" << endl;
             failures++;
         } else {
@@ -114,7 +118,7 @@ int main() {
                 this_thread::sleep_for(chrono::milliseconds(10));
             }
             {{else}}
-            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf.data());
+            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot->GetRespBuffer());
             if (resp->error() && resp->error()->size() > 0) {
                  cout << "  Got Error: " << resp->error()->str() << endl;
             } else {

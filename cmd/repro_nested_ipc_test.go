@@ -20,7 +20,7 @@ func TestRepro_NestedIPC_Corruption(t *testing.T) {
 
 	// 2. Init
 	projectName := "repro_project"
-	if err := runInit(projectName); err != nil {
+	if err := runInit(projectName, false); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
