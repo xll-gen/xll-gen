@@ -41,7 +41,7 @@ func TestRegression(t *testing.T) {
 	}
 	defer os.Chdir(origWd)
 
-	if err := runInit(projectName); err != nil {
+	if err := runInit(projectName, false); err != nil {
 		t.Fatalf("runInit failed: %v", err)
 	}
 

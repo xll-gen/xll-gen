@@ -14,6 +14,8 @@ import (
 	"xll-gen/internal/templates"
 )
 
+var force bool
+
 // initCmd represents the init command.
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
@@ -21,7 +23,7 @@ var initCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		projectName := args[0]
-		if err := runInit(projectName); err != nil {
+		if err := runInit(projectName, force); err != nil {
 			fmt.Printf("Error initializing project: %v\n", err)
 			os.Exit(1)
 		}
@@ -30,6 +32,7 @@ var initCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(initCmd)
+	initCmd.Flags().BoolVarP(&force, "force", "f", false, "Force overwrite of existing directory")
 }
 
 // runInit scaffolds a new project directory with the specified name.
@@ -37,14 +40,21 @@ func init() {
 //
 // Parameters:
 //   - projectName: The name of the project (and directory) to create.
+//   - force: If true, existing directory will be removed.
 //
 // Returns:
-//   - error: An error if the directory already exists or file creation fails.
-func runInit(projectName string) error {
+//   - error: An error if the directory already exists (and force is false) or file creation fails.
+func runInit(projectName string, force bool) error {
 	fmt.Printf("Initializing project %s...\n", projectName)
 
 	if _, err := os.Stat(projectName); !os.IsNotExist(err) {
-		return fmt.Errorf("directory %s already exists", projectName)
+		if force {
+			if err := os.RemoveAll(projectName); err != nil {
+				return fmt.Errorf("failed to remove existing directory %s: %w", projectName, err)
+			}
+		} else {
+			return fmt.Errorf("directory %s already exists", projectName)
+		}
 	}
 
 	if err := os.Mkdir(projectName, 0755); err != nil {
