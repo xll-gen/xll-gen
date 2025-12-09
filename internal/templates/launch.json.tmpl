@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Excel (C++)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+            "args": [
+                "${workspaceFolder}/build/{{ .ProjectName }}.xll"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+        {
+            "name": "Attach to Go Server",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": 0
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Debug All",
+            "configurations": ["Debug Excel (C++)", "Attach to Go Server"]
+        }
+    ]
+}
