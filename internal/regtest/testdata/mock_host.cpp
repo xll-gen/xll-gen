@@ -21,9 +21,6 @@ using namespace std;
     } \
 }
 
-// main is the entry point for the mock host.
-// It initializes shared memory, acts as the Excel process, sends various requests to the Go server,
-// and verifies the responses.
 int main() {
     shm::DirectHost host;
     if (!host.Init("smoke_proj", 1024, 1024*1024, 16)) {
@@ -46,7 +43,6 @@ int main() {
         vector<uint8_t> respBuf;
         int sz = -1;
 
-        // Retry logic for the first request to allow Guest to connect
         if (i == 0) {
              auto startWait = chrono::steady_clock::now();
              int spin = 0;
@@ -118,7 +114,60 @@ int main() {
         ASSERT_EQ(val, resp->result(), "EchoBool");
     }
 
-    // 5. CheckAny (ID 136)
+    // 5. AsyncEchoInt (ID 136)
+    {
+        builder.Reset();
+        ipc::AsyncEchoIntRequestBuilder req(builder);
+        req.add_val(42);
+        req.add_async_handle(999);
+        builder.Finish(req.Finish());
+
+        vector<uint8_t> respBuf;
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        if (sz < 0) return 1;
+
+        // Wait for callback (MsgID 127 - BatchAsyncResponse)
+        bool gotCallback = false;
+        auto start = chrono::steady_clock::now();
+        int spin = 0;
+        while(chrono::steady_clock::now() - start < chrono::seconds(2)) {
+            int n = host.ProcessGuestCalls([&](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
+                if (msgId == 127) { // MSG_BATCH_ASYNC_RESPONSE
+                     auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
+                     if (batch->results()) {
+                         for (unsigned int i = 0; i < batch->results()->size(); i++) {
+                             auto res = batch->results()->Get(i);
+                             if (res->handle() == 999) {
+                                 // Check result
+                                 if (res->result_type() == ipc::types::AnyValue_Int) {
+                                     if (res->result_as_Int()->val() == 42) {
+                                        gotCallback = true;
+                                     }
+                                 }
+                             }
+                         }
+                     }
+                }
+                return 0;
+            });
+            if (gotCallback) break;
+
+            if (n == 0) {
+                if (spin < 1000) {
+                    this_thread::yield();
+                    spin++;
+                } else {
+                    this_thread::sleep_for(chrono::milliseconds(1));
+                    spin = 0;
+                }
+            } else {
+                spin = 0;
+            }
+        }
+        if (!gotCallback) { cerr << "Async callback missing" << endl; return 1; }
+    }
+
+    // 6. CheckAny (ID 137)
     // Int
     {
         builder.Reset();
@@ -128,7 +177,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Int:10", resp->result()->str(), "CheckAny Int");
     }
@@ -142,7 +191,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Str:hello", resp->result()->str(), "CheckAny Str");
     }
@@ -155,7 +204,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Num:1.5", resp->result()->str(), "CheckAny Num");
     }
@@ -171,7 +220,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("NumGrid:1x2", resp->result()->str(), "CheckAny NumGrid");
     }
@@ -193,12 +242,12 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Grid:1x2", resp->result()->str(), "CheckAny Grid");
     }
 
-    // 6. CheckRange (ID 137)
+    // 7. CheckRange (ID 138)
     {
         builder.Reset();
         auto sOff = builder.CreateString("Sheet1");
@@ -209,12 +258,12 @@ int main() {
         req.add_val(rangeVal);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckRangeResponse>(respBuf.data());
         ASSERT_STREQ("Range:Sheet1!1:1:1:1", resp->result()->str(), "CheckRange");
     }
 
-    // 7. TimeoutFunc (ID 138)
+    // 8. TimeoutFunc (ID 139)
     {
         builder.Reset();
         ipc::TimeoutFuncRequestBuilder req(builder);
@@ -222,21 +271,21 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), 139, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::TimeoutFuncResponse>(respBuf.data());
 
         // Timeout now returns -1 instead of error
         ASSERT_EQ(-1, resp->result(), "TimeoutFunc");
     }
 
-    // 8. CalculationEnded Commands - Set (ID 139)
+    // 9. CalculationEnded Commands - Set (ID 140)
     {
-        // 1. Call ScheduleCmd (ID 139)
+        // 1. Call ScheduleCmd (ID 140)
         builder.Reset();
         ipc::ScheduleCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 139, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleCmd");
 
@@ -263,14 +312,14 @@ int main() {
         ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
     }
 
-    // 9. CalculationEnded Commands - Format (ID 140)
+    // 10. CalculationEnded Commands - Format (ID 141)
     {
-        // 1. Call ScheduleFormatCmd (ID 140)
+        // 1. Call ScheduleFormatCmd (ID 141)
         builder.Reset();
         ipc::ScheduleFormatCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleFormatCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleFormatCmd");
 
@@ -292,14 +341,14 @@ int main() {
         ASSERT_STREQ("General", fmtCmd->format()->str(), "FormatCommand Format");
     }
 
-    // 10. CalculationEnded Commands - Multi (ID 141)
+    // 11. CalculationEnded Commands - Multi (ID 142)
     {
-        // 1. Call ScheduleMultiCmd (ID 141)
+        // 1. Call ScheduleMultiCmd (ID 142)
         builder.Reset();
         ipc::ScheduleMultiCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 142, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMultiCmdResponse>(respBuf.data());
         ASSERT_EQ(2, resp->result(), "ScheduleMultiCmd");
 
@@ -328,14 +377,14 @@ int main() {
         }
     }
 
-    // 11. ScheduleMassive (ID 142)
+    // 12. ScheduleMassive (ID 143)
     {
         // 1. Call ScheduleMassive
         builder.Reset();
         ipc::ScheduleMassiveRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 142, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 143, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMassiveResponse>(respBuf.data());
         ASSERT_EQ(100, resp->result(), "ScheduleMassive");
 
@@ -369,14 +418,14 @@ int main() {
         ASSERT_EQ(2, count200, "Count 200 commands");
     }
 
-    // 12. ScheduleGridCmd (ID 143)
+    // 13. ScheduleGridCmd (ID 144)
     {
         // 1. Call ScheduleGridCmd
         builder.Reset();
         ipc::ScheduleGridCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 143, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 144, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleGridCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleGridCmd");
 
