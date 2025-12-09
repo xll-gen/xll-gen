@@ -135,8 +135,8 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     g_worker = std::thread([]{
         int spin = 0;
         while(g_running) {
-             int n = g_host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
-                 switch (msgId) {
+             int n = g_host.ProcessGuestCalls([](const uint8_t* req, uint32_t msgType, uint8_t* resp, uint32_t size, uint32_t timeoutMs) -> int32_t {
+                 switch (msgType) {
                  {{range $i, $fn := .Functions}}
                      {{if .Async}}
                      case {{add 132 $i}}: { // {{.Name}}
@@ -432,7 +432,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
-    // Zero-Copy Send (Size, MsgId, Timeout)
+    // Zero-Copy Send (Size, MsgType, Timeout)
     {{if .Async}}
     // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
     {{ $ackTimeout := parseTimeout .Timeout 0 }}
