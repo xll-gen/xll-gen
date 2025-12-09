@@ -28,12 +28,6 @@ func (s *Service) EchoString(ctx context.Context, val string) (string, error) { 
 // EchoBool returns the input boolean.
 func (s *Service) EchoBool(ctx context.Context, val bool) (bool, error) { return val, nil }
 
-// AsyncEchoInt waits briefly and returns the input integer, simulating async work.
-func (s *Service) AsyncEchoInt(ctx context.Context, val int32) (int32, error) {
-	time.Sleep(10 * time.Millisecond)
-	return val, nil
-}
-
 // TimeoutFunc waits for 500ms, which exceeds the configured timeout, returning -1 on cancellation.
 func (s *Service) TimeoutFunc(ctx context.Context, val int32) (int32, error) {
 	select {
@@ -45,7 +39,7 @@ func (s *Service) TimeoutFunc(ctx context.Context, val int32) (int32, error) {
 	}
 }
 
-// CheckAny inspects the generic Any value and returns a string description of its type and content.
+// CheckAny inspects the generic Any value and returns a string description of the type and content.
 func (s *Service) CheckAny(ctx context.Context, val *types.Any) (string, error) {
 	if val == nil {
 		return "Nil", nil
@@ -239,6 +233,86 @@ func (s *Service) ScheduleMassive(ctx context.Context) (int32, error) {
         }
     }
     return 100, nil
+}
+
+func (s *Service) ScheduleGridCmd(ctx context.Context) (int32, error) {
+    b := flatbuffers.NewBuilder(0)
+
+    // Create Range
+    sOff := b.CreateString("Sheet1")
+    types.RangeStartRefsVector(b, 1)
+    types.CreateRect(b, 2, 3, 2, 3) // 2x2 area
+    refsOff := b.EndVector(1)
+    types.RangeStart(b)
+    types.RangeAddSheetName(b, sOff)
+    types.RangeAddRefs(b, refsOff)
+    rOff := types.RangeEnd(b)
+    b.Finish(rOff)
+    r := types.GetRootAsRange(b.FinishedBytes(), 0)
+
+    // Create Grid
+    // [[1, 2], [3, 4]]
+
+    // 1
+    types.IntStart(b)
+    types.IntAddVal(b, 1)
+    v1 := types.IntEnd(b)
+    types.ScalarStart(b)
+    types.ScalarAddValType(b, types.ScalarValueInt)
+    types.ScalarAddVal(b, v1)
+    scalar1 := types.ScalarEnd(b)
+
+    // 2
+    types.IntStart(b)
+    types.IntAddVal(b, 2)
+    v2 := types.IntEnd(b)
+    types.ScalarStart(b)
+    types.ScalarAddValType(b, types.ScalarValueInt)
+    types.ScalarAddVal(b, v2)
+    scalar2 := types.ScalarEnd(b)
+
+    // 3
+    types.IntStart(b)
+    types.IntAddVal(b, 3)
+    v3 := types.IntEnd(b)
+    types.ScalarStart(b)
+    types.ScalarAddValType(b, types.ScalarValueInt)
+    types.ScalarAddVal(b, v3)
+    scalar3 := types.ScalarEnd(b)
+
+    // 4
+    types.IntStart(b)
+    types.IntAddVal(b, 4)
+    v4 := types.IntEnd(b)
+    types.ScalarStart(b)
+    types.ScalarAddValType(b, types.ScalarValueInt)
+    types.ScalarAddVal(b, v4)
+    scalar4 := types.ScalarEnd(b)
+
+    types.GridStartDataVector(b, 4)
+    b.PrependUOffsetT(scalar4)
+    b.PrependUOffsetT(scalar3)
+    b.PrependUOffsetT(scalar2)
+    b.PrependUOffsetT(scalar1)
+    dataOff := b.EndVector(4)
+
+    types.GridStart(b)
+    types.GridAddRows(b, 2)
+    types.GridAddCols(b, 2)
+    types.GridAddData(b, dataOff)
+    gOff := types.GridEnd(b)
+
+    // Wrap in Any
+    types.AnyStart(b)
+    types.AnyAddValType(b, types.AnyValueGrid)
+    types.AnyAddVal(b, gOff)
+    anyOff := types.AnyEnd(b)
+    b.Finish(anyOff)
+
+    v := types.GetRootAsAny(b.FinishedBytes(), 0)
+
+    generated.ScheduleSet(r, v)
+    return 1, nil
 }
 
 func (s *Service) OnCalculationEnded(ctx context.Context) error {
