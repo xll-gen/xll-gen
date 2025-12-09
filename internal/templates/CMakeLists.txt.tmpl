@@ -72,9 +72,15 @@ set(ZSTD_OUTPUT_PATH "${CMAKE_CURRENT_BINARY_DIR}/${ZSTD_BINARY_NAME}")
 
 find_program(GO_EXE NAMES go REQUIRED)
 
+# Determine Go Build Flags based on Configuration
+# Release: Strip symbols (-s -w) for size
+# Debug:   Disable optimizations (-gcflags="all=-N -l") for debugging
+set(GO_FLAGS_RELEASE "-ldflags='-s -w'")
+set(GO_FLAGS_DEBUG "-gcflags='all=-N -l'")
+
 add_custom_command(
     OUTPUT ${ZSTD_OUTPUT_PATH}
-    COMMAND ${GO_EXE} build -ldflags="-s -w" -o ${GO_OUTPUT_PATH} .
+    COMMAND ${GO_EXE} build $<$<CONFIG:Debug>:${GO_FLAGS_DEBUG}> $<$<CONFIG:Release>:${GO_FLAGS_RELEASE}> $<$<CONFIG:RelWithDebInfo>:${GO_FLAGS_RELEASE}> -o ${GO_OUTPUT_PATH} .
     COMMAND $<TARGET_FILE:compressor> ${GO_OUTPUT_PATH} ${ZSTD_OUTPUT_PATH}
     WORKING_DIRECTORY ${GO_SOURCE_DIR}
     DEPENDS compressor "${GO_SOURCE_DIR}/server.go" "${GO_SOURCE_DIR}/main.go" # Basic dependency check

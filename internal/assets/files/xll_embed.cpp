@@ -75,6 +75,16 @@ bool DecompressAndWrite(void* pSrc, size_t srcSize, const std::string& destPath)
 }
 
 std::string ExtractAndStartExe(const std::string& tempDirPattern) {
+    // 1. Check for Debug Override
+    // If XLL_DEV_DISABLE_EMBED is set to "1", skip extraction and return empty string.
+    // This allows the caller to fall back to the local executable for easier debugging.
+    char envBuf[16];
+    if (GetEnvironmentVariableA("XLL_DEV_DISABLE_EMBED", envBuf, 16) > 0) {
+        if (std::string(envBuf) == "1") {
+            return ""; // Trigger fallback
+        }
+    }
+
     std::string tempDir = ExpandEnvVars(tempDirPattern);
 
     // Ensure trailing slash
