@@ -333,9 +333,9 @@ LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
                     // If so, we delete elem->val.str.
                     // So we must allocate it with new wchar_t[].
                     std::wstring ws = StringToWString(s);
-                    auto pascal = WStringToPascalString(ws);
-                    cell.val.str = new wchar_t[pascal.size()];
-                    std::memcpy(cell.val.str, pascal.data(), pascal.size() * sizeof(wchar_t));
+                    auto pascalStr = WStringToPascalString(ws);
+                    cell.val.str = new wchar_t[pascalStr.size()];
+                    std::memcpy(cell.val.str, pascalStr.data(), pascalStr.size() * sizeof(wchar_t));
                     break;
                 }
                 case ipc::types::ScalarValue_Err:
