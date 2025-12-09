@@ -4,6 +4,7 @@
 #include "xll_ipc.h"
 #include "xll_mem.h"
 #include <sstream>
+#include <cstring>
 
 std::wstring GetSheetName(LPXLOPER12 pxRef) {
     if (!pxRef || (pxRef->xltype != xltypeRef && pxRef->xltype != xltypeSRef)) {
@@ -235,6 +236,72 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
     return ipc::types::CreateAny(builder, ipc::types::AnyValue_Nil, nilVal.Union());
 }
 
+FP12* NumGridToFP12(const ipc::types::NumGrid* g) {
+    if (!g) return nullptr;
+    int rows = g->rows();
+    int cols = g->cols();
+    FP12* fp = NewFP12(rows, cols);
+    if (!fp) return nullptr;
+    auto data = g->data();
+    int count = rows * cols;
+    if (data->size() == count) {
+        std::memcpy(fp->array, data->data(), count * sizeof(double));
+    }
+    return fp;
+}
+
+LPXLOPER12 GridToXLOPER12(const ipc::types::Grid* g) {
+    if (!g) return NewXLOPER12();
+    int rows = g->rows();
+    int cols = g->cols();
+    int count = rows * cols;
+    auto data = g->data();
+    if (data->size() != count) return NewXLOPER12();
+
+    LPXLOPER12 x = NewXLOPER12();
+    x->xltype = xltypeMulti | xlbitDLLFree;
+    x->val.array.rows = rows;
+    x->val.array.columns = cols;
+    x->val.array.lparray = new XLOPER12[count];
+    std::memset(x->val.array.lparray, 0, count * sizeof(XLOPER12));
+
+    for(int i=0; i<count; ++i) {
+        auto scalar = data->Get(i);
+        auto& cell = x->val.array.lparray[i];
+
+        switch (scalar->val_type()) {
+            case ipc::types::ScalarValue_Num:
+                cell.xltype = xltypeNum;
+                cell.val.num = scalar->val_as_Num()->val();
+                break;
+            case ipc::types::ScalarValue_Int:
+                cell.xltype = xltypeInt;
+                cell.val.w = scalar->val_as_Int()->val();
+                break;
+            case ipc::types::ScalarValue_Bool:
+                cell.xltype = xltypeBool;
+                cell.val.xbool = scalar->val_as_Bool()->val() ? 1 : 0;
+                break;
+            case ipc::types::ScalarValue_Str: {
+                std::string s = scalar->val_as_Str()->val()->str();
+                std::wstring ws = StringToWString(s);
+                auto pascal = WStringToPascalString(ws);
+                cell.val.str = new wchar_t[pascal.size()];
+                std::memcpy(cell.val.str, pascal.data(), pascal.size() * sizeof(wchar_t));
+                cell.xltype = xltypeStr | xlbitDLLFree;
+                break;
+            }
+            case ipc::types::ScalarValue_Err:
+                cell.xltype = xltypeErr;
+                cell.val.err = (int)scalar->val_as_Err()->val();
+                break;
+            default:
+                cell.xltype = xltypeNil;
+        }
+    }
+    return x;
+}
+
 LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
     if (!any) return NewXLOPER12(); // Nil
 
@@ -289,65 +356,7 @@ LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
         return x;
     }
     case ipc::types::AnyValue_Grid: {
-        auto g = any->val_as_Grid();
-        int rows = g->rows();
-        int cols = g->cols();
-        int count = rows * cols;
-        auto data = g->data();
-        if (data->size() != count) return NewXLOPER12(); // Error
-
-        LPXLOPER12 x = NewXLOPER12();
-        x->xltype = xltypeMulti | xlbitDLLFree;
-        x->val.array.rows = rows;
-        x->val.array.columns = cols;
-        x->val.array.lparray = new XLOPER12[count];
-        std::memset(x->val.array.lparray, 0, count * sizeof(XLOPER12));
-
-        // Recursively convert elements
-        for(int i=0; i<count; ++i) {
-            auto scalar = data->Get(i);
-            // ConvertScalar inverse...
-            // Wait, Grid in flatbuffers contains Scalars (which are a Union of simple types)
-            // Scalar is NOT Any. Scalar has val_type: Num, Int, Str, Bool, Err, Nil.
-            // We need ScalarToXLOPER logic here.
-
-            auto& cell = x->val.array.lparray[i];
-
-            switch (scalar->val_type()) {
-                case ipc::types::ScalarValue_Num:
-                    cell.xltype = xltypeNum;
-                    cell.val.num = scalar->val_as_Num()->val();
-                    break;
-                case ipc::types::ScalarValue_Int:
-                    cell.xltype = xltypeInt;
-                    cell.val.w = scalar->val_as_Int()->val();
-                    break;
-                case ipc::types::ScalarValue_Bool:
-                    cell.xltype = xltypeBool;
-                    cell.val.xbool = scalar->val_as_Bool()->val() ? 1 : 0;
-                    break;
-                case ipc::types::ScalarValue_Str: {
-                    std::string s = scalar->val_as_Str()->val()->str();
-                    // We need to allocate string buffer
-                    cell.xltype = xltypeStr | xlbitDLLFree; // Wait, xlAutoFree12 logic
-                    // In xlAutoFree12 for xltypeMulti, we check if elem->xltype & xltypeStr.
-                    // If so, we delete elem->val.str.
-                    // So we must allocate it with new wchar_t[].
-                    std::wstring ws = StringToWString(s);
-                    auto pascalStr = WStringToPascalString(ws);
-                    cell.val.str = new wchar_t[pascalStr.size()];
-                    std::memcpy(cell.val.str, pascalStr.data(), pascalStr.size() * sizeof(wchar_t));
-                    break;
-                }
-                case ipc::types::ScalarValue_Err:
-                    cell.xltype = xltypeErr;
-                    cell.val.err = (int)scalar->val_as_Err()->val();
-                    break;
-                default:
-                    cell.xltype = xltypeNil;
-            }
-        }
-        return x;
+        return GridToXLOPER12(any->val_as_Grid());
     }
     default:
         return NewXLOPER12();

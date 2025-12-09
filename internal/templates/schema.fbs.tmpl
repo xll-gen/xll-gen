@@ -15,6 +15,16 @@ table Chunk {
   msg_type: uint;
 }
 
+table AsyncResult {
+  handle: ulong;
+  result: ipc.types.Any;
+  error: string;
+}
+
+table BatchAsyncResponse {
+  results: [AsyncResult];
+}
+
 table SetRefCacheRequest {
   key: string;
   val: ipc.types.Any;

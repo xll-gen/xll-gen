@@ -12,6 +12,7 @@
 #include <wchar.h>
 #include <random>
 #include <iostream>
+#include <cstring>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
 #include "include/xll_utility.h"
@@ -30,6 +31,19 @@ HINSTANCE g_hModule = NULL;
 
 // Global Error Value for Returns
 static XLOPER12 g_xlErrValue;
+
+// Helper for creating string XLOPER12 without pool (for batching)
+// We cannot use the global ObjectPool because xlAsyncReturn with xltypeMulti
+// requires a contiguous array of XLOPER12 structs, while the pool provides
+// pointers to scattered individual objects.
+XLOPER12 CreateStringXLOPER(const std::wstring& str) {
+    XLOPER12 x;
+    x.xltype = xltypeStr;
+    std::vector<wchar_t> pstr = WStringToPascalString(str);
+    x.val.str = new wchar_t[pstr.size()];
+    std::memcpy(x.val.str, pstr.data(), pstr.size() * sizeof(wchar_t));
+    return x;
+}
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
@@ -133,37 +147,90 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     g_running = true;
     g_worker = std::thread([]{
+        // Reusable vectors for batch processing
+        std::vector<XLOPER12> handles;
+        std::vector<XLOPER12> values;
+        handles.reserve(256);
+        values.reserve(256);
+
         int spin = 0;
         while(g_running) {
-             int n = g_host.ProcessGuestCalls([](const uint8_t* req, uint32_t msgType, uint8_t* resp, uint32_t size, uint32_t timeoutMs) -> int32_t {
+             handles.clear();
+             values.clear();
+
+             int n = g_host.ProcessGuestCalls([&handles, &values](const uint8_t* req, uint32_t msgType, uint8_t* resp, uint32_t size, uint32_t timeoutMs) -> int32_t {
                  switch (msgType) {
+                 case 127: { // MSG_BATCH_ASYNC_RESPONSE
+                     auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
+                     if (batch->results()) {
+                         for (auto res : *batch->results()) {
+                             XLOPER12 h;
+                             h.xltype = xltypeBigData | xlbitXLFree; // Actually handled by Excel? No, passed as pointer.
+
+                             LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
+                             if (originalHandle) {
+                                 h = *originalHandle; // Copy the struct content (xltypeBigData, val, etc.)
+
+                                 XLOPER12 val;
+                                 std::memset(&val, 0, sizeof(XLOPER12));
+
+                                 if (res->error() && res->error()->size() > 0) {
+                                     val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                 } else {
+                                     // Convert AnyValue to XLOPER12
+                                     auto anyType = res->result_type();
+                                     if (anyType == ipc::types::AnyValue_Int) {
+                                         val.xltype = xltypeInt;
+                                         val.val.w = static_cast<const ipc::types::Int*>(res->result())->val();
+                                     } else if (anyType == ipc::types::AnyValue_Num) {
+                                         val.xltype = xltypeNum;
+                                         val.val.num = static_cast<const ipc::types::Num*>(res->result())->val();
+                                     } else if (anyType == ipc::types::AnyValue_Bool) {
+                                         val.xltype = xltypeBool;
+                                         val.val.xbool = static_cast<const ipc::types::Bool*>(res->result())->val() ? 1 : 0;
+                                     } else if (anyType == ipc::types::AnyValue_Str) {
+                                         auto s = static_cast<const ipc::types::Str*>(res->result())->val();
+                                         std::wstring wres = StringToWString(s->str());
+                                         val = CreateStringXLOPER(wres);
+                                     } else {
+                                          val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                     }
+                                 }
+                                 handles.push_back(h);
+                                 values.push_back(val);
+                             }
+                         }
+                     }
+                     return 0;
+                 }
                  {{range $i, $fn := .Functions}}
                      {{if .Async}}
-                     case {{add 132 $i}}: { // {{.Name}}
+                     case {{add 132 $i}}: { // {{.Name}} (Single Legacy Response)
                          auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
-                         LPXLOPER12 h = (LPXLOPER12)response->async_handle();
+                         LPXLOPER12 hPtr = (LPXLOPER12)response->async_handle();
 
-                         if (response->error() && response->error()->size() > 0) {
-                             XLOPER12 xErr; xErr.xltype = xltypeErr; xErr.val.err = xlerrValue;
-                             Excel12(xlAsyncReturn, 0, 2, h, &xErr);
-                             return 0;
+                         if (hPtr) {
+                             XLOPER12 h = *hPtr; // Copy handle content
+                             XLOPER12 val;
+                             std::memset(&val, 0, sizeof(XLOPER12));
+
+                             if (response->error() && response->error()->size() > 0) {
+                                 val.xltype = xltypeErr; val.val.err = xlerrValue;
+                             } else {
+                                 {{if eq .Return "string"}}
+                                 std::wstring wres = StringToWString(response->result()->str());
+                                 val = CreateStringXLOPER(wres);
+                                 {{else if eq .Return "int"}}
+                                 val.xltype = xltypeInt; val.val.w = response->result();
+                                 {{else if eq .Return "float"}}
+                                 val.xltype = xltypeNum; val.val.num = response->result();
+                                 {{else if eq .Return "bool"}}
+                                 val.xltype = xltypeBool; val.val.xbool = response->result() ? 1 : 0;
+                                 {{end}}
+                             }
+                             handles.push_back(h);
+                             values.push_back(val);
                          }
-
-                         {{if eq .Return "string"}}
-                         std::wstring wres = StringToWString(response->result()->str());
-                         LPXLOPER12 xRes = NewExcelString(wres.c_str());
-                         Excel12(xlAsyncReturn, 0, 2, h, xRes);
-                         xlAutoFree12(xRes);
-                         {{else if eq .Return "int"}}
-                         XLOPER12 xRes; xRes.xltype = xltypeInt; xRes.val.w = response->result();
-                         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-                         {{else if eq .Return "float"}}
-                         XLOPER12 xRes; xRes.xltype = xltypeNum; xRes.val.num = response->result();
-                         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-                         {{else if eq .Return "bool"}}
-                         XLOPER12 xRes; xRes.xltype = xltypeBool; xRes.val.xbool = response->result() ? 1 : 0;
-                         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-                         {{end}}
                          return 0;
                      }
                      {{end}}
@@ -172,6 +239,28 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                          return 0;
                  }
               });
+
+              if (!handles.empty()) {
+                  if (handles.size() == 1) {
+                      Excel12(xlAsyncReturn, 0, 2, &handles[0], &values[0]);
+                  } else {
+                      int N = (int)handles.size();
+
+                      XLOPER12 arrH, arrV;
+                      arrH.xltype = xltypeMulti; arrH.val.array.rows = 1; arrH.val.array.columns = N; arrH.val.array.lparray = handles.data();
+                      arrV.xltype = xltypeMulti; arrV.val.array.rows = 1; arrV.val.array.columns = N; arrV.val.array.lparray = values.data();
+
+                      Excel12(xlAsyncReturn, 0, 2, &arrH, &arrV);
+                  }
+
+                  // Cleanup allocated strings
+                  for(auto& v : values) {
+                      if ((v.xltype & xltypeStr) && v.val.str) {
+                          delete[] v.val.str;
+                          v.val.str = nullptr;
+                      }
+                  }
+              }
 
               if (n == 0) {
                   if (spin < 1000) {
