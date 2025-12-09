@@ -130,4 +130,9 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
     if !strings.Contains(content, expectedIntFix) {
          t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
     }
+
+    // Check for memmove usage (for SHMAllocator back-to-front correction)
+    if !strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
+        t.Fatal("Expected memmove to align buffer to start")
+    }
 }
