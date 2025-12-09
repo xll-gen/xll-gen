@@ -30,3 +30,6 @@ temp_project/
 build_cmake/
 temp_*/
 build/
+
+# IDEs and editors
+.vscode/

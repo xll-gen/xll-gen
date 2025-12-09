@@ -70,13 +70,16 @@ LPXLOPER12 TempStr12(const wchar_t* txt) {
 
 extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeString(const wchar_t* s) {
     wchar_t buf[256];
-    size_t len = 0;
-    if (s) len = (size_t)s[0];
+    if (s == NULL) {
+        swprintf(buf, 256, L"Ptr: 0x%p (NULL)", s);
+        return NewExcelString(buf);
+    }
+    size_t len = (size_t)s[0];
     if (len > 128) len = 128; // Cap for display
 
     // Create a temporary null-terminated string for display
     wchar_t tmp[129];
-    if (s) wmemcpy(tmp, s+1, len);
+    wmemcpy(tmp, s + 1, len);
     tmp[len] = 0;
 
     #ifdef _MSC_VER
@@ -90,13 +93,16 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeString(const wchar_t*
 
 extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeIntPtr(int* p) {
     wchar_t buf[256];
-    int val = p ? *p : 0;
-    const wchar_t* status = p ? L"Valid" : L"Null";
+    if (p == NULL) {
+        swprintf(buf, 256, L"Ptr: 0x%p (NULL)", p);
+        return NewExcelString(buf);
+    }
+    signed long val = (signed long)*p;
 
     #ifdef _MSC_VER
-    _snwprintf_s(buf, 256, _TRUNCATE, L"Ptr: 0x%p | Val: %d (%s)", p, val, status);
+    _snwprintf_s(buf, 256, _TRUNCATE, L"Ptr: 0x%p | Val: %ld (Valid)", p, val);
     #else
-    swprintf(buf, 256, L"Ptr: 0x%p | Val: %d (%ls)", p, val, status);
+    swprintf(buf, 256, L"Ptr: 0x%p | Val: %ld (Valid)", p, val);
     #endif
 
     return NewExcelString(buf);
@@ -104,13 +110,16 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeIntPtr(int* p) {
 
 extern "C" __declspec(dllexport) LPXLOPER12 __stdcall ProbeDoublePtr(double* p) {
     wchar_t buf[256];
-    double val = p ? *p : 0.0;
-    const wchar_t* status = p ? L"Valid" : L"Null";
+    if (p == NULL) {
+        swprintf(buf, 256, L"Ptr: 0x%p (NULL)", p);
+        return NewExcelString(buf);
+    }
+    double val = *p;
 
     #ifdef _MSC_VER
-    _snwprintf_s(buf, 256, _TRUNCATE, L"Ptr: 0x%p | Val: %f (%s)", p, val, status);
+    _snwprintf_s(buf, 256, _TRUNCATE, L"Ptr: 0x%p | Val: %f (Valid)", p, val);
     #else
-    swprintf(buf, 256, L"Ptr: 0x%p | Val: %f (%ls)", p, val, status);
+    swprintf(buf, 256, L"Ptr: 0x%p | Val: %f (Valid)", p, val);
     #endif
 
     return NewExcelString(buf);
