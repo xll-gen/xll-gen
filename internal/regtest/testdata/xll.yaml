@@ -28,11 +28,6 @@ functions:
     args: [{name: "val", type: "bool"}]
     return: "bool"
 
-  - name: "AsyncEchoInt"
-    args: [{name: "val", type: "int"}]
-    return: "int"
-    async: true
-
   # Any & Range
   - name: "CheckAny"
     args: [{name: "val", type: "any"}]
@@ -58,5 +53,8 @@ functions:
     args: []
     return: "int"
   - name: "ScheduleMassive"
+    args: []
+    return: "int"
+  - name: "ScheduleGridCmd"
     args: []
     return: "int"
