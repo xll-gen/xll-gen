@@ -38,7 +38,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         // Initialize global error
         g_xlErrValue.xltype = xltypeErr;
-        g_xlErrValue.val.err = xlErrValue;
+        g_xlErrValue.val.err = xlerrValue;
     }
     return TRUE;
 }
@@ -110,50 +110,6 @@ void ExecuteCommands(const ipc::CalculationEndedResponse* resp) {
     }
 }
 
-// Guest Call Handler (Async Return)
-int32_t GuestHandler(const uint8_t* req, uint8_t* resp, uint32_t msgId) {
-    switch (msgId) {
-    case MSG_CHUNK: { // Chunk (128)
-        return HandleChunk(req, resp, GuestHandler);
-    }
-{{range $i, $fn := .Functions}}
-    {{if .Async}}
-    case {{add 132 $i}}: { // {{.Name}}
-        auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
-        LPXLOPER12 h = (LPXLOPER12)response->async_handle();
-
-        if (response->error() && response->error()->size() > 0) {
-            XLOPER12 xErr; xErr.xltype = xltypeErr; xErr.val.err = xlErrValue;
-            Excel12(xlAsyncReturn, 0, 2, h, &xErr);
-            return 0;
-        }
-
-        {{if eq .Return "string"}}
-        std::wstring wres = StringToWString(response->result()->str());
-        LPXLOPER12 xRes = NewExcelString(wres.c_str());
-        Excel12(xlAsyncReturn, 0, 2, h, xRes);
-        // NewExcelString sets xlbitDLLFree, so we can use xlAutoFree12 to clean it up.
-        // This handles both the string buffer and returning the XLOPER12 to the pool.
-        xlAutoFree12(xRes);
-        {{else if eq .Return "int"}}
-        XLOPER12 xRes; xRes.xltype = xltypeInt; xRes.val.w = response->result();
-        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-        {{else if eq .Return "float"}}
-        XLOPER12 xRes; xRes.xltype = xltypeNum; xRes.val.num = response->result();
-        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-        {{else if eq .Return "bool"}}
-        XLOPER12 xRes; xRes.xltype = xltypeBool; xRes.val.xbool = response->result() ? 1 : 0;
-        Excel12(xlAsyncReturn, 0, 2, h, &xRes);
-        {{end}}
-        return 0;
-    }
-    {{end}}
-{{end}}
-    default:
-        return 0;
-    }
-}
-
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
@@ -178,8 +134,44 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     g_running = true;
     g_worker = std::thread([]{
         while(g_running) {
-             int n = g_host.ProcessGuestCalls(GuestHandler);
-             if (n == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+             int n = g_host.ProcessGuestCalls([](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
+                 switch (msgId) {
+                 {{range $i, $fn := .Functions}}
+                     {{if .Async}}
+                     case {{add 132 $i}}: { // {{.Name}}
+                         auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
+                         LPXLOPER12 h = (LPXLOPER12)response->async_handle();
+
+                         if (response->error() && response->error()->size() > 0) {
+                             XLOPER12 xErr; xErr.xltype = xltypeErr; xErr.val.err = xlerrValue;
+                             Excel12(xlAsyncReturn, 0, 2, h, &xErr);
+                             return 0;
+                         }
+
+                         {{if eq .Return "string"}}
+                         std::wstring wres = StringToWString(response->result()->str());
+                         LPXLOPER12 xRes = NewExcelString(wres.c_str());
+                         Excel12(xlAsyncReturn, 0, 2, h, xRes);
+                         xlAutoFree12(xRes);
+                         {{else if eq .Return "int"}}
+                         XLOPER12 xRes; xRes.xltype = xltypeInt; xRes.val.w = response->result();
+                         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
+                         {{else if eq .Return "float"}}
+                         XLOPER12 xRes; xRes.xltype = xltypeNum; xRes.val.num = response->result();
+                         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
+                         {{else if eq .Return "bool"}}
+                         XLOPER12 xRes; xRes.xltype = xltypeBool; xRes.val.xbool = response->result() ? 1 : 0;
+                         Excel12(xlAsyncReturn, 0, 2, h, &xRes);
+                         {{end}}
+                         return 0;
+                     }
+                     {{end}}
+                 {{end}}
+                     default:
+                         return 0;
+                 }
+              });
+              if (n == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     });
 
@@ -318,19 +310,17 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         std::lock_guard<std::mutex> lock(g_refCacheMutex);
         g_sentRefCache.clear();
     }
-    auto slot = g_host.GetZeroCopySlot();
-    if (slot.Send(0, MSG_CALCULATION_ENDED, 2000)) {
-         if (slot.GetRespSize() > 0) {
-             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(slot.GetRespBuffer());
-             ExecuteCommands(resp);
-         }
+    std::vector<uint8_t> respBuf;
+    if (g_host.Send(nullptr, 0, MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
+         auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
+         ExecuteCommands(resp);
     }
     {{else if eq .Type "CalculationCanceled"}}
-    auto slot = g_host.GetZeroCopySlot();
-    slot.Send(0, MSG_CALCULATION_CANCELED, 2000);
+    std::vector<uint8_t> respBuf;
+    g_host.Send(nullptr, 0, MSG_CALCULATION_CANCELED, respBuf, 2000);
     {{else}}
-    auto slot = g_host.GetZeroCopySlot();
-    slot.Send(0, {{lookupEventId .Type}}, 2000);
+    std::vector<uint8_t> respBuf;
+    g_host.Send(nullptr, 0, {{lookupEventId .Type}}, respBuf, 2000);
     {{end}}
 }
 {{end}}
@@ -341,12 +331,10 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         std::lock_guard<std::mutex> lock(g_refCacheMutex);
         g_sentRefCache.clear();
     }
-    auto slot = g_host.GetZeroCopySlot();
-    if (slot.Send(0, MSG_CALCULATION_ENDED, 2000)) {
-         if (slot.GetRespSize() > 0) {
-             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(slot.GetRespBuffer());
-             ExecuteCommands(resp);
-         }
+    std::vector<uint8_t> respBuf;
+    if (g_host.Send(nullptr, 0, MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
+         auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
+         ExecuteCommands(resp);
     }
 }
 {{end}}
@@ -354,8 +342,7 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 {{range $i, $fn := .Functions}}
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
 
-    auto slot = g_host.GetZeroCopySlot();
-    flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
+    flatbuffers::FlatBufferBuilder builder(1024);
 
     {{range .Args}}
     {{if eq .Type "string"}}
@@ -435,17 +422,18 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
     {{ $ackTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-    bool ok = slot.Send(builder.GetSize(), {{add 132 $i}}, {{ $ackTimeout }});
-    if (!ok) return;
+    std::vector<uint8_t> respBuf;
+    g_host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 132 $i}}, respBuf, {{ $ackTimeout }});
     return;
     {{else}}
     // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
     {{ $syncTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-    const uint8_t* respBuf = ReceiveChunked(slot, {{add 132 $i}}, builder.GetSize(), {{ $syncTimeout }});
-    if (!respBuf) return {{defaultErrorVal .Return}};
+    std::vector<uint8_t> respBuf;
+    int size = g_host.Send(builder.GetBufferPointer(), builder.GetSize(), {{add 132 $i}}, respBuf, {{ $syncTimeout }});
+    if (size <= 0) return {{defaultErrorVal .Return}};
 
-    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf);
+    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(respBuf.data());
     if (resp->error() && resp->error()->size() > 0) {
         return {{defaultErrorVal .Return}};
     }
