@@ -366,3 +366,26 @@ client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 ## 11. Development Workflow
 
 *   **Temporary Projects**: Use directories starting with `temp_` (e.g., `temp_verify`, `temp_test`) for creating temporary test projects. These are git-ignored to prevent accidental commits of artifacts.
+
+## 12. Tag Message Guidelines
+
+When creating a tag message, adhere to the following format:
+
+1.  **Major Changes Summary**: Group major changes by category (e.g., Performance, Feature, Fix). Summarize the change and include the commit hash.
+2.  **Detailed Commit List**: List all commits (including those not in the summary) with their commit message and hash.
+3.  **Hyperlinks**: Ensure every commit hash is a hyperlink.
+
+**Example:**
+
+```text
+### Features
+* Added async support ([1a2b3c](http://url...))
+
+### Performance
+* Optimized IPC ([4d5e6f](http://url...))
+
+### All Commits
+* [1a2b3c](http://url...) Added async support
+* [4d5e6f](http://url...) Optimized IPC
+* [7g8h9i](http://url...) Fixed typo in README
+```
