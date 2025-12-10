@@ -3,6 +3,8 @@ package assets
 import (
 	"embed"
 	"io/fs"
+	"path/filepath"
+	"strings"
 )
 
 // assetsFS embeds all files in the files/ directory.
@@ -10,7 +12,7 @@ import (
 //go:embed files/*
 var assetsFS embed.FS
 
-// AssetsMap holds the content of all embedded assets, keyed by filename.
+// AssetsMap holds the content of all embedded assets, keyed by relative path (e.g., "xlcall.h" or "tools/compressor.cpp").
 // It is populated during package initialization.
 var AssetsMap = make(map[string]string)
 
@@ -27,8 +29,18 @@ func init() {
 			if err != nil {
 				return err
 			}
-			// Use the filename as the key (e.g., "xlcall.h")
-			AssetsMap[d.Name()] = string(content)
+
+			// Compute relative path from "files" root
+			// path is "files/tools/compressor.cpp", we want "tools/compressor.cpp"
+			// path is "files/xlcall.h", we want "xlcall.h"
+			relPath := strings.TrimPrefix(path, "files/")
+
+			// Use the relative path as the key to preserve directory structure
+			// Ensure we use forward slashes for consistency across platforms if needed,
+			// though embedded FS usually uses forward slashes.
+			relPath = filepath.ToSlash(relPath)
+
+			AssetsMap[relPath] = string(content)
 		}
 		return nil
 	})
