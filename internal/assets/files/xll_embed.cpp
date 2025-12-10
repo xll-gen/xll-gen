@@ -6,14 +6,26 @@
 #include <iostream>
 #include <zstd.h>
 #include <process.h>
+#include <sstream>
+#include <iomanip>
 
-// Resource ID defined in resource.rc (assumed to be 101 or similar, but we need the actual ID)
-// For this template, we will assume a fixed ID. The RC generation must match this.
+// Resource ID defined in resource.rc (assumed to be 101)
 #define IDR_GO_ZST 101
 
 extern HMODULE g_hModule;
 
 namespace embed {
+
+// FNV-1a Hash for Checksum
+uint32_t FNV1a(const void* data, size_t size) {
+    uint32_t hash = 2166136261u;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= p[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
 
 // Helper to expand environment variables like %TEMP% or ${TEMP}
 std::string ExpandEnvVars(const std::string& pattern) {
@@ -52,17 +64,9 @@ bool DecompressAndWrite(void* pSrc, size_t srcSize, const std::string& destPath)
         return false;
     }
 
-    // Use CreateFile to set FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE
-    // Note: To make DELETE_ON_CLOSE work, we must keep the handle open,
-    // OR allow sharing such that CreateProcess can open it.
-    // However, if we CloseHandle immediately, the file is deleted.
-    // So for "simple" execution where we don't manage the process handle lifetime deeply,
-    // using FILE_ATTRIBUTE_TEMPORARY + unique name is safer and simpler.
-    // We omit DELETE_ON_CLOSE here to ensure the file exists for CreateProcess.
-    // Cleanup is handled by OS (eventually) or unique naming avoids conflict.
-
+    // Use CreateFile without FILE_ATTRIBUTE_TEMPORARY to ensure persistence (cache)
     HANDLE hFile = CreateFileA(destPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_TEMPORARY, NULL);
+                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -74,10 +78,8 @@ bool DecompressAndWrite(void* pSrc, size_t srcSize, const std::string& destPath)
     return ok != 0;
 }
 
-std::string ExtractAndStartExe(const std::string& tempDirPattern) {
+std::string ExtractAndStartExe(const std::string& tempDirPattern, const std::string& projectName) {
     // 1. Check for Debug Override
-    // If XLL_DEV_DISABLE_EMBED is set to "1", skip extraction and return empty string.
-    // This allows the caller to fall back to the local executable for easier debugging.
     char envBuf[16];
     if (GetEnvironmentVariableA("XLL_DEV_DISABLE_EMBED", envBuf, 16) > 0) {
         if (std::string(envBuf) == "1") {
@@ -85,41 +87,60 @@ std::string ExtractAndStartExe(const std::string& tempDirPattern) {
         }
     }
 
-    std::string tempDir = ExpandEnvVars(tempDirPattern);
-
-    // Ensure trailing slash
-    if (!tempDir.empty() && tempDir.back() != '\\' && tempDir.back() != '/') {
-        tempDir += "\\";
-    }
-
-    // Use PID to prevent collision
-    std::string exeName = "embedded_server_" + std::to_string(GetCurrentProcessId()) + ".exe";
-    std::string exePath = tempDir + exeName;
-
-    // Check if we need to extract.
-    // Optimization: Check if file exists. For now, we always overwrite to ensure version match
-    // unless we implement hash checking. But given the "performance" discussion,
-    // we use FILE_ATTRIBUTE_TEMPORARY which is fast.
-
+    // 2. Load Resource
     HRSRC hRes = FindResourceA(g_hModule, MAKEINTRESOURCEA(IDR_GO_ZST), RT_RCDATA);
-    if (!hRes) {
-        // Resource not found?
-        return "";
-    }
+    if (!hRes) return "";
 
     HGLOBAL hMem = LoadResource(g_hModule, hRes);
     void* pData = LockResource(hMem);
     DWORD size = SizeofResource(g_hModule, hRes);
+    if (!pData || size == 0) return "";
 
-    if (!pData || size == 0) {
-        return "";
+    // 3. Compute Checksum
+    uint32_t hash = FNV1a(pData, size);
+    std::stringstream ss;
+    ss << std::hex << std::setw(8) << std::setfill('0') << hash;
+    std::string hashStr = ss.str();
+
+    // 4. Resolve Directory
+    std::string baseTemp = ExpandEnvVars(tempDirPattern);
+    if (baseTemp.empty()) return "";
+    if (baseTemp.back() != '\\' && baseTemp.back() != '/') baseTemp += "\\";
+
+    std::string projectDir = baseTemp + projectName + "\\";
+    CreateDirectoryA(projectDir.c_str(), NULL); // Ensure directory exists
+
+    std::string exeName = "embedded_server_" + hashStr + ".exe";
+    std::string finalPath = projectDir + exeName;
+
+    // 5. Check Cache
+    DWORD attrs = GetFileAttributesA(finalPath.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        // Cache Hit: File exists
+        return finalPath;
     }
 
-    if (!DecompressAndWrite(pData, size, exePath)) {
-        return "";
+    // 6. Cache Miss: Extract to Temp and Atomic Rename
+    std::string tempPath = finalPath + ".tmp_" + std::to_string(GetCurrentProcessId());
+
+    if (DecompressAndWrite(pData, size, tempPath)) {
+        if (MoveFileA(tempPath.c_str(), finalPath.c_str())) {
+            // Success
+            return finalPath;
+        } else {
+            // Move failed.
+            // Case A: Another process created it concurrently -> Delete temp and use theirs.
+            // Case B: Access denied / File locked? -> Still use theirs if exists.
+            DeleteFileA(tempPath.c_str());
+
+            // Re-check existence
+            if (GetFileAttributesA(finalPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                return finalPath;
+            }
+        }
     }
 
-    return exePath;
+    return "";
 }
 
 } // namespace embed
