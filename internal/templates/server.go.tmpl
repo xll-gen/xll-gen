@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
@@ -866,46 +867,68 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		return 0, 0
 	}
 
-	// Call handler
-	res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
+	// Call handler with panic recovery
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				fmt.Printf("Panic in async handler {{.Name}}: %v\n%s\n", r, stack)
+				queueAsyncResult(handle, nil, 0, fmt.Sprintf("panic: %v", r), client)
+			}
+		}()
 
-	if err != nil {
-		queueAsyncResult(handle, nil, 0, err.Error(), client)
-	} else {
-		{{if eq .Return "string"}}
-		queueAsyncResult(handle, res, types.AnyValueStr, "", client)
-		{{else if eq .Return "int"}}
-		queueAsyncResult(handle, res, types.AnyValueInt, "", client)
-		{{else if eq .Return "int?"}}
-		if res != nil {
-			queueAsyncResult(handle, *res, types.AnyValueInt, "", client)
+		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
+
+		if err != nil {
+			queueAsyncResult(handle, nil, 0, err.Error(), client)
 		} else {
-			queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+			{{if eq .Return "string"}}
+			queueAsyncResult(handle, res, types.AnyValueStr, "", client)
+			{{else if eq .Return "int"}}
+			queueAsyncResult(handle, res, types.AnyValueInt, "", client)
+			{{else if eq .Return "int?"}}
+			if res != nil {
+				queueAsyncResult(handle, *res, types.AnyValueInt, "", client)
+			} else {
+				queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+			}
+			{{else if eq .Return "float"}}
+			queueAsyncResult(handle, res, types.AnyValueNum, "", client)
+			{{else if eq .Return "float?"}}
+			if res != nil {
+				queueAsyncResult(handle, *res, types.AnyValueNum, "", client)
+			} else {
+				queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+			}
+			{{else if eq .Return "bool"}}
+			queueAsyncResult(handle, res, types.AnyValueBool, "", client)
+			{{else if eq .Return "bool?"}}
+			if res != nil {
+				queueAsyncResult(handle, *res, types.AnyValueBool, "", client)
+			} else {
+				queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+			}
+			{{end}}
 		}
-		{{else if eq .Return "float"}}
-		queueAsyncResult(handle, res, types.AnyValueNum, "", client)
-		{{else if eq .Return "float?"}}
-		if res != nil {
-			queueAsyncResult(handle, *res, types.AnyValueNum, "", client)
-		} else {
-			queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
-		}
-		{{else if eq .Return "bool"}}
-		queueAsyncResult(handle, res, types.AnyValueBool, "", client)
-		{{else if eq .Return "bool?"}}
-		if res != nil {
-			queueAsyncResult(handle, *res, types.AnyValueBool, "", client)
-		} else {
-			queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
-		}
-		{{end}}
-	}
+	}()
 
 	return 0, 0
 	{{else}}
 	// Sync execution
-	// Call handler
-	res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
+	var res {{lookupGoType .Return}}
+	var err error
+
+	// Call handler with panic recovery
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				fmt.Printf("Panic in sync handler {{.Name}}: %v\n%s\n", r, stack)
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		res, err = handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
+	}()
 
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
