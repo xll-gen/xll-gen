@@ -4,6 +4,8 @@
 #include <vector>
 #include "xlcall.h"
 
+typedef wchar_t XLL_PASCAL_STRING;
+
 // Global Module Handle (extern)
 extern HINSTANCE g_hModule;
 
