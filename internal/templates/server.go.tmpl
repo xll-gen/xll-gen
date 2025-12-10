@@ -68,6 +68,13 @@ type pendingAsyncResult struct {
 var (
 	// Channel for async results (buffer size 1024 to absorb bursts)
 	asyncResultQueue = make(chan pendingAsyncResult, 1024)
+
+	// Builder Pool to reduce GC pressure
+	builderPool = sync.Pool{
+		New: func() interface{} {
+			return flatbuffers.NewBuilder(1024)
+		},
+	}
 )
 
 // Optimization Structures
@@ -377,7 +384,9 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 		return
 	}
 
-	b := flatbuffers.NewBuilder(1024)
+	b := builderPool.Get().(*flatbuffers.Builder)
+	b.Reset()
+	defer builderPool.Put(b)
 
 	resultOffsets := make([]flatbuffers.UOffsetT, len(batch))
 
@@ -549,10 +558,18 @@ func Serve(handler XllService) {
 
 	client.Handle(func(req []byte, respBuf []byte, msgType shm.MsgType) (int32, shm.MsgType) {
 
-        var dispatch func(data []byte, mType shm.MsgType) (int32, shm.MsgType)
-        dispatch = func(data []byte, mType shm.MsgType) (int32, shm.MsgType) {
-             builder := flatbuffers.NewBuilder(0)
+        var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
+        dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
+             builder := builderPool.Get().(*flatbuffers.Builder)
+             if respBuf != nil && cap(respBuf) > 0 {
+                 builder.Bytes = respBuf
+             }
              builder.Reset()
+             // Safety: Detach SHM buffer before returning to pool to prevent corruption
+             defer func() {
+                 builder.Bytes = nil
+                 builderPool.Put(builder)
+             }()
 
              switch uint32(mType) {
              case MSG_CALCULATION_ENDED:
@@ -698,7 +715,7 @@ func Serve(handler XllService) {
                     chunkCacheMutex.Unlock()
 
                     payloadMsgType := reqObj.MsgType()
-                    return dispatch(buf.data, shm.MsgType(payloadMsgType))
+                    return dispatch(buf.data, respBuf, shm.MsgType(payloadMsgType))
                 }
 
                 ipc.AckStart(builder)
@@ -752,7 +769,7 @@ func Serve(handler XllService) {
              }
         }
 
-        return dispatch(req, msgType)
+        return dispatch(req, respBuf, msgType)
 	})
 
 	client.Start()
@@ -924,8 +941,14 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	root := ipc.{{.Name}}ResponseEnd(b)
 	b.Finish(root)
 
-	// Copy to respBuf
+	// Zero-Copy Return (Negative Size)
+	// cap(b.Bytes) == cap(respBuf) implies it is still the SHM buffer.
+	// If so, data is end-aligned and we return negative size.
 	payload := b.FinishedBytes()
+	if cap(b.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
+		return -int32(len(payload)), msgType
+	}
+
 	if len(payload) > len(respBuf) {
 		// Chunking needed
 		transferId := uint64(rand.Int63())
