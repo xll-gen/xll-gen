@@ -459,7 +459,7 @@ func Serve(handler XllService) {
 		}
 	}
 
-	client, err := shm.Connect(name)
+	client, err := shm.Connect(shm.ClientConfig{ShmName: name})
 	if err != nil {
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
