@@ -22,7 +22,7 @@
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
-{{if eq .Embed.Mode "exe_in_xll"}}
+{{if eq .Build.Singlefile "xll"}}
 #include "include/xll_embed.h"
 {{end}}
 
@@ -365,9 +365,9 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         }
         {{end}}
 
-{{if eq .Embed.Mode "exe_in_xll"}}
+{{if eq .Build.Singlefile "xll"}}
         // EMBEDDED MODE: Extract and use the embedded Executable
-        std::string extractedExe = embed::ExtractAndStartExe("{{.Embed.TempDir}}", "{{.ProjectName}}");
+        std::string extractedExe = embed::ExtractAndStartExe("{{.Build.TempDir}}", "{{.ProjectName}}");
         std::wstring exePath;
         if (!extractedExe.empty()) {
             exePath = StringToWString(extractedExe);

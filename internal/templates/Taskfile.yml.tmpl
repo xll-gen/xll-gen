@@ -11,8 +11,8 @@ tasks:
     cmds:
       - task: build-cpp
 
-{{if eq .Embed.Mode "exe_in_xll"}}
-  # For 'exe_in_xll' mode, Taskfile ensures the Go server is built before C++.
+{{if eq .Build.Singlefile "xll"}}
+  # For 'singlefile: xll' mode, Taskfile ensures the Go server is built before C++.
   build-cpp:
     desc: Build C++ XLL (Release)
     deps: [ build-go-server ] # Ensure .exe is built first

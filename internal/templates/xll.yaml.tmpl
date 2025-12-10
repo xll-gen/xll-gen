@@ -10,9 +10,8 @@ gen:
 
 # Build configuration
 build:
-  embed:
-    # mode: "none" # Optional: Embedding strategy. Can be "none", "exe_in_xll", or "xll_in_exe". Default is "none".
-    # temp_dir: "${TEMP}" # Optional: Directory for extracting embedded binaries. Supports environment variables. Default is "${TEMP}".
+  # singlefile: "xll" # Optional: "xll" to embed Go server in XLL. "exe" is reserved.
+  # temp_dir: "${TEMP}" # Optional: Directory for extracting embedded binaries. Supports environment variables. Default is "${TEMP}".
 
 # Go server process configuration
 server:
