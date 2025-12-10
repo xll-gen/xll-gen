@@ -117,13 +117,13 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return
-    // We expect: if (!slot.Send(reqSize, 132, 2000)) { return &g_xlErrValue; }
+    // We expect: if (!slot.Send(reqSize, (shm::MsgType)(132), 2000)) { return &g_xlErrValue; }
     // The message ID for TestStr (first function) should be 132.
     // Note: Template now uses reqSize (negative) for zero-copy.
-    expectedFix := "if (!slot.Send(reqSize, 132, 2000)) {\n        return &g_xlErrValue;\n    }"
+    expectedFix := "if (!slot.Send(reqSize, (shm::MsgType)(132), 2000)) {\n        return &g_xlErrValue;\n    }"
     if !strings.Contains(content, expectedFix) {
         // Fallback check if whitespace is different or reqSize calculation is inline
-        if !strings.Contains(content, "slot.Send(reqSize, 132") {
+        if !strings.Contains(content, "slot.Send(reqSize, (shm::MsgType)(132)") {
              t.Logf("Generated content:\n%s", content)
              t.Fatal("Could not find expected Send failure check")
         }
@@ -133,9 +133,9 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
     }
 
     // Check TestInt should return 0 (MsgID 133)
-    expectedIntFix := "if (!slot.Send(reqSize, 133, 2000)) {\n        return 0;\n    }"
+    expectedIntFix := "if (!slot.Send(reqSize, (shm::MsgType)(133), 2000)) {\n        return 0;\n    }"
     if !strings.Contains(content, expectedIntFix) {
-         if !strings.Contains(content, "slot.Send(reqSize, 133") {
+         if !strings.Contains(content, "slot.Send(reqSize, (shm::MsgType)(133)") {
              t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
          }
     }
