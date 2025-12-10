@@ -9,38 +9,49 @@ tasks:
   build:
     desc: Build the project (Release)
     cmds:
+      - task: build-cpp
 {{if eq .Embed.Mode "exe_in_xll"}}
-      # In 'exe_in_xll' mode, the C++ build (CMake) handles the Go build and embedding.
-      # We skip the explicit Go build task to avoid redundant/conflicting builds.
-      - task: build-cpp
-{{else}}
-      - task: build-go
-      - task: build-cpp
+      # Copy the final XLL to the build root for convenience
+      - cmd: copy 'build\cpp\Release\{{.ProjectName}}.xll' 'build\{{.ProjectName}}.xll'
+        ignore_error: true
+      - cmd: copy 'build\cpp\{{.ProjectName}}.xll' 'build\{{.ProjectName}}.xll'
+        ignore_error: true
 {{end}}
 
-  build-go:
-    desc: Build Go server
+{{if eq .Embed.Mode "exe_in_xll"}}
+  # For 'exe_in_xll' mode, Taskfile ensures the Go server is built before C++.
+  build-cpp:
+    desc: Build C++ XLL (Release)
+    deps: [ build-go-server ] # Ensure .exe is built first
     cmds:
-{{if eq .Embed.Mode "exe_in_xll"}}
-      # This task is kept for manual Go debugging, but NOT used in the main build flow.
-      # The final embedded binary is built by CMake with different flags (-s -w).
-      # Note: The embedded binary is built via CMake with specific flags.
-      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
-{{else}}
-      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
-{{end}}
+      - task: configure-cpp
+      - cmake --build build/cpp --config Release
 
+  configure-cpp:
+    desc: Configure the C++ project with CMake
+    # Pass the path of the pre-built Go executable to CMake
+    cmds:
+      - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DGO_SERVER_EXE_PATH=build/go_server.exe
+
+  build-go-server:
+    desc: Build the Go IPC server executable
+    sources: [ 'generated/server.go', 'generated/main.go' ]
+    generates: [ 'build/go_server.exe' ]
+    cmds:
+      - go build -ldflags="-s -w" -o build/go_server.exe ./generated
+
+{{else}}
+  # For other modes, the process is simpler.
   build-cpp:
     desc: Build C++ XLL (Release)
     cmds:
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
       - cmake --build build/cpp --config Release
-{{if eq .Embed.Mode "exe_in_xll"}}
-      # Copy the final XLL to the build root for convenience
-      - cmd: copy build\cpp\Release\{{.ProjectName}}.xll build\{{.ProjectName}}.xll
-        ignore_error: true
-      - cmd: copy build\cpp\{{.ProjectName}}.xll build\{{.ProjectName}}.xll
-        ignore_error: true
+
+  build-go:
+    desc: Build Go server
+    cmds:
+      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
 {{end}}
 
   clean:

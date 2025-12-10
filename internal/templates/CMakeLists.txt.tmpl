@@ -52,50 +52,37 @@ set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(zstd)
 
-# Ensure libzstd_static is available
-if(NOT TARGET libzstd_static)
-  # Fallback if FetchContent behaves differently (usually exposes libzstd_static)
-  message(STATUS "libzstd_static target not found, attempting to use zstd::libzstd_static")
-endif()
-
 
 # 2. Build Compressor Tool
 add_executable(compressor "${CMAKE_CURRENT_SOURCE_DIR}/tools/compressor.cpp")
-target_link_libraries(compressor PRIVATE libzstd_static)
+add_dependencies(compressor zstd_static)
+target_link_libraries(compressor PRIVATE zstd_static)
 
-# 3. Build Go and Compress
-set(GO_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../") # Root of project
-set(GO_BINARY_NAME "go_server.exe")
-set(GO_OUTPUT_PATH "${CMAKE_CURRENT_BINARY_DIR}/${GO_BINARY_NAME}")
+# 3. Compress Pre-built Go Binary
+# The GO_SERVER_EXE_PATH is provided by the Taskfile, which ensures the Go binary is built first.
+set(GO_SERVER_EXE_PATH "" CACHE FILEPATH "Path to the pre-built Go server executable")
+if(NOT EXISTS "${GO_SERVER_EXE_PATH}")
+    message(FATAL_ERROR "GO_SERVER_EXE_PATH is not set or file does not exist: ${GO_SERVER_EXE_PATH}")
+endif()
+
 set(ZSTD_BINARY_NAME "go_server.zst")
 set(ZSTD_OUTPUT_PATH "${CMAKE_CURRENT_BINARY_DIR}/${ZSTD_BINARY_NAME}")
 
-find_program(GO_EXE NAMES go REQUIRED)
-
-# Determine Go Build Flags based on Configuration
-# Release: Strip symbols (-s -w) for size
-# Debug:   Disable optimizations (-gcflags="all=-N -l") for debugging
-set(GO_FLAGS_RELEASE "-ldflags='-s -w'")
-set(GO_FLAGS_DEBUG "-gcflags='all=-N -l'")
-
 add_custom_command(
     OUTPUT ${ZSTD_OUTPUT_PATH}
-    COMMAND ${GO_EXE} build $<$<CONFIG:Debug>:${GO_FLAGS_DEBUG}> $<$<CONFIG:Release>:${GO_FLAGS_RELEASE}> $<$<CONFIG:RelWithDebInfo>:${GO_FLAGS_RELEASE}> -o ${GO_OUTPUT_PATH} .
-    COMMAND $<TARGET_FILE:compressor> ${GO_OUTPUT_PATH} ${ZSTD_OUTPUT_PATH}
-    WORKING_DIRECTORY ${GO_SOURCE_DIR}
-    DEPENDS compressor "${GO_SOURCE_DIR}/server.go" "${GO_SOURCE_DIR}/main.go" # Basic dependency check
-    COMMENT "Building Go binary and compressing with Zstd..."
+    COMMAND $<TARGET_FILE:compressor> ${GO_SERVER_EXE_PATH} ${ZSTD_OUTPUT_PATH}
+    DEPENDS compressor "${GO_SERVER_EXE_PATH}" # Depend on the pre-built exe
+    COMMENT "Compressing pre-built Go binary with Zstd..."
 )
 
 add_custom_target(GenerateCompressedGo DEPENDS ${ZSTD_OUTPUT_PATH})
 
 # 4. Generate Resource File
-# We create a resource.h and resource.rc on the fly if not present,
-# but since we need it linked, we can generate a simple one here.
-# However, to be cleaner, we will create a temporary .rc file.
-
 set(RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/embedded_resource.rc")
-file(WRITE ${RC_FILE} "101 RCDATA \"${ZSTD_BINARY_NAME}\"")
+file(WRITE ${RC_FILE} "101 RCDATA \"${ZSTD_OUTPUT_PATH}\"")
+
+# Explicitly state that compiling the RC file depends on the ZST file being created.
+set_source_files_properties(${RC_FILE} PROPERTIES OBJECT_DEPENDS "${ZSTD_OUTPUT_PATH}")
 
 {{ end }}
 
@@ -121,9 +108,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 )
 
 {{ if eq .Embed.Mode "exe_in_xll" }}
+add_dependencies(${PROJECT_NAME} zstd_static)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(${PROJECT_NAME} PRIVATE libzstd_static)
-add_dependencies(${PROJECT_NAME} GenerateCompressedGo)
+target_link_libraries(${PROJECT_NAME} PRIVATE zstd_static)
 {{ end }}
 
 if(NOT MSVC)
