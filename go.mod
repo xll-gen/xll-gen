@@ -3,9 +3,8 @@ module xll-gen
 go 1.24.3
 
 require (
-	github.com/google/flatbuffers v25.9.23+incompatible
 	github.com/spf13/cobra v1.10.2
-	github.com/xll-gen/shm/go v0.0.0-20251208055837-b0bedad438c4
+	github.com/xll-gen/shm/go v0.0.0-20251210030618-e7f27fb7a647
 	gopkg.in/yaml.v3 v3.0.1
 )
 
