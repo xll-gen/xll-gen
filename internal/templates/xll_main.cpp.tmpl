@@ -604,6 +604,21 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     {{if eq .Return "string"}}
     std::wstring wres = StringToWString(resp->result()->str());
     return NewExcelString(wres.c_str());
+    {{else if eq .Return "int"}}
+    static thread_local XLOPER12 xRes;
+    xRes.xltype = xltypeInt;
+    xRes.val.w = resp->result();
+    return &xRes;
+    {{else if eq .Return "float"}}
+    static thread_local XLOPER12 xRes;
+    xRes.xltype = xltypeNum;
+    xRes.val.num = resp->result();
+    return &xRes;
+    {{else if eq .Return "bool"}}
+    static thread_local XLOPER12 xRes;
+    xRes.xltype = xltypeBool;
+    xRes.val.xbool = resp->result() ? 1 : 0;
+    return &xRes;
     {{else if eq .Return "any"}}
     return AnyToXLOPER12(resp->result());
     {{else if eq .Return "grid"}}
