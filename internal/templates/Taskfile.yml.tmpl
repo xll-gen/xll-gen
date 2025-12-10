@@ -10,13 +10,6 @@ tasks:
     desc: Build the project (Release)
     cmds:
       - task: build-cpp
-{{if eq .Embed.Mode "exe_in_xll"}}
-      # Copy the final XLL to the build root for convenience
-      - cmd: copy 'build\cpp\Release\{{.ProjectName}}.xll' 'build\{{.ProjectName}}.xll'
-        ignore_error: true
-      - cmd: copy 'build\cpp\{{.ProjectName}}.xll' 'build\{{.ProjectName}}.xll'
-        ignore_error: true
-{{end}}
 
 {{if eq .Embed.Mode "exe_in_xll"}}
   # For 'exe_in_xll' mode, Taskfile ensures the Go server is built before C++.
