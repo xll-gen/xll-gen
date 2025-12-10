@@ -23,7 +23,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Functions       []config.Function
 		Events          []config.Event
 		Server          config.ServerConfig
-		Embed           config.EmbedConfig
+		Build           config.BuildConfig
 		ShouldAppendPid bool
 		Version         string
 	}{
@@ -31,7 +31,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Functions:       cfg.Functions,
 		Events:          cfg.Events,
 		Server:          cfg.Server,
-		Embed:           cfg.Build.Embed,
+		Build:           cfg.Build,
 		ShouldAppendPid: shouldAppendPid,
 		Version:         version.Version,
 	}
@@ -52,11 +52,11 @@ func generateCMake(cfg *config.Config, dir string) error {
 	data := struct {
 		ProjectName string
 		Version     string
-		Embed       config.EmbedConfig
+		Build       config.BuildConfig
 	}{
 		ProjectName: cfg.Project.Name,
 		Version:     version.Version,
-		Embed:       cfg.Build.Embed,
+		Build:       cfg.Build,
 	}
 
 	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)

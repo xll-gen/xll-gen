@@ -35,14 +35,9 @@ type Event struct {
 
 // BuildConfig contains build settings.
 type BuildConfig struct {
-	// Embed configures how binaries are embedded.
-	Embed EmbedConfig `yaml:"embed"`
-}
-
-// EmbedConfig configures embedding behavior.
-type EmbedConfig struct {
-	// Mode determines the embedding strategy: "none", "exe_in_xll", "xll_in_exe".
-	Mode    string `yaml:"mode"`
+	// Singlefile configures the embedding strategy.
+	// Options: "xll" (embed Go server in XLL), "exe" (reserved/unimplemented), or empty (no embedding).
+	Singlefile string `yaml:"singlefile"`
 	// TempDir is the directory where embedded binaries are extracted (supports env vars).
 	TempDir string `yaml:"temp_dir"`
 }
@@ -160,12 +155,14 @@ var validReturnTypes = map[string]bool{
 // Returns:
 //   - error: An error if the configuration is invalid, or nil otherwise.
 func Validate(config *Config) error {
-	if config.Build.Embed.Mode != "" {
-		switch config.Build.Embed.Mode {
-		case "none", "exe_in_xll", "xll_in_exe":
+	if config.Build.Singlefile != "" {
+		switch config.Build.Singlefile {
+		case "xll":
 			// ok
+		case "exe":
+			return fmt.Errorf("singlefile mode 'exe' is not supported yet")
 		default:
-			return fmt.Errorf("invalid embed mode: %s (allowed: none, exe_in_xll, xll_in_exe)", config.Build.Embed.Mode)
+			return fmt.Errorf("invalid singlefile mode: %s (allowed: xll)", config.Build.Singlefile)
 		}
 	}
 
@@ -209,11 +206,11 @@ func allowedTypesList(m map[string]bool) string {
 // Parameters:
 //   - config: The Config object to modify.
 func ApplyDefaults(config *Config) {
-	if config.Build.Embed.Mode == "" {
-		config.Build.Embed.Mode = "none"
+	if config.Build.Singlefile == "" {
+		config.Build.Singlefile = "xll"
 	}
-	if config.Build.Embed.TempDir == "" {
-		config.Build.Embed.TempDir = "${TEMP}"
+	if config.Build.TempDir == "" {
+		config.Build.TempDir = "${TEMP}"
 	}
 
 	if config.Server.Launch != nil {
