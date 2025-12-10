@@ -111,7 +111,7 @@ std::string ExtractAndStartExe(const std::string& tempDirPattern, const std::str
     std::string projectDir = baseTemp + projectName + "\\";
     CreateDirectoryA(projectDir.c_str(), NULL); // Ensure directory exists
 
-    std::string exeName = "embedded_server_" + hashStr + ".exe";
+    std::string exeName = projectName + "_" + hashStr + ".exe";
     std::string finalPath = projectDir + exeName;
 
     // 5. Check Cache
