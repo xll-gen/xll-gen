@@ -51,7 +51,7 @@ int main() {
              auto startWait = chrono::steady_clock::now();
              int spin = 0;
              while(chrono::steady_clock::now() - startWait < chrono::seconds(30)) {
-                sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 132, respBuf);
+                sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)132, respBuf);
                 if (sz >= 0) break;
                 if (spin < 1000) {
                     this_thread::yield();
@@ -62,7 +62,7 @@ int main() {
                 }
              }
         } else {
-             sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 132, respBuf);
+             sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)132, respBuf);
         }
 
         if (sz < 0) { cerr << "Send failed for EchoInt " << val << endl; return 1; }
@@ -81,7 +81,7 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 133, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)133, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoFloatResponse>(respBuf.data());
         if (std::abs(val - resp->result()) > 0.0001) { cerr << "Float mismatch" << endl; return 1; }
@@ -97,7 +97,7 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 134, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)134, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoStringResponse>(respBuf.data());
         ASSERT_STREQ(val, resp->result()->str(), "EchoString");
@@ -112,7 +112,7 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 135, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)135, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoBoolResponse>(respBuf.data());
         ASSERT_EQ(val, resp->result(), "EchoBool");
@@ -128,7 +128,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)136, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Int:10", resp->result()->str(), "CheckAny Int");
@@ -143,7 +143,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)136, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Str:hello", resp->result()->str(), "CheckAny Str");
@@ -157,7 +157,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)136, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Num:1.5", resp->result()->str(), "CheckAny Num");
@@ -174,7 +174,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)136, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("NumGrid:1x2", resp->result()->str(), "CheckAny NumGrid");
@@ -197,7 +197,7 @@ int main() {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), 136, respBuf);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)136, respBuf);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Grid:1x2", resp->result()->str(), "CheckAny Grid");
@@ -214,7 +214,7 @@ int main() {
         req.add_val(rangeVal);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 137, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckRangeResponse>(respBuf.data());
         ASSERT_STREQ("Range:Sheet1!1:1:1:1", resp->result()->str(), "CheckRange");
     }
@@ -227,7 +227,7 @@ int main() {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), 138, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)138, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::TimeoutFuncResponse>(respBuf.data());
 
         // Timeout now returns -1 instead of error
@@ -241,13 +241,13 @@ int main() {
         ipc::ScheduleCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 139, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)139, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleCmd");
 
         // 2. Send CalculationEnded (ID 130)
         vector<uint8_t> eventBuf;
-        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+        if(host.Send(nullptr, 0, (shm::MsgType)130, eventBuf) < 0) return 1;
 
         // 3. Verify Response contains SetCommand
         if (eventBuf.empty()) { cerr << "Expected commands in CalcEnded response" << endl; return 1; }
@@ -275,13 +275,13 @@ int main() {
         ipc::ScheduleFormatCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 140, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)140, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleFormatCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleFormatCmd");
 
         // 2. Send CalculationEnded
         vector<uint8_t> eventBuf;
-        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+        if(host.Send(nullptr, 0, (shm::MsgType)130, eventBuf) < 0) return 1;
 
         // 3. Verify Response contains FormatCommand
         auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
@@ -304,13 +304,13 @@ int main() {
         ipc::ScheduleMultiCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 141, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)141, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMultiCmdResponse>(respBuf.data());
         ASSERT_EQ(2, resp->result(), "ScheduleMultiCmd");
 
         // 2. Send CalculationEnded
         vector<uint8_t> eventBuf;
-        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+        if(host.Send(nullptr, 0, (shm::MsgType)130, eventBuf) < 0) return 1;
 
         // 3. Verify Response contains 2 commands (Set, Format)
         auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
@@ -340,13 +340,13 @@ int main() {
         ipc::ScheduleMassiveRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 142, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)142, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMassiveResponse>(respBuf.data());
         ASSERT_EQ(100, resp->result(), "ScheduleMassive");
 
         // 2. Send CalculationEnded
         vector<uint8_t> eventBuf;
-        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+        if(host.Send(nullptr, 0, (shm::MsgType)130, eventBuf) < 0) return 1;
 
         // 3. Verify Response
         auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
@@ -381,13 +381,13 @@ int main() {
         ipc::ScheduleGridCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), 143, respBuf) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)143, respBuf) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleGridCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleGridCmd");
 
         // 2. Send CalculationEnded
         vector<uint8_t> eventBuf;
-        if(host.Send(nullptr, 0, 130, eventBuf) < 0) return 1;
+        if(host.Send(nullptr, 0, (shm::MsgType)130, eventBuf) < 0) return 1;
 
         // 3. Verify Response contains Grid
         auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());

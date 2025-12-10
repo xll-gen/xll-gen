@@ -1,13 +1,9 @@
 package generator
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
-	"text/template"
 
 	"xll-gen/internal/config"
-	"xll-gen/internal/templates"
 	"xll-gen/version"
 )
 
@@ -22,139 +18,7 @@ import (
 // Returns:
 //   - error: An error if generation fails.
 func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error {
-	tmplContent, err := templates.Get("xll_main.cpp.tmpl")
-	if err != nil {
-		return err
-	}
-
-	funcMap := template.FuncMap{
-		"add": func(a, b int) int { return a + b },
-		"sub": func(a, b int) int { return a - b },
-		"registerCount": func(f config.Function) int {
-			c := 10 + len(f.Args)
-			if f.Async {
-				c++
-			}
-			return c
-		},
-		"joinArgNames": func(f config.Function) string {
-			var names []string
-			for _, a := range f.Args {
-				names = append(names, a.Name)
-			}
-			if f.Async {
-				names = append(names, "asyncHandle")
-			}
-			return strings.Join(names, ",")
-		},
-		"withDefault": func(val, def string) string {
-			if val == "" {
-				return def
-			}
-			return val
-		},
-		"lookupCppType": func(t string) string {
-			m := map[string]string{
-				"int":     "int32_t",
-				"float":   "double",
-				"string":  "LPXLOPER12",
-				"bool":    "short",
-				"range":   "LPXLOPER12",
-				"any":     "LPXLOPER12",
-				"grid":    "LPXLOPER12",
-				"numgrid": "FP12*",
-			}
-			if v, ok := m[t]; ok { return v }
-			return t
-		},
-		"lookupArgCppType": func(t string) string {
-			m := map[string]string{
-				"int":     "int32_t",
-				"float":   "double",
-				"string":  "const wchar_t*",
-				"bool":    "short",
-				"range":   "LPXLOPER12",
-				"any":     "LPXLOPER12",
-				"grid":    "LPXLOPER12",
-				"numgrid": "FP12*",
-			}
-			if v, ok := m[t]; ok { return v }
-			return t
-		},
-		"lookupXllType": func(t string) string {
-			m := map[string]string{
-				"int":     "J",
-				"float":   "B",
-				"string":  "Q",
-				"bool":    "A",
-				"range":   "U",
-				"any":     "U",
-				"grid":    "U",
-				"numgrid": "K%",
-			}
-			if v, ok := m[t]; ok { return v }
-			return t
-		},
-		"lookupArgXllType": func(t string) string {
-			m := map[string]string{
-				"int":     "J",
-				"float":   "B",
-				"string":  "D%",
-				"bool":    "A",
-				"range":   "U",
-				"any":     "U",
-				"grid":    "U",
-				"numgrid": "K%",
-			}
-			if v, ok := m[t]; ok { return v }
-			return t
-		},
-		"lookupEventId": func(evtType string) int {
-			// Returns offset from User Start
-			if evtType == "CalculationEnded" { return 1 }
-			if evtType == "CalculationCanceled" { return 2 }
-			return 0
-		},
-		"lookupEventCode": func(evtType string) string {
-			if evtType == "CalculationEnded" { return "xleventCalculationEnded"; }
-			if evtType == "CalculationCanceled" { return "xleventCalculationCanceled"; }
-			return "0";
-		},
-		"hasEvent": func(name string, events []config.Event) bool {
-			for _, e := range events {
-				if e.Type == name {
-					return true
-				}
-			}
-			return false
-		},
-		"defaultErrorVal": func(t string) string {
-			if t == "string" || t == "any" || t == "range" || t == "grid" {
-				return "&g_xlErrValue";
-			}
-			return "0";
-		},
-		"derefBool": func(b *bool) bool {
-			if b == nil { return false }
-			return *b
-		},
-		"parseTimeout": func(s string, defaultMs int) int {
-			return parseDurationToMs(s, defaultMs)
-		},
-	}
-
-	t, err := template.New("cpp").Funcs(funcMap).Parse(tmplContent)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.Create(filepath.Join(dir, "xll_main.cpp"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return t.Execute(f, struct {
+	data := struct {
 		ProjectName     string
 		Functions       []config.Function
 		Events          []config.Event
@@ -168,7 +32,9 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Server:          cfg.Server,
 		ShouldAppendPid: shouldAppendPid,
 		Version:         version.Version,
-	})
+	}
+
+	return executeTemplate("xll_main.cpp.tmpl", filepath.Join(dir, "xll_main.cpp"), data, GetCommonFuncMap())
 }
 
 // generateCMake generates the CMakeLists.txt build file.
@@ -181,27 +47,13 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 // Returns:
 //   - error: An error if generation fails.
 func generateCMake(cfg *config.Config, dir string) error {
-	tmplContent, err := templates.Get("CMakeLists.txt.tmpl")
-	if err != nil {
-		return err
-	}
-
-	t, err := template.New("cmake").Parse(tmplContent)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.Create(filepath.Join(dir, "CMakeLists.txt"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return t.Execute(f, struct {
+	data := struct {
 		ProjectName string
 		Version     string
 	}{
 		ProjectName: cfg.Project.Name,
 		Version:     version.Version,
-	})
+	}
+
+	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)
 }

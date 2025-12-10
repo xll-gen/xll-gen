@@ -1,0 +1,104 @@
+package generator
+
+import (
+	"strings"
+	"text/template"
+
+	"xll-gen/internal/config"
+)
+
+// GetCommonFuncMap returns a map of functions available to all templates.
+// It aggregates type lookups, event lookups, and general utility functions.
+func GetCommonFuncMap() template.FuncMap {
+	return template.FuncMap{
+		// Math
+		"add": func(a, b int) int { return a + b },
+		"sub": func(a, b int) int { return a - b },
+
+		// Types
+		"lookupSchemaType": LookupSchemaType,
+		"lookupGoType":     LookupGoType,
+		"lookupCppType":    LookupCppType,
+		"lookupArgCppType": LookupArgCppType,
+		"lookupXllType":    LookupXllType,
+		"lookupArgXllType": LookupArgXllType,
+		"defaultErrorVal":  DefaultErrorVal,
+
+		// Events
+		"lookupEventId": func(evtType string) int {
+			// Returns offset from User Start
+			if evtType == "CalculationEnded" {
+				return 1
+			}
+			if evtType == "CalculationCanceled" {
+				return 2
+			}
+			return 0
+		},
+		"lookupEventCode": func(evtType string) string {
+			if evtType == "CalculationEnded" {
+				return "xleventCalculationEnded"
+			}
+			if evtType == "CalculationCanceled" {
+				return "xleventCalculationCanceled"
+			}
+			return "0"
+		},
+		"hasEvent": func(name string, events []config.Event) bool {
+			for _, e := range events {
+				if e.Type == name {
+					return true
+				}
+			}
+			return false
+		},
+
+		// String / Formatting
+		"capitalize": func(s string) string {
+			if len(s) == 0 {
+				return ""
+			}
+			return strings.ToUpper(s[:1]) + s[1:]
+		},
+		"withDefault": func(val, def string) string {
+			if val == "" {
+				return def
+			}
+			return val
+		},
+		"boolToInt": func(b bool) int {
+			if b {
+				return 1
+			}
+			return 0
+		},
+		"derefBool": func(b *bool) bool {
+			if b == nil {
+				return false
+			}
+			return *b
+		},
+
+		// Config Helpers
+		"registerCount": func(f config.Function) int {
+			c := 10 + len(f.Args)
+			if f.Async {
+				c++
+			}
+			return c
+		},
+		"joinArgNames": func(f config.Function) string {
+			var names []string
+			for _, a := range f.Args {
+				names = append(names, a.Name)
+			}
+			if f.Async {
+				names = append(names, "asyncHandle")
+			}
+			return strings.Join(names, ",")
+		},
+		"parseTimeout": func(s string, defaultMs int) int {
+			return parseDurationToMs(s, defaultMs)
+		},
+	}
+}

@@ -1,13 +1,9 @@
 package generator
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
-	"text/template"
 
 	"xll-gen/internal/config"
-	"xll-gen/internal/templates"
 	"xll-gen/version"
 )
 
@@ -22,38 +18,6 @@ import (
 // Returns:
 //   - error: An error if generation fails.
 func generateInterface(cfg *config.Config, dir string, modName string) error {
-	tmplContent, err := templates.Get("interface.go.tmpl")
-	if err != nil {
-		return err
-	}
-
-	funcMap := template.FuncMap{
-		"lookupGoType": func(t string) string {
-			m := map[string]string{
-				"int":     "int32",
-				"float":   "float64",
-				"string":  "string",
-				"bool":    "bool",
-				"range":   "*types.Range",
-				"any":     "*types.Any",
-				"grid":    "*types.Grid",
-				"numgrid": "*types.NumGrid",
-				"int?":    "*int32",
-				"float?":  "*float64",
-				"bool?":   "*bool",
-			}
-			if v, ok := m[t]; ok {
-				return v
-			}
-			return t
-		},
-	}
-
-	t, err := template.New("interface").Funcs(funcMap).Parse(tmplContent)
-	if err != nil {
-		return err
-	}
-
 	pkg := cfg.Gen.Go.Package
 	if pkg == "" {
 		pkg = "generated"
@@ -73,13 +37,7 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 		Version:   version.Version,
 	}
 
-	f, err := os.Create(filepath.Join(dir, "interface.go"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return t.Execute(f, data)
+	return executeTemplate("interface.go.tmpl", filepath.Join(dir, "interface.go"), data, GetCommonFuncMap())
 }
 
 // generateServer generates the Go server implementation (server.go).
@@ -93,63 +51,6 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 // Returns:
 //   - error: An error if generation fails.
 func generateServer(cfg *config.Config, dir string, modName string) error {
-	tmplContent, err := templates.Get("server.go.tmpl")
-	if err != nil {
-		return err
-	}
-
-	funcMap := template.FuncMap{
-		"add": func(a, b int) int { return a + b },
-		"capitalize": func(s string) string {
-			if len(s) == 0 {
-				return ""
-			}
-			return strings.ToUpper(s[:1]) + s[1:]
-		},
-		"lookupGoType": func(t string) string {
-			m := map[string]string{
-				"int":     "int32",
-				"float":   "float64",
-				"string":  "string",
-				"bool":    "bool",
-				"range":   "*types.Range",
-				"any":     "*types.Any",
-				"grid":    "*types.Grid",
-				"numgrid": "*types.NumGrid",
-				"int?":    "*int32",
-				"float?":  "*float64",
-				"bool?":   "*bool",
-			}
-			if v, ok := m[t]; ok {
-				return v
-			}
-			return t
-		},
-		"lookupEventId": func(evtType string) int {
-			// Returns offset from User Start
-			if evtType == "CalculationEnded" {
-				return 1
-			}
-			if evtType == "CalculationCanceled" {
-				return 2
-			}
-			return 0
-		},
-		"hasEvent": func(name string, events []config.Event) bool {
-			for _, e := range events {
-				if e.Type == name {
-					return true
-				}
-			}
-			return false
-		},
-	}
-
-	t, err := template.New("server").Funcs(funcMap).Parse(tmplContent)
-	if err != nil {
-		return err
-	}
-
 	pkg := cfg.Gen.Go.Package
 	if pkg == "" {
 		pkg = "generated"
@@ -175,11 +76,5 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		Version:       version.Version,
 	}
 
-	f, err := os.Create(filepath.Join(dir, "server.go"))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return t.Execute(f, data)
+	return executeTemplate("server.go.tmpl", filepath.Join(dir, "server.go"), data, GetCommonFuncMap())
 }
