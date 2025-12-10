@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"xll-gen/internal/assets"
 	"xll-gen/internal/config"
@@ -38,12 +39,27 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	}
 
 	// 2. Write Assets (C++ common files)
+	// We handle subdirectory structures (e.g., tools/) by checking the asset name.
+	// Default is include/, but tools/ goes to cpp/tools/.
 	includeDir := filepath.Join(cppDir, "include")
 	if err := os.MkdirAll(includeDir, 0755); err != nil {
 		return err
 	}
+
 	for name, content := range assets.AssetsMap {
-		if err := os.WriteFile(filepath.Join(includeDir, name), []byte(content), 0644); err != nil {
+		var destPath string
+		if strings.HasPrefix(name, "tools/") {
+			// e.g. tools/compressor.cpp -> generated/cpp/tools/compressor.cpp
+			destPath = filepath.Join(cppDir, name)
+		} else {
+			// default: include/
+			destPath = filepath.Join(includeDir, name)
+		}
+
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(destPath, []byte(content), 0644); err != nil {
 			return err
 		}
 	}

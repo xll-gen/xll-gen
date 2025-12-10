@@ -20,9 +20,11 @@ func generateTaskfile(cfg *config.Config, dir string) error {
 	data := struct {
 		ProjectName string
 		Version     string
+		Embed       config.EmbedConfig
 	}{
 		ProjectName: cfg.Project.Name,
 		Version:     version.Version,
+		Embed:       cfg.Build.Embed,
 	}
 
 	return executeTemplate("Taskfile.yml.tmpl", filepath.Join(dir, "Taskfile.yml"), data, nil)
