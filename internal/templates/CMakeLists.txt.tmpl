@@ -118,7 +118,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
   shm
   flatbuffers
-  winmm
 )
 
 {{ if eq .Embed.Mode "exe_in_xll" }}
