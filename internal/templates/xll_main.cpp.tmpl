@@ -185,9 +185,9 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
              handles.clear();
              values.clear();
 
-             int n = g_host.ProcessGuestCalls([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, uint32_t msgId) -> int32_t {
+             int n = g_host.ProcessGuestCalls([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
                  switch (msgId) {
-                 case 127: { // MSG_BATCH_ASYNC_RESPONSE
+                 case (shm::MsgType)127: { // MSG_BATCH_ASYNC_RESPONSE
                      auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
                      if (batch->results()) {
                          for (auto res : *batch->results()) {
@@ -231,7 +231,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                  }
                  {{range $i, $fn := .Functions}}
                      {{if .Async}}
-                     case {{add 132 $i}}: { // {{.Name}} (Single Legacy Response)
+                     case (shm::MsgType){{add 132 $i}}: { // {{.Name}} (Single Legacy Response)
                          auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
                          LPXLOPER12 hPtr = (LPXLOPER12)response->async_handle();
 
@@ -470,16 +470,16 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         g_sentRefCache.clear();
     }
     std::vector<uint8_t> respBuf;
-    if (g_host.Send(nullptr, 0, MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
+    if (g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
          auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
          ExecuteCommands(resp);
     }
     {{else if eq .Type "CalculationCanceled"}}
     std::vector<uint8_t> respBuf;
-    g_host.Send(nullptr, 0, MSG_CALCULATION_CANCELED, respBuf, 2000);
+    g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_CANCELED, respBuf, 2000);
     {{else}}
     std::vector<uint8_t> respBuf;
-    g_host.Send(nullptr, 0, {{lookupEventId .Type}}, respBuf, 2000);
+    g_host.Send(nullptr, 0, (shm::MsgType){{lookupEventId .Type}}, respBuf, 2000);
     {{end}}
 }
 {{end}}
@@ -491,7 +491,7 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         g_sentRefCache.clear();
     }
     std::vector<uint8_t> respBuf;
-    if (g_host.Send(nullptr, 0, MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
+    if (g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
          auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
          ExecuteCommands(resp);
     }
@@ -586,13 +586,13 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
     {{ $ackTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-    slot.Send(reqSize, {{add 132 $i}}, {{ $ackTimeout }});
+    slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $ackTimeout }});
     return;
     {{else}}
     // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
     {{ $syncTimeout := parseTimeout .Timeout 0 }}
     {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-    if (!slot.Send(reqSize, {{add 132 $i}}, {{ $syncTimeout }})) {
+    if (!slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $syncTimeout }})) {
         return {{defaultErrorVal .Return}};
     }
 

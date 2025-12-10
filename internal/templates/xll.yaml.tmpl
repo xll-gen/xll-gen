@@ -2,25 +2,41 @@ project:
   name: "{{.ProjectName}}"
   version: "0.1.0"
 
+# Code generation settings
 gen:
   go:
     package: "generated"
+  # disable_pid_suffix: false # Optional: If true, prevents appending the PID to the shared memory name. Default is false.
 
+# Build configuration
+build:
+  embed:
+    # mode: "none" # Optional: Embedding strategy. Can be "none", "exe_in_xll", or "xll_in_exe". Default is "none".
+    # temp_dir: "${TEMP}" # Optional: Directory for extracting embedded binaries. Supports environment variables. Default is "${TEMP}".
+
+# Go server process configuration
 server:
-  timeout: "10s"
-  workers: 0 # 0 means use runtime.NumCPU()
+  timeout: "10s" # Default timeout for synchronous function calls.
+  # async_ack_timeout: "1s" # Optional: Timeout for acknowledging asynchronous requests.
+  workers: 0 # Size of the worker pool for processing requests. 0 means use runtime.NumCPU().
   launch:
-    enabled: true
-    command: "./{{.ProjectName}}.exe" # Optional: default to project executable
-    cwd: "." # Optional: default to XLL directory
+    enabled: true # If true, the XLL automatically launches the Go server.
+    command: "./{{.ProjectName}}.exe" # Optional: Command to launch the server. Defaults to the project executable.
+    cwd: "." # Optional: Working directory for the server process. Defaults to the XLL directory.
 
 # Function Definitions
-# Supported types: int, float, string, bool
+# Supported argument/return types: int, float, string, bool, range, grid, numgrid, any
 functions:
   # Simple integer addition
   - name: "Add"
     description: "Adds two integers"
     category: "Math"
+    # volatile: false # Optional: If true, recalculates on any sheet change. Default is false.
+    # async: false # Optional: Marks the function as asynchronous. Default is false.
+    # shortcut: "" # Optional: Keyboard shortcut, e.g., "Ctrl+Shift+A".
+    # help_topic: "" # Optional: URL or path to a help topic file.
+    # timeout: "" # Optional: Overrides the global server timeout for this specific function.
+    # caller: false # Optional: If true, provides the calling cell's reference as the first argument to your Go function. Default is false.
     args:
       - name: "a"
         type: "int"
@@ -60,3 +76,14 @@ functions:
         type: "int"
         description: "Value to check"
     return: "bool"
+
+# Event Handlers (Optional)
+#
+# Subscribe to Excel events and execute Go code in response. For example,
+# you can refresh data when a calculation cycle completes.
+#
+# events:
+#   # Example: A handler for the 'CalculationEnded' event.
+#   - type: "CalculationEnded" # The type of Excel event.
+#     name: "OnCalculationEnded" # The name for the generated Go handler function.
+#     description: "Handles the end of a calculation cycle."

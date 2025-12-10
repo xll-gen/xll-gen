@@ -8,6 +8,7 @@
 #include <process.h>
 #include <sstream>
 #include <iomanip>
+#include <cstdint>
 
 // Resource ID defined in resource.rc (assumed to be 101)
 #define IDR_GO_ZST 101
