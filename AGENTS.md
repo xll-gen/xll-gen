@@ -363,10 +363,6 @@ client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 *   **Versioning**: The version of `xll-gen` is defined in `version/version.go`. All generated files (C++, Go, CMake, etc.) must include a header comment indicating the version of `xll-gen` that created them. This helps in debugging and ensures users know when their artifacts are out of date.
 *   **Testing**: When applying changes due to upstream library updates (e.g., `shm` API changes), ensure that any outdated or incompatible tests are updated or deleted if they are no longer relevant.
 
-### CMake and Dependencies
-
-*   **`FetchContent_Populate` is forbidden**: Do not use `FetchContent_Populate`. It is deprecated and causes issues with the build process in this project. Always use the modern `FetchContent_MakeAvailable` to add dependencies. If linker errors occur, investigate alternative `FetchContent` strategies (like `FETCHCONTENT_UPDATES_DISCONNECTED`) before resorting to `Populate`.
-
 ## 11. Development Workflow
 
 *   **Temporary Projects**: Use directories starting with `temp_` (e.g., `temp_verify`, `temp_test`) for creating temporary test projects. These are git-ignored to prevent accidental commits of artifacts.
