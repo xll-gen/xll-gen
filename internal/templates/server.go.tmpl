@@ -589,8 +589,14 @@ func Serve(handler XllService) {
                 wg.Wait()
                 {{end}}
 
-                respBytes := flushCommands()
+                builder.Reset()
+                respBytes := flushCommands(builder)
                 if len(respBytes) > 0 {
+                    // Zero-Copy Return (Negative Size)
+                    if cap(builder.Bytes) == cap(respBuf) && len(respBytes) <= len(respBuf) {
+                        return -int32(len(respBytes)), MSG_CALCULATION_ENDED
+                    }
+
                     if len(respBytes) > len(respBuf) {
                         fmt.Printf("Warning: CalculationEnded response too large (%d)\n", len(respBytes))
                         return 0, 0
@@ -635,6 +641,9 @@ func Serve(handler XllService) {
                 builder.Finish(root)
 
                 payload := builder.FinishedBytes()
+                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
+                    return -int32(len(payload)), MSG_ACK
+                }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
                 return int32(len(payload)), MSG_ACK
@@ -677,6 +686,9 @@ func Serve(handler XllService) {
                 outgoingChunksMutex.Unlock()
 
                 payload := builder.FinishedBytes()
+                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
+                    return -int32(len(payload)), MSG_CHUNK
+                }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
                 return int32(len(payload)), MSG_CHUNK
@@ -725,6 +737,9 @@ func Serve(handler XllService) {
                 builder.Finish(root)
 
                 payload := builder.FinishedBytes()
+                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
+                    return -int32(len(payload)), MSG_CHUNK
+                }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
                 return int32(len(payload)), MSG_CHUNK
@@ -1011,7 +1026,7 @@ func queueAsyncResult(handle uint64, val interface{}, valType types.AnyValue, er
 {{end}}
 {{end}}
 
-func flushCommands() []byte {
+func flushCommands(b *flatbuffers.Builder) []byte {
     flushBuffers()
 	cmdQueueLock.Lock()
 	defer cmdQueueLock.Unlock()
@@ -1019,8 +1034,6 @@ func flushCommands() []byte {
 	if len(cmdQueue) == 0 {
 		return nil
 	}
-
-	b := flatbuffers.NewBuilder(0)
 
 	wrappers := make([]flatbuffers.UOffsetT, len(cmdQueue))
 
