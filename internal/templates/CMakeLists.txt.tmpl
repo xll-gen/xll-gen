@@ -67,19 +67,19 @@ add_executable(compressor "${CMAKE_CURRENT_SOURCE_DIR}/tools/compressor.cpp")
 target_link_libraries(compressor PRIVATE libzstd_static)
 target_include_directories(compressor PRIVATE ${zstd_SOURCE_DIR}/lib)
 
-# 3. Build Go Binary
-set(GO_EXE "${CMAKE_CURRENT_BINARY_DIR}/go_server.exe")
-# Glob source files in parent directory (project root) to track dependencies
-file(GLOB GO_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../*.go")
+# 3. Use Pre-built Go Binary
+if(NOT DEFINED GO_SERVER_EXE_PATH)
+    message(FATAL_ERROR "GO_SERVER_EXE_PATH must be defined via -DGO_SERVER_EXE_PATH=...")
+endif()
 
-add_custom_command(
-    OUTPUT ${GO_EXE}
-    # Build from the project root (where go.mod is located)
-    COMMAND go build -ldflags="-s -w" -o ${GO_EXE} ./generated
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
-    DEPENDS ${GO_SOURCES}
-    COMMENT "Building Go binary..."
-)
+# GO_SERVER_EXE_PATH is passed relative to the project root (where Taskfile is run).
+# The project root is two levels up from CMAKE_CURRENT_SOURCE_DIR (generated/cpp).
+get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(GO_EXE "${PROJECT_ROOT}/${GO_SERVER_EXE_PATH}")
+
+if(NOT EXISTS "${GO_EXE}")
+    message(FATAL_ERROR "Go binary not found at: ${GO_EXE}. Ensure it is built before running CMake.")
+endif()
 
 # 4. Compress Go Binary
 set(ZSTD_BINARY_NAME "go_server.zst")
