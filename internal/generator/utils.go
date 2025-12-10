@@ -1,8 +1,12 @@
 package generator
 
 import (
+	"os"
 	"strconv"
+	"text/template"
 	"time"
+
+	"xll-gen/internal/templates"
 )
 
 // parseDurationToMs parses a duration string (e.g. "2s", "500ms") and returns milliseconds as int.
@@ -31,4 +35,30 @@ func parseDurationToMs(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return int(d.Milliseconds())
+}
+
+// executeTemplate loads a template, parses it with the provided funcMap, and executes it to the output path.
+func executeTemplate(tmplName string, outputPath string, data interface{}, funcMap template.FuncMap) error {
+	tmplContent, err := templates.Get(tmplName)
+	if err != nil {
+		return err
+	}
+
+	// If funcMap is nil, use empty map
+	if funcMap == nil {
+		funcMap = template.FuncMap{}
+	}
+
+	t, err := template.New(tmplName).Funcs(funcMap).Parse(tmplContent)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return t.Execute(f, data)
 }

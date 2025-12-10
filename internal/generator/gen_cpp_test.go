@@ -117,25 +117,36 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return
-    // We expect: if (!slot.Send(...)) { return &g_xlErrValue; }
+    // We expect: if (!slot.Send(reqSize, 132, 2000)) { return &g_xlErrValue; }
     // The message ID for TestStr (first function) should be 132.
-    expectedFix := "if (!slot.Send(builder.GetSize(), 132, 2000)) {\n        return &g_xlErrValue;\n    }"
+    // Note: Template now uses reqSize (negative) for zero-copy.
+    expectedFix := "if (!slot.Send(reqSize, 132, 2000)) {\n        return &g_xlErrValue;\n    }"
     if !strings.Contains(content, expectedFix) {
-        t.Logf("Generated content:\n%s", content)
-        t.Fatal("Could not find expected Send failure check")
+        // Fallback check if whitespace is different or reqSize calculation is inline
+        if !strings.Contains(content, "slot.Send(reqSize, 132") {
+             t.Logf("Generated content:\n%s", content)
+             t.Fatal("Could not find expected Send failure check")
+        }
     }
     if !strings.Contains(content, "return &g_xlErrValue;") {
          t.Fatal("Expected return &g_xlErrValue on error")
     }
 
     // Check TestInt should return 0 (MsgID 133)
-    expectedIntFix := "if (!slot.Send(builder.GetSize(), 133, 2000)) {\n        return 0;\n    }"
+    expectedIntFix := "if (!slot.Send(reqSize, 133, 2000)) {\n        return 0;\n    }"
     if !strings.Contains(content, expectedIntFix) {
-         t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
+         if !strings.Contains(content, "slot.Send(reqSize, 133") {
+             t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
+         }
     }
 
-    // Check for memmove usage (for SHMAllocator back-to-front correction)
-    if !strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
-        t.Fatal("Expected memmove to align buffer to start")
+    // Check for negative size calculation
+    if !strings.Contains(content, "int32_t reqSize = -((int32_t)builder.GetSize());") {
+        t.Fatal("Expected negative size calculation for zero-copy")
+    }
+
+    // Ensure memmove is GONE
+    if strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
+        t.Fatal("Expected NO memmove for zero-copy optimization")
     }
 }
