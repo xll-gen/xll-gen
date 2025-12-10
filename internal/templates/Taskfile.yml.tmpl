@@ -24,9 +24,10 @@ tasks:
 {{if eq .Embed.Mode "exe_in_xll"}}
       # This task is kept for manual Go debugging, but NOT used in the main build flow.
       # The final embedded binary is built by CMake with different flags (-s -w).
-      - go build -ldflags="-H=windowsgui" -o build/{{.ProjectName}}.exe main.go
+      # Note: The embedded binary is built via CMake with specific flags.
+      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
 {{else}}
-      - go build -ldflags="-H=windowsgui" -o build/{{.ProjectName}}.exe main.go
+      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
 {{end}}
 
   build-cpp:

