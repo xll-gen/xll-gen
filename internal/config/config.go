@@ -13,6 +13,8 @@ type Config struct {
 	Project   ProjectConfig `yaml:"project"`
 	// Gen contains settings for code generation.
 	Gen       GenConfig     `yaml:"gen"`
+	// Build contains build configuration including embedding settings.
+	Build     BuildConfig   `yaml:"build"`
 	// Server contains configuration for the Go server process.
 	Server    ServerConfig  `yaml:"server"`
 	// Functions is a list of Excel functions to register.
@@ -29,6 +31,20 @@ type Event struct {
 	Name        string `yaml:"name"`
 	// Description describes the purpose of the event handler.
 	Description string `yaml:"description"`
+}
+
+// BuildConfig contains build settings.
+type BuildConfig struct {
+	// Embed configures how binaries are embedded.
+	Embed EmbedConfig `yaml:"embed"`
+}
+
+// EmbedConfig configures embedding behavior.
+type EmbedConfig struct {
+	// Mode determines the embedding strategy: "none", "exe_in_xll", "xll_in_exe".
+	Mode    string `yaml:"mode"`
+	// TempDir is the directory where embedded binaries are extracted (supports env vars).
+	TempDir string `yaml:"temp_dir"`
 }
 
 // ServerConfig configures the runtime behavior of the Go server.
@@ -144,6 +160,15 @@ var validReturnTypes = map[string]bool{
 // Returns:
 //   - error: An error if the configuration is invalid, or nil otherwise.
 func Validate(config *Config) error {
+	if config.Build.Embed.Mode != "" {
+		switch config.Build.Embed.Mode {
+		case "none", "exe_in_xll", "xll_in_exe":
+			// ok
+		default:
+			return fmt.Errorf("invalid embed mode: %s (allowed: none, exe_in_xll, xll_in_exe)", config.Build.Embed.Mode)
+		}
+	}
+
 	seenEvents := make(map[string]bool)
 	for _, evt := range config.Events {
 		if seenEvents[evt.Type] {
@@ -184,6 +209,13 @@ func allowedTypesList(m map[string]bool) string {
 // Parameters:
 //   - config: The Config object to modify.
 func ApplyDefaults(config *Config) {
+	if config.Build.Embed.Mode == "" {
+		config.Build.Embed.Mode = "none"
+	}
+	if config.Build.Embed.TempDir == "" {
+		config.Build.Embed.TempDir = "${TEMP}"
+	}
+
 	if config.Server.Launch != nil {
 		if config.Server.Launch.Enabled == nil {
 			t := true

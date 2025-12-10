@@ -22,6 +22,9 @@
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
+{{if eq .Embed.Mode "exe_in_xll"}}
+#include "include/xll_embed.h"
+{{end}}
 
 std::thread g_worker;
 std::atomic<bool> g_running{false};
@@ -189,31 +192,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                      if (batch->results()) {
                          for (auto res : *batch->results()) {
                              XLOPER12 h;
-                             h.xltype = xltypeBigData | xlbitXLFree; // Actually handled by Excel? No, passed as pointer.
-                             // Wait, async handle is opaque pointer. We just treat it as such.
-                             // But xlAsyncReturn expects LPXLOPER12 for handle.
-                             // Usually we just cast the ulong back to XLOPER12*.
-                             // But if we construct an XLOPER12 wrapping it?
-                             // No, the async handle IS a pointer to an XLOPER12 created by Excel.
-                             // Wait, `ipc.AsyncResult.handle` is ulong.
-                             // We need to dereference it? No, it IS the LPXLOPER12 pointer value.
-
-                             // However, for xlAsyncReturn, we pass LPXLOPER12.
-                             // In batch mode (xltypeMulti), we need an array of XLOPER12s.
-                             // Does Excel expect the array elements to BE the handles?
-                             // Or pointers to handles?
-                             // The docs say: "pass an LPXLOPER12 that points to XLOPER12 structures that contain ... asynchronous handles".
-                             // An async handle is type xltypeBigData.
-
-                             // So we need to reconstruct the XLOPER12 content from the ulong pointer?
-                             // Actually, the handle passed to us in the function call was `LPXLOPER12 asyncHandle`.
-                             // We cast it to uint64_t to send to Go.
-                             // Now we get it back. It is a pointer to an XLOPER12 struct that Excel owns.
-                             // We need to COPY that struct into our array?
-                             // Or can we just use the pointer?
-                             // xltypeMulti contains an array of XLOPER12s.
-                             // So we must copy the content of *asyncHandle into our vector element.
-
+                             h.xltype = xltypeBigData | xlbitXLFree;
                              LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
                              if (originalHandle) {
                                  h = *originalHandle; // Copy the struct content (xltypeBigData, val, etc.)
@@ -386,6 +365,19 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         }
         {{end}}
 
+{{if eq .Embed.Mode "exe_in_xll"}}
+        // EMBEDDED MODE: Extract and use the embedded Executable
+        std::string extractedExe = embed::ExtractAndStartExe("{{.Embed.TempDir}}", "{{.ProjectName}}");
+        std::wstring exePath;
+        if (!extractedExe.empty()) {
+            exePath = StringToWString(extractedExe);
+        } else {
+            // Fallback? Or fail?
+            // If extraction fails, we might be unable to start.
+            // Assuming fallback to local execution if debug?
+             exePath = xllDir + L"\\{{.ProjectName}}.exe";
+        }
+{{else}}
         // Resolve Command
         std::wstring exePath = xllDir + L"\\{{.ProjectName}}.exe";
         {{if .Server.Launch.Command}}
@@ -402,6 +394,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
             }
         }
         {{end}}
+{{end}}
 
         // Append SHM Flag (Quote the executable path to handle spaces)
         std::wstring cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);

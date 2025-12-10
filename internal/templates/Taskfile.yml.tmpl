@@ -7,21 +7,41 @@ tasks:
       - task: build
 
   build:
-    desc: Build both Go server and C++ XLL (Release)
+    desc: Build the project (Release)
     cmds:
+{{if eq .Embed.Mode "exe_in_xll"}}
+      # In 'exe_in_xll' mode, the C++ build (CMake) handles the Go build and embedding.
+      # We skip the explicit Go build task to avoid redundant/conflicting builds.
+      - task: build-cpp
+{{else}}
       - task: build-go
       - task: build-cpp
+{{end}}
 
   build-go:
     desc: Build Go server
     cmds:
-      - go build -ldflags="-H=windowsgui" -o build/{{.ProjectName}}.exe main.go
+{{if eq .Embed.Mode "exe_in_xll"}}
+      # This task is kept for manual Go debugging, but NOT used in the main build flow.
+      # The final embedded binary is built by CMake with different flags (-s -w).
+      # Note: The embedded binary is built via CMake with specific flags.
+      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
+{{else}}
+      - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
+{{end}}
 
   build-cpp:
     desc: Build C++ XLL (Release)
     cmds:
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
       - cmake --build build/cpp --config Release
+{{if eq .Embed.Mode "exe_in_xll"}}
+      # Copy the final XLL to the build root for convenience
+      - cmd: copy build\cpp\Release\{{.ProjectName}}.xll build\{{.ProjectName}}.xll
+        ignore_error: true
+      - cmd: copy build\cpp\{{.ProjectName}}.xll build\{{.ProjectName}}.xll
+        ignore_error: true
+{{end}}
 
   clean:
     desc: Clean build artifacts
