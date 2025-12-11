@@ -28,10 +28,8 @@ tasks:
 
   build-go-server:
     desc: Build the Go IPC server executable
-    sources: [ 'generated/server.go', 'generated/main.go' ]
-    generates: [ 'build/go_server.exe' ]
     cmds:
-      - go build -ldflags="-s -w" -o build/go_server.exe ./generated
+      - go build -ldflags="-H=windowsgui -s -w" -o build/go_server.exe .
 
 {{else}}
   # For other modes, the process is simpler.
