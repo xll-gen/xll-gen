@@ -14,7 +14,7 @@ To demonstrate and validate a robust build pipeline using CMake that:
 The following technical details were crucial for making this work, particularly for the Zstd integration via CMake:
 
 ### 1. Zstd CMake Integration
-The standard `FetchContent_MakeAvailable(zstd)` fails for Zstd v1.5.5 because the `CMakeLists.txt` is located in `build/cmake`, not the root of the repository.
+The standard `FetchContent_MakeAvailable(zstd)` fails for Zstd v1.5.7 because the `CMakeLists.txt` is located in `build/cmake`, not the root of the repository.
 
 **Solution:**
 Manually populate the content and add the specific subdirectory:
