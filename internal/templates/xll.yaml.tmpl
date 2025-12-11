@@ -25,7 +25,7 @@ server:
   workers: 0 # Size of the worker pool for processing requests. 0 means use runtime.NumCPU().
   launch:
     enabled: true # If true, the XLL automatically launches the Go server.
-    command: "./{{.ProjectName}}.exe" # Optional: Command to launch the server. Defaults to the project executable.
+    command: "${BIN}" # Optional: Command to launch the server. ${BIN} resolves to the executable path.
     cwd: "." # Optional: Working directory for the server process. Defaults to the XLL directory.
 
 # Function Definitions
