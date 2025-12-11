@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/config"
 )
 
 func TestGenGrid(t *testing.T) {

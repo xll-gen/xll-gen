@@ -5,7 +5,7 @@ import (
 	"strings"
 	"text/template"
 
-	"xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/config"
 )
 
 // GetCommonFuncMap returns a map of functions available to all templates.

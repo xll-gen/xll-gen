@@ -3,8 +3,8 @@ package generator
 import (
 	"path/filepath"
 
-	"xll-gen/internal/config"
-	"xll-gen/version"
+	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/version"
 )
 
 // generateTaskfile creates a Taskfile.yml for the project.
