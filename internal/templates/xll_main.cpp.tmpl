@@ -687,13 +687,17 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
         {{ $ackTimeout := parseTimeout .Timeout 0 }}
         {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-        slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $ackTimeout }});
+        auto res = slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $ackTimeout }});
+        if (res.HasError()) {
+            LogError("Failed to send async request for {{.Name}}");
+        }
         return;
         {{else}}
         // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
         {{ $syncTimeout := parseTimeout .Timeout 0 }}
         {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-        if (!slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $syncTimeout }})) {
+        auto res = slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $syncTimeout }});
+        if (res.HasError()) {
             LogError("Failed to send request for {{.Name}}");
             return {{defaultErrorVal .Return}};
         }
