@@ -437,7 +437,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::wstring defaultBinPath;
 {{if eq .Build.Singlefile "xll"}}
         // EMBEDDED MODE
-        std::string extractedExe = embed::ExtractAndStartExe("{{.Build.TempDir}}", "{{.ProjectName}}");
+        std::string extractedExe = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
         if (!extractedExe.empty()) {
             defaultBinPath = StringToWString(extractedExe);
             // In singlefile mode, run from the temp dir so logs appear there
