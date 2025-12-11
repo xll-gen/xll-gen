@@ -151,6 +151,16 @@ void ExecuteCommands(const ipc::CalculationEndedResponse* resp) {
     }
 }
 
+// Helper to replace all occurrences of a substring
+void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring& to) {
+    if(from.empty()) return;
+    size_t start_pos = 0;
+    while((start_pos = str.find(from, start_pos)) != std::wstring::npos) {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length();
+    }
+}
+
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
@@ -365,36 +375,51 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         }
         {{end}}
 
+        // 1. Determine Default Binary Path
+        std::wstring defaultBinPath;
 {{if eq .Build.Singlefile "xll"}}
-        // EMBEDDED MODE: Extract and use the embedded Executable
+        // EMBEDDED MODE
         std::string extractedExe = embed::ExtractAndStartExe("{{.Build.TempDir}}", "{{.ProjectName}}");
-        std::wstring exePath;
         if (!extractedExe.empty()) {
-            exePath = StringToWString(extractedExe);
+            defaultBinPath = StringToWString(extractedExe);
         } else {
-            // Fallback? Or fail?
-            // If extraction fails, we might be unable to start.
-            // Assuming fallback to local execution if debug?
-             exePath = xllDir + L"\\{{.ProjectName}}.exe";
+             defaultBinPath = xllDir + L"\\{{.ProjectName}}.exe";
         }
 {{else}}
-        // Resolve Command
-        std::wstring exePath = xllDir + L"\\{{.ProjectName}}.exe";
+        // STANDARD MODE
+        defaultBinPath = xllDir + L"\\{{.ProjectName}}.exe";
+{{end}}
+
+        // 2. Resolve Configured Command
+        std::wstring exePath = defaultBinPath;
         {{if .Server.Launch.Command}}
         std::string cfgCmd = "{{.Server.Launch.Command}}";
-        std::wstring wCmd = StringToWString(cfgCmd);
-        bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
-        if (isCmdAbs) {
-            exePath = wCmd;
-        } else {
-             if (cfgCmd.find("./") == 0 || cfgCmd.find(".\\") == 0) {
-                 exePath = cwd + L"\\" + wCmd.substr(2);
+        if (!cfgCmd.empty()) {
+            std::wstring wCmd = StringToWString(cfgCmd);
+
+            // Check for ${BIN} variable
+            std::wstring varBin = L"${BIN}";
+            if (wCmd.find(varBin) != std::wstring::npos) {
+                ReplaceAll(wCmd, varBin, defaultBinPath);
+                exePath = wCmd;
             } else {
-                 exePath = cwd + L"\\" + wCmd;
+                // Legacy/Standard relative path resolution
+                // If the user provided a specific path without ${BIN}
+                // We keep the existing logic that checks for absolute paths or prepends cwd/xllDir
+
+                bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
+                if (isCmdAbs) {
+                    exePath = wCmd;
+                } else {
+                     if (cfgCmd.find("./") == 0 || cfgCmd.find(".\\") == 0) {
+                         exePath = cwd + L"\\" + wCmd.substr(2);
+                    } else {
+                         exePath = cwd + L"\\" + wCmd;
+                    }
+                }
             }
         }
         {{end}}
-{{end}}
 
         // Append SHM Flag (Quote the executable path to handle spaces)
         std::wstring cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);
