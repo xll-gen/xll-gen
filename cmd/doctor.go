@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/generator"
 )
 
 // doctorCmd represents the doctor command.

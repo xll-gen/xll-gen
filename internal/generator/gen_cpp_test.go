@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/config"
 )
 
 func TestGenCpp_ComplexReturnTypes(t *testing.T) {

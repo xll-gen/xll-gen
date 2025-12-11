@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"xll-gen/internal/regtest"
+	"github.com/xll-gen/xll-gen/internal/regtest"
 )
 
 // TestRegression runs an end-to-end regression test.
@@ -53,7 +53,7 @@ func TestRegression(t *testing.T) {
 	}
 
 	// 2.5 Add replace directive for xll-gen (so pkg/log can be found)
-	editCmd := exec.Command("go", "mod", "edit", "-replace", "xll-gen="+repoRoot)
+	editCmd := exec.Command("go", "mod", "edit", "-replace", "github.com/xll-gen/xll-gen="+repoRoot)
 	if out, err := editCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go mod edit replace failed: %v\nOutput: %s", err, out)
 	}
