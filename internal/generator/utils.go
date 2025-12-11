@@ -6,7 +6,7 @@ import (
 	"text/template"
 	"time"
 
-	"xll-gen/internal/templates"
+	"github.com/xll-gen/xll-gen/internal/templates"
 )
 
 // parseDurationToMs parses a duration string (e.g. "2s", "500ms") and returns milliseconds as int.

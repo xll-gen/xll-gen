@@ -1,4 +1,4 @@
-module xll-gen
+module github.com/xll-gen/xll-gen
 
 go 1.24.3
 

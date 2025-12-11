@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-	"xll-gen/internal/config"
-	"xll-gen/internal/generator"
-	"xll-gen/internal/templates"
+	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/templates"
 )
 
 var force bool
@@ -138,7 +138,7 @@ func runInit(projectName string, force bool) error {
 	cmdTidy.Stdout = os.Stdout
 	cmdTidy.Stderr = os.Stderr
 	if err := cmdTidy.Run(); err != nil {
-		return fmt.Errorf("failed to run go mod tidy: %w", err)
+		fmt.Printf("Warning: 'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.\n", err)
 	}
 
 	fmt.Printf("Project %s initialized successfully!\n", projectName)

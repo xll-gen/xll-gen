@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"xll-gen/internal/assets"
-	"xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/assets"
+	"github.com/xll-gen/xll-gen/internal/config"
 )
 
 // Options contains optional flags for the code generation process.

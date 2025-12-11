@@ -14,7 +14,7 @@ import (
 	"sort"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
-	"xll-gen/pkg/log"
+	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -447,8 +447,19 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 	b.Finish(root)
 
 	// Send Batch Message
-	if _, err := client.SendGuestCall(b.FinishedBytes(), MSG_BATCH_ASYNC_RESPONSE); err != nil {
-		log.Error("Error sending batch async response", "error", err)
+	// We implement a short retry loop to handle transient buffer fullness.
+	msgBytes := b.FinishedBytes()
+	var err error
+	for i := 0; i < 10; i++ {
+		if _, err = client.SendGuestCall(msgBytes, MSG_BATCH_ASYNC_RESPONSE); err == nil {
+			return
+		}
+		// Backoff: 5ms, 10ms, ... 2.5s max total wait
+		time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
+	}
+
+	if err != nil {
+		log.Error("Error sending batch async response after retries", "error", err)
 	}
 }
 

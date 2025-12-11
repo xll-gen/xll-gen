@@ -3,8 +3,8 @@ package generator
 import (
 	"os"
 
-	"xll-gen/internal/config"
-	"xll-gen/internal/templates"
+	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/templates"
 )
 
 // generateSchema generates the FlatBuffers schema file (schema.fbs).

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"xll-gen/internal/regtest"
+	"github.com/xll-gen/xll-gen/internal/regtest"
 )
 
 // TestRegression runs an end-to-end regression test.
@@ -53,7 +53,7 @@ func TestRegression(t *testing.T) {
 	}
 
 	// 2.5 Add replace directive for xll-gen (so pkg/log can be found)
-	editCmd := exec.Command("go", "mod", "edit", "-replace", "xll-gen="+repoRoot)
+	editCmd := exec.Command("go", "mod", "edit", "-replace", "github.com/xll-gen/xll-gen="+repoRoot)
 	if out, err := editCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go mod edit replace failed: %v\nOutput: %s", err, out)
 	}
@@ -107,7 +107,17 @@ func TestRegression(t *testing.T) {
 	}
 
 	// 9. Build Simulation
-	cmd = exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"))
+	// Use a persistent cache directory for FetchContent to avoid re-downloading dependencies
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
+	regtestCache := filepath.Join(cacheDir, "xll-gen", "regtest_cache")
+	if err := os.MkdirAll(regtestCache, 0755); err != nil {
+		t.Logf("Failed to create regtest cache dir: %v", err)
+	}
+
+	cmd = exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"), "-DFETCHCONTENT_BASE_DIR="+regtestCache)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cmake config failed: %s", out)
 	}
