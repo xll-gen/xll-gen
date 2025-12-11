@@ -481,6 +481,14 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 ReplaceAll(wCmd, varBin, defaultBinPath);
                 exePath = wCmd;
             } else {
+{{if eq .Build.Singlefile "xll"}}
+                // In singlefile mode, if the command explicitly points to the project executable (default config),
+                // we should ignore it and use the extracted binary path instead.
+                std::string projExe = "{{.ProjectName}}.exe";
+                if (cfgCmd.find(projExe) != std::string::npos) {
+                    // Ignore, keep exePath as defaultBinPath (extracted)
+                } else {
+{{end}}
                 // Legacy/Standard relative path resolution
                 // If the user provided a specific path without ${BIN}
                 // We keep the existing logic that checks for absolute paths or prepends cwd/xllDir
@@ -495,6 +503,9 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                          exePath = cwd + L"\\" + wCmd;
                     }
                 }
+{{if eq .Build.Singlefile "xll"}}
+                }
+{{end}}
             }
         }
         {{end}}
