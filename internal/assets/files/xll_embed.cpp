@@ -79,7 +79,7 @@ bool DecompressAndWrite(void* pSrc, size_t srcSize, const std::string& destPath)
     return ok != 0;
 }
 
-std::string ExtractAndStartExe(const std::string& tempDirPattern, const std::string& projectName) {
+std::string ExtractEmbeddedExe(const std::string& tempDirPattern, const std::string& projectName) {
     // 1. Check for Debug Override
     char envBuf[16];
     if (GetEnvironmentVariableA("XLL_DEV_DISABLE_EMBED", envBuf, 16) > 0) {

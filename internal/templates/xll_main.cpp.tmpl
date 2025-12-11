@@ -192,8 +192,23 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{if .Logging.Path}}
     // Setup Native Logging
     std::wstring xllDir = GetXllDir();
+    std::wstring logDir = xllDir;
+
+    {{if eq .Build.Singlefile "xll"}}
+    // In singlefile mode, we want logs in the temp directory
+    std::string tempPattern = "{{.Build.TempDir}}";
+    std::string projName = "{{.ProjectName}}";
+    std::string expandedTemp = embed::ExpandEnvVars(tempPattern);
+    if (!expandedTemp.empty()) {
+        std::string targetDir = expandedTemp + "\\" + projName;
+        // Ensure dir exists
+        CreateDirectoryA(targetDir.c_str(), NULL);
+        logDir = StringToWString(targetDir);
+    }
+    {{end}}
+
     std::wstring wLogName = StringToWString("{{fileBase .Logging.Path}}_native{{fileExt .Logging.Path}}");
-    g_logPath = WideToUtf8(xllDir + L"\\" + wLogName);
+    g_logPath = WideToUtf8(logDir + L"\\" + wLogName);
     {{end}}
 
     // Determine worker count
@@ -422,9 +437,14 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::wstring defaultBinPath;
 {{if eq .Build.Singlefile "xll"}}
         // EMBEDDED MODE
-        std::string extractedExe = embed::ExtractAndStartExe("{{.Build.TempDir}}", "{{.ProjectName}}");
+        std::string extractedExe = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
         if (!extractedExe.empty()) {
             defaultBinPath = StringToWString(extractedExe);
+            // In singlefile mode, run from the temp dir so logs appear there
+            size_t lastSlash = defaultBinPath.find_last_of(L"\\");
+            if (lastSlash != std::wstring::npos) {
+                cwd = defaultBinPath.substr(0, lastSlash);
+            }
         } else {
              // Fallback: Check standard locations
              std::wstring sameDir = xllDir + L"\\{{.ProjectName}}.exe";
