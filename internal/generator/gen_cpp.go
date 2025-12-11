@@ -26,6 +26,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Build           config.BuildConfig
 		ShouldAppendPid bool
 		Version         string
+		Logging         config.LoggingConfig
 	}{
 		ProjectName:     cfg.Project.Name,
 		Functions:       cfg.Functions,
@@ -34,6 +35,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Build:           cfg.Build,
 		ShouldAppendPid: shouldAppendPid,
 		Version:         version.Version,
+		Logging:         cfg.Logging,
 	}
 
 	return executeTemplate("xll_main.cpp.tmpl", filepath.Join(dir, "xll_main.cpp"), data, GetCommonFuncMap())

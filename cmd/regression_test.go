@@ -34,6 +34,11 @@ func TestRegression(t *testing.T) {
 
 	// Switch WD to tempDir to run init
 	origWd, _ := os.Getwd()
+	repoRoot := origWd
+	// If we are in cmd/, go up one level to get repo root
+	if filepath.Base(repoRoot) == "cmd" {
+		repoRoot = filepath.Dir(repoRoot)
+	}
 	if err := os.Chdir(tempDir); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +50,12 @@ func TestRegression(t *testing.T) {
 
 	if err := os.Chdir(projectName); err != nil {
 		t.Fatal(err)
+	}
+
+	// 2.5 Add replace directive for xll-gen (so pkg/log can be found)
+	editCmd := exec.Command("go", "mod", "edit", "-replace", "xll-gen="+repoRoot)
+	if out, err := editCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod edit replace failed: %v\nOutput: %s", err, out)
 	}
 
 	// 3. Write Comprehensive xll.yaml

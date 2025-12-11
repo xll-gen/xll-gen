@@ -14,6 +14,7 @@ import (
 	"sort"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
+	"xll-gen/pkg/log"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -447,11 +448,16 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 
 	// Send Batch Message
 	if _, err := client.SendGuestCall(b.FinishedBytes(), MSG_BATCH_ASYNC_RESPONSE); err != nil {
-		fmt.Printf("Error sending batch async response: %v\n", err)
+		log.Error("Error sending batch async response", "error", err)
 	}
 }
 
 func Serve(handler XllService) {
+	// Initialize Logger
+	if err := log.Init("{{.Logging.Path}}", "{{.Logging.Level}}"); err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+	}
+
 	name := "{{.ProjectName}}"
 	for _, arg := range os.Args {
 		if strings.HasPrefix(arg, "-xll-shm=") {
@@ -461,6 +467,7 @@ func Serve(handler XllService) {
 
 	client, err := shm.Connect(shm.ClientConfig{ShmName: name})
 	if err != nil {
+		log.Error("Failed to connect to SHM", "error", err)
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
 	defer client.Close()
@@ -584,7 +591,7 @@ func Serve(handler XllService) {
                 jobQueue <- func() {
                     defer wg.Done()
                     if err := handler.OnCalculationEnded(context.Background()); err != nil {
-                        fmt.Printf("Event handler OnCalculationEnded failed: %v\n", err)
+                        log.Error("Event handler OnCalculationEnded failed", "error", err)
                     }
                 }
                 wg.Wait()
@@ -599,7 +606,7 @@ func Serve(handler XllService) {
                     }
 
                     if len(respBytes) > len(respBuf) {
-                        fmt.Printf("Warning: CalculationEnded response too large (%d)\n", len(respBytes))
+                        log.Warn("CalculationEnded response too large", "size", len(respBytes))
                         return 0, 0
                     }
                     copy(respBuf, respBytes)
@@ -620,7 +627,7 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 jobQueue <- func() {
                     if err := handler.OnCalculationCanceled(ctx); err != nil {
-                        fmt.Printf("Event handler OnCalculationCanceled failed: %v\n", err)
+                        log.Error("Event handler OnCalculationCanceled failed", "error", err)
                     }
                 }
                 {{end}}
@@ -751,7 +758,7 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 jobQueue <- func() {
                     if err := handler.{{.Name}}(ctx); err != nil {
-                        fmt.Printf("Event handler {{.Name}} failed: %v\n", err)
+                        log.Error("Event handler {{.Name}} failed", "error", err)
                     }
                 }
                 return 0, 0
@@ -872,7 +879,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
-				fmt.Printf("Panic in async handler {{.Name}}: %v\n%s\n", r, stack)
+				log.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
 				queueAsyncResult(handle, nil, 0, fmt.Sprintf("panic: %v", r), client)
 			}
 		}()
@@ -923,7 +930,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
-				fmt.Printf("Panic in sync handler {{.Name}}: %v\n%s\n", r, stack)
+				log.Error("Panic in sync handler {{.Name}}", "error", r, "stack", string(stack))
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()

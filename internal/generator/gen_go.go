@@ -65,6 +65,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		ServerTimeout string
 		ServerWorkers int
 		Version       string
+		Logging       config.LoggingConfig
 	}{
 		Package:       pkg,
 		ModName:       modName,
@@ -74,6 +75,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		ServerTimeout: cfg.Server.Timeout,
 		ServerWorkers: cfg.Server.Workers,
 		Version:       version.Version,
+		Logging:       cfg.Logging,
 	}
 
 	return executeTemplate("server.go.tmpl", filepath.Join(dir, "server.go"), data, GetCommonFuncMap())

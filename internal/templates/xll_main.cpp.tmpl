@@ -12,6 +12,7 @@
 #include <wchar.h>
 #include <random>
 #include <iostream>
+#include <fstream>
 #include <cstring>
 #include "include/xlcall.h"
 #include "include/xll_mem.h"
@@ -36,6 +37,24 @@ HINSTANCE g_hModule = NULL;
 
 // Global Error Value for Returns
 static XLOPER12 g_xlErrValue;
+
+// Logging
+static std::string g_logPath;
+
+void LogError(const std::string& msg) {
+    if (g_logPath.empty()) return;
+    std::ofstream logFile(g_logPath, std::ios_base::app);
+    if (logFile.is_open()) {
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        struct tm buf;
+        localtime_s(&buf, &in_time_t);
+        char timeStr[32];
+        std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &buf);
+
+        logFile << "[" << timeStr << "] [ERROR] " << msg << std::endl;
+    }
+}
 
 // Custom Allocator for FlatBuffers to use Shared Memory
 class SHMAllocator : public flatbuffers::Allocator {
@@ -164,6 +183,13 @@ void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring&
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
+    {{if .Logging.Path}}
+    // Setup Native Logging
+    std::wstring xllDir = GetXllDir();
+    std::wstring wLogName = StringToWString("{{fileBase .Logging.Path}}_native{{fileExt .Logging.Path}}");
+    g_logPath = WideToUtf8(xllDir + L"\\" + wLogName);
+    {{end}}
+
     // Determine worker count
     int workers = {{.Server.Workers}};
     if (workers <= 0) {
@@ -179,6 +205,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{end}}
 
     if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers + 2)) {
+        LogError("Failed to initialize Shared Memory with name: " + shmName);
         return 0;
     }
 
@@ -196,83 +223,93 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
              values.clear();
 
              int n = g_host.ProcessGuestCalls([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
-                 switch (msgId) {
-                 case (shm::MsgType)127: { // MSG_BATCH_ASYNC_RESPONSE
-                     auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
-                     if (batch->results()) {
-                         for (auto res : *batch->results()) {
-                             XLOPER12 h;
-                             h.xltype = xltypeBigData | xlbitXLFree;
-                             LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
-                             if (originalHandle) {
-                                 h = *originalHandle; // Copy the struct content (xltypeBigData, val, etc.)
+                 try {
+                     switch (msgId) {
+                     case (shm::MsgType)127: { // MSG_BATCH_ASYNC_RESPONSE
+                         auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
+                         if (batch->results()) {
+                             for (auto res : *batch->results()) {
+                                 XLOPER12 h;
+                                 h.xltype = xltypeBigData | xlbitXLFree;
+                                 LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
+                                 if (originalHandle) {
+                                     h = *originalHandle; // Copy the struct content (xltypeBigData, val, etc.)
 
+                                     XLOPER12 val;
+                                     std::memset(&val, 0, sizeof(XLOPER12));
+
+                                     if (res->error() && res->error()->size() > 0) {
+                                         val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                         // LogError("Async batch error: " + res->error()->str()); // Optional
+                                     } else {
+                                         // Convert AnyValue to XLOPER12
+                                         auto anyType = res->result_type();
+                                         if (anyType == ipc::types::AnyValue_Int) {
+                                             val.xltype = xltypeInt;
+                                             val.val.w = static_cast<const ipc::types::Int*>(res->result())->val();
+                                         } else if (anyType == ipc::types::AnyValue_Num) {
+                                             val.xltype = xltypeNum;
+                                             val.val.num = static_cast<const ipc::types::Num*>(res->result())->val();
+                                         } else if (anyType == ipc::types::AnyValue_Bool) {
+                                             val.xltype = xltypeBool;
+                                             val.val.xbool = static_cast<const ipc::types::Bool*>(res->result())->val() ? 1 : 0;
+                                         } else if (anyType == ipc::types::AnyValue_Str) {
+                                             auto s = static_cast<const ipc::types::Str*>(res->result())->val();
+                                             std::wstring wres = StringToWString(s->str());
+                                             val = CreateStringXLOPER(wres);
+                                         } else {
+                                              val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                         }
+                                     }
+                                     handles.push_back(h);
+                                     values.push_back(val);
+                                 }
+                             }
+                         }
+                         return 0;
+                     }
+                     {{range $i, $fn := .Functions}}
+                         {{if .Async}}
+                         case (shm::MsgType){{add 132 $i}}: { // {{.Name}} (Single Legacy Response)
+                             auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
+                             LPXLOPER12 hPtr = (LPXLOPER12)response->async_handle();
+
+                             if (hPtr) {
+                                 XLOPER12 h = *hPtr; // Copy handle content
                                  XLOPER12 val;
                                  std::memset(&val, 0, sizeof(XLOPER12));
 
-                                 if (res->error() && res->error()->size() > 0) {
+                                 if (response->error() && response->error()->size() > 0) {
                                      val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                     LogError("Async error for {{.Name}}: " + response->error()->str());
                                  } else {
-                                     // Convert AnyValue to XLOPER12
-                                     auto anyType = res->result_type();
-                                     if (anyType == ipc::types::AnyValue_Int) {
-                                         val.xltype = xltypeInt;
-                                         val.val.w = static_cast<const ipc::types::Int*>(res->result())->val();
-                                     } else if (anyType == ipc::types::AnyValue_Num) {
-                                         val.xltype = xltypeNum;
-                                         val.val.num = static_cast<const ipc::types::Num*>(res->result())->val();
-                                     } else if (anyType == ipc::types::AnyValue_Bool) {
-                                         val.xltype = xltypeBool;
-                                         val.val.xbool = static_cast<const ipc::types::Bool*>(res->result())->val() ? 1 : 0;
-                                     } else if (anyType == ipc::types::AnyValue_Str) {
-                                         auto s = static_cast<const ipc::types::Str*>(res->result())->val();
-                                         std::wstring wres = StringToWString(s->str());
-                                         val = CreateStringXLOPER(wres);
-                                     } else {
-                                          val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                     }
+                                     {{if eq .Return "string"}}
+                                     std::wstring wres = StringToWString(response->result()->str());
+                                     val = CreateStringXLOPER(wres);
+                                     {{else if eq .Return "int"}}
+                                     val.xltype = xltypeInt; val.val.w = response->result();
+                                     {{else if eq .Return "float"}}
+                                     val.xltype = xltypeNum; val.val.num = response->result();
+                                     {{else if eq .Return "bool"}}
+                                     val.xltype = xltypeBool; val.val.xbool = response->result() ? 1 : 0;
+                                     {{end}}
                                  }
                                  handles.push_back(h);
                                  values.push_back(val);
                              }
+                             return 0;
                          }
-                     }
-                     return 0;
-                 }
-                 {{range $i, $fn := .Functions}}
-                     {{if .Async}}
-                     case (shm::MsgType){{add 132 $i}}: { // {{.Name}} (Single Legacy Response)
-                         auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
-                         LPXLOPER12 hPtr = (LPXLOPER12)response->async_handle();
-
-                         if (hPtr) {
-                             XLOPER12 h = *hPtr; // Copy handle content
-                             XLOPER12 val;
-                             std::memset(&val, 0, sizeof(XLOPER12));
-
-                             if (response->error() && response->error()->size() > 0) {
-                                 val.xltype = xltypeErr; val.val.err = xlerrValue;
-                             } else {
-                                 {{if eq .Return "string"}}
-                                 std::wstring wres = StringToWString(response->result()->str());
-                                 val = CreateStringXLOPER(wres);
-                                 {{else if eq .Return "int"}}
-                                 val.xltype = xltypeInt; val.val.w = response->result();
-                                 {{else if eq .Return "float"}}
-                                 val.xltype = xltypeNum; val.val.num = response->result();
-                                 {{else if eq .Return "bool"}}
-                                 val.xltype = xltypeBool; val.val.xbool = response->result() ? 1 : 0;
-                                 {{end}}
-                             }
-                             handles.push_back(h);
-                             values.push_back(val);
-                         }
-                         return 0;
-                     }
+                         {{end}}
                      {{end}}
-                 {{end}}
-                     default:
-                         return 0;
+                         default:
+                             return 0;
+                     }
+                 } catch (const std::exception& e) {
+                     LogError("Exception in guest call handler: " + std::string(e.what()));
+                     return 0;
+                 } catch (...) {
+                     LogError("Unknown exception in guest call handler");
+                     return 0;
                  }
               });
 
@@ -463,6 +500,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 }
             } else {
                 // Process creation failed
+                LogError("Failed to launch Go server: " + WideToUtf8(cmd));
                 if (g_hJob) { CloseHandle(g_hJob); g_hJob = NULL; }
             }
 
@@ -495,174 +533,197 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
 
 {{range .Events}}
 __declspec(dllexport) void __stdcall {{.Name}}() {
-    {{if eq .Type "CalculationEnded"}}
-    {
-        std::lock_guard<std::mutex> lock(g_refCacheMutex);
-        g_sentRefCache.clear();
+    try {
+        {{if eq .Type "CalculationEnded"}}
+        {
+            std::lock_guard<std::mutex> lock(g_refCacheMutex);
+            g_sentRefCache.clear();
+        }
+        std::vector<uint8_t> respBuf;
+        auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
+        if (res && res.Value() > 0) {
+             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
+             ExecuteCommands(resp);
+        } else {
+            // LogError("Failed to send CalculationEnded event or invalid response");
+        }
+        {{else if eq .Type "CalculationCanceled"}}
+        std::vector<uint8_t> respBuf;
+        g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_CANCELED, respBuf, 2000);
+        {{else}}
+        std::vector<uint8_t> respBuf;
+        g_host.Send(nullptr, 0, (shm::MsgType){{lookupEventId .Type}}, respBuf, 2000);
+        {{end}}
+    } catch (const std::exception& e) {
+        LogError("Exception in event handler {{.Name}}: " + std::string(e.what()));
+    } catch (...) {
+        LogError("Unknown exception in event handler {{.Name}}");
     }
-    std::vector<uint8_t> respBuf;
-    auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
-    if (res && res.Value() > 0) {
-         auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
-         ExecuteCommands(resp);
-    }
-    {{else if eq .Type "CalculationCanceled"}}
-    std::vector<uint8_t> respBuf;
-    g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_CANCELED, respBuf, 2000);
-    {{else}}
-    std::vector<uint8_t> respBuf;
-    g_host.Send(nullptr, 0, (shm::MsgType){{lookupEventId .Type}}, respBuf, 2000);
-    {{end}}
 }
 {{end}}
 {{if hasEvent "CalculationEnded" .Events}}
 {{else}}
 __declspec(dllexport) void __stdcall CalculationEnded() {
-    {
-        std::lock_guard<std::mutex> lock(g_refCacheMutex);
-        g_sentRefCache.clear();
-    }
-    std::vector<uint8_t> respBuf;
-    if (g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
-         auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
-         ExecuteCommands(resp);
+    try {
+        {
+            std::lock_guard<std::mutex> lock(g_refCacheMutex);
+            g_sentRefCache.clear();
+        }
+        std::vector<uint8_t> respBuf;
+        if (g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
+             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
+             ExecuteCommands(resp);
+        }
+    } catch (const std::exception& e) {
+        LogError("Exception in CalculationEnded: " + std::string(e.what()));
+    } catch (...) {
+        LogError("Unknown exception in CalculationEnded");
     }
 }
 {{end}}
 
 {{range $i, $fn := .Functions}}
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+    try {
+        auto slot = g_host.GetZeroCopySlot();
+        SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
+        flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
 
-    auto slot = g_host.GetZeroCopySlot();
-    SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
-    flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
+        {{range .Args}}
+        {{if eq .Type "string"}}
+        auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
+        {{else if eq .Type "int?"}}
+        flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
+        if ({{.Name}}) {
+            {{.Name}}_off = ipc::types::CreateInt(builder, *{{.Name}});
+        }
+        {{else if eq .Type "float?"}}
+        flatbuffers::Offset<ipc::types::Num> {{.Name}}_off = 0;
+        if ({{.Name}}) {
+            {{.Name}}_off = ipc::types::CreateNum(builder, *{{.Name}});
+        }
+        {{else if eq .Type "bool?"}}
+        flatbuffers::Offset<ipc::types::Bool> {{.Name}}_off = 0;
+        if ({{.Name}}) {
+            {{.Name}}_off = ipc::types::CreateBool(builder, (*{{.Name}} != 0));
+        }
+        {{else if eq .Type "range"}}
+        auto {{.Name}}_off = ConvertRange({{.Name}}, builder);
+        {{else if eq .Type "grid"}}
+        auto {{.Name}}_off = ConvertGrid({{.Name}}, builder);
+        {{else if eq .Type "numgrid"}}
+        auto {{.Name}}_off = ConvertNumGrid({{.Name}}, builder);
+        {{else if eq .Type "any"}}
+        auto {{.Name}}_off = ConvertAny({{.Name}}, builder);
+        {{end}}
+        {{end}}
 
-    {{range .Args}}
-    {{if eq .Type "string"}}
-    auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
-    {{else if eq .Type "int?"}}
-    flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
-    if ({{.Name}}) {
-        {{.Name}}_off = ipc::types::CreateInt(builder, *{{.Name}});
-    }
-    {{else if eq .Type "float?"}}
-    flatbuffers::Offset<ipc::types::Num> {{.Name}}_off = 0;
-    if ({{.Name}}) {
-        {{.Name}}_off = ipc::types::CreateNum(builder, *{{.Name}});
-    }
-    {{else if eq .Type "bool?"}}
-    flatbuffers::Offset<ipc::types::Bool> {{.Name}}_off = 0;
-    if ({{.Name}}) {
-        {{.Name}}_off = ipc::types::CreateBool(builder, (*{{.Name}} != 0));
-    }
-    {{else if eq .Type "range"}}
-    auto {{.Name}}_off = ConvertRange({{.Name}}, builder);
-    {{else if eq .Type "grid"}}
-    auto {{.Name}}_off = ConvertGrid({{.Name}}, builder);
-    {{else if eq .Type "numgrid"}}
-    auto {{.Name}}_off = ConvertNumGrid({{.Name}}, builder);
-    {{else if eq .Type "any"}}
-    auto {{.Name}}_off = ConvertAny({{.Name}}, builder);
-    {{end}}
-    {{end}}
-
-    {{if .Caller}}
-    flatbuffers::Offset<ipc::types::Range> caller_off = 0;
-    {
-        XLOPER12 xCaller;
-        if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
-            caller_off = ConvertRange(&xCaller, builder);
-            if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
-                Excel12(xlFree, 0, 1, &xCaller);
+        {{if .Caller}}
+        flatbuffers::Offset<ipc::types::Range> caller_off = 0;
+        {
+            XLOPER12 xCaller;
+            if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
+                caller_off = ConvertRange(&xCaller, builder);
+                if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
+                    Excel12(xlFree, 0, 1, &xCaller);
+                }
             }
         }
+        {{end}}
+
+        ipc::{{.Name}}RequestBuilder reqBuilder(builder);
+        {{range .Args}}
+        {{if eq .Type "string"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "int?"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "float?"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "bool?"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "range"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "grid"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "numgrid"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "any"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else}}
+        reqBuilder.add_{{.Name}}({{.Name}});
+        {{end}}
+        {{end}}
+        {{if .Caller}}
+        if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
+        {{end}}
+        {{if .Async}}
+        reqBuilder.add_async_handle((uint64_t)asyncHandle);
+        {{end}}
+        auto req = reqBuilder.Finish();
+        builder.Finish(req);
+
+        // Zero-Copy Send (Size, MsgId, Timeout)
+        // We send negative size to indicate the data is at the end of the buffer (Zero-Copy).
+        int32_t reqSize = -((int32_t)builder.GetSize());
+
+        {{if .Async}}
+        // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
+        {{ $ackTimeout := parseTimeout .Timeout 0 }}
+        {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
+        slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $ackTimeout }});
+        return;
+        {{else}}
+        // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
+        {{ $syncTimeout := parseTimeout .Timeout 0 }}
+        {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
+        if (!slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $syncTimeout }})) {
+            LogError("Failed to send request for {{.Name}}");
+            return {{defaultErrorVal .Return}};
+        }
+
+        auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
+        if (resp->error() && resp->error()->size() > 0) {
+            LogError("Error executing {{.Name}}: " + resp->error()->str());
+            return {{defaultErrorVal .Return}};
+        }
+
+        {{if eq .Return "string"}}
+        std::wstring wres = StringToWString(resp->result()->str());
+        return NewExcelString(wres.c_str());
+        {{else if eq .Return "int"}}
+        static thread_local XLOPER12 xRes;
+        xRes.xltype = xltypeInt;
+        xRes.val.w = resp->result();
+        return &xRes;
+        {{else if eq .Return "float"}}
+        static thread_local XLOPER12 xRes;
+        xRes.xltype = xltypeNum;
+        xRes.val.num = resp->result();
+        return &xRes;
+        {{else if eq .Return "bool"}}
+        static thread_local XLOPER12 xRes;
+        xRes.xltype = xltypeBool;
+        xRes.val.xbool = resp->result() ? 1 : 0;
+        return &xRes;
+        {{else if eq .Return "any"}}
+        return AnyToXLOPER12(resp->result());
+        {{else if eq .Return "grid"}}
+        return GridToXLOPER12(resp->result());
+        {{else if eq .Return "numgrid"}}
+        return NumGridToFP12(resp->result());
+        {{else if eq .Return "range"}}
+        return RangeToXLOPER12(resp->result());
+        {{else}}
+        return resp->result();
+        {{end}}
+        {{end}}
+    } catch (const std::exception& e) {
+        LogError("Exception in {{.Name}}: " + std::string(e.what()));
+        {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
+    } catch (...) {
+        LogError("Unknown exception in {{.Name}}");
+        {{if .Async}}return;{{else}}return {{defaultErrorVal .Return}};{{end}}
     }
-    {{end}}
-
-    ipc::{{.Name}}RequestBuilder reqBuilder(builder);
-    {{range .Args}}
-    {{if eq .Type "string"}}
-    reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "int?"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "float?"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "bool?"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "range"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "grid"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "numgrid"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else if eq .Type "any"}}
-    if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
-    {{else}}
-    reqBuilder.add_{{.Name}}({{.Name}});
-    {{end}}
-    {{end}}
-    {{if .Caller}}
-    if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
-    {{end}}
-    {{if .Async}}
-    reqBuilder.add_async_handle((uint64_t)asyncHandle);
-    {{end}}
-    auto req = reqBuilder.Finish();
-    builder.Finish(req);
-
-    // Zero-Copy Send (Size, MsgId, Timeout)
-    // We send negative size to indicate the data is at the end of the buffer (Zero-Copy).
-    int32_t reqSize = -((int32_t)builder.GetSize());
-
-    {{if .Async}}
-    // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
-    {{ $ackTimeout := parseTimeout .Timeout 0 }}
-    {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-    slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $ackTimeout }});
-    return;
-    {{else}}
-    // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
-    {{ $syncTimeout := parseTimeout .Timeout 0 }}
-    {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-    if (!slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $syncTimeout }})) {
-        return {{defaultErrorVal .Return}};
-    }
-
-    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
-    if (resp->error() && resp->error()->size() > 0) {
-        return {{defaultErrorVal .Return}};
-    }
-
-    {{if eq .Return "string"}}
-    std::wstring wres = StringToWString(resp->result()->str());
-    return NewExcelString(wres.c_str());
-    {{else if eq .Return "int"}}
-    static thread_local XLOPER12 xRes;
-    xRes.xltype = xltypeInt;
-    xRes.val.w = resp->result();
-    return &xRes;
-    {{else if eq .Return "float"}}
-    static thread_local XLOPER12 xRes;
-    xRes.xltype = xltypeNum;
-    xRes.val.num = resp->result();
-    return &xRes;
-    {{else if eq .Return "bool"}}
-    static thread_local XLOPER12 xRes;
-    xRes.xltype = xltypeBool;
-    xRes.val.xbool = resp->result() ? 1 : 0;
-    return &xRes;
-    {{else if eq .Return "any"}}
-    return AnyToXLOPER12(resp->result());
-    {{else if eq .Return "grid"}}
-    return GridToXLOPER12(resp->result());
-    {{else if eq .Return "numgrid"}}
-    return NumGridToFP12(resp->result());
-    {{else if eq .Return "range"}}
-    return RangeToXLOPER12(resp->result());
-    {{else}}
-    return resp->result();
-    {{end}}
-    {{end}}
 }
 {{end}}
 

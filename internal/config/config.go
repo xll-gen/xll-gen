@@ -15,12 +15,22 @@ type Config struct {
 	Gen       GenConfig     `yaml:"gen"`
 	// Build contains build configuration including embedding settings.
 	Build     BuildConfig   `yaml:"build"`
+	// Logging contains logging configuration.
+	Logging   LoggingConfig `yaml:"logging"`
 	// Server contains configuration for the Go server process.
 	Server    ServerConfig  `yaml:"server"`
 	// Functions is a list of Excel functions to register.
 	Functions []Function    `yaml:"functions"`
 	// Events is a list of Excel events to handle.
 	Events    []Event       `yaml:"events"`
+}
+
+// LoggingConfig configures logging behavior.
+type LoggingConfig struct {
+	// Level is the log level (debug, info, warn, error).
+	Level string `yaml:"level"`
+	// Path is the log file path.
+	Path string `yaml:"path"`
 }
 
 // Event defines a subscription to a specific Excel event.
@@ -189,6 +199,15 @@ func Validate(config *Config) error {
 		}
 	}
 
+	if config.Logging.Level != "" {
+		switch strings.ToLower(config.Logging.Level) {
+		case "debug", "info", "warn", "error":
+			// ok
+		default:
+			return fmt.Errorf("invalid logging level: %s (allowed: debug, info, warn, error)", config.Logging.Level)
+		}
+	}
+
 	return nil
 }
 
@@ -218,5 +237,9 @@ func ApplyDefaults(config *Config) {
 			t := true
 			config.Server.Launch.Enabled = &t
 		}
+	}
+
+	if config.Logging.Level == "" {
+		config.Logging.Level = "info"
 	}
 }
