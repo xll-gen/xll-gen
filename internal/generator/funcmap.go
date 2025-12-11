@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"path/filepath"
 	"strings"
 	"text/template"
 
@@ -77,6 +78,14 @@ func GetCommonFuncMap() template.FuncMap {
 				return false
 			}
 			return *b
+		},
+
+		// Path Helpers
+		"fileBase": func(s string) string {
+			return strings.TrimSuffix(s, filepath.Ext(s))
+		},
+		"fileExt": func(s string) string {
+			return filepath.Ext(s)
 		},
 
 		// Config Helpers
