@@ -359,7 +359,7 @@ client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 ## 10. Agent Guidelines
 
 *   **Documentation Updates**: When modifying features or adding new capabilities, you must update the relevant documentation (e.g., `README.md`, `AGENTS.md`) to reflect the changes.
-*   **Language Policy**: All documentation and code comments must be written in English. Do not use other languages.
+*   **Language Policy**: All documentation, code comments, commit messages, and other project-related text must be in English.
 *   **Versioning**: The version of `xll-gen` is defined in `version/version.go`. All generated files (C++, Go, CMake, etc.) must include a header comment indicating the version of `xll-gen` that created them. This helps in debugging and ensures users know when their artifacts are out of date.
 *   **Testing**: When applying changes due to upstream library updates (e.g., `shm` API changes), ensure that any outdated or incompatible tests are updated or deleted if they are no longer relevant.
 
