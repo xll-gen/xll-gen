@@ -4,9 +4,11 @@ go 1.24.3
 
 require (
 	github.com/spf13/cobra v1.10.2
-	github.com/xll-gen/shm/go v0.0.0-20251210051358-adef88c3c82d
+	github.com/xll-gen/shm/go v0.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+replace github.com/xll-gen/shm/go v0.5.0 => github.com/xll-gen/shm/go v0.0.0-20251210120941-ca97f8a9f70a
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
