@@ -39,6 +39,7 @@ Traditional Excel XLLs are Dynamic Link Libraries (DLLs) loaded directly into th
     - XLL serializes arguments to Flatbuffers and writes to Shared Memory.
     - User Server reads the request, computes the result, and writes the response back.
     - XLL deserializes the response and returns it to Excel.
+5.  **Failure Handling**: If the User Server crashes, the XLL detects the process termination and alerts the user via a message box.
 
 ## Prerequisites
 
@@ -120,11 +121,16 @@ The `xll.yaml` file is the single source of truth for your add-in.
 ```yaml
 project:
   name: "my-project"
-  version: "0.1.0"
+  version: "0.2.0"
 
 gen:
   go:
     package: "generated"
+
+build:
+  # 'xll' embeds the Go server executable inside the XLL file (default).
+  # 'exe' (future) would keep them separate.
+  singlefile: xll
 
 server:
   workers: 100       # Number of concurrent request handlers
@@ -168,6 +174,8 @@ functions:
 | `grid` | Generic 2D Array | `*types.Grid` | `Array` |
 | `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
 
+> **Note**: Nullable scalar types (`int?`, `float?`, `bool?`) are not supported. Use `any` to handle missing or nil values.
+
 ## Command Scheduling
 
 You can schedule Excel commands (like `xlSet` or formatting) to run after the calculation cycle ends. This is useful for modifying cells or formatting, which is restricted during function execution.
@@ -182,12 +190,6 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
     return nil
 }
 ```
-
-### Supported Types
-
-1.  **Excel Process**: Loads the generated XLL (C++).
-2.  **Shared Memory**: Used for data transport.
-3.  **User Process**: Your Go application, which implements the logic defined in `main.go`.
 
 ## CLI Reference
 
