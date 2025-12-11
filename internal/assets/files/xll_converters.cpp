@@ -209,7 +209,8 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                       std::vector<uint8_t> respBuf;
                       uint32_t timeoutMs = 2000;
 
-                      if (g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), (shm::MsgType)MSG_SETREFCACHE, respBuf, 2000) > 0) {
+                      auto res = g_host.Send(reqB.GetBufferPointer(), reqB.GetSize(), (shm::MsgType)MSG_SETREFCACHE, respBuf, 2000);
+                      if (res && res.Value() > 0) {
                           g_sentRefCache[key] = true;
                           cached = true;
                       }

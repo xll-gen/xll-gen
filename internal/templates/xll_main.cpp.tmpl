@@ -523,7 +523,8 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         g_sentRefCache.clear();
     }
     std::vector<uint8_t> respBuf;
-    if (g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000) > 0) {
+    auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
+    if (res && res.Value() > 0) {
          auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
          ExecuteCommands(resp);
     }
