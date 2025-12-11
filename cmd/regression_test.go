@@ -107,7 +107,17 @@ func TestRegression(t *testing.T) {
 	}
 
 	// 9. Build Simulation
-	cmd = exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"))
+	// Use a persistent cache directory for FetchContent to avoid re-downloading dependencies
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
+	regtestCache := filepath.Join(cacheDir, "xll-gen", "regtest_cache")
+	if err := os.MkdirAll(regtestCache, 0755); err != nil {
+		t.Logf("Failed to create regtest cache dir: %v", err)
+	}
+
+	cmd = exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"), "-DFETCHCONTENT_BASE_DIR="+regtestCache)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cmake config failed: %s", out)
 	}
