@@ -422,7 +422,13 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         {{end}}
 
         // Append SHM Flag (Quote the executable path to handle spaces)
-        std::wstring cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);
+        // If the path already starts with a quote (e.g. user provided "${BIN}" or "path"), assume it's a full command line and don't add outer quotes.
+        std::wstring cmd;
+        if (!exePath.empty() && exePath[0] == L'"') {
+            cmd = exePath + L" -xll-shm=" + StringToWString(shmName);
+        } else {
+            cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);
+        }
 
         // Setup Log File
         std::wstring logPath = cwd + L"\\xll_launch.log";
