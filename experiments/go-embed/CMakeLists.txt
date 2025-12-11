@@ -14,7 +14,7 @@ include(FetchContent)
 FetchContent_Declare(
   zstd
   GIT_REPOSITORY https://github.com/facebook/zstd.git
-  GIT_TAG v1.5.5
+  GIT_TAG v1.5.7
 )
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
