@@ -7,8 +7,8 @@ github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiT
 github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
-github.com/xll-gen/shm/go v0.0.0-20251210051358-adef88c3c82d h1:zmJpU6xQLb8P0cdvOvqSdHKoHTu4HW4m1xqlWr33nUE=
-github.com/xll-gen/shm/go v0.0.0-20251210051358-adef88c3c82d/go.mod h1:XfLDapwHtbVeGUWgSw0TxAS4ZCPEe1tUfgIIYCYh2Rw=
+github.com/xll-gen/shm/go v0.0.0-20251210120941-ca97f8a9f70a h1:fboNAuAKyD3dMku2k/6H04IR4jlpF4+7CA/6fMA/lQ0=
+github.com/xll-gen/shm/go v0.0.0-20251210120941-ca97f8a9f70a/go.mod h1:XfLDapwHtbVeGUWgSw0TxAS4ZCPEe1tUfgIIYCYh2Rw=
 go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=

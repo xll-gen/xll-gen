@@ -25,14 +25,6 @@ int main() {
     auto start = chrono::steady_clock::now();
     bool connected = false;
 
-    // We loop for a bit waiting for guest calls or just sleep?
-    // Guest connects, but Host doesn't know until Guest sends a message?
-    // No, standard SHM protocol usually doesn't have "Client Connected" event unless implemented.
-    // However, we are sending requests to Guest.
-    // We can just start sending. If Guest is not ready, it might miss it?
-    // Guest "Connect" just opens the SHM.
-    // Guest "Start" starts the loop.
-
     // We'll give the guest a second to start up
     this_thread::sleep_for(chrono::seconds(2));
 
@@ -43,12 +35,12 @@ int main() {
     {
         cout << "Testing {{.Name}}..." << endl;
         auto slot = host.GetZeroCopySlot();
-        if (!slot) {
+        if (!slot.IsValid()) {
              cerr << "  Failed to acquire slot!" << endl;
              failures++;
              continue;
         }
-        flatbuffers::FlatBufferBuilder builder(slot->GetMaxReqSize(), nullptr, false, slot->GetReqBuffer());
+        flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), nullptr, false, slot.GetReqBuffer());
 
         // Construct Request with default values
         {{range .Args}}
@@ -104,7 +96,7 @@ int main() {
         builder.Finish(req);
 
         // Send
-        if (!slot->Send(builder.GetSize(), (shm::MsgType)({{add 11 $i}}), 2000)) {
+        if (!slot.Send(builder.GetSize(), (shm::MsgType)({{add 11 $i}}), 2000)) {
             cerr << "  Send failed!" << endl;
             failures++;
         } else {
@@ -118,7 +110,7 @@ int main() {
                 this_thread::sleep_for(chrono::milliseconds(10));
             }
             {{else}}
-            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot->GetRespBuffer());
+            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
             if (resp->error() && resp->error()->size() > 0) {
                  cout << "  Got Error: " << resp->error()->str() << endl;
             } else {
