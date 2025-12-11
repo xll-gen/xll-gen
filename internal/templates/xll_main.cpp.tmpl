@@ -28,6 +28,7 @@
 {{end}}
 
 std::thread g_worker;
+std::thread g_monitor;
 std::atomic<bool> g_running{false};
 
 // Global Process Handle (for auto-launched server)
@@ -498,6 +499,15 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 if (g_hJob) {
                     AssignProcessToJobObject(g_hJob, g_hChildProcess);
                 }
+
+                // Monitor Thread
+                g_monitor = std::thread([]{
+                    if (WaitForSingleObject(g_hChildProcess, INFINITE) == WAIT_OBJECT_0) {
+                        if (g_running) {
+                            MessageBoxW(NULL, L"The Go server process has terminated unexpectedly.\nThe Add-in will no longer function correctly.", L"Server Crash", MB_OK | MB_ICONERROR);
+                        }
+                    }
+                });
             } else {
                 // Process creation failed
                 LogError("Failed to launch Go server: " + WideToUtf8(cmd));
@@ -521,6 +531,12 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
 
     if (g_hChildProcess) {
         TerminateProcess(g_hChildProcess, 0);
+        // This will signal the monitor thread to wake up
+    }
+
+    if (g_monitor.joinable()) g_monitor.join();
+
+    if (g_hChildProcess) {
         CloseHandle(g_hChildProcess);
         g_hChildProcess = NULL;
     }
