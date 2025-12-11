@@ -181,6 +181,11 @@ void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring&
     }
 }
 
+bool FileExists(const std::wstring& path) {
+    DWORD dwAttrib = GetFileAttributesW(path.c_str());
+    return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+}
+
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
@@ -421,11 +426,46 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         if (!extractedExe.empty()) {
             defaultBinPath = StringToWString(extractedExe);
         } else {
-             defaultBinPath = xllDir + L"\\{{.ProjectName}}.exe";
+             // Fallback: Check standard locations
+             std::wstring sameDir = xllDir + L"\\{{.ProjectName}}.exe";
+             if (FileExists(sameDir)) {
+                 defaultBinPath = sameDir;
+             } else {
+                 // Check parent directory (Standard Go build output in dev)
+                 size_t lastSlash = xllDir.find_last_of(L"\\");
+                 if (lastSlash != std::wstring::npos) {
+                     std::wstring parentDir = xllDir.substr(0, lastSlash);
+                     std::wstring parentExe = parentDir + L"\\{{.ProjectName}}.exe";
+                     if (FileExists(parentExe)) {
+                         defaultBinPath = parentExe;
+                     } else {
+                         defaultBinPath = sameDir; // Default to same dir for consistent error message
+                     }
+                 } else {
+                      defaultBinPath = sameDir;
+                 }
+             }
         }
 {{else}}
         // STANDARD MODE
-        defaultBinPath = xllDir + L"\\{{.ProjectName}}.exe";
+        // Check same dir, then parent
+        std::wstring sameDir = xllDir + L"\\{{.ProjectName}}.exe";
+        if (FileExists(sameDir)) {
+            defaultBinPath = sameDir;
+        } else {
+            size_t lastSlash = xllDir.find_last_of(L"\\");
+            if (lastSlash != std::wstring::npos) {
+                std::wstring parentDir = xllDir.substr(0, lastSlash);
+                std::wstring parentExe = parentDir + L"\\{{.ProjectName}}.exe";
+                if (FileExists(parentExe)) {
+                    defaultBinPath = parentExe;
+                } else {
+                    defaultBinPath = sameDir;
+                }
+            } else {
+                defaultBinPath = sameDir;
+            }
+        }
 {{end}}
 
         // 2. Resolve Configured Command
@@ -510,8 +550,18 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 });
             } else {
                 // Process creation failed
-                LogError("Failed to launch Go server: " + WideToUtf8(cmd));
+                std::wstring msg = L"Failed to launch Go server.\nCommand: " + cmd;
+                LogError(WideToUtf8(msg));
+                MessageBoxW(NULL, msg.c_str(), L"Launch Error", MB_OK | MB_ICONERROR);
                 if (g_hJob) { CloseHandle(g_hJob); g_hJob = NULL; }
+
+                // Cleanup to allow safe unload
+                g_running = false;
+                if (g_worker.joinable()) g_worker.join();
+                g_host.Shutdown();
+
+                Excel12(xlFree, 0, 1, &xDll);
+                return 0;
             }
 
             CloseHandle(hLog);
