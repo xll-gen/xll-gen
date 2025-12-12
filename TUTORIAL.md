@@ -10,7 +10,7 @@ Before we begin, ensure you have the following installed:
 2.  **C++ Compiler**:
     *   **Windows**: Visual Studio Build Tools (MSVC) or MinGW (`winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`).
 3.  **CMake** (v3.14+): [Download CMake](https://cmake.org/download/)
-4.  **Task** (Optional but recommended): [Download Task](https://taskfile.dev/installation/)
+4.  **Task**: [Download Task](https://taskfile.dev/installation/) (Required for building).
 
 ## Step 1: Install xll-gen
 
@@ -41,12 +41,13 @@ This generates the following structure:
 *   `xll.yaml`: The project configuration file.
 *   `main.go`: The Go entry point where you'll write your code.
 *   `Taskfile.yml`: A build script for automation.
+*   `.vscode/`: Launch configurations for debugging.
 
 ## Step 3: Define Your Functions
 
 Open `xll.yaml` in your text editor. This file defines the functions that will be exposed to Excel.
 
-Replace the default `functions` section with the following:
+Replace the contents with the following:
 
 ```yaml
 project:
@@ -57,9 +58,18 @@ gen:
   go:
     package: "generated"
 
+build:
+  singlefile: xll
+
+logging:
+  level: info
+  path: FibDemo.log
+
 server:
-  workers: 4
+  workers: 0 # Use all CPUs
   timeout: "5s"
+  launch:
+    enabled: true
 
 functions:
   - name: "Fibonacci"
@@ -146,21 +156,16 @@ func main() {
 }
 ```
 
-**Note**: The method signatures (names and argument types) must match exactly what `xll-gen` expects. You can check `generated/interface.go` to see the required interface.
-
 ## Step 6: Build the Project
 
-Use the included `Taskfile.yml` to build both the Go server and the C++ XLL add-in.
+Use the `xll-gen build` command to build both the Go server and the C++ XLL add-in.
 
 ```bash
-task build
+xll-gen build
 ```
 
-If you don't have `task` installed, you can use the commands manually (see `Taskfile.yml`), but `task` is much easier.
-
-On success, you will see a `build/` directory containing:
-*   `FibDemo.xll` (The Excel Add-in)
-*   `fib-demo.exe` (The Go Server)
+This will run `task build` internally. On success, you will see a `build/` directory containing:
+*   `FibDemo.xll` (The Excel Add-in with the embedded server)
 
 ## Step 7: Run in Excel
 
@@ -177,14 +182,14 @@ Once loaded:
 
 ## Troubleshooting
 
-*   **Excel crashes**: Ensure you are not returning invalid memory. Since we are using `xll-gen` (which uses shared memory), this is handled for you, but be careful if you modify C++ code manually.
+*   **Excel crashes**: Ensure you are not returning invalid memory. Since we are using `xll-gen` (which uses shared memory), this is handled for you.
 *   **"#VALUE!" Error**: This usually means the Go server is not running or crashed.
-    *   Check if `fib-demo.exe` is running in your Task Manager.
-    *   If you didn't enable auto-launch (it's enabled by default in the `init` template), you might need to run `fib-demo.exe` manually.
+    *   Check `FibDemo.log` (as defined in `xll.yaml`) for server errors.
+    *   If the server crashed, the XLL might display a message box with the error.
 *   **Compilation Errors**: Run `xll-gen doctor` to ensure your C++ compiler is set up correctly.
 
 ## Next Steps
 
 *   Explore **Asynchronous Functions** (`async: true` in `xll.yaml`) for long-running tasks.
 *   Use **Ranges** (`type: any` or `type: grid`) to handle array inputs.
-*   Check out the `examples/` directory in the repository for more complex use cases.
+*   See `xll.yaml` comments for advanced configuration like `launch.command` or `events`.
