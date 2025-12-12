@@ -32,7 +32,7 @@ Traditional Excel XLLs are Dynamic Link Libraries (DLLs) loaded directly into th
 ## Architecture
 
 1.  **Excel Process**: Loads `project.xll`.
-2.  **XLL Shim**: Initializes a shared memory region and spawns the User Server (optional auto-launch).
+2.  **XLL Shim**: Initializes a shared memory region. It automatically extracts and spawns the embedded User Server (in `singlefile` mode).
 3.  **User Server**: Connects to the shared memory region and listens for requests.
 4.  **Data Flow**:
     - Excel calls a function (e.g., `=Add(1, 2)`).
@@ -54,16 +54,14 @@ Before using `xll-gen`, ensure you have the following installed:
         winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT
         ```
 *   **Excel**: Microsoft Excel 2007 or later (Windows).
-*   **Task** (Optional): [go-task](https://taskfile.dev/) is recommended for running the generated build scripts.
+*   **Task** (Required for `xll-gen build`): [go-task](https://taskfile.dev/) is used to orchestrate the build process.
 
 ## Installation
 
-Clone the repository and install the tool using `go install`:
+Install the tool using `go install`:
 
 ```bash
-git clone https://github.com/your-org/xll-gen.git
-cd xll-gen
-go install
+go install github.com/xll-gen/xll-gen@latest
 ```
 
 Ensure that your `$(go env GOPATH)/bin` is in your system PATH.
@@ -98,17 +96,12 @@ xll-gen generate
 
 ### 4. Build
 
-Build both the Go server and the C++ XLL:
+Build the project (Go server + C++ XLL):
 
 ```bash
-# If you have Task installed:
-task build
-
-# Or manually:
-# go build -o build/my-quant-lib.exe main.go
-# cmake -S generated/cpp -B build -DCMAKE_BUILD_TYPE=Release
-# cmake --build build --config Release
+xll-gen build
 ```
+*Note: This command requires `task` to be installed. Alternatively, you can run `task build` directly.*
 
 ### 5. Run
 
@@ -126,17 +119,25 @@ project:
 gen:
   go:
     package: "generated"
+  disable_pid_suffix: false # Useful for testing/stable IPC names
 
 build:
   # 'xll' embeds the Go server executable inside the XLL file (default).
-  # 'exe' (future) would keep them separate.
   singlefile: xll
+  # Directory to extract embedded binary to (default: ${TEMP})
+  temp_dir: "${TEMP}"
+
+logging:
+  level: "info"
+  path: "my-project.log"
 
 server:
-  workers: 100       # Number of concurrent request handlers
-  timeout: "5s"      # Default timeout for synchronous requests
+  workers: 0         # 0 = Use runtime.NumCPU()
+  timeout: "10s"     # Default timeout for synchronous requests
   launch:
     enabled: true    # Automatically start the Go server when XLL loads
+    command: "${BIN}"
+    cwd: "."
 
 functions:
   - name: "Add"
@@ -174,7 +175,7 @@ functions:
 | `grid` | Generic 2D Array | `*types.Grid` | `Array` |
 | `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
 
-> **Note**: Nullable scalar types (`int?`, `float?`, `bool?`) are not supported. Use `any` to handle missing or nil values.
+> **Note**: Nullable scalar types (`int?`, `float?`, `bool?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
 ## Command Scheduling
 
@@ -195,16 +196,16 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
 
 ### `init <name>`
 Scaffolds a new project structure.
+*   `-f, --force`: Overwrite existing directory.
 
 ### `generate`
 Generates C++ and Go source code based on `xll.yaml`.
-*   **--no-pid-suffix**: Disables appending the PID to the Shared Memory name (useful for testing).
+
+### `build`
+Wraps `task build` to compile the project. Requires `task` to be installed.
 
 ### `doctor`
 Checks the environment for required tools (C++ compiler, `flatc`).
-
-### `regtest`
-Runs a regression test suite using a mock host (requires `regtest` build tag).
 
 ## Debugging
 
@@ -212,10 +213,10 @@ Runs a regression test suite using a mock host (requires `regtest` build tag).
 
 **Setup**:
 1.  Install the **Go** and **C/C++** extensions for VS Code.
-2.  Use the generated `.vscode/launch.json` configuration (create one if missing).
+2.  Use the generated `.vscode/launch.json` configuration.
 
 **Steps**:
-1.  **Build** the project (`task build`).
+1.  **Build** the project.
 2.  **Launch Excel**: Use the "Debug XLL" configuration to start Excel with your XLL.
 3.  **Attach Go Debugger**: Use the "Attach to Go Server" configuration to attach to the automatically spawned `my-project.exe`.
 
@@ -225,7 +226,7 @@ Runs a regression test suite using a mock host (requires `regtest` build tag).
 Run `xll-gen doctor`. It will attempt to download the correct version of the FlatBuffers compiler automatically.
 
 **"Shared Memory Open Failed"**:
-Ensure the XLL and the Go server are using the same shared memory name. If debugging manually, make sure to pass `-xll-shm=<Name>` to the Go server.
+Ensure the XLL and the Go server are using the same shared memory name.
 
 ## License
 
