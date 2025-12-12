@@ -74,6 +74,11 @@ int32_t ProcessAsyncBatchResponse(const uint8_t* req, std::vector<XLOPER12>& han
                     delete[] v.val.array.lparray;
                     v.val.array.lparray = nullptr;
                 }
+            } else if (v.xltype & xltypeRef) {
+                if (v.val.mref.lpmref) {
+                    delete[] (char*)v.val.mref.lpmref;
+                    v.val.mref.lpmref = nullptr;
+                }
             }
         }
     }

@@ -96,6 +96,20 @@ func TestRepro_MemoryLeak(t *testing.T) {
 	if !strings.Contains(sConv, "case ipc::types::AnyValue_Range:") {
 		t.Errorf("xll_converters.cpp: AnyToXLOPER12 missing AnyValue_Range case")
 	}
+
+	// 6. Verify xll_async.cpp (Range leak in manual cleanup)
+	asyncCppPath := filepath.Join("generated", "cpp", "include", "xll_async.cpp")
+	asyncContent, err := os.ReadFile(asyncCppPath)
+	if err != nil {
+		t.Fatalf("Could not read xll_async.cpp: %v", err)
+	}
+	sAsync := string(asyncContent)
+
+	// Check if cleanup loop handles xltypeRef
+	// We look for "else if (v.xltype & xltypeRef)"
+	if !strings.Contains(sAsync, "v.xltype & xltypeRef") {
+		t.Errorf("xll_async.cpp: Cleanup loop does not handle xltypeRef (Memory Leak)")
+	}
 }
 
 func setupMockFlatc(t *testing.T, tempDir string) {
