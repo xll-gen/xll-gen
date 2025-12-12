@@ -11,6 +11,11 @@ tasks:
     cmds:
       - task: build-cpp
 
+  build-debug:
+    desc: Build the project (Debug)
+    cmds:
+      - task: build-cpp-debug
+
 {{if eq .Build.Singlefile "xll"}}
   # For 'singlefile: xll' mode, Taskfile ensures the Go server is built before C++.
   build-cpp:
@@ -20,16 +25,35 @@ tasks:
       - task: configure-cpp
       - cmake --build build/cpp --config Release
 
+  build-cpp-debug:
+    desc: Build C++ XLL (Debug)
+    deps: [ build-go-server-debug ]
+    cmds:
+      - task: configure-cpp-debug
+      - cmake --build build/cpp --config Debug
+
   configure-cpp:
     desc: Configure the C++ project with CMake
     # Pass the path of the pre-built Go executable to CMake
     cmds:
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DGO_SERVER_EXE_PATH=build/go_server.exe
 
+  configure-cpp-debug:
+    desc: Configure the C++ project with CMake (Debug)
+    cmds:
+      - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Debug -DXLL_DEBUG=ON -DGO_SERVER_EXE_PATH=build/go_server.exe
+
   build-go-server:
     desc: Build the Go IPC server executable
     cmds:
       - go build -ldflags="-H=windowsgui -s -w" -o build/go_server.exe .
+
+  build-go-server-debug:
+    desc: Build the Go IPC server executable (Debug)
+    cmds:
+      # We keep windowsgui to hide the console, but symbols are preserved (no -s -w).
+      # And we pass xll_debug and shm_debug tags.
+      - go build -tags xll_debug,shm_debug -ldflags="-H=windowsgui" -o build/go_server.exe .
 
 {{else}}
   # For other modes, the process is simpler.
@@ -39,10 +63,21 @@ tasks:
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
       - cmake --build build/cpp --config Release
 
+  build-cpp-debug:
+    desc: Build C++ XLL (Debug)
+    cmds:
+      - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Debug -DXLL_DEBUG=ON
+      - cmake --build build/cpp --config Debug
+
   build-go:
     desc: Build Go server
     cmds:
       - go build -ldflags="-H=windowsgui -s -w" -o build/{{.ProjectName}}.exe main.go
+
+  build-go-debug:
+    desc: Build Go server (Debug)
+    cmds:
+      - go build -tags xll_debug,shm_debug -ldflags="-H=windowsgui" -o build/{{.ProjectName}}.exe main.go
 {{end}}
 
   clean:

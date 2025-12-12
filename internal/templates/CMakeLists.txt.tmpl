@@ -30,13 +30,17 @@ FetchContent_MakeAvailable(flatbuffers)
 FetchContent_Declare(
   shm
   GIT_REPOSITORY https://github.com/xll-gen/shm.git
-  GIT_TAG v0.5.2
+  GIT_TAG v0.5.3
 )
 FetchContent_MakeAvailable(shm)
 
 if(NOT TARGET shm)
   add_library(shm INTERFACE)
   target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
+endif()
+
+if(XLL_DEBUG)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE SHM_DEBUG)
 endif()
 
 {{ if eq .Build.Singlefile "xll" }}

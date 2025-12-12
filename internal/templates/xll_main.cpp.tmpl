@@ -104,6 +104,20 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     return TRUE;
 }
 
+#ifdef SHM_DEBUG
+static void LogHandler(shm::LogLevel level, const std::string& msg) {
+    std::string prefix = "";
+    switch (level) {
+        case shm::LogLevel::TRACE: prefix = "[TRACE] "; break;
+        case shm::LogLevel::DEBUG: prefix = "[DEBUG] "; break;
+        case shm::LogLevel::INFO:  prefix = "[INFO]  "; break;
+        case shm::LogLevel::WARN:  prefix = "[WARN]  "; break;
+        case shm::LogLevel::ERROR: prefix = "[ERROR] "; break;
+    }
+    LogError(prefix + msg);
+}
+#endif
+
 bool IsSingleCell(LPXLOPER12 xRef) {
     if (!xRef) return false;
     int type = xRef->xltype & ~(xlbitXLFree | xlbitDLLFree);
@@ -210,6 +224,10 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::wstring wLogName = StringToWString("{{fileBase .Logging.Path}}_native{{fileExt .Logging.Path}}");
     g_logPath = WideToUtf8(logDir + L"\\" + wLogName);
     {{end}}
+
+#ifdef SHM_DEBUG
+    shm::SetLogHandler(LogHandler);
+#endif
 
     // Determine worker count
     int workers = {{.Server.Workers}};
