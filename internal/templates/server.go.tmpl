@@ -631,9 +631,6 @@ func Serve(handler XllService) {
                 bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
                 bufferedFormats = make(map[string]map[algo.Cell]string)
                 bufferLock.Unlock()
-                refCacheMutex.Lock()
-                refCache = make(map[string][]byte)
-                refCacheMutex.Unlock()
 
                 {{if hasEvent "CalculationCanceled" .Events}}
                 ctx := context.Background()
