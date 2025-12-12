@@ -246,7 +246,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
              int n = g_host.ProcessGuestCalls([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
                  try {
                      switch (msgId) {
-                     case (shm::MsgType)127: { // MSG_BATCH_ASYNC_RESPONSE
+                     case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
                          auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
                          if (batch->results()) {
                              for (auto res : *batch->results()) {
@@ -287,11 +287,11 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                                  }
                              }
                          }
-                         return 0;
+                         return 1;
                      }
                      {{range $i, $fn := .Functions}}
                          {{if .Async}}
-                         case (shm::MsgType){{add 132 $i}}: { // {{.Name}} (Single Legacy Response)
+                         case (shm::MsgType){{add 133 $i}}: { // {{.Name}} (Single Legacy Response)
                              auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
                              LPXLOPER12 hPtr = (LPXLOPER12)response->async_handle();
 
@@ -689,7 +689,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 
         {{range .Args}}
         {{if eq .Type "string"}}
-        auto {{.Name}}_off = builder.CreateString(ConvertExcelString({{.Name}}));
+        auto {{.Name}}_off = builder.CreateString(ConvertExcelString(({{.Name}} && {{.Name}}->xltype == xltypeStr) ? {{.Name}}->val.str : nullptr));
         {{else if eq .Type "int?"}}
         flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
         if ({{.Name}}) {
@@ -768,7 +768,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
         {{ $ackTimeout := parseTimeout .Timeout 0 }}
         {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
-        auto res = slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $ackTimeout }});
+        auto res = slot.Send(reqSize, (shm::MsgType)({{add 133 $i}}), {{ $ackTimeout }});
         if (res.HasError()) {
             LogError("Failed to send async request for {{.Name}}");
         }
@@ -777,7 +777,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
         {{ $syncTimeout := parseTimeout .Timeout 0 }}
         {{ if eq $syncTimeout 0 }}{{ $syncTimeout = parseTimeout $.Server.Timeout 2000 }}{{ end }}
-        auto res = slot.Send(reqSize, (shm::MsgType)({{add 132 $i}}), {{ $syncTimeout }});
+        auto res = slot.Send(reqSize, (shm::MsgType)({{add 133 $i}}), {{ $syncTimeout }});
         if (res.HasError()) {
             LogError("Failed to send request for {{.Name}}");
             return {{defaultErrorVal .Return}};

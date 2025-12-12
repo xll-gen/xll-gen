@@ -25,12 +25,12 @@ var _ = types.Bool{}
 
 const (
 	MSG_ACK                  = 2
-	MSG_BATCH_ASYNC_RESPONSE = 127
-	MSG_CHUNK                = 128
-	MSG_SETREFCACHE          = 129
-	MSG_CALCULATION_ENDED    = 130
-	MSG_CALCULATION_CANCELED = 131
-	MSG_USER_START           = 132
+	MSG_BATCH_ASYNC_RESPONSE = 128
+	MSG_CHUNK                = 129
+	MSG_SETREFCACHE          = 130
+	MSG_CALCULATION_ENDED    = 131
+	MSG_CALCULATION_CANCELED = 132
+	MSG_USER_START           = 133
 )
 
 type chunkBuffer struct {
@@ -781,7 +781,7 @@ func Serve(handler XllService) {
              {{end}}
 {{end}}
 
-{{range $i, $fn := .Functions}}             case {{add 132 $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}             case {{add 133 $i}}: // {{.Name}}
                 {{if .Timeout}}
                 ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
                 {{else}}
@@ -792,9 +792,13 @@ func Serve(handler XllService) {
                 {{if .Async}}
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
-                jobQueue <- func() {
+                select {
+                case jobQueue <- func() {
                     defer cancel()
                     handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
+                }:
+                default:
+                    log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
                 }
                 return 0, 0
                 {{else}}

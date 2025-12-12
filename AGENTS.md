@@ -212,7 +212,7 @@ For types with multiple representation options, we stick to the following canoni
 | **Boolean** | `A` | `short` | 0=false, 1=true. |
 | **Double** | `B` | `double` | IEEE 8-byte floating point. |
 | **Int** | `J` | `int32_t` | 32-bit signed integer. |
-| **String** | `D%` | `const wchar_t *` | Counted Unicode wide-character string (Pascal). |
+| **String** | `Q` | `XLOPER12 *` | Pointer to XLOPER12 (internally mapped to Q for safety). |
 | **Array (FP)** | `K%` | `FP12 *` | Floating-point array structure. Efficient for math. |
 | **Any (Value)** | `Q` | `XLOPER12 *` | Pointer to XLOPER12. Dereferences references (Pass by Value). |
 | **Any (Ref)** | `U` | `XLOPER12 *` | Pointer to XLOPER12. Allows references (Range). |
@@ -255,7 +255,7 @@ Proper memory management is critical to prevent Excel crashes.
     -   Set `xltype` to `type | xlbitDLLFree`.
     -   Implement the `xlAutoFree12` callback.
     -   Use the provided `xll_mem` library helpers (`NewExcelString`, `NewXLOPER12`) which use a thread-safe object pool and `xlAutoFree12` implementation.
-3.  **Pascal Strings**: We use `D%` for string inputs (counted wide string). For returns, we use `Q` (XLOPER12) wrapping a counted wide string with `xlbitDLLFree`.
+3.  **Strings**: We use `Q` for string inputs (XLOPER12) to ensure safety. For returns, we use `Q` (XLOPER12) wrapping a counted wide string with `xlbitDLLFree`.
 
 
 ### 8.3 Error Codes (`xlCVError`)
