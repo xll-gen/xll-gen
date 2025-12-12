@@ -39,10 +39,6 @@ if(NOT TARGET shm)
   target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
 endif()
 
-if(XLL_DEBUG)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE SHM_DEBUG)
-endif()
-
 {{ if eq .Build.Singlefile "xll" }}
 # ==============================================================================
 # Embedding Executable in XLL (exe_in_xll mode / singlefile: xll)
@@ -130,6 +126,15 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE libzstd_static)
 target_include_directories(${PROJECT_NAME} PRIVATE ${zstd_SOURCE_DIR}/lib)
 {{ end }}
+
+if(XLL_DEBUG)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE SHM_DEBUG)
+endif()
+
+if(WIN32)
+  # Prevent collision between shm/Logger.h (LogLevel::ERROR) and windows.h (ERROR macro)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE NOGDI)
+endif()
 
 if(NOT MSVC)
   target_compile_options(${PROJECT_NAME} PRIVATE
