@@ -95,19 +95,19 @@ func TestGenerate_Fixes(t *testing.T) {
 	// If I change 127 to return 1, I should verify that.
 
 	// Fix 2: String Corruption
-	// Argument 'ticker' in GetPrice is string.
-	// Previously it was generated as `const XLL_PASCAL_STRING* ticker`.
-	// We want `LPXLOPER12 ticker`.
+	// Argument 'name' in Greet is string.
+	// Previously it was generated as `const XLL_PASCAL_STRING* name`.
+	// We want `LPXLOPER12 name`.
 	// And we want `ConvertExcelString` usage to handle `xltypeStr`.
-	if strings.Contains(sContent, "const XLL_PASCAL_STRING* ticker") {
-		t.Errorf("String argument 'ticker' should be LPXLOPER12 to avoid corruption, found const XLL_PASCAL_STRING*")
+	if strings.Contains(sContent, "const XLL_PASCAL_STRING* name") {
+		t.Errorf("String argument 'name' should be LPXLOPER12 to avoid corruption, found const XLL_PASCAL_STRING*")
 	}
-	if !strings.Contains(sContent, "LPXLOPER12 ticker") {
-		t.Errorf("String argument 'ticker' should be LPXLOPER12")
+	if !strings.Contains(sContent, "LPXLOPER12 name") {
+		t.Errorf("String argument 'name' should be LPXLOPER12")
 	}
 
 	// Check for usage of xltypeStr
-	if !strings.Contains(sContent, "if (ticker->xltype == xltypeStr)") && !strings.Contains(sContent, "xltypeStr") {
+	if !strings.Contains(sContent, "if (name->xltype == xltypeStr)") && !strings.Contains(sContent, "xltypeStr") {
 		// This check is tricky because template generation might vary.
 		// But checking for LPXLOPER12 is the main structural change.
 	}
