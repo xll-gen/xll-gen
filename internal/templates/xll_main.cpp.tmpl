@@ -244,8 +244,8 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{end}}
 
     // Reserve slots for nested IPC calls (recursion depth 1 requires 2x slots).
-    // Allocating workers * 2 + 16 provides a safe margin.
-    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers * 2 + 16)) {
+    // Allocating workers * 2 + 2 provides a sufficient margin.
+    if (!g_host.Init(shmName.c_str(), 1024, 1024*1024, workers * 2 + 2)) {
         LogError("Failed to initialize Shared Memory with name: " + shmName);
         return 0;
     }
