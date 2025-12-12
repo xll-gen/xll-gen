@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"github.com/xll-gen/xll-gen/internal/regtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"github.com/xll-gen/xll-gen/internal/regtest"
 )
 
 // TestRegression runs an end-to-end regression test.

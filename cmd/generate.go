@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/generator"
+	"gopkg.in/yaml.v3"
 )
 
 // disablePidSuffix controls whether the PID is appended to the shared memory name.
