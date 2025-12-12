@@ -285,7 +285,9 @@ Starting with Excel 2010, `xlEventRegister` allows XLLs to register for specific
 
 **Supported Events:**
 *   `CalculationEnded` (Code 1): Raised when Excel completes a calculation cycle. Useful for freeing resources allocated during async calculations.
-*   `CalculationCanceled` (Code 2): Raised when the user interrupts the calculation (e.g., via ESC). The XLL should abort pending async activities.
+*   `CalculationCanceled` (Code 2): Raised when the user interrupts the calculation (e.g., via ESC). The XLL should abort pending async activities. **Immediately following this event, the `CalculationEnded` event is raised.**
+
+**Note**: `CalculationEnded` and `CalculationCanceled` are **not** raised during programmatic recalculation.
 
 **Configuration (`xll.yaml`):**
 ```yaml
