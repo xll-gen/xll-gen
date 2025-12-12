@@ -19,6 +19,10 @@
 #include "include/xll_utility.h"
 #include "include/xll_ipc.h"
 #include "include/xll_converters.h"
+#include "include/xll_log.h"
+#include "include/xll_commands.h"
+#include "include/xll_async.h"
+#include "include/SHMAllocator.h"
 #include "include/PascalString.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
@@ -38,46 +42,6 @@ HINSTANCE g_hModule = NULL;
 
 // Global Error Value for Returns
 static XLOPER12 g_xlErrValue;
-
-// Logging
-static std::string g_logPath;
-
-void LogError(const std::string& msg) {
-    if (g_logPath.empty()) return;
-    std::ofstream logFile(g_logPath, std::ios_base::app);
-    if (logFile.is_open()) {
-        auto now = std::chrono::system_clock::now();
-        auto in_time_t = std::chrono::system_clock::to_time_t(now);
-        struct tm buf;
-        localtime_s(&buf, &in_time_t);
-        char timeStr[32];
-        std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &buf);
-
-        logFile << "[" << timeStr << "] [ERROR] " << msg << std::endl;
-    }
-}
-
-// Custom Allocator for FlatBuffers to use Shared Memory
-class SHMAllocator : public flatbuffers::Allocator {
-private:
-    uint8_t* buffer_;
-    size_t size_;
-
-public:
-    SHMAllocator(uint8_t* buffer, size_t size)
-        : buffer_(buffer), size_(size) {}
-
-    uint8_t* allocate(size_t size) override {
-        if (size > size_) {
-            return nullptr;
-        }
-        return buffer_;
-    }
-
-    void deallocate(uint8_t* p, size_t size) override {
-        // Shared Memory, do nothing
-    }
-};
 
 // Helper for creating string XLOPER12 without pool (for batching)
 // We cannot use the global ObjectPool because xlAsyncReturn with xltypeMulti
@@ -118,73 +82,6 @@ static void LogHandler(shm::LogLevel level, const std::string& msg) {
 }
 #endif
 
-bool IsSingleCell(LPXLOPER12 xRef) {
-    if (!xRef) return false;
-    int type = xRef->xltype & ~(xlbitXLFree | xlbitDLLFree);
-    if (type == xltypeSRef) {
-         const auto& r = xRef->val.sref.ref;
-         return (r.rwFirst == r.rwLast && r.colFirst == r.colLast);
-    } else if (type == xltypeRef) {
-         const auto* m = xRef->val.mref.lpmref;
-         if (m && m->count == 1) {
-             const auto& r = m->reftbl[0];
-             return (r.rwFirst == r.rwLast && r.colFirst == r.colLast);
-         }
-    }
-    return false;
-}
-
-void ExecuteCommands(const ipc::CalculationEndedResponse* resp) {
-    if (!resp || !resp->commands()) return;
-    auto wrappers = resp->commands();
-    for (auto it = wrappers->begin(); it != wrappers->end(); ++it) {
-        if (it->cmd_type() == ipc::Command_SetCommand) {
-            auto cmd = static_cast<const ipc::SetCommand*>(it->cmd());
-            LPXLOPER12 xRef = RangeToXLOPER12(cmd->target());
-            LPXLOPER12 xVal = AnyToXLOPER12(cmd->value());
-            if (xRef && xVal) {
-                Excel12(xlSet, 0, 2, xRef, xVal);
-            }
-            if (xRef) xlAutoFree12(xRef);
-            if (xVal) xlAutoFree12(xVal);
-        } else if (it->cmd_type() == ipc::Command_FormatCommand) {
-            auto cmd = static_cast<const ipc::FormatCommand*>(it->cmd());
-            LPXLOPER12 xRef = RangeToXLOPER12(cmd->target());
-            if (xRef) {
-                bool doFormat = true;
-                std::string fmt = cmd->format()->str();
-                std::wstring wfmt = StringToWString(fmt);
-
-                if (IsSingleCell(xRef)) {
-                    XLOPER12 xFmt;
-                    if (Excel12(xlfGetCell, &xFmt, 2, TempInt12(7), xRef) == xlretSuccess) {
-                        if (xFmt.xltype == xltypeStr && xFmt.val.str) {
-                            size_t len = (size_t)xFmt.val.str[0];
-                            if (len == wfmt.length()) {
-                                if (wcsncmp(xFmt.val.str + 1, wfmt.c_str(), len) == 0) {
-                                    doFormat = false;
-                                }
-                            }
-                        }
-                        Excel12(xlFree, 0, 1, &xFmt);
-                    }
-                }
-
-                if (doFormat) {
-                    XLOPER12 xOldSel;
-                    if (Excel12(xlfSelection, &xOldSel, 0) == xlretSuccess) {
-                        Excel12(xlcSelect, 0, 1, xRef);
-                        Excel12(xlcFormatNumber, 0, 1, TempStr12(wfmt.c_str()));
-                        Excel12(xlcSelect, 0, 1, &xOldSel);
-                        Excel12(xlFree, 0, 1, &xOldSel);
-                    }
-                }
-                xlAutoFree12(xRef);
-            }
-        }
-    }
-}
-
 // Helper to replace all occurrences of a substring
 void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring& to) {
     if(from.empty()) return;
@@ -205,24 +102,16 @@ extern "C" {
 __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{if .Logging.Path}}
     // Setup Native Logging
-    std::wstring xllDir = GetXllDir();
-    std::wstring logDir = xllDir;
+    std::string tempPattern = "";
+    std::string projName = "{{.ProjectName}}";
+    bool isSingleFile = false;
 
     {{if eq .Build.Singlefile "xll"}}
-    // In singlefile mode, we want logs in the temp directory
-    std::string tempPattern = "{{.Build.TempDir}}";
-    std::string projName = "{{.ProjectName}}";
-    std::string expandedTemp = embed::ExpandEnvVars(tempPattern);
-    if (!expandedTemp.empty()) {
-        std::string targetDir = expandedTemp + "\\" + projName;
-        // Ensure dir exists
-        CreateDirectoryA(targetDir.c_str(), NULL);
-        logDir = StringToWString(targetDir);
-    }
+    isSingleFile = true;
+    tempPattern = "{{.Build.TempDir}}";
     {{end}}
 
-    std::wstring wLogName = StringToWString("{{fileBase .Logging.Path}}_native{{fileExt .Logging.Path}}");
-    g_logPath = WideToUtf8(logDir + L"\\" + wLogName);
+    InitLog(L"{{.Logging.Path}}", tempPattern, projName, isSingleFile);
     {{end}}
 
 #ifdef SHM_DEBUG
@@ -267,83 +156,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
              try {
                  switch (msgId) {
                  case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
-                     handles.clear();
-                     values.clear();
-
-                     auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
-                     if (batch->results()) {
-                         for (auto res : *batch->results()) {
-                             XLOPER12 h;
-                             h.xltype = xltypeBigData | xlbitXLFree;
-                             LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
-                             if (originalHandle) {
-                                 h = *originalHandle; // Copy the struct content
-
-                                 XLOPER12 val;
-                                 std::memset(&val, 0, sizeof(XLOPER12));
-
-                                 if (res->error() && res->error()->size() > 0) {
-                                     val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                 } else {
-                                     // result() is now ipc::types::Any* (Table)
-                                     auto* anyPtr = res->result();
-                                     LPXLOPER12 pVal = AnyToXLOPER12(anyPtr);
-                                     if (pVal) {
-                                         val = *pVal;
-                                         // If pVal was allocated by NewXLOPER12 (xlbitDLLFree), we must eventually free it.
-                                         // But here we copy the struct into 'val' (in our vector).
-                                         // If pVal has xlbitDLLFree, 'val' inherits it.
-                                         // We need to delete pVal itself (the container) but keep the content.
-                                         // AnyToXLOPER12 returns a new allocation (NewXLOPER12).
-                                         // We just took the content. We should delete the pVal container.
-                                         delete pVal;
-                                         // Note: We don't call xlAutoFree12(pVal) because that would free the content (str/array)
-                                         // which we now own in 'val'.
-                                     } else {
-                                         val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                     }
-                                 }
-                                 handles.push_back(h);
-                                 values.push_back(val);
-                             }
-                         }
-                     }
-
-                     if (!handles.empty()) {
-                         if (handles.size() == 1) {
-                             Excel12(xlAsyncReturn, 0, 2, &handles[0], &values[0]);
-                         } else {
-                             int N = (int)handles.size();
-
-                             XLOPER12 arrH, arrV;
-                             arrH.xltype = xltypeMulti; arrH.val.array.rows = 1; arrH.val.array.columns = N; arrH.val.array.lparray = handles.data();
-                             arrV.xltype = xltypeMulti; arrV.val.array.rows = 1; arrV.val.array.columns = N; arrV.val.array.lparray = values.data();
-
-                             Excel12(xlAsyncReturn, 0, 2, &arrH, &arrV);
-                         }
-
-                         // Cleanup allocated strings and arrays
-                         for(auto& v : values) {
-                             if (v.xltype & xltypeStr) {
-                                 if (v.val.str) {
-                                     delete[] v.val.str;
-                                     v.val.str = nullptr;
-                                 }
-                             } else if (v.xltype & xltypeMulti) {
-                                 if (v.val.array.lparray) {
-                                     int count = v.val.array.rows * v.val.array.columns;
-                                     for(int i=0; i<count; ++i) {
-                                         if ((v.val.array.lparray[i].xltype & xltypeStr) && v.val.array.lparray[i].val.str) {
-                                             delete[] v.val.array.lparray[i].val.str;
-                                         }
-                                     }
-                                     delete[] v.val.array.lparray;
-                                     v.val.array.lparray = nullptr;
-                                 }
-                             }
-                         }
-                     }
-                     return 1;
+                     return ProcessAsyncBatchResponse(req, handles, values);
                  }
                  default:
                      return 0;
