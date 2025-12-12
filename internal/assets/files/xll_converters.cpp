@@ -309,19 +309,19 @@ LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
     switch (any->val_type()) {
     case ipc::types::AnyValue_Num: {
         LPXLOPER12 x = NewXLOPER12();
-        x->xltype = xltypeNum;
+        x->xltype = xltypeNum | xlbitDLLFree;
         x->val.num = any->val_as_Num()->val();
         return x;
     }
     case ipc::types::AnyValue_Int: {
         LPXLOPER12 x = NewXLOPER12();
-        x->xltype = xltypeInt;
+        x->xltype = xltypeInt | xlbitDLLFree;
         x->val.w = any->val_as_Int()->val();
         return x;
     }
     case ipc::types::AnyValue_Bool: {
         LPXLOPER12 x = NewXLOPER12();
-        x->xltype = xltypeBool;
+        x->xltype = xltypeBool | xlbitDLLFree;
         x->val.xbool = any->val_as_Bool()->val() ? 1 : 0;
         return x;
     }
@@ -331,9 +331,12 @@ LPXLOPER12 AnyToXLOPER12(const ipc::types::Any* any) {
     }
     case ipc::types::AnyValue_Err: {
         LPXLOPER12 x = NewXLOPER12();
-        x->xltype = xltypeErr;
+        x->xltype = xltypeErr | xlbitDLLFree;
         x->val.err = (int)any->val_as_Err()->val();
         return x;
+    }
+    case ipc::types::AnyValue_Range: {
+        return RangeToXLOPER12(any->val_as_Range());
     }
     case ipc::types::AnyValue_NumGrid: {
         auto g = any->val_as_NumGrid();
@@ -399,7 +402,7 @@ LPXLOPER12 RangeToXLOPER12(const ipc::types::Range* range) {
 
     if (!hasSheet) {
         if (refs->size() == 1) {
-            x->xltype = xltypeSRef;
+            x->xltype = xltypeSRef | xlbitDLLFree;
             const auto& r = refs->Get(0);
             x->val.sref.count = 1;
             x->val.sref.ref.rwFirst = r->row_first();

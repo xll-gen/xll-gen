@@ -90,6 +90,12 @@ extern "C" void __stdcall xlAutoFree12(LPXLOPER12 p) {
              delete[] p->val.array.lparray;
          }
     }
+    else if (p->xltype & xltypeRef) {
+        if (p->val.mref.lpmref) {
+            delete[] (char*)p->val.mref.lpmref;
+            p->val.mref.lpmref = nullptr;
+        }
+    }
 
     // Finally, release the XLOPER12 struct itself back to the pool
     xloperPool.Release(p);
