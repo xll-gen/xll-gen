@@ -387,7 +387,6 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
             TempStr12(L"{{.HelpTopic}}"),
             TempStr12(L"{{.Description}}"){{if .Args}},{{end}}
             {{range $j, $arg := .Args}}TempStr12(L"{{$arg.Description}}"){{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}
-            {{if .Async}}{{if .Args}},{{end}}TempStr12(L"Async Handle"){{end}}
         );
     }
 {{end}}

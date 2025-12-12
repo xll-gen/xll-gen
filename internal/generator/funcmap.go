@@ -90,10 +90,9 @@ func GetCommonFuncMap() template.FuncMap {
 
 		// Config Helpers
 		"registerCount": func(f config.Function) int {
+			// Async functions have an implicit handle argument, but we do not register a help string for it
+			// because Excel hides it. Therefore, we do not increment the count for Async functions.
 			c := 10 + len(f.Args)
-			if f.Async {
-				c++
-			}
 			return c
 		},
 		"joinArgNames": func(f config.Function) string {
@@ -101,9 +100,7 @@ func GetCommonFuncMap() template.FuncMap {
 			for _, a := range f.Args {
 				names = append(names, a.Name)
 			}
-			if f.Async {
-				names = append(names, "asyncHandle")
-			}
+			// Do not append "asyncHandle" to argument text, as it is implicit/hidden in Excel.
 			return strings.Join(names, ",")
 		},
 		"parseTimeout": func(s string, defaultMs int) int {
