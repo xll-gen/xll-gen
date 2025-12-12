@@ -13,7 +13,7 @@ func (s *MyService) Add(ctx context.Context, a int32, b int32) (int32, error) {
 	return a + b, nil
 }
 
-func (s *MyService) GetPrice(ctx context.Context, ticker string) (float64, error) {
+func (s *MyService) GetPrice(ctx context.Context) (float64, error) {
 	// Simulate async work
 	select {
 	case <-time.After(100 * time.Millisecond):

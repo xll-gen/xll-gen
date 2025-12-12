@@ -807,7 +807,20 @@ func Serve(handler XllService) {
                 default:
                     log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
                 }
-                return 0, 0
+
+                builder.Reset()
+                ipc.AckStart(builder)
+                ipc.AckAddOk(builder, true)
+                root := ipc.AckEnd(builder)
+                builder.Finish(root)
+
+                payload := builder.FinishedBytes()
+                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
+                    return -int32(len(payload)), MSG_ACK
+                }
+                if len(payload) > len(respBuf) { return 0, 0 }
+                copy(respBuf, payload)
+                return int32(len(payload)), MSG_ACK
                 {{else}}
                 defer cancel()
                 len, respId := handle{{.Name}}(ctx, data, respBuf, handler, builder, client, mType, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
