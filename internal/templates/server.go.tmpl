@@ -12,10 +12,10 @@ import (
 	"time"
 	"runtime"
 	"runtime/debug"
-	"sort"
 	"{{.ModName}}/generated/ipc"
 	"{{.ModName}}/generated/ipc/types"
 	"github.com/xll-gen/xll-gen/pkg/log"
+	"github.com/xll-gen/xll-gen/pkg/algo"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -87,16 +87,6 @@ var (
 	}
 )
 
-// Optimization Structures
-type Cell struct {
-	Row int32
-	Col int32
-}
-
-type mergedRect struct {
-	r1, r2, c1, c2 int32
-}
-
 type ScalarValue struct {
 	Type types.AnyValue
 	Num  float64
@@ -107,8 +97,8 @@ type ScalarValue struct {
 }
 
 var (
-	bufferedSets      = make(map[string]map[Cell]ScalarValue)
-	bufferedFormats   = make(map[string]map[Cell]string)
+	bufferedSets      = make(map[string]map[algo.Cell]ScalarValue)
+	bufferedFormats   = make(map[string]map[algo.Cell]string)
 	bufferLock        sync.Mutex
 )
 
@@ -118,7 +108,7 @@ func ScheduleSet(r *types.Range, v *types.Any) {
 		sheet := string(r.SheetName())
 		bufferLock.Lock()
 		if bufferedSets[sheet] == nil {
-			bufferedSets[sheet] = make(map[Cell]ScalarValue)
+			bufferedSets[sheet] = make(map[algo.Cell]ScalarValue)
 		}
 
 		l := r.RefsLength()
@@ -127,7 +117,7 @@ func ScheduleSet(r *types.Range, v *types.Any) {
 			if r.Refs(&rect, i) {
 				for row := rect.RowFirst(); row <= rect.RowLast(); row++ {
 					for col := rect.ColFirst(); col <= rect.ColLast(); col++ {
-						bufferedSets[sheet][Cell{row, col}] = scalar
+						bufferedSets[sheet][algo.Cell{Row: row, Col: col}] = scalar
 					}
 				}
 			}
@@ -157,7 +147,7 @@ func ScheduleFormat(r *types.Range, fmtStr string) {
 	sheet := string(r.SheetName())
 	bufferLock.Lock()
 	if bufferedFormats[sheet] == nil {
-		bufferedFormats[sheet] = make(map[Cell]string)
+		bufferedFormats[sheet] = make(map[algo.Cell]string)
 	}
 
 	l := r.RefsLength()
@@ -166,7 +156,7 @@ func ScheduleFormat(r *types.Range, fmtStr string) {
 		if r.Refs(&rect, i) {
 			for row := rect.RowFirst(); row <= rect.RowLast(); row++ {
 				for col := rect.ColFirst(); col <= rect.ColLast(); col++ {
-					bufferedFormats[sheet][Cell{row, col}] = fmtStr
+					bufferedFormats[sheet][algo.Cell{Row: row, Col: col}] = fmtStr
 				}
 			}
 		}
@@ -180,13 +170,13 @@ func flushBuffers() {
 
 	// Process Sets
 	for sheet, cells := range bufferedSets {
-		byVal := make(map[ScalarValue][]Cell)
+		byVal := make(map[ScalarValue][]algo.Cell)
 		for cell, val := range cells {
 			byVal[val] = append(byVal[val], cell)
 		}
 
 		for val, cellList := range byVal {
-			rects := greedyMesh(cellList)
+			rects := algo.GreedyMesh(cellList)
 
 			// Chunk by 32
 			for i := 0; i < len(rects); i += 32 {
@@ -199,7 +189,7 @@ func flushBuffers() {
 
 				types.RangeStartRefsVector(b, len(batch))
 				for j := len(batch) - 1; j >= 0; j-- {
-					types.CreateRect(b, batch[j].r1, batch[j].r2, batch[j].c1, batch[j].c2)
+					types.CreateRect(b, batch[j].RowFirst, batch[j].RowLast, batch[j].ColFirst, batch[j].ColLast)
 				}
 				refsOff := b.EndVector(len(batch))
 
@@ -226,13 +216,13 @@ func flushBuffers() {
 
 	// Process Formats
 	for sheet, cells := range bufferedFormats {
-		byFmt := make(map[string][]Cell)
+		byFmt := make(map[string][]algo.Cell)
 		for cell, fmt := range cells {
 			byFmt[fmt] = append(byFmt[fmt], cell)
 		}
 
 		for fmt, cellList := range byFmt {
-			rects := greedyMesh(cellList)
+			rects := algo.GreedyMesh(cellList)
 
 			for i := 0; i < len(rects); i += 32 {
 				end := i + 32
@@ -244,7 +234,7 @@ func flushBuffers() {
 
 				types.RangeStartRefsVector(b, len(batch))
 				for j := len(batch) - 1; j >= 0; j-- {
-					types.CreateRect(b, batch[j].r1, batch[j].r2, batch[j].c1, batch[j].c2)
+					types.CreateRect(b, batch[j].RowFirst, batch[j].RowLast, batch[j].ColFirst, batch[j].ColLast)
 				}
 				refsOff := b.EndVector(len(batch))
 
@@ -268,68 +258,6 @@ func flushBuffers() {
 		}
 		delete(bufferedFormats, sheet)
 	}
-}
-
-func greedyMesh(cells []Cell) []mergedRect {
-	if len(cells) == 0 { return nil }
-
-	sort.Slice(cells, func(i, j int) bool {
-		if cells[i].Row != cells[j].Row {
-			return cells[i].Row < cells[j].Row
-		}
-		return cells[i].Col < cells[j].Col
-	})
-
-	grid := make(map[Cell]bool, len(cells))
-	for _, c := range cells {
-		grid[c] = true
-	}
-
-	var rects []mergedRect
-	visited := make(map[Cell]bool, len(cells))
-
-	for _, c := range cells {
-		if visited[c] { continue }
-
-		rFirst, cFirst := c.Row, c.Col
-		rLast, cLast := rFirst, cFirst
-
-		// Expand Width
-		for {
-			nextCol := cLast + 1
-			if grid[Cell{rFirst, nextCol}] && !visited[Cell{rFirst, nextCol}] {
-				cLast = nextCol
-			} else {
-				break
-			}
-		}
-
-		// Expand Height
-		for {
-			nextRow := rLast + 1
-			canExpand := true
-			for col := cFirst; col <= cLast; col++ {
-				if !grid[Cell{nextRow, col}] || visited[Cell{nextRow, col}] {
-					canExpand = false
-					break
-				}
-			}
-			if canExpand {
-				rLast = nextRow
-			} else {
-				break
-			}
-		}
-
-		for r := rFirst; r <= rLast; r++ {
-			for c := cFirst; c <= cLast; c++ {
-				visited[Cell{r, c}] = true
-			}
-		}
-
-		rects = append(rects, mergedRect{rFirst, rLast, cFirst, cLast})
-	}
-	return rects
 }
 
 func toScalar(v *types.Any) (ScalarValue, bool) {
@@ -642,8 +570,8 @@ func Serve(handler XllService) {
                 cmdQueue = nil
                 cmdQueueLock.Unlock()
                 bufferLock.Lock()
-                bufferedSets = make(map[string]map[Cell]ScalarValue)
-                bufferedFormats = make(map[string]map[Cell]string)
+                bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
+                bufferedFormats = make(map[string]map[algo.Cell]string)
                 bufferLock.Unlock()
 
                 {{if hasEvent "CalculationCanceled" .Events}}
