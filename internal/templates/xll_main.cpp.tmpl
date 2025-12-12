@@ -24,6 +24,8 @@
 #include "include/xll_async.h"
 #include "include/SHMAllocator.h"
 #include "include/PascalString.h"
+#include "include/xll_launch.h"
+#include "include/xll_worker.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -35,10 +37,8 @@ std::thread g_worker;
 std::thread g_monitor;
 std::atomic<bool> g_running{false};
 
-// Global Process Handle (for auto-launched server)
-HANDLE g_hChildProcess = NULL;
-HANDLE g_hJob = NULL;
-HANDLE g_hShutdownEvent = NULL;
+// Global Process Info
+xll::ProcessInfo g_procInfo = {NULL, NULL, NULL};
 HINSTANCE g_hModule = NULL;
 
 // Global Error Value for Returns
@@ -133,7 +133,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::string shmName = "{{.ProjectName}}";
     {{end}}
 
-    g_hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    g_procInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     // Configure SHM
     shm::HostConfig config;
@@ -149,64 +149,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     g_running = true;
     g_worker = std::thread([]{
-        // Reusable vectors for batch processing
-        std::vector<XLOPER12> handles;
-        std::vector<XLOPER12> values;
-        handles.reserve(256);
-        values.reserve(256);
-
-        g_host.Start([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
-             static std::map<uint64_t, std::vector<uint8_t>> chunkBuffers;
-             static std::map<uint64_t, size_t> chunkSizes;
-
-             try {
-                 switch (msgId) {
-                 case (shm::MsgType)129: { // MSG_CHUNK
-                     auto chunk = flatbuffers::GetRoot<ipc::Chunk>(req);
-                     uint64_t id = chunk->id();
-
-                     std::vector<uint8_t>& buf = chunkBuffers[id];
-                     if (buf.empty()) {
-                         buf.resize(chunk->total_size());
-                         chunkSizes[id] = 0;
-                     }
-
-                     auto data = chunk->data();
-                     if (data) {
-                         size_t offset = chunk->offset();
-                         size_t len = data->size();
-                         if (offset + len <= buf.size()) {
-                             std::memcpy(buf.data() + offset, data->data(), len);
-                             chunkSizes[id] += len;
-                         }
-                     }
-
-                     if (chunkSizes[id] >= buf.size()) {
-                         shm::MsgType payloadType = (shm::MsgType)chunk->msg_type();
-                         int32_t ret = 0;
-                         if (payloadType == (shm::MsgType)128) {
-                             ret = ProcessAsyncBatchResponse(buf.data(), handles, values);
-                         }
-                         chunkBuffers.erase(id);
-                         chunkSizes.erase(id);
-                         return ret;
-                     }
-                     return 1; // ACK
-                 }
-                 case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
-                     return ProcessAsyncBatchResponse(req, handles, values);
-                 }
-                 default:
-                     return 0;
-                 }
-             } catch (const std::exception& e) {
-                 LogError("Exception in guest call handler: " + std::string(e.what()));
-                 return 0;
-             } catch (...) {
-                 LogError("Unknown exception in guest call handler");
-                 return 0;
-             }
-        });
+        xll::StartWorker(g_host);
     });
 
     static XLOPER12 xDll;
@@ -246,14 +189,6 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 {{if derefBool .Server.Launch.Enabled}}
     // Launch Logic
     {
-        // Create Job Object to ensure child process termination on exit
-        g_hJob = CreateJobObject(NULL, NULL);
-        if (g_hJob) {
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = { 0 };
-            jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(g_hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
-        }
-
         std::wstring xllDir = GetXllDir();
 
         // Resolve CWD
@@ -348,9 +283,6 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 } else {
 {{end}}
                 // Legacy/Standard relative path resolution
-                // If the user provided a specific path without ${BIN}
-                // We keep the existing logic that checks for absolute paths or prepends cwd/xllDir
-
                 bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
                 if (isCmdAbs) {
                     exePath = wCmd;
@@ -368,8 +300,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         }
         {{end}}
 
-        // Append SHM Flag (Quote the executable path to handle spaces)
-        // If the path already starts with a quote (e.g. user provided "${BIN}" or "path"), assume it's a full command line and don't add outer quotes.
+        // Append SHM Flag
         std::wstring cmd;
         if (!exePath.empty() && exePath[0] == L'"') {
             cmd = exePath + L" -xll-shm=" + StringToWString(shmName);
@@ -377,101 +308,19 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
             cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);
         }
 
-        // Setup Log File
         std::wstring logPath = cwd + L"\\xll_launch.log";
-        SECURITY_ATTRIBUTES sa;
-        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-        sa.bInheritHandle = TRUE;
-        sa.lpSecurityDescriptor = NULL;
 
-        HANDLE hLog = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-        if (hLog != INVALID_HANDLE_VALUE) {
-            STARTUPINFOW si;
-            ZeroMemory(&si, sizeof(si));
-            si.cb = sizeof(si);
-            si.dwFlags |= STARTF_USESTDHANDLES;
-            si.hStdOutput = hLog;
-            si.hStdError = hLog;
-            si.hStdInput = NULL;
-
-            PROCESS_INFORMATION pi;
-            ZeroMemory(&pi, sizeof(pi));
-
-            // Need mutable string for CreateProcess
-            std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
-            cmdBuf.push_back(0);
-
-            if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, 0, NULL, cwd.c_str(), &si, &pi)) {
-                g_hChildProcess = pi.hProcess;
-                CloseHandle(pi.hThread);
-                if (g_hJob) {
-                    AssignProcessToJobObject(g_hJob, g_hChildProcess);
-                }
-
-                // Monitor Thread
-                g_monitor = std::thread([logPath]{
-                    HANDLE handles[2] = { g_hChildProcess, g_hShutdownEvent };
-                    DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
-
-                    if (res == WAIT_OBJECT_0) {
-                        // Check if shutdown was requested concurrently
-                        if (WaitForSingleObject(g_hShutdownEvent, 0) == WAIT_TIMEOUT) {
-                            if (g_running) {
-                                DWORD exitCode = 0;
-                                GetExitCodeProcess(g_hChildProcess, &exitCode);
-
-                                std::wstringstream ss;
-                                ss << L"The Go server process has terminated unexpectedly (Exit Code: " << exitCode << L").\n";
-                                ss << L"The Add-in will no longer function correctly.\n\n";
-                                ss << L"Last log entries:\n";
-
-                                HANDLE hRead = CreateFileW(logPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-                                if (hRead != INVALID_HANDLE_VALUE) {
-                                    LARGE_INTEGER size;
-                                    if (GetFileSizeEx(hRead, &size)) {
-                                        long long length = size.QuadPart;
-                                        long long start = 0;
-                                        if (length > 1024) start = length - 1024;
-
-                                        LARGE_INTEGER move;
-                                        move.QuadPart = start;
-                                        SetFilePointerEx(hRead, move, NULL, FILE_BEGIN);
-
-                                        std::vector<char> buffer((size_t)(length - start));
-                                        DWORD bytesRead = 0;
-                                        if (ReadFile(hRead, buffer.data(), (DWORD)buffer.size(), &bytesRead, NULL)) {
-                                            std::string s(buffer.data(), bytesRead);
-                                            ss << StringToWString(s);
-                                        }
-                                    }
-                                    CloseHandle(hRead);
-                                } else {
-                                    ss << L"(Unable to read log file)";
-                                }
-
-                                MessageBoxW(NULL, ss.str().c_str(), L"Server Crash", MB_OK | MB_ICONERROR);
-                            }
-                        }
-                    }
-                });
-            } else {
-                // Process creation failed
-                std::wstring msg = L"Failed to launch Go server.\nCommand: " + cmd;
-                LogError(WideToUtf8(msg));
-                MessageBoxW(NULL, msg.c_str(), L"Launch Error", MB_OK | MB_ICONERROR);
-                if (g_hJob) { CloseHandle(g_hJob); g_hJob = NULL; }
-
-                // Cleanup to allow safe unload
-                g_running = false;
-                if (g_worker.joinable()) g_worker.join();
-                g_host.Shutdown();
-
-                Excel12(xlFree, 0, 1, &xDll);
-                return 0;
-            }
-
-            CloseHandle(hLog);
+        if (xll::LaunchProcess(cmd, cwd, logPath, g_procInfo)) {
+            g_monitor = std::thread([logPath]{
+                xll::MonitorProcess(g_procInfo, logPath);
+            });
+        } else {
+            // Launch failed. Cleanup.
+            g_running = false;
+            if (g_worker.joinable()) g_worker.join();
+            g_host.Shutdown();
+            Excel12(xlFree, 0, 1, &xDll);
+            return 0;
         }
     }
 {{end}}
@@ -482,30 +331,29 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 }
 
 __declspec(dllexport) int __stdcall xlAutoClose() {
-    if (g_hShutdownEvent) SetEvent(g_hShutdownEvent);
+    if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
     g_running = false;
     if (g_worker.joinable()) g_worker.join();
     g_host.Shutdown();
 
-    if (g_hChildProcess) {
-        TerminateProcess(g_hChildProcess, 0);
-        // This will signal the monitor thread to wake up
+    if (g_procInfo.hProcess) {
+        TerminateProcess(g_procInfo.hProcess, 0);
     }
 
     if (g_monitor.joinable()) g_monitor.join();
 
-    if (g_hChildProcess) {
-        CloseHandle(g_hChildProcess);
-        g_hChildProcess = NULL;
+    if (g_procInfo.hProcess) {
+        CloseHandle(g_procInfo.hProcess);
+        g_procInfo.hProcess = NULL;
     }
-    if (g_hJob) {
-        CloseHandle(g_hJob);
-        g_hJob = NULL;
+    if (g_procInfo.hJob) {
+        CloseHandle(g_procInfo.hJob);
+        g_procInfo.hJob = NULL;
     }
-    if (g_hShutdownEvent) {
-        CloseHandle(g_hShutdownEvent);
-        g_hShutdownEvent = NULL;
+    if (g_procInfo.hShutdownEvent) {
+        CloseHandle(g_procInfo.hShutdownEvent);
+        g_procInfo.hShutdownEvent = NULL;
     }
     return 1;
 }

@@ -72,17 +72,23 @@ func TestGenerate_Fixes(t *testing.T) {
 	}
 	sContent := string(content)
 
+	// 4b. Verify xll_worker.cpp content (Async Handler moved here)
+	workerContent, err := os.ReadFile("generated/cpp/include/xll_worker.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sWorkerContent := string(workerContent)
+
 	// Fix 1: Infinite Loop in C++ Async Handler
-	// Search for case 128 returning 1
-	if !strings.Contains(sContent, "case (shm::MsgType)128:") {
-		t.Errorf("xll_main.cpp should handle MSG_BATCH_ASYNC_RESPONSE (128)")
+	// Search for case 128 returning 1 in xll_worker.cpp
+	if !strings.Contains(sWorkerContent, "case (shm::MsgType)128:") {
+		t.Errorf("xll_worker.cpp should handle MSG_BATCH_ASYNC_RESPONSE (128)")
 	}
 	// We want to ensure it returns 1, not 0.
-	// We verify that return 1 appears in the file (it didn't before for handlers).
-	if !strings.Contains(sContent, "return 1;") {
-		t.Errorf("xll_main.cpp should return 1 to acknowledge async batch processing")
-	}
 	// We want to ensure it returns 1, not 0.
+	if !strings.Contains(sWorkerContent, "return 1;") {
+		t.Errorf("xll_worker.cpp should return 1 to acknowledge async batch processing")
+	}
 	// This is a bit loose with string search, but sufficient.
 	// We look for the block end.
 	// Ideally we want to see "return 1;" inside the 127 block.

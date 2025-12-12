@@ -16,6 +16,7 @@ import (
 	"{{.ModName}}/generated/ipc/types"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/algo"
+	"github.com/xll-gen/xll-gen/pkg/server"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
@@ -24,53 +25,14 @@ import (
 var _ = time.Now
 var _ = types.Bool{}
 
-const (
-	MSG_ACK                  = 2
-	MSG_BATCH_ASYNC_RESPONSE = 128
-	MSG_CHUNK                = 129
-	MSG_SETREFCACHE          = 130
-	MSG_CALCULATION_ENDED    = 131
-	MSG_CALCULATION_CANCELED = 132
-	MSG_USER_START           = 133
-)
-
-type chunkBuffer struct {
-	data       []byte
-	totalSize  int
-	received   int
-	mutex      sync.Mutex
-	lastAccess time.Time
-}
-
-type outgoingChunk struct {
-	data       []byte
-	offset     int
-	id         uint64
-	msgType    uint32
-	lastAccess time.Time
-}
-
-// Command Queue
-type queuedCommand struct {
-	cmdType int // 0: Set, 1: Format
-	data    []byte
-}
 var (
 	cmdQueueLock sync.Mutex
-	cmdQueue     []queuedCommand
+	cmdQueue     []server.QueuedCommand
 )
 
-// Async Result Buffer
-type pendingAsyncResult struct {
-	handle  uint64
-	valType types.AnyValue // Enum
-	val     interface{}    // Go value or struct
-	err     string
-}
-
 var (
-	// Channel for async results (buffer size 1024 to absorb bursts)
-	asyncResultQueue = make(chan pendingAsyncResult, 1024)
+	asyncBatcher = server.NewAsyncBatcher()
+	chunkManager = server.NewChunkManager()
 
 	// Builder Pool to reduce GC pressure
 	builderPool = sync.Pool{
@@ -87,17 +49,8 @@ var (
 	}
 )
 
-type ScalarValue struct {
-	Type types.AnyValue
-	Num  float64
-	Int  int32
-	Bool bool
-	Str  string
-	Err  int16
-}
-
 var (
-	bufferedSets      = make(map[string]map[algo.Cell]ScalarValue)
+	bufferedSets      = make(map[string]map[algo.Cell]server.ScalarValue)
 	bufferedFormats   = make(map[string]map[algo.Cell]string)
 	bufferLock        sync.Mutex
 )
@@ -108,7 +61,7 @@ func ScheduleSet(r *types.Range, v *types.Any) {
 		sheet := string(r.SheetName())
 		bufferLock.Lock()
 		if bufferedSets[sheet] == nil {
-			bufferedSets[sheet] = make(map[algo.Cell]ScalarValue)
+			bufferedSets[sheet] = make(map[algo.Cell]server.ScalarValue)
 		}
 
 		l := r.RefsLength()
@@ -139,7 +92,7 @@ func ScheduleSet(r *types.Range, v *types.Any) {
 	b.Finish(root)
 
 	cmdQueueLock.Lock()
-	cmdQueue = append(cmdQueue, queuedCommand{0, b.FinishedBytes()})
+	cmdQueue = append(cmdQueue, server.QueuedCommand{CmdType: 0, Data: b.FinishedBytes()})
 	cmdQueueLock.Unlock()
 }
 
@@ -170,7 +123,7 @@ func flushBuffers() {
 
 	// Process Sets
 	for sheet, cells := range bufferedSets {
-		byVal := make(map[ScalarValue][]algo.Cell)
+		byVal := make(map[server.ScalarValue][]algo.Cell)
 		for cell, val := range cells {
 			byVal[val] = append(byVal[val], cell)
 		}
@@ -207,7 +160,7 @@ func flushBuffers() {
 				b.Finish(uOff)
 
 				cmdQueueLock.Lock()
-				cmdQueue = append(cmdQueue, queuedCommand{0, b.FinishedBytes()})
+				cmdQueue = append(cmdQueue, server.QueuedCommand{CmdType: 0, Data: b.FinishedBytes()})
 				cmdQueueLock.Unlock()
 			}
 		}
@@ -252,7 +205,7 @@ func flushBuffers() {
 				b.Finish(uOff)
 
 				cmdQueueLock.Lock()
-				cmdQueue = append(cmdQueue, queuedCommand{1, b.FinishedBytes()})
+				cmdQueue = append(cmdQueue, server.QueuedCommand{CmdType: 1, Data: b.FinishedBytes()})
 				cmdQueueLock.Unlock()
 			}
 		}
@@ -260,64 +213,64 @@ func flushBuffers() {
 	}
 }
 
-func toScalar(v *types.Any) (ScalarValue, bool) {
-	if v == nil { return ScalarValue{}, false }
+func toScalar(v *types.Any) (server.ScalarValue, bool) {
+	if v == nil { return server.ScalarValue{}, false }
 	var tbl flatbuffers.Table
-	if !v.Val(&tbl) { return ScalarValue{}, false }
+	if !v.Val(&tbl) { return server.ScalarValue{}, false }
 
 	switch v.ValType() {
 	case types.AnyValueInt:
 		var t types.Int; t.Init(tbl.Bytes, tbl.Pos)
-		return ScalarValue{Type: types.AnyValueInt, Int: t.Val()}, true
+		return server.ScalarValue{Type: server.AnyValueInt, Int: t.Val()}, true
 	case types.AnyValueNum:
 		var t types.Num; t.Init(tbl.Bytes, tbl.Pos)
-		return ScalarValue{Type: types.AnyValueNum, Num: t.Val()}, true
+		return server.ScalarValue{Type: server.AnyValueNum, Num: t.Val()}, true
 	case types.AnyValueBool:
 		var t types.Bool; t.Init(tbl.Bytes, tbl.Pos)
-		return ScalarValue{Type: types.AnyValueBool, Bool: t.Val()}, true
+		return server.ScalarValue{Type: server.AnyValueBool, Bool: t.Val()}, true
 	case types.AnyValueStr:
 		var t types.Str; t.Init(tbl.Bytes, tbl.Pos)
-		return ScalarValue{Type: types.AnyValueStr, Str: string(t.Val())}, true
+		return server.ScalarValue{Type: server.AnyValueStr, Str: string(t.Val())}, true
 	case types.AnyValueErr:
 		var t types.Err; t.Init(tbl.Bytes, tbl.Pos)
-		return ScalarValue{Type: types.AnyValueErr, Err: int16(t.Val())}, true
+		return server.ScalarValue{Type: server.AnyValueErr, Err: int16(t.Val())}, true
 	}
-	return ScalarValue{}, false
+	return server.ScalarValue{}, false
 }
 
-func createScalarAny(b *flatbuffers.Builder, val ScalarValue) flatbuffers.UOffsetT {
+func createScalarAny(b *flatbuffers.Builder, val server.ScalarValue) flatbuffers.UOffsetT {
 	var uOff flatbuffers.UOffsetT
 	switch val.Type {
-	case types.AnyValueInt:
+	case server.AnyValueInt:
 		types.IntStart(b)
 		types.IntAddVal(b, val.Int)
 		uOff = types.IntEnd(b)
-	case types.AnyValueNum:
+	case server.AnyValueNum:
 		types.NumStart(b)
 		types.NumAddVal(b, val.Num)
 		uOff = types.NumEnd(b)
-	case types.AnyValueBool:
+	case server.AnyValueBool:
 		types.BoolStart(b)
 		types.BoolAddVal(b, val.Bool)
 		uOff = types.BoolEnd(b)
-	case types.AnyValueStr:
+	case server.AnyValueStr:
 		sOff := b.CreateString(val.Str)
 		types.StrStart(b)
 		types.StrAddVal(b, sOff)
 		uOff = types.StrEnd(b)
-	case types.AnyValueErr:
+	case server.AnyValueErr:
 		types.ErrStart(b)
 		types.ErrAddVal(b, types.XlError(val.Err))
 		uOff = types.ErrEnd(b)
 	}
 
 	types.AnyStart(b)
-	types.AnyAddValType(b, val.Type)
+	types.AnyAddValType(b, types.AnyValue(val.Type))
 	types.AnyAddVal(b, uOff)
 	return types.AnyEnd(b)
 }
 
-func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
+func flushAsyncBatch(batch []server.PendingAsyncResult, client *shm.Client) {
 	if len(batch) == 0 {
 		return
 	}
@@ -332,42 +285,42 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 		var anyOff flatbuffers.UOffsetT
 		var errOff flatbuffers.UOffsetT
 
-		if res.err != "" {
-			errOff = b.CreateString(res.err)
+		if res.Err != "" {
+			errOff = b.CreateString(res.Err)
 		} else {
 			// Build Any Table
 			var uOff flatbuffers.UOffsetT
-			switch res.valType {
-			case types.AnyValueInt:
+			switch res.ValType {
+			case server.AnyValueInt:
 				types.IntStart(b)
-				types.IntAddVal(b, res.val.(int32))
+				types.IntAddVal(b, res.Val.(int32))
 				uOff = types.IntEnd(b)
-			case types.AnyValueNum:
+			case server.AnyValueNum:
 				types.NumStart(b)
-				types.NumAddVal(b, res.val.(float64))
+				types.NumAddVal(b, res.Val.(float64))
 				uOff = types.NumEnd(b)
-			case types.AnyValueBool:
+			case server.AnyValueBool:
 				types.BoolStart(b)
-				types.BoolAddVal(b, res.val.(bool))
+				types.BoolAddVal(b, res.Val.(bool))
 				uOff = types.BoolEnd(b)
-			case types.AnyValueStr:
-				sOff := b.CreateString(res.val.(string))
+			case server.AnyValueStr:
+				sOff := b.CreateString(res.Val.(string))
 				types.StrStart(b)
 				types.StrAddVal(b, sOff)
 				uOff = types.StrEnd(b)
-			case types.AnyValueNil:
+			case server.AnyValueNil:
 				types.NilStart(b)
 				uOff = types.NilEnd(b)
 			}
 
 			types.AnyStart(b)
-			types.AnyAddValType(b, res.valType)
+			types.AnyAddValType(b, types.AnyValue(res.ValType))
 			types.AnyAddVal(b, uOff)
 			anyOff = types.AnyEnd(b)
 		}
 
 		ipc.AsyncResultStart(b)
-		ipc.AsyncResultAddHandle(b, res.handle)
+		ipc.AsyncResultAddHandle(b, res.Handle)
 		if errOff > 0 {
 			ipc.AsyncResultAddError(b, errOff)
 		} else {
@@ -400,7 +353,7 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 	// We implement a short retry loop to handle transient buffer fullness.
 	var err error
 	for i := 0; i < 10; i++ {
-		if _, err = client.SendGuestCall(msgBytes, MSG_BATCH_ASYNC_RESPONSE); err == nil {
+		if _, err = client.SendGuestCall(msgBytes, server.MsgBatchAsyncResponse); err == nil {
 			return
 		}
 		// Backoff: 5ms, 10ms, ... 2.5s max total wait
@@ -434,7 +387,7 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 		ipc.ChunkAddTotalSize(b, uint32(total))
 		ipc.ChunkAddOffset(b, uint32(offset))
 		ipc.ChunkAddData(b, dataOff)
-		ipc.ChunkAddMsgType(b, MSG_BATCH_ASYNC_RESPONSE)
+		ipc.ChunkAddMsgType(b, server.MsgBatchAsyncResponse)
 		root := ipc.ChunkEnd(b)
 		b.FinishWithFileIdentifier(root, []byte("XCHN"))
 
@@ -444,7 +397,7 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 		var err error
 		sent := false
 		for i := 0; i < 10; i++ {
-			if _, err = client.SendGuestCall(payload, MSG_CHUNK); err == nil {
+			if _, err = client.SendGuestCall(payload, server.MsgChunk); err == nil {
 				sent = true
 				break
 			}
@@ -487,71 +440,10 @@ func Serve(handler XllService) {
 	var refCacheMutex sync.RWMutex
 	refCache := make(map[string][]byte)
 
-	// Chunking Cache
-	var chunkCacheMutex sync.Mutex
-	chunkCache := make(map[uint64]*chunkBuffer)
-
-	// Outgoing Chunks
-	var outgoingChunksMutex sync.Mutex
-	outgoingChunks := make(map[uint64]*outgoingChunk)
-
-	// Cleanup Ticker
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		for range ticker.C {
-			now := time.Now()
-			chunkCacheMutex.Lock()
-			for id, buf := range chunkCache {
-				if now.Sub(buf.lastAccess) > 60*time.Second {
-					delete(chunkCache, id)
-				}
-			}
-			chunkCacheMutex.Unlock()
-
-			outgoingChunksMutex.Lock()
-			for id, buf := range outgoingChunks {
-				if now.Sub(buf.lastAccess) > 60*time.Second {
-					delete(outgoingChunks, id)
-				}
-			}
-			outgoingChunksMutex.Unlock()
-		}
-	}()
-
-	// Reactive Async Flusher
-	go func() {
-		const maxBatchSize = 256
-		batch := make([]pendingAsyncResult, 0, maxBatchSize)
-
-		for {
-			// 1. Wait for at least one item (blocking)
-			item, ok := <-asyncResultQueue
-			if !ok { return } // Channel closed
-			batch = append(batch, item)
-
-			// 2. Greedily drain any other available items (non-blocking)
-			drain:
-			for len(batch) < maxBatchSize {
-				select {
-				case nextItem, ok := <-asyncResultQueue:
-					if !ok {
-						flushAsyncBatch(batch, client)
-						return
-					}
-					batch = append(batch, nextItem)
-				default:
-					// No more items immediately available, break to flush
-					break drain
-				}
-			}
-
-			// 3. Flush the batch
-			flushAsyncBatch(batch, client)
-
-			// 4. Reset batch (keep capacity)
-			batch = batch[:0]
-		}
-	}()
+	// Start Async Worker
+	asyncBatcher.StartWorker(func(batch []server.PendingAsyncResult) {
+		flushAsyncBatch(batch, client)
+	})
 
 	// Configuration
 	{{range .Functions}}
@@ -589,7 +481,7 @@ func Serve(handler XllService) {
              }()
 
              switch uint32(mType) {
-             case MSG_CALCULATION_ENDED:
+             case server.MsgCalculationEnded:
                 refCacheMutex.Lock()
                 refCache = make(map[string][]byte)
                 refCacheMutex.Unlock()
@@ -611,7 +503,7 @@ func Serve(handler XllService) {
                 if len(respBytes) > 0 {
                     // Zero-Copy Return (Negative Size)
                     if cap(builder.Bytes) == cap(respBuf) && len(respBytes) <= len(respBuf) {
-                        return -int32(len(respBytes)), MSG_CALCULATION_ENDED
+                        return -int32(len(respBytes)), server.MsgCalculationEnded
                     }
 
                     if len(respBytes) > len(respBuf) {
@@ -619,16 +511,16 @@ func Serve(handler XllService) {
                         return 0, 0
                     }
                     copy(respBuf, respBytes)
-                    return int32(len(respBytes)), MSG_CALCULATION_ENDED
+                    return int32(len(respBytes)), server.MsgCalculationEnded
                 }
                 return 0, 0
 
-             case MSG_CALCULATION_CANCELED:
+             case server.MsgCalculationCanceled:
                 cmdQueueLock.Lock()
                 cmdQueue = nil
                 cmdQueueLock.Unlock()
                 bufferLock.Lock()
-                bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
+                bufferedSets = make(map[string]map[algo.Cell]server.ScalarValue)
                 bufferedFormats = make(map[string]map[algo.Cell]string)
                 bufferLock.Unlock()
 
@@ -642,7 +534,7 @@ func Serve(handler XllService) {
                 {{end}}
                 return 0, 0
 
-             case MSG_SETREFCACHE:
+             case server.MsgSetRefCache:
                 reqObj := ipc.GetRootAsSetRefCacheRequest(data, 0)
                 key := string(reqObj.Key())
                 reqCopy := make([]byte, len(data))
@@ -659,92 +551,67 @@ func Serve(handler XllService) {
 
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), MSG_ACK
+                    return -int32(len(payload)), server.MsgAck
                 }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
-                return int32(len(payload)), MSG_ACK
+                return int32(len(payload)), server.MsgAck
 
-             case MSG_ACK:
+             case server.MsgAck:
                 reqObj := ipc.GetRootAsAck(data, 0)
                 id := reqObj.Id()
-                outgoingChunksMutex.Lock()
-                out, exists := outgoingChunks[id]
-                if !exists {
-                    outgoingChunksMutex.Unlock()
-                    return 0, 0
-                }
-                out.lastAccess = time.Now()
 
                 const chunkSize = 950 * 1024
-                remaining := len(out.data) - out.offset
-                currentSize := chunkSize
-                if remaining < chunkSize { currentSize = remaining }
+                chunkData, msgType, totalSize, offset, found := chunkManager.GetNextChunk(id, chunkSize)
 
-                if currentSize <= 0 {
-                    delete(outgoingChunks, id)
-                    outgoingChunksMutex.Unlock()
+                if !found {
+                    return 0, 0
+                }
+
+                if len(chunkData) == 0 {
                     return 0, 0
                 }
 
                 builder.Reset()
-                dataOff := builder.CreateByteVector(out.data[out.offset : out.offset+currentSize])
+                dataOff := builder.CreateByteVector(chunkData)
                 ipc.ChunkStart(builder)
                 ipc.ChunkAddId(builder, id)
-                ipc.ChunkAddTotalSize(builder, uint32(len(out.data)))
-                ipc.ChunkAddOffset(builder, uint32(out.offset))
+                ipc.ChunkAddTotalSize(builder, uint32(totalSize))
+                ipc.ChunkAddOffset(builder, uint32(offset))
                 ipc.ChunkAddData(builder, dataOff)
-                ipc.ChunkAddMsgType(builder, out.msgType)
+                ipc.ChunkAddMsgType(builder, msgType)
                 root := ipc.ChunkEnd(builder)
                 builder.FinishWithFileIdentifier(root, []byte("XCHN"))
 
-                out.offset += currentSize
-                if out.offset >= len(out.data) { delete(outgoingChunks, id) }
-                outgoingChunksMutex.Unlock()
-
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), MSG_CHUNK
+                    return -int32(len(payload)), server.MsgChunk
                 }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
-                return int32(len(payload)), MSG_CHUNK
+                return int32(len(payload)), server.MsgChunk
 
-             case MSG_CHUNK:
+             case server.MsgChunk:
                 reqObj := ipc.GetRootAsChunk(data, 0)
                 id := reqObj.Id()
                 total := int(reqObj.TotalSize())
                 offset := int(reqObj.Offset())
                 dataLen := reqObj.DataLength()
 
-                chunkCacheMutex.Lock()
-                buf, exists := chunkCache[id]
-                if !exists {
-                    buf = &chunkBuffer{
-                        data:       make([]byte, total),
-                        totalSize:  total,
-                        lastAccess: time.Now(),
-                    }
-                    chunkCache[id] = buf
-                }
-                buf.lastAccess = time.Now()
-                chunkCacheMutex.Unlock()
+                buf := chunkManager.GetChunkBuffer(id, total)
 
-                buf.mutex.Lock()
-                if offset + dataLen <= len(buf.data) {
-                    copy(buf.data[offset:], reqObj.DataBytes())
-                    buf.received += dataLen
+                buf.Mutex.Lock()
+                if offset + dataLen <= len(buf.Data) {
+                    copy(buf.Data[offset:], reqObj.DataBytes())
+                    buf.Received += dataLen
                 }
-                isComplete := buf.received >= buf.totalSize
-                buf.mutex.Unlock()
+                isComplete := buf.Received >= buf.TotalSize
+                buf.Mutex.Unlock()
 
                 if isComplete {
-                    chunkCacheMutex.Lock()
-                    delete(chunkCache, id)
-                    chunkCacheMutex.Unlock()
-
+                    chunkManager.RemoveChunkBuffer(id)
                     payloadMsgType := reqObj.MsgType()
-                    return dispatch(buf.data, respBuf, shm.MsgType(payloadMsgType))
+                    return dispatch(buf.Data, respBuf, shm.MsgType(payloadMsgType))
                 }
 
                 ipc.AckStart(builder)
@@ -755,11 +622,11 @@ func Serve(handler XllService) {
 
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), MSG_CHUNK
+                    return -int32(len(payload)), server.MsgChunk
                 }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
-                return int32(len(payload)), MSG_CHUNK
+                return int32(len(payload)), server.MsgChunk
 
 {{range .Events}}
              {{if and (ne .Type "CalculationEnded") (ne .Type "CalculationCanceled")}}
@@ -788,7 +655,7 @@ func Serve(handler XllService) {
                 select {
                 case jobQueue <- func() {
                     defer cancel()
-                    handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
+                    handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex)
                 }:
                 default:
                     log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
@@ -802,14 +669,14 @@ func Serve(handler XllService) {
 
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), MSG_ACK
+                    return -int32(len(payload)), server.MsgAck
                 }
                 if len(payload) > len(respBuf) { return 0, 0 }
                 copy(respBuf, payload)
-                return int32(len(payload)), MSG_ACK
+                return int32(len(payload)), server.MsgAck
                 {{else}}
                 defer cancel()
-                len, respId := handle{{.Name}}(ctx, data, respBuf, handler, builder, client, mType, refCache, &refCacheMutex, outgoingChunks, &outgoingChunksMutex)
+                len, respId := handle{{.Name}}(ctx, data, respBuf, handler, builder, client, mType, refCache, &refCacheMutex)
                 return len, respId
                 {{end}}
 {{end}}
@@ -826,7 +693,7 @@ func Serve(handler XllService) {
 
 // ... handle functions ...
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgType shm.MsgType, refCache map[string][]byte, refCacheMutex *sync.RWMutex, outgoingChunks map[uint64]*outgoingChunk, outgoingChunksMutex *sync.Mutex) (int32, shm.MsgType) {
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgType shm.MsgType, refCache map[string][]byte, refCacheMutex *sync.RWMutex) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 	_ = request
 
@@ -897,7 +764,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	handle := request.AsyncHandle()
 
 	if ctx.Err() != nil {
-		queueAsyncResult(handle, nil, 0, ctx.Err().Error(), client)
+		queueAsyncResult(handle, nil, server.AnyValueNone, ctx.Err().Error())
 		return 0, 0
 	}
 
@@ -907,40 +774,40 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			if r := recover(); r != nil {
 				stack := debug.Stack()
 				log.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
-				queueAsyncResult(handle, nil, 0, fmt.Sprintf("panic: %v", r), client)
+				queueAsyncResult(handle, nil, server.AnyValueNone, fmt.Sprintf("panic: %v", r))
 			}
 		}()
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
 		if err != nil {
-			queueAsyncResult(handle, nil, 0, err.Error(), client)
+			queueAsyncResult(handle, nil, server.AnyValueNone, err.Error())
 		} else {
 			{{if eq .Return "string"}}
-			queueAsyncResult(handle, res, types.AnyValueStr, "", client)
+			queueAsyncResult(handle, res, server.AnyValueStr, "")
 			{{else if eq .Return "int"}}
-			queueAsyncResult(handle, res, types.AnyValueInt, "", client)
+			queueAsyncResult(handle, res, server.AnyValueInt, "")
 			{{else if eq .Return "int?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, types.AnyValueInt, "", client)
+				queueAsyncResult(handle, *res, server.AnyValueInt, "")
 			} else {
-				queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+				queueAsyncResult(handle, nil, server.AnyValueNil, "")
 			}
 			{{else if eq .Return "float"}}
-			queueAsyncResult(handle, res, types.AnyValueNum, "", client)
+			queueAsyncResult(handle, res, server.AnyValueNum, "")
 			{{else if eq .Return "float?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, types.AnyValueNum, "", client)
+				queueAsyncResult(handle, *res, server.AnyValueNum, "")
 			} else {
-				queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+				queueAsyncResult(handle, nil, server.AnyValueNil, "")
 			}
 			{{else if eq .Return "bool"}}
-			queueAsyncResult(handle, res, types.AnyValueBool, "", client)
+			queueAsyncResult(handle, res, server.AnyValueBool, "")
 			{{else if eq .Return "bool?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, types.AnyValueBool, "", client)
+				queueAsyncResult(handle, *res, server.AnyValueBool, "")
 			} else {
-				queueAsyncResult(handle, nil, types.AnyValueNil, "", client)
+				queueAsyncResult(handle, nil, server.AnyValueNil, "")
 			}
 			{{end}}
 		}
@@ -1025,42 +892,40 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		// Chunking needed
 		transferId := uint64(rand.Int63())
 
-		outgoingChunksMutex.Lock()
-		outgoingChunks[transferId] = &outgoingChunk{
-			data:       make([]byte, len(payload)),
-			id:         transferId,
-			msgType:    uint32(msgType),
-			lastAccess: time.Now(),
-		}
-		copy(outgoingChunks[transferId].data, payload)
+        out := &server.OutgoingChunk{
+            Data:       make([]byte, len(payload)),
+            Id:         transferId,
+            MsgType:    uint32(msgType),
+            LastAccess: time.Now(),
+        }
+		copy(out.Data, payload)
+        chunkManager.AddOutgoingChunk(transferId, out)
 
-		out := outgoingChunks[transferId]
 		const chunkSize = 950 * 1024
 		currentSize := chunkSize
-		if len(out.data) < chunkSize {
-			currentSize = len(out.data)
+		if len(out.Data) < chunkSize {
+			currentSize = len(out.Data)
 		}
 
 		b.Reset()
-		dataOff := b.CreateByteVector(out.data[0:currentSize])
+		dataOff := b.CreateByteVector(out.Data[0:currentSize])
 		ipc.ChunkStart(b)
 		ipc.ChunkAddId(b, transferId)
-		ipc.ChunkAddTotalSize(b, uint32(len(out.data)))
+		ipc.ChunkAddTotalSize(b, uint32(len(out.Data)))
 		ipc.ChunkAddOffset(b, 0)
 		ipc.ChunkAddData(b, dataOff)
 		ipc.ChunkAddMsgType(b, uint32(msgType))
 		root := ipc.ChunkEnd(b)
 		b.FinishWithFileIdentifier(root, []byte("XCHN"))
 
-		out.offset = currentSize
-		outgoingChunksMutex.Unlock()
+		out.Offset = currentSize
 
 		payload = b.FinishedBytes()
 		if len(payload) > len(respBuf) {
 			return 0, 0 // Fatal: Chunk header overhead made it > 1MB?
 		}
 		copy(respBuf, payload)
-		return int32(len(payload)), MSG_CHUNK
+		return int32(len(payload)), server.MsgChunk
 	}
 	copy(respBuf, payload)
 	return int32(len(payload)), msgType
@@ -1068,17 +933,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 }
 
 {{if .Async}}
-func queueAsyncResult(handle uint64, val interface{}, valType types.AnyValue, errStr string, client *shm.Client) {
-	// Send to channel, non-blocking if full?
-	// If channel is full, we must block or drop.
-	// Blocking is safer to avoid data loss, but might slow down workers.
-	// Channel size 1024 is generous.
-	asyncResultQueue <- pendingAsyncResult{
-		handle: handle,
-		val:    val,
-		valType: valType,
-		err:    errStr,
-	}
+func queueAsyncResult(handle uint64, val interface{}, valType server.AnyValue, errStr string) {
+	asyncBatcher.QueueResult(handle, val, valType, errStr)
 }
 {{end}}
 {{end}}
@@ -1098,8 +954,8 @@ func flushCommands(b *flatbuffers.Builder) []byte {
 		var uOff flatbuffers.UOffsetT
 		var uType ipc.Command
 
-		if c.cmdType == 0 {
-			cmd := ipc.GetRootAsSetCommand(c.data, 0)
+		if c.CmdType == 0 {
+			cmd := ipc.GetRootAsSetCommand(c.Data, 0)
 			rOff := cloneRange(b, cmd.Target(nil))
 			vOff := cloneAny(b, cmd.Value(nil))
 
@@ -1109,7 +965,7 @@ func flushCommands(b *flatbuffers.Builder) []byte {
 			uOff = ipc.SetCommandEnd(b)
 			uType = ipc.CommandSetCommand
 		} else {
-			cmd := ipc.GetRootAsFormatCommand(c.data, 0)
+			cmd := ipc.GetRootAsFormatCommand(c.Data, 0)
 			rOff := cloneRange(b, cmd.Target(nil))
 			fOff := b.CreateString(string(cmd.Format()))
 
