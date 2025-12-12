@@ -156,8 +156,43 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         values.reserve(256);
 
         g_host.Start([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
+             static std::map<uint64_t, std::vector<uint8_t>> chunkBuffers;
+             static std::map<uint64_t, size_t> chunkSizes;
+
              try {
                  switch (msgId) {
+                 case (shm::MsgType)129: { // MSG_CHUNK
+                     auto chunk = flatbuffers::GetRoot<ipc::Chunk>(req);
+                     uint64_t id = chunk->id();
+
+                     std::vector<uint8_t>& buf = chunkBuffers[id];
+                     if (buf.empty()) {
+                         buf.resize(chunk->total_size());
+                         chunkSizes[id] = 0;
+                     }
+
+                     auto data = chunk->data();
+                     if (data) {
+                         size_t offset = chunk->offset();
+                         size_t len = data->size();
+                         if (offset + len <= buf.size()) {
+                             std::memcpy(buf.data() + offset, data->data(), len);
+                             chunkSizes[id] += len;
+                         }
+                     }
+
+                     if (chunkSizes[id] >= buf.size()) {
+                         shm::MsgType payloadType = (shm::MsgType)chunk->msg_type();
+                         int32_t ret = 0;
+                         if (payloadType == (shm::MsgType)128) {
+                             ret = ProcessAsyncBatchResponse(buf.data(), handles, values);
+                         }
+                         chunkBuffers.erase(id);
+                         chunkSizes.erase(id);
+                         return ret;
+                     }
+                     return 1; // ACK
+                 }
                  case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
                      return ProcessAsyncBatchResponse(req, handles, values);
                  }
