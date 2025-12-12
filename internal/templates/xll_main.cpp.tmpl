@@ -378,7 +378,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         Excel12(xlfRegister, 0, {{registerCount $fn}},
             &xDll,
             TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{if .Async}}>{{end}}{{lookupXllType .Return}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}$"),
+            TempStr12(L"{{if .Async}}>{{else}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}$"),
             TempStr12(L"{{.Name}}"),
             TempStr12(L"{{joinArgNames $fn}}"),
             TempStr12(L"1"),
