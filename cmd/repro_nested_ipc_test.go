@@ -56,4 +56,9 @@ func TestRepro_NestedIPC_Corruption(t *testing.T) {
 	if strings.Contains(body, "g_host.GetZeroCopySlot()") {
 		t.Errorf("BUG DETECTED: ConvertAny uses g_host.GetZeroCopySlot(). This corrupts the shared memory buffer when called recursively during argument processing.")
 	}
+
+	// Ensure we ARE using g_host.Send() for safe nested IPC
+	if !strings.Contains(body, "g_host.Send(") {
+		t.Errorf("ConvertAny does not use g_host.Send(). It must use Send() (blocking, copying) to avoid slot corruption.")
+	}
 }
