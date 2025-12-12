@@ -428,6 +428,67 @@ int main() {
         ASSERT_EQ(4, s3->val_as_Int()->val(), "S3 val");
     }
 
+    // 13. RefCache Cleanup on Canceled (ID 130, 132, 137)
+    {
+        // 1. Send SetRefCache "K1" = Int(123)
+        builder.Reset();
+        auto keyOff = builder.CreateString("K1");
+        auto valOff = ipc::types::CreateInt(builder, 123);
+        auto anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_Int, valOff.Union());
+        auto req = ipc::CreateSetRefCacheRequest(builder, keyOff, anyOff);
+        builder.Finish(req);
+        vector<uint8_t> respBuf;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)130, respBuf).ValueOr(-1) < 0) return 1;
+        // Expect Ack
+        auto ack = flatbuffers::GetRoot<ipc::Ack>(respBuf.data());
+        ASSERT_EQ(true, ack->ok(), "SetRefCache Ack");
+
+        // 2. Send CheckAny with RefCache("K1") -> Expect "Int:123"
+        builder.Reset();
+        keyOff = builder.CreateString("K1");
+        auto rcVal = ipc::types::CreateRefCache(builder, keyOff);
+        anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, rcVal.Union());
+        ipc::CheckAnyRequestBuilder caReq(builder);
+        caReq.add_val(anyOff);
+        builder.Finish(caReq.Finish());
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) return 1;
+        auto caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("Int:123", caResp->result()->str(), "CheckAny RefCache Resolved");
+
+        // 3. Send CalculationCanceled (ID 132)
+        if(host.Send(nullptr, 0, (shm::MsgType)132, respBuf).ValueOr(-1) < 0) return 1;
+        // No response payload expected (size 0)
+
+        // 4. Verify RefCache persists after Canceled (since we reverted the cleanup)
+        // Send CheckAny with RefCache("K1") -> Expect "Int:123"
+        builder.Reset();
+        keyOff = builder.CreateString("K1");
+        rcVal = ipc::types::CreateRefCache(builder, keyOff);
+        anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, rcVal.Union());
+        ipc::CheckAnyRequestBuilder caReq2(builder);
+        caReq2.add_val(anyOff);
+        builder.Finish(caReq2.Finish());
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) return 1;
+        caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("Int:123", caResp->result()->str(), "CheckAny RefCache Persists");
+
+        // 5. Send CalculationEnded (ID 131)
+        if(host.Send(nullptr, 0, (shm::MsgType)131, respBuf).ValueOr(-1) < 0) return 1;
+
+        // 6. Verify RefCache Cleared after Ended
+        // Send CheckAny with RefCache("K1") -> Expect "RefCache:K1"
+        builder.Reset();
+        keyOff = builder.CreateString("K1");
+        rcVal = ipc::types::CreateRefCache(builder, keyOff);
+        anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, rcVal.Union());
+        ipc::CheckAnyRequestBuilder caReq3(builder);
+        caReq3.add_val(anyOff);
+        builder.Finish(caReq3.Finish());
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) return 1;
+        caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+        ASSERT_STREQ("RefCache:K1", caResp->result()->str(), "CheckAny RefCache Cleared");
+    }
+
     cout << "PASSED" << endl;
     return 0;
 }

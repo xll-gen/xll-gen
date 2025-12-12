@@ -874,6 +874,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 				if data, ok := refCache[key]; ok {
 					cacheReq := ipc.GetRootAsSetRefCacheRequest(data, 0)
 					arg_{{.Name}} = cacheReq.Val(nil)
+				} else {
+					arg_{{.Name}} = arg_{{.Name}}_raw
 				}
 				refCacheMutex.RUnlock()
 			}
