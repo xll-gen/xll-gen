@@ -365,11 +365,24 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                       Excel12(xlAsyncReturn, 0, 2, &arrH, &arrV);
                   }
 
-                  // Cleanup allocated strings
+                  // Cleanup allocated strings and arrays
                   for(auto& v : values) {
-                      if ((v.xltype & xltypeStr) && v.val.str) {
-                          delete[] v.val.str;
-                          v.val.str = nullptr;
+                      if (v.xltype & xltypeStr) {
+                          if (v.val.str) {
+                              delete[] v.val.str;
+                              v.val.str = nullptr;
+                          }
+                      } else if (v.xltype & xltypeMulti) {
+                          if (v.val.array.lparray) {
+                              int count = v.val.array.rows * v.val.array.columns;
+                              for(int i=0; i<count; ++i) {
+                                  if ((v.val.array.lparray[i].xltype & xltypeStr) && v.val.array.lparray[i].val.str) {
+                                      delete[] v.val.array.lparray[i].val.str;
+                                  }
+                              }
+                              delete[] v.val.array.lparray;
+                              v.val.array.lparray = nullptr;
+                          }
                       }
                   }
               }
