@@ -132,15 +132,6 @@ func runInit(projectName string, force bool) error {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
 
-	// Run go mod tidy
-	fmt.Println("Running 'go mod tidy'...")
-	cmdTidy := exec.Command("go", "mod", "tidy")
-	cmdTidy.Stdout = os.Stdout
-	cmdTidy.Stderr = os.Stderr
-	if err := cmdTidy.Run(); err != nil {
-		fmt.Printf("Warning: 'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.\n", err)
-	}
-
 	fmt.Printf("Project %s initialized successfully!\n", projectName)
 	fmt.Println("Next steps:")
 	fmt.Printf("  cd %s\n", projectName)
