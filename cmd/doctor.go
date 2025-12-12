@@ -17,13 +17,15 @@ var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check for necessary dependencies and tools",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Checking environment...")
+		printHeader("🩺 Running System Diagnosis...")
 
 		// Check C++ compiler
 		checkCompiler()
 
 		// Check flatc
 		checkFlatc()
+
+		fmt.Println("")
 	},
 }
 
@@ -33,32 +35,30 @@ func init() {
 
 // checkCompiler verifies if a suitable C++ compiler (MSVC or MinGW) is available in the system PATH.
 func checkCompiler() {
-	fmt.Print("Checking for C++ compiler... ")
-
 	// Check for cl.exe (MSVC)
 	if _, err := exec.LookPath("cl.exe"); err == nil {
-		fmt.Println("Found MSVC (cl.exe)")
+		printSuccess("C++ Compiler", "Found MSVC")
 		return
 	}
 
 	// Check for g++ (MinGW/GCC)
 	if _, err := exec.LookPath("g++"); err == nil {
-		fmt.Println("Found g++")
+		printSuccess("C++ Compiler", "Found g++")
 		return
 	}
 
 	if _, err := exec.LookPath("gcc"); err == nil {
-		fmt.Println("Found gcc")
+		printSuccess("C++ Compiler", "Found gcc")
 		return
 	}
 
-	fmt.Println("NOT FOUND")
-	fmt.Println("Warning: No C++ compiler found. You will not be able to build the XLL.")
+	printError("C++ Compiler", "NOT FOUND")
+	printWarning("Action Required", "No C++ compiler found. You will not be able to build the XLL.")
 
 	if runtime.GOOS == "windows" {
 		// Check if winget is available
 		if _, err := exec.LookPath("winget"); err == nil {
-			fmt.Print("Do you want to install MinGW using winget? [Y/n] ")
+			fmt.Printf("\n%s?%s Do you want to install MinGW using winget? [Y/n] ", colorCyan, colorReset)
 			reader := bufio.NewReader(os.Stdin)
 			response, _ := reader.ReadString('\n')
 			response = strings.TrimSpace(response)
@@ -70,9 +70,9 @@ func checkCompiler() {
 				cmd.Stderr = os.Stderr
 				cmd.Stdin = os.Stdin
 				if err := cmd.Run(); err != nil {
-					fmt.Printf("Error installing MinGW: %v\n", err)
+					printError("Installation", fmt.Sprintf("Error installing MinGW: %v", err))
 				} else {
-					fmt.Println("MinGW installed successfully. Please restart your terminal/shell to update PATH.")
+					printSuccess("Installation", "MinGW installed successfully. Please restart your terminal.")
 				}
 				return
 			}
@@ -84,13 +84,11 @@ func checkCompiler() {
 
 // checkFlatc verifies if the FlatBuffers compiler (flatc) is available and downloads it if missing.
 func checkFlatc() {
-	fmt.Print("Checking for flatc... ")
-
 	path, err := generator.EnsureFlatc()
 	if err != nil {
-		fmt.Println("NOT FOUND")
-		fmt.Printf("Failed to resolve flatc: %v\n", err)
+		printError("Flatbuffers", "NOT FOUND")
+		fmt.Printf("      %v\n", err)
 		return
 	}
-	fmt.Printf("Found (%s)\n", path)
+	printSuccess("Flatbuffers", fmt.Sprintf("Found (%s)", path))
 }

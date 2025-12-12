@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/templates"
+	"gopkg.in/yaml.v3"
 )
 
 // regtestCmd represents the regtest command.
