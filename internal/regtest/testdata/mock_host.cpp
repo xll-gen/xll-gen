@@ -26,7 +26,13 @@ using namespace std;
 // and verifies the responses.
 int main() {
     shm::DirectHost host;
-    if (!host.Init("smoke_proj", 1024, 1024*1024, 16)) {
+    shm::HostConfig config;
+    config.shmName = "smoke_proj";
+    config.numHostSlots = 16;
+    config.numGuestSlots = 2;
+    config.payloadSize = 1024*1024;
+
+    if (!host.Init(config)) {
         cerr << "Failed to init SHM" << endl;
         return 1;
     }
