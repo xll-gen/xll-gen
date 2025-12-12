@@ -151,7 +151,16 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	}
 	fmt.Println("Generated Taskfile.yml")
 
-	fmt.Println("Done. Please run 'go mod tidy' to ensure dependencies are installed.")
+	// 11. Run go mod tidy
+	fmt.Println("Running 'go mod tidy'...")
+	cmdTidy := exec.Command("go", "mod", "tidy")
+	cmdTidy.Stdout = os.Stdout
+	cmdTidy.Stderr = os.Stderr
+	if err := cmdTidy.Run(); err != nil {
+		fmt.Printf("Warning: 'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.\n", err)
+	}
+
+	fmt.Println("Done.")
 
 	return nil
 }
