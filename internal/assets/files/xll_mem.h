@@ -6,6 +6,10 @@
 // Allocates an XLOPER12 from the thread-safe object pool and initializes it to empty.
 LPXLOPER12 NewXLOPER12();
 
+// Releases an XLOPER12 back to the pool without freeing its content.
+// Internal use only (e.g. for async handlers that extract values).
+void ReleaseXLOPER12(LPXLOPER12 p);
+
 // Creates an XLOPER12 String (Pascal-style wide string) managed by the DLL.
 // Sets xltypeStr | xlbitDLLFree.
 // The returned pointer and the string buffer are both managed and will be freed by xlAutoFree12.

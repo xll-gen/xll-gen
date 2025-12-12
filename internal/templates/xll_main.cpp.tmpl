@@ -38,6 +38,7 @@ std::atomic<bool> g_running{false};
 // Global Process Handle (for auto-launched server)
 HANDLE g_hChildProcess = NULL;
 HANDLE g_hJob = NULL;
+HANDLE g_hShutdownEvent = NULL;
 HINSTANCE g_hModule = NULL;
 
 // Global Error Value for Returns
@@ -132,6 +133,8 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::string shmName = "{{.ProjectName}}";
     {{end}}
 
+    g_hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+
     // Configure SHM
     shm::HostConfig config;
     config.shmName = shmName;
@@ -153,8 +156,43 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         values.reserve(256);
 
         g_host.Start([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
+             static std::map<uint64_t, std::vector<uint8_t>> chunkBuffers;
+             static std::map<uint64_t, size_t> chunkSizes;
+
              try {
                  switch (msgId) {
+                 case (shm::MsgType)129: { // MSG_CHUNK
+                     auto chunk = flatbuffers::GetRoot<ipc::Chunk>(req);
+                     uint64_t id = chunk->id();
+
+                     std::vector<uint8_t>& buf = chunkBuffers[id];
+                     if (buf.empty()) {
+                         buf.resize(chunk->total_size());
+                         chunkSizes[id] = 0;
+                     }
+
+                     auto data = chunk->data();
+                     if (data) {
+                         size_t offset = chunk->offset();
+                         size_t len = data->size();
+                         if (offset + len <= buf.size()) {
+                             std::memcpy(buf.data() + offset, data->data(), len);
+                             chunkSizes[id] += len;
+                         }
+                     }
+
+                     if (chunkSizes[id] >= buf.size()) {
+                         shm::MsgType payloadType = (shm::MsgType)chunk->msg_type();
+                         int32_t ret = 0;
+                         if (payloadType == (shm::MsgType)128) {
+                             ret = ProcessAsyncBatchResponse(buf.data(), handles, values);
+                         }
+                         chunkBuffers.erase(id);
+                         chunkSizes.erase(id);
+                         return ret;
+                     }
+                     return 1; // ACK
+                 }
                  case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
                      return ProcessAsyncBatchResponse(req, handles, values);
                  }
@@ -372,10 +410,48 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 }
 
                 // Monitor Thread
-                g_monitor = std::thread([]{
-                    if (WaitForSingleObject(g_hChildProcess, INFINITE) == WAIT_OBJECT_0) {
-                        if (g_running) {
-                            MessageBoxW(NULL, L"The Go server process has terminated unexpectedly.\nThe Add-in will no longer function correctly.", L"Server Crash", MB_OK | MB_ICONERROR);
+                g_monitor = std::thread([logPath]{
+                    HANDLE handles[2] = { g_hChildProcess, g_hShutdownEvent };
+                    DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+
+                    if (res == WAIT_OBJECT_0) {
+                        // Check if shutdown was requested concurrently
+                        if (WaitForSingleObject(g_hShutdownEvent, 0) == WAIT_TIMEOUT) {
+                            if (g_running) {
+                                DWORD exitCode = 0;
+                                GetExitCodeProcess(g_hChildProcess, &exitCode);
+
+                                std::wstringstream ss;
+                                ss << L"The Go server process has terminated unexpectedly (Exit Code: " << exitCode << L").\n";
+                                ss << L"The Add-in will no longer function correctly.\n\n";
+                                ss << L"Last log entries:\n";
+
+                                HANDLE hRead = CreateFileW(logPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                                if (hRead != INVALID_HANDLE_VALUE) {
+                                    LARGE_INTEGER size;
+                                    if (GetFileSizeEx(hRead, &size)) {
+                                        long long length = size.QuadPart;
+                                        long long start = 0;
+                                        if (length > 1024) start = length - 1024;
+
+                                        LARGE_INTEGER move;
+                                        move.QuadPart = start;
+                                        SetFilePointerEx(hRead, move, NULL, FILE_BEGIN);
+
+                                        std::vector<char> buffer((size_t)(length - start));
+                                        DWORD bytesRead = 0;
+                                        if (ReadFile(hRead, buffer.data(), (DWORD)buffer.size(), &bytesRead, NULL)) {
+                                            std::string s(buffer.data(), bytesRead);
+                                            ss << StringToWString(s);
+                                        }
+                                    }
+                                    CloseHandle(hRead);
+                                } else {
+                                    ss << L"(Unable to read log file)";
+                                }
+
+                                MessageBoxW(NULL, ss.str().c_str(), L"Server Crash", MB_OK | MB_ICONERROR);
+                            }
                         }
                     }
                 });
@@ -406,6 +482,8 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 }
 
 __declspec(dllexport) int __stdcall xlAutoClose() {
+    if (g_hShutdownEvent) SetEvent(g_hShutdownEvent);
+
     g_running = false;
     if (g_worker.joinable()) g_worker.join();
     g_host.Shutdown();
@@ -424,6 +502,10 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
     if (g_hJob) {
         CloseHandle(g_hJob);
         g_hJob = NULL;
+    }
+    if (g_hShutdownEvent) {
+        CloseHandle(g_hShutdownEvent);
+        g_hShutdownEvent = NULL;
     }
     return 1;
 }

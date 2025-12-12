@@ -14,6 +14,12 @@ LPXLOPER12 NewXLOPER12() {
     return p;
 }
 
+void ReleaseXLOPER12(LPXLOPER12 p) {
+    if (p) {
+        xloperPool.Release(p);
+    }
+}
+
 LPXLOPER12 NewExcelString(const std::wstring& str) {
     LPXLOPER12 p = NewXLOPER12();
     p->xltype = xltypeStr | xlbitDLLFree;

@@ -1,5 +1,6 @@
 #include "include/xll_async.h"
 #include "include/xll_converters.h"
+#include "include/xll_mem.h"
 #include "schema_generated.h"
 #include <cstring>
 
@@ -30,8 +31,8 @@ int32_t ProcessAsyncBatchResponse(const uint8_t* req, std::vector<XLOPER12>& han
                         // If pVal was allocated by NewXLOPER12 (xlbitDLLFree), we must eventually free it.
                         // But here we copy the struct into 'val' (in our vector).
                         // If pVal has xlbitDLLFree, 'val' inherits it.
-                        // We need to delete pVal itself (the container) but keep the content.
-                        delete pVal;
+                        // We need to release pVal itself (the container) back to the pool but keep the content.
+                        ReleaseXLOPER12(pVal);
                     } else {
                         val.xltype = xltypeErr; val.val.err = xlerrValue;
                     }
