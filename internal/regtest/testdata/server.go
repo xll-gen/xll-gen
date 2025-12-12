@@ -80,6 +80,10 @@ func (s *Service) CheckAny(ctx context.Context, val *types.Any) (string, error) 
 		var t types.Grid
 		t.Init(tbl.Bytes, tbl.Pos)
 		return fmt.Sprintf("Grid:%dx%d", t.Rows(), t.Cols()), nil
+	case types.AnyValueRefCache:
+		var t types.RefCache
+		t.Init(tbl.Bytes, tbl.Pos)
+		return fmt.Sprintf("RefCache:%s", string(t.Key())), nil
 	}
 	return "Unknown", nil
 }

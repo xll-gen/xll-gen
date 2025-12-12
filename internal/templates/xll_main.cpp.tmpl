@@ -221,6 +221,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{range $i, $fn := .Functions}}{{range .Args}}{{if eq .Type "any"}}needCalcEnded=true;{{end}}{{end}}{{end}}
     if (needCalcEnded) {
          Excel12(xlEventRegister, 0, 2, TempStr12(L"CalculationEnded"), TempInt12(xleventCalculationEnded));
+         Excel12(xlEventRegister, 0, 2, TempStr12(L"CalculationCanceled"), TempInt12(xleventCalculationCanceled));
     }
     {{end}}
 
@@ -558,6 +559,23 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         LogError("Exception in CalculationEnded: " + std::string(e.what()));
     } catch (...) {
         LogError("Unknown exception in CalculationEnded");
+    }
+}
+{{end}}
+{{if hasEvent "CalculationCanceled" .Events}}
+{{else}}
+__declspec(dllexport) void __stdcall CalculationCanceled() {
+    try {
+        std::vector<uint8_t> respBuf;
+        g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_CANCELED, respBuf, 2000);
+        {
+            std::lock_guard<std::mutex> lock(g_refCacheMutex);
+            g_sentRefCache.clear();
+        }
+    } catch (const std::exception& e) {
+        LogError("Exception in CalculationCanceled: " + std::string(e.what()));
+    } catch (...) {
+        LogError("Unknown exception in CalculationCanceled");
     }
 }
 {{end}}

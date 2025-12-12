@@ -631,6 +631,9 @@ func Serve(handler XllService) {
                 bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
                 bufferedFormats = make(map[string]map[algo.Cell]string)
                 bufferLock.Unlock()
+                refCacheMutex.Lock()
+                refCache = make(map[string][]byte)
+                refCacheMutex.Unlock()
 
                 {{if hasEvent "CalculationCanceled" .Events}}
                 ctx := context.Background()
@@ -874,6 +877,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 				if data, ok := refCache[key]; ok {
 					cacheReq := ipc.GetRootAsSetRefCacheRequest(data, 0)
 					arg_{{.Name}} = cacheReq.Val(nil)
+				} else {
+					arg_{{.Name}} = arg_{{.Name}}_raw
 				}
 				refCacheMutex.RUnlock()
 			}
