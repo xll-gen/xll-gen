@@ -264,147 +264,99 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         handles.reserve(256);
         values.reserve(256);
 
-        int spin = 0;
-        while(g_running) {
-             handles.clear();
-             values.clear();
+        g_host.Start([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
+             try {
+                 switch (msgId) {
+                 case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
+                     handles.clear();
+                     values.clear();
 
-             int n = g_host.ProcessGuestCalls([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
-                 try {
-                     switch (msgId) {
-                     case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
-                         auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
-                         if (batch->results()) {
-                             for (auto res : *batch->results()) {
-                                 XLOPER12 h;
-                                 h.xltype = xltypeBigData | xlbitXLFree;
-                                 LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
-                                 if (originalHandle) {
-                                     h = *originalHandle; // Copy the struct content
+                     auto batch = flatbuffers::GetRoot<ipc::BatchAsyncResponse>(req);
+                     if (batch->results()) {
+                         for (auto res : *batch->results()) {
+                             XLOPER12 h;
+                             h.xltype = xltypeBigData | xlbitXLFree;
+                             LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
+                             if (originalHandle) {
+                                 h = *originalHandle; // Copy the struct content
 
-                                     XLOPER12 val;
-                                     std::memset(&val, 0, sizeof(XLOPER12));
-
-                                     if (res->error() && res->error()->size() > 0) {
-                                         val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                     } else {
-                                         // result() is now ipc::types::Any* (Table)
-                                         auto* anyPtr = res->result();
-                                         LPXLOPER12 pVal = AnyToXLOPER12(anyPtr);
-                                         if (pVal) {
-                                             val = *pVal;
-                                             // If pVal was allocated by NewXLOPER12 (xlbitDLLFree), we must eventually free it.
-                                             // But here we copy the struct into 'val' (in our vector).
-                                             // If pVal has xlbitDLLFree, 'val' inherits it.
-                                             // We need to delete pVal itself (the container) but keep the content.
-                                             // AnyToXLOPER12 returns a new allocation (NewXLOPER12).
-                                             // We just took the content. We should delete the pVal container.
-                                             delete pVal;
-                                             // Note: We don't call xlAutoFree12(pVal) because that would free the content (str/array)
-                                             // which we now own in 'val'.
-                                         } else {
-                                             val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                         }
-                                     }
-                                     handles.push_back(h);
-                                     values.push_back(val);
-                                 }
-                             }
-                         }
-                         return 1;
-                     }
-                     {{range $i, $fn := .Functions}}
-                         {{if .Async}}
-                         case (shm::MsgType){{add 133 $i}}: { // {{.Name}} (Single Legacy Response)
-                             auto response = flatbuffers::GetRoot<ipc::{{.Name}}Response>(req);
-                             LPXLOPER12 hPtr = (LPXLOPER12)response->async_handle();
-
-                             if (hPtr) {
-                                 XLOPER12 h = *hPtr; // Copy handle content
                                  XLOPER12 val;
                                  std::memset(&val, 0, sizeof(XLOPER12));
 
-                                 if (response->error() && response->error()->size() > 0) {
+                                 if (res->error() && res->error()->size() > 0) {
                                      val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                     LogError("Async error for {{.Name}}: " + response->error()->str());
                                  } else {
-                                     {{if eq .Return "string"}}
-                                     std::wstring wres = StringToWString(response->result()->str());
-                                     val = CreateStringXLOPER(wres);
-                                     {{else if eq .Return "int"}}
-                                     val.xltype = xltypeInt; val.val.w = response->result();
-                                     {{else if eq .Return "float"}}
-                                     val.xltype = xltypeNum; val.val.num = response->result();
-                                     {{else if eq .Return "bool"}}
-                                     val.xltype = xltypeBool; val.val.xbool = response->result() ? 1 : 0;
-                                     {{end}}
+                                     // result() is now ipc::types::Any* (Table)
+                                     auto* anyPtr = res->result();
+                                     LPXLOPER12 pVal = AnyToXLOPER12(anyPtr);
+                                     if (pVal) {
+                                         val = *pVal;
+                                         // If pVal was allocated by NewXLOPER12 (xlbitDLLFree), we must eventually free it.
+                                         // But here we copy the struct into 'val' (in our vector).
+                                         // If pVal has xlbitDLLFree, 'val' inherits it.
+                                         // We need to delete pVal itself (the container) but keep the content.
+                                         // AnyToXLOPER12 returns a new allocation (NewXLOPER12).
+                                         // We just took the content. We should delete the pVal container.
+                                         delete pVal;
+                                         // Note: We don't call xlAutoFree12(pVal) because that would free the content (str/array)
+                                         // which we now own in 'val'.
+                                     } else {
+                                         val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                     }
                                  }
                                  handles.push_back(h);
                                  values.push_back(val);
                              }
-                             return 0;
                          }
-                         {{end}}
-                     {{end}}
-                         default:
-                             return 0;
                      }
-                 } catch (const std::exception& e) {
-                     LogError("Exception in guest call handler: " + std::string(e.what()));
-                     return 0;
-                 } catch (...) {
-                     LogError("Unknown exception in guest call handler");
+
+                     if (!handles.empty()) {
+                         if (handles.size() == 1) {
+                             Excel12(xlAsyncReturn, 0, 2, &handles[0], &values[0]);
+                         } else {
+                             int N = (int)handles.size();
+
+                             XLOPER12 arrH, arrV;
+                             arrH.xltype = xltypeMulti; arrH.val.array.rows = 1; arrH.val.array.columns = N; arrH.val.array.lparray = handles.data();
+                             arrV.xltype = xltypeMulti; arrV.val.array.rows = 1; arrV.val.array.columns = N; arrV.val.array.lparray = values.data();
+
+                             Excel12(xlAsyncReturn, 0, 2, &arrH, &arrV);
+                         }
+
+                         // Cleanup allocated strings and arrays
+                         for(auto& v : values) {
+                             if (v.xltype & xltypeStr) {
+                                 if (v.val.str) {
+                                     delete[] v.val.str;
+                                     v.val.str = nullptr;
+                                 }
+                             } else if (v.xltype & xltypeMulti) {
+                                 if (v.val.array.lparray) {
+                                     int count = v.val.array.rows * v.val.array.columns;
+                                     for(int i=0; i<count; ++i) {
+                                         if ((v.val.array.lparray[i].xltype & xltypeStr) && v.val.array.lparray[i].val.str) {
+                                             delete[] v.val.array.lparray[i].val.str;
+                                         }
+                                     }
+                                     delete[] v.val.array.lparray;
+                                     v.val.array.lparray = nullptr;
+                                 }
+                             }
+                         }
+                     }
+                     return 1;
+                 }
+                 default:
                      return 0;
                  }
-              });
-
-              if (!handles.empty()) {
-                  if (handles.size() == 1) {
-                      Excel12(xlAsyncReturn, 0, 2, &handles[0], &values[0]);
-                  } else {
-                      int N = (int)handles.size();
-
-                      XLOPER12 arrH, arrV;
-                      arrH.xltype = xltypeMulti; arrH.val.array.rows = 1; arrH.val.array.columns = N; arrH.val.array.lparray = handles.data();
-                      arrV.xltype = xltypeMulti; arrV.val.array.rows = 1; arrV.val.array.columns = N; arrV.val.array.lparray = values.data();
-
-                      Excel12(xlAsyncReturn, 0, 2, &arrH, &arrV);
-                  }
-
-                  // Cleanup allocated strings and arrays
-                  for(auto& v : values) {
-                      if (v.xltype & xltypeStr) {
-                          if (v.val.str) {
-                              delete[] v.val.str;
-                              v.val.str = nullptr;
-                          }
-                      } else if (v.xltype & xltypeMulti) {
-                          if (v.val.array.lparray) {
-                              int count = v.val.array.rows * v.val.array.columns;
-                              for(int i=0; i<count; ++i) {
-                                  if ((v.val.array.lparray[i].xltype & xltypeStr) && v.val.array.lparray[i].val.str) {
-                                      delete[] v.val.array.lparray[i].val.str;
-                                  }
-                              }
-                              delete[] v.val.array.lparray;
-                              v.val.array.lparray = nullptr;
-                          }
-                      }
-                  }
-              }
-
-              if (n == 0) {
-                  if (spin < 1000) {
-                      std::this_thread::yield();
-                      spin++;
-                  } else {
-                      Sleep(1);
-                      spin = 0;
-                  }
-              } else {
-                  spin = 0;
-              }
-        }
+             } catch (const std::exception& e) {
+                 LogError("Exception in guest call handler: " + std::string(e.what()));
+                 return 0;
+             } catch (...) {
+                 LogError("Unknown exception in guest call handler");
+                 return 0;
+             }
+        });
     });
 
     static XLOPER12 xDll;
