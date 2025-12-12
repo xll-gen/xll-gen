@@ -274,32 +274,30 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                                  h.xltype = xltypeBigData | xlbitXLFree;
                                  LPXLOPER12 originalHandle = (LPXLOPER12)res->handle();
                                  if (originalHandle) {
-                                     h = *originalHandle; // Copy the struct content (xltypeBigData, val, etc.)
+                                     h = *originalHandle; // Copy the struct content
 
                                      XLOPER12 val;
                                      std::memset(&val, 0, sizeof(XLOPER12));
 
                                      if (res->error() && res->error()->size() > 0) {
                                          val.xltype = xltypeErr; val.val.err = xlerrValue;
-                                         // LogError("Async batch error: " + res->error()->str()); // Optional
                                      } else {
-                                         // Convert AnyValue to XLOPER12
-                                         auto anyType = res->result_type();
-                                         if (anyType == ipc::types::AnyValue_Int) {
-                                             val.xltype = xltypeInt;
-                                             val.val.w = static_cast<const ipc::types::Int*>(res->result())->val();
-                                         } else if (anyType == ipc::types::AnyValue_Num) {
-                                             val.xltype = xltypeNum;
-                                             val.val.num = static_cast<const ipc::types::Num*>(res->result())->val();
-                                         } else if (anyType == ipc::types::AnyValue_Bool) {
-                                             val.xltype = xltypeBool;
-                                             val.val.xbool = static_cast<const ipc::types::Bool*>(res->result())->val() ? 1 : 0;
-                                         } else if (anyType == ipc::types::AnyValue_Str) {
-                                             auto s = static_cast<const ipc::types::Str*>(res->result())->val();
-                                             std::wstring wres = StringToWString(s->str());
-                                             val = CreateStringXLOPER(wres);
+                                         // result() is now ipc::types::Any* (Table)
+                                         auto* anyPtr = res->result();
+                                         LPXLOPER12 pVal = AnyToXLOPER12(anyPtr);
+                                         if (pVal) {
+                                             val = *pVal;
+                                             // If pVal was allocated by NewXLOPER12 (xlbitDLLFree), we must eventually free it.
+                                             // But here we copy the struct into 'val' (in our vector).
+                                             // If pVal has xlbitDLLFree, 'val' inherits it.
+                                             // We need to delete pVal itself (the container) but keep the content.
+                                             // AnyToXLOPER12 returns a new allocation (NewXLOPER12).
+                                             // We just took the content. We should delete the pVal container.
+                                             delete pVal;
+                                             // Note: We don't call xlAutoFree12(pVal) because that would free the content (str/array)
+                                             // which we now own in 'val'.
                                          } else {
-                                              val.xltype = xltypeErr; val.val.err = xlerrValue;
+                                             val.xltype = xltypeErr; val.val.err = xlerrValue;
                                          }
                                      }
                                      handles.push_back(h);

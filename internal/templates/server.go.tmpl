@@ -401,13 +401,14 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 	resultOffsets := make([]flatbuffers.UOffsetT, len(batch))
 
 	for i, res := range batch {
-		var uOff flatbuffers.UOffsetT
+		var anyOff flatbuffers.UOffsetT
 		var errOff flatbuffers.UOffsetT
 
 		if res.err != "" {
 			errOff = b.CreateString(res.err)
 		} else {
-			// Build Union Value
+			// Build Any Table
+			var uOff flatbuffers.UOffsetT
 			switch res.valType {
 			case types.AnyValueInt:
 				types.IntStart(b)
@@ -430,6 +431,11 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 				types.NilStart(b)
 				uOff = types.NilEnd(b)
 			}
+
+			types.AnyStart(b)
+			types.AnyAddValType(b, res.valType)
+			types.AnyAddVal(b, uOff)
+			anyOff = types.AnyEnd(b)
 		}
 
 		ipc.AsyncResultStart(b)
@@ -437,8 +443,7 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 		if errOff > 0 {
 			ipc.AsyncResultAddError(b, errOff)
 		} else {
-			ipc.AsyncResultAddResultType(b, res.valType)
-			ipc.AsyncResultAddResult(b, uOff)
+			ipc.AsyncResultAddResult(b, anyOff)
 		}
 		resultOffsets[i] = ipc.AsyncResultEnd(b)
 	}
