@@ -77,6 +77,13 @@ var (
 			return flatbuffers.NewBuilder(1024)
 		},
 	}
+
+	// Heap Builder Pool for outgoing messages (retains buffer capacity)
+	heapBuilderPool = sync.Pool{
+		New: func() interface{} {
+			return flatbuffers.NewBuilder(1024)
+		},
+	}
 )
 
 // Optimization Structures
@@ -386,9 +393,9 @@ func flushAsyncBatch(batch []pendingAsyncResult, client *shm.Client) {
 		return
 	}
 
-	b := builderPool.Get().(*flatbuffers.Builder)
+	b := heapBuilderPool.Get().(*flatbuffers.Builder)
 	b.Reset()
-	defer builderPool.Put(b)
+	defer heapBuilderPool.Put(b)
 
 	resultOffsets := make([]flatbuffers.UOffsetT, len(batch))
 
@@ -575,10 +582,8 @@ func Serve(handler XllService) {
 		}()
 	}
 
-	client.Handle(func(req []byte, respBuf []byte, msgType shm.MsgType) (int32, shm.MsgType) {
-
-        var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
-        dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
+	var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
+	dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
              builder := builderPool.Get().(*flatbuffers.Builder)
              if respBuf != nil && cap(respBuf) > 0 {
                  builder.Bytes = respBuf
@@ -801,10 +806,9 @@ func Serve(handler XllService) {
              default:
                 return 0, 0
              }
-        }
+	}
 
-        return dispatch(req, respBuf, msgType)
-	})
+	client.Handle(dispatch)
 
 	client.Start()
 	client.Wait()
