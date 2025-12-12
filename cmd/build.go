@@ -8,24 +8,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var debugBuild bool
+
 // buildCmd represents the build command.
 var buildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build the XLL project using Taskfile",
 	Long:  `Executes 'task build' to build the Go server and C++ XLL. It requires the 'task' (or 'go-task') command to be available in the system PATH.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		runBuildCommand()
+		runBuildCommand(debugBuild)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(buildCmd)
+	buildCmd.Flags().BoolVar(&debugBuild, "debug", false, "Build in debug mode (task build-debug)")
 }
 
 // runBuildCommand checks for the presence of a Taskfile and executes the 'task build' command.
 // It searches for 'task' or 'go-task' executables in the system PATH.
 // If the build fails, it exits the process with a non-zero status code.
-func runBuildCommand() {
+func runBuildCommand(debug bool) {
 	// 1. Check for Taskfile.yml or Taskfile.yaml
 	if _, err := os.Stat("Taskfile.yml"); os.IsNotExist(err) {
 		if _, err := os.Stat("Taskfile.yaml"); os.IsNotExist(err) {
@@ -46,8 +49,13 @@ func runBuildCommand() {
 	}
 
 	// 3. Execute 'task build'
-	fmt.Printf("Building project using '%s build'...\n", taskExe)
-	cmd := exec.Command(taskExe, "build")
+	taskName := "build"
+	if debug {
+		taskName = "build-debug"
+	}
+
+	fmt.Printf("Building project using '%s %s'...\n", taskExe, taskName)
+	cmd := exec.Command(taskExe, taskName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

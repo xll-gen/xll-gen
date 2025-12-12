@@ -4,6 +4,7 @@ package {{.Package}}
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"strings"
@@ -475,6 +476,7 @@ func Serve(handler XllService) {
 	if err := log.Init("{{.Logging.Path}}", "{{.Logging.Level}}"); err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 	}
+	shm.SetLogger(slog.Default())
 
 	name := "{{.ProjectName}}"
 	for _, arg := range os.Args {
