@@ -35,9 +35,9 @@ var typeRegistry = map[string]TypeInfo{
 		SchemaType:      "string",
 		GoType:          "string",
 		CppType:         "LPXLOPER12",
-		ArgCppType:      "const XLL_PASCAL_STRING*",
+		ArgCppType:      "LPXLOPER12",
 		XllType:         "Q",
-		ArgXllType:      "D%",
+		ArgXllType:      "Q",
 		DefaultErrorVal: "&g_xlErrValue",
 	},
 	"bool": {
