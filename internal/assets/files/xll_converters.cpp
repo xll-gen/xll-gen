@@ -188,7 +188,9 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
         long totalCells = rows * cols;
         std::string key = ss.str();
 
-        bool useCache = (totalCells > 100);
+        // Nested IPC (SetRefCache) corrupts the ZeroCopy slot used by xll_main.
+        // Disabled until shm supports independent slots for nested calls.
+        bool useCache = false;
 
         if (useCache) {
              std::lock_guard<std::mutex> lock(g_refCacheMutex);
@@ -197,6 +199,9 @@ flatbuffers::Offset<ipc::types::Any> ConvertAny(LPXLOPER12 op, flatbuffers::Flat
                   XLOPER12 xMulti;
                   int ret = Excel12(xlCoerce, &xMulti, 2, op, TempInt12(xltypeMulti));
                   if (ret == xlretSuccess) {
+                      // Use a local builder and explicit Send() to avoid reusing the global ZeroCopySlot
+                      // which is already being used by the caller (xll_main).
+                      // Nested usage of ZeroCopySlot leads to buffer corruption.
                       flatbuffers::FlatBufferBuilder reqB(1024);
 
                       auto anyOff = ConvertMultiToAny(xMulti, reqB);
