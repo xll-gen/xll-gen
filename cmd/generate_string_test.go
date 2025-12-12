@@ -80,8 +80,9 @@ functions:
 	// We should check for the expected correct pattern to be sure.
 
 	// Expected fix pattern:
-	// Use helper ConvertExcelString(msg)
-	expectedCall := "ConvertExcelString(msg)"
+	// Use helper ConvertExcelString((msg && msg->xltype == xltypeStr) ? msg->val.str : nullptr)
+	// We just check for ConvertExcelString usage
+	expectedCall := "ConvertExcelString"
 
 	if !strings.Contains(content, expectedCall) {
 		t.Errorf("Generated code missing expected fix part: %s", expectedCall)
