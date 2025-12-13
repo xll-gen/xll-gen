@@ -116,28 +116,25 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	}
 	content := string(contentBytes)
 
-	// Verify TestStr error return
-    // We expect: if (!slot.Send(reqSize, (shm::MsgType)(132), 2000)) { return &g_xlErrValue; }
-    // The message ID for TestStr (first function) should be 132.
-    // Note: Template now uses reqSize (negative) for zero-copy.
-    expectedFix := "if (!slot.Send(reqSize, (shm::MsgType)(132), 2000)) {\n        return &g_xlErrValue;\n    }"
-    if !strings.Contains(content, expectedFix) {
-        // Fallback check if whitespace is different or reqSize calculation is inline
-        if !strings.Contains(content, "slot.Send(reqSize, (shm::MsgType)(132)") {
-             t.Logf("Generated content:\n%s", content)
-             t.Fatal("Could not find expected Send failure check")
-        }
+	// Verify TestStr error return (MsgID 133)
+    // Expect: auto res = slot.Send(reqSize, (shm::MsgType)(133), 2000);
+    if !strings.Contains(content, "auto res = slot.Send(reqSize, (shm::MsgType)(133), 2000);") {
+         t.Fatal("Could not find expected Send call for TestStr (MsgId 133)")
     }
-    if !strings.Contains(content, "return &g_xlErrValue;") {
-         t.Fatal("Expected return &g_xlErrValue on error")
+    // Expect: if (res.HasError())
+    if !strings.Contains(content, "if (res.HasError())") {
+         t.Fatal("Could not find expected HasError check")
     }
 
-    // Check TestInt should return 0 (MsgID 133)
-    expectedIntFix := "if (!slot.Send(reqSize, (shm::MsgType)(133), 2000)) {\n        return 0;\n    }"
-    if !strings.Contains(content, expectedIntFix) {
-         if !strings.Contains(content, "slot.Send(reqSize, (shm::MsgType)(133)") {
-             t.Fatalf("Expected int return 0 on error, expected: %s", expectedIntFix)
-         }
+    // Verify TestInt error return (MsgID 134)
+    // Expect: auto res = slot.Send(reqSize, (shm::MsgType)(134), 2000);
+    if !strings.Contains(content, "auto res = slot.Send(reqSize, (shm::MsgType)(134), 2000);") {
+         t.Fatal("Could not find expected Send call for TestInt (MsgId 134)")
+    }
+
+    // Check that HasError is used at least twice (once for each function)
+    if strings.Count(content, "if (res.HasError())") < 2 {
+         t.Fatal("Expected at least 2 occurrences of 'if (res.HasError())'")
     }
 
     // Check for negative size calculation
