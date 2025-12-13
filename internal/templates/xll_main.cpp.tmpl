@@ -83,21 +83,6 @@ static void LogHandler(shm::LogLevel level, const std::string& msg) {
 }
 #endif
 
-// Helper to replace all occurrences of a substring
-void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring& to) {
-    if(from.empty()) return;
-    size_t start_pos = 0;
-    while((start_pos = str.find(from, start_pos)) != std::wstring::npos) {
-        str.replace(start_pos, from.length(), to);
-        start_pos += to.length();
-    }
-}
-
-bool FileExists(const std::wstring& path) {
-    DWORD dwAttrib = GetFileAttributesW(path.c_str());
-    return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
-}
-
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
@@ -190,125 +175,26 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     // Launch Logic
     {
         std::wstring xllDir = GetXllDir();
+        std::wstring extractedExe = L"";
 
-        // Resolve CWD
-        std::wstring cwd = xllDir;
-        {{if .Server.Launch.Cwd}}
-        std::string cfgCwd = "{{.Server.Launch.Cwd}}";
-        if (cfgCwd != ".") {
-            std::wstring wCwd = StringToWString(cfgCwd);
-            bool isAbs = (wCwd.find(L":") != std::wstring::npos || (wCwd.size() > 1 && wCwd[0] == L'\\' && wCwd[1] == L'\\'));
-            if (isAbs) {
-                cwd = wCwd;
-            } else {
-                cwd = xllDir + L"\\" + wCwd;
-            }
-        }
-        {{end}}
-
-        // 1. Determine Default Binary Path
-        std::wstring defaultBinPath;
 {{if eq .Build.Singlefile "xll"}}
         // EMBEDDED MODE
-        std::string extractedExe = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
-        if (!extractedExe.empty()) {
-            defaultBinPath = StringToWString(extractedExe);
-            // In singlefile mode, run from the temp dir so logs appear there
-            size_t lastSlash = defaultBinPath.find_last_of(L"\\");
-            if (lastSlash != std::wstring::npos) {
-                cwd = defaultBinPath.substr(0, lastSlash);
-            }
-        } else {
-             // Fallback: Check standard locations
-             std::wstring sameDir = xllDir + L"\\{{.ProjectName}}.exe";
-             if (FileExists(sameDir)) {
-                 defaultBinPath = sameDir;
-             } else {
-                 // Check parent directory (Standard Go build output in dev)
-                 size_t lastSlash = xllDir.find_last_of(L"\\");
-                 if (lastSlash != std::wstring::npos) {
-                     std::wstring parentDir = xllDir.substr(0, lastSlash);
-                     std::wstring parentExe = parentDir + L"\\{{.ProjectName}}.exe";
-                     if (FileExists(parentExe)) {
-                         defaultBinPath = parentExe;
-                     } else {
-                         defaultBinPath = sameDir; // Default to same dir for consistent error message
-                     }
-                 } else {
-                      defaultBinPath = sameDir;
-                 }
-             }
-        }
-{{else}}
-        // STANDARD MODE
-        // Check same dir, then parent
-        std::wstring sameDir = xllDir + L"\\{{.ProjectName}}.exe";
-        if (FileExists(sameDir)) {
-            defaultBinPath = sameDir;
-        } else {
-            size_t lastSlash = xllDir.find_last_of(L"\\");
-            if (lastSlash != std::wstring::npos) {
-                std::wstring parentDir = xllDir.substr(0, lastSlash);
-                std::wstring parentExe = parentDir + L"\\{{.ProjectName}}.exe";
-                if (FileExists(parentExe)) {
-                    defaultBinPath = parentExe;
-                } else {
-                    defaultBinPath = sameDir;
-                }
-            } else {
-                defaultBinPath = sameDir;
-            }
+        std::string extractedStr = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
+        if (!extractedStr.empty()) {
+            extractedExe = StringToWString(extractedStr);
         }
 {{end}}
 
-        // 2. Resolve Configured Command
-        std::wstring exePath = defaultBinPath;
-        {{if .Server.Launch.Command}}
-        std::string cfgCmd = "{{.Server.Launch.Command}}";
-        if (!cfgCmd.empty()) {
-            std::wstring wCmd = StringToWString(cfgCmd);
+        xll::LaunchConfig cfg;
+        cfg.projectName = L"{{.ProjectName}}";
+        cfg.isSingleFile = {{if eq .Build.Singlefile "xll"}}true{{else}}false{{end}};
+        cfg.tempDir = L"{{.Build.TempDir}}";
+        cfg.cwd = "{{.Server.Launch.Cwd}}";
+        cfg.command = "{{.Server.Launch.Command}}";
+        cfg.shmName = shmName;
 
-            // Check for ${BIN} variable
-            std::wstring varBin = L"${BIN}";
-            if (wCmd.find(varBin) != std::wstring::npos) {
-                ReplaceAll(wCmd, varBin, defaultBinPath);
-                exePath = wCmd;
-            } else {
-{{if eq .Build.Singlefile "xll"}}
-                // In singlefile mode, if the command explicitly points to the project executable (default config),
-                // we should ignore it and use the extracted binary path instead.
-                std::string projExe = "{{.ProjectName}}.exe";
-                if (cfgCmd.find(projExe) != std::string::npos) {
-                    // Ignore, keep exePath as defaultBinPath (extracted)
-                } else {
-{{end}}
-                // Legacy/Standard relative path resolution
-                bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
-                if (isCmdAbs) {
-                    exePath = wCmd;
-                } else {
-                     if (cfgCmd.find("./") == 0 || cfgCmd.find(".\\") == 0) {
-                         exePath = cwd + L"\\" + wCmd.substr(2);
-                    } else {
-                         exePath = cwd + L"\\" + wCmd;
-                    }
-                }
-{{if eq .Build.Singlefile "xll"}}
-                }
-{{end}}
-            }
-        }
-        {{end}}
-
-        // Append SHM Flag
-        std::wstring cmd;
-        if (!exePath.empty() && exePath[0] == L'"') {
-            cmd = exePath + L" -xll-shm=" + StringToWString(shmName);
-        } else {
-            cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(shmName);
-        }
-
-        std::wstring logPath = cwd + L"\\xll_launch.log";
+        std::wstring cmd, cwd, logPath;
+        xll::ResolveServerPath(xllDir, extractedExe, cfg, cmd, cwd, logPath);
 
         if (xll::LaunchProcess(cmd, cwd, logPath, g_procInfo)) {
             g_monitor = std::thread([logPath]{
@@ -421,19 +307,19 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         {{if eq .Type "string"}}
         auto {{.Name}}_off = builder.CreateString(ConvertExcelString(({{.Name}} && {{.Name}}->xltype == xltypeStr) ? {{.Name}}->val.str : nullptr));
         {{else if eq .Type "int?"}}
-        flatbuffers::Offset<ipc::types::Int> {{.Name}}_off = 0;
+        flatbuffers::Offset<protocol::Int> {{.Name}}_off = 0;
         if ({{.Name}}) {
-            {{.Name}}_off = ipc::types::CreateInt(builder, *{{.Name}});
+            {{.Name}}_off = protocol::CreateInt(builder, *{{.Name}});
         }
         {{else if eq .Type "float?"}}
-        flatbuffers::Offset<ipc::types::Num> {{.Name}}_off = 0;
+        flatbuffers::Offset<protocol::Num> {{.Name}}_off = 0;
         if ({{.Name}}) {
-            {{.Name}}_off = ipc::types::CreateNum(builder, *{{.Name}});
+            {{.Name}}_off = protocol::CreateNum(builder, *{{.Name}});
         }
         {{else if eq .Type "bool?"}}
-        flatbuffers::Offset<ipc::types::Bool> {{.Name}}_off = 0;
+        flatbuffers::Offset<protocol::Bool> {{.Name}}_off = 0;
         if ({{.Name}}) {
-            {{.Name}}_off = ipc::types::CreateBool(builder, (*{{.Name}} != 0));
+            {{.Name}}_off = protocol::CreateBool(builder, (*{{.Name}} != 0));
         }
         {{else if eq .Type "range"}}
         auto {{.Name}}_off = ConvertRange({{.Name}}, builder);
@@ -447,7 +333,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         {{end}}
 
         {{if .Caller}}
-        flatbuffers::Offset<ipc::types::Range> caller_off = 0;
+        flatbuffers::Offset<protocol::Range> caller_off = 0;
         {
             XLOPER12 xCaller;
             if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {

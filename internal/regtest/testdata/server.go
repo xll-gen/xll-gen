@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"smoke_proj/generated"
-	"smoke_proj/generated/ipc/types"
+	types "github.com/xll-gen/xll-gen/pkg/protocol"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -320,6 +320,10 @@ func (s *Service) ScheduleGridCmd(ctx context.Context) (int32, error) {
 }
 
 func (s *Service) OnCalculationEnded(ctx context.Context) error {
+    return nil
+}
+
+func (s *Service) OnCalculationCanceled(ctx context.Context) error {
     return nil
 }
 

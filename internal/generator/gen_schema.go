@@ -20,16 +20,17 @@ func generateSchema(cfg *config.Config, path string) error {
 	return executeTemplate("schema.fbs.tmpl", path, cfg, GetCommonFuncMap())
 }
 
-// generateXlTypes writes the static xltypes.fbs file.
-// This file contains standard Excel type definitions used by the schema.
+// generateProtocol writes the static protocol.fbs file.
+// This file contains standard Excel type definitions and system messages.
 //
 // Parameters:
-//   - path: The file path where xltypes.fbs should be written.
+//   - path: The file path where protocol.fbs should be written.
 //
 // Returns:
 //   - error: An error if the write fails.
-func generateXlTypes(path string) error {
-	content, err := templates.Get("xltypes.fbs.tmpl")
+func generateProtocol(path string) error {
+	// Note: protocol.fbs is stored as a static file, not a .tmpl
+	content, err := templates.Get("protocol.fbs")
 	if err != nil {
 		return err
 	}

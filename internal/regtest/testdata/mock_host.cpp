@@ -127,8 +127,8 @@ int main() {
     // Int
     {
         builder.Reset();
-        auto val = ipc::types::CreateInt(builder, 10);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Int, val.Union());
+        auto val = protocol::CreateInt(builder, 10);
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Int, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -142,8 +142,8 @@ int main() {
     {
         builder.Reset();
         auto s = builder.CreateString("hello");
-        auto val = ipc::types::CreateStr(builder, s);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Str, val.Union());
+        auto val = protocol::CreateStr(builder, s);
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Str, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -156,8 +156,8 @@ int main() {
     // Num
     {
         builder.Reset();
-        auto val = ipc::types::CreateNum(builder, 1.5);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Num, val.Union());
+        auto val = protocol::CreateNum(builder, 1.5);
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Num, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -173,8 +173,8 @@ int main() {
         builder.Reset();
         std::vector<double> data = {1.1, 2.2};
         auto dataOff = builder.CreateVector(data);
-        auto arr = ipc::types::CreateNumGrid(builder, 1, 2, dataOff);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_NumGrid, arr.Union());
+        auto arr = protocol::CreateNumGrid(builder, 1, 2, dataOff);
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_NumGrid, arr.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -188,15 +188,15 @@ int main() {
     // Grid
     {
         builder.Reset();
-        auto val1 = ipc::types::CreateInt(builder, 1);
-        auto s1 = ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Int, val1.Union());
-        auto val2 = ipc::types::CreateBool(builder, true);
-        auto s2 = ipc::types::CreateScalar(builder, ipc::types::ScalarValue_Bool, val2.Union());
+        auto val1 = protocol::CreateInt(builder, 1);
+        auto s1 = protocol::CreateScalar(builder, protocol::ScalarValue_Int, val1.Union());
+        auto val2 = protocol::CreateBool(builder, true);
+        auto s2 = protocol::CreateScalar(builder, protocol::ScalarValue_Bool, val2.Union());
 
-        std::vector<flatbuffers::Offset<ipc::types::Scalar>> data = {s1, s2};
+        std::vector<flatbuffers::Offset<protocol::Scalar>> data = {s1, s2};
         auto dataOff = builder.CreateVector(data);
-        auto arr = ipc::types::CreateGrid(builder, 1, 2, dataOff);
-        auto any = ipc::types::CreateAny(builder, ipc::types::AnyValue_Grid, arr.Union());
+        auto arr = protocol::CreateGrid(builder, 1, 2, dataOff);
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Grid, arr.Union());
 
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
@@ -212,9 +212,9 @@ int main() {
     {
         builder.Reset();
         auto sOff = builder.CreateString("Sheet1");
-        std::vector<ipc::types::Rect> refs = { {1,1,1,1} };
+        std::vector<protocol::Rect> refs = { {1,1,1,1} };
         auto refsOff = builder.CreateVectorOfStructs(refs);
-        auto rangeVal = ipc::types::CreateRange(builder, sOff, refsOff);
+        auto rangeVal = protocol::CreateRange(builder, sOff, refsOff);
         ipc::CheckRangeRequestBuilder req(builder);
         req.add_val(rangeVal);
         builder.Finish(req.Finish());
@@ -257,20 +257,20 @@ int main() {
 
         // 3. Verify Response contains SetCommand
         if (eventBuf.empty()) { cerr << "Expected commands in CalcEnded response" << endl; return 1; }
-        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        auto eventResp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(eventBuf.data());
 
         if (!eventResp->commands()) { cerr << "No commands list" << endl; return 1; }
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 command" << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        if (wrapper->cmd_type() != ipc::Command_SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
+        if (wrapper->cmd_type() != protocol::Command_SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
 
-        auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+        auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
         auto rng = setCmd->target();
         ASSERT_STREQ("Sheet1", rng->sheet_name()->str(), "SetCommand Sheet");
 
         auto val = setCmd->value();
-        ASSERT_EQ(ipc::types::AnyValue_Int, val->val_type(), "SetCommand ValType");
+        ASSERT_EQ(protocol::AnyValue_Int, val->val_type(), "SetCommand ValType");
         ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
     }
 
@@ -290,13 +290,13 @@ int main() {
         if(host.Send(nullptr, 0, (shm::MsgType)131, eventBuf).ValueOr(-1) < 0) return 1;
 
         // 3. Verify Response contains FormatCommand
-        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        auto eventResp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(eventBuf.data());
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 format command" << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        if (wrapper->cmd_type() != ipc::Command_FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
+        if (wrapper->cmd_type() != protocol::Command_FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
 
-        auto fmtCmd = static_cast<const ipc::FormatCommand*>(wrapper->cmd());
+        auto fmtCmd = static_cast<const protocol::FormatCommand*>(wrapper->cmd());
         auto rng = fmtCmd->target();
         ASSERT_STREQ("Sheet1", rng->sheet_name()->str(), "FormatCommand Sheet");
 
@@ -319,22 +319,22 @@ int main() {
         if(host.Send(nullptr, 0, (shm::MsgType)131, eventBuf).ValueOr(-1) < 0) return 1;
 
         // 3. Verify Response contains 2 commands (Set, Format)
-        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        auto eventResp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(eventBuf.data());
         if (eventResp->commands()->size() != 2) { cerr << "Expected 2 commands" << endl; return 1; }
 
         // First: Set
         {
             auto wrapper = eventResp->commands()->Get(0);
-            if (wrapper->cmd_type() != ipc::Command_SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
-            auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+            if (wrapper->cmd_type() != protocol::Command_SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
+            auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
             auto val = setCmd->value();
             ASSERT_EQ(200, val->val_as_Int()->val(), "Multi SetCommand Val");
         }
         // Second: Format
         {
             auto wrapper = eventResp->commands()->Get(1);
-            if (wrapper->cmd_type() != ipc::Command_FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
-            auto fmtCmd = static_cast<const ipc::FormatCommand*>(wrapper->cmd());
+            if (wrapper->cmd_type() != protocol::Command_FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
+            auto fmtCmd = static_cast<const protocol::FormatCommand*>(wrapper->cmd());
             ASSERT_STREQ("Number", fmtCmd->format()->str(), "Multi FormatCommand Format");
         }
     }
@@ -355,7 +355,7 @@ int main() {
         if(host.Send(nullptr, 0, (shm::MsgType)131, eventBuf).ValueOr(-1) < 0) return 1;
 
         // 3. Verify Response
-        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        auto eventResp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(eventBuf.data());
         if (!eventResp->commands()) { cerr << "No commands list for Massive" << endl; return 1; }
 
         int cmdCount = eventResp->commands()->size();
@@ -369,8 +369,8 @@ int main() {
 
         for (unsigned int i=0; i<eventResp->commands()->size(); ++i) {
              auto wrapper = eventResp->commands()->Get(i);
-             if (wrapper->cmd_type() == ipc::Command_SetCommand) {
-                 auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+             if (wrapper->cmd_type() == protocol::Command_SetCommand) {
+                 auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
                  auto val = setCmd->value()->val_as_Int()->val();
                  if (val == 100) count100++;
                  else if (val == 200) count200++;
@@ -396,15 +396,15 @@ int main() {
         if(host.Send(nullptr, 0, (shm::MsgType)131, eventBuf).ValueOr(-1) < 0) return 1;
 
         // 3. Verify Response contains Grid
-        auto eventResp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(eventBuf.data());
+        auto eventResp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(eventBuf.data());
         if (!eventResp->commands()) { cerr << "No commands list for Grid" << endl; return 1; }
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 command for Grid, got " << eventResp->commands()->size() << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        auto setCmd = static_cast<const ipc::SetCommand*>(wrapper->cmd());
+        auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
         auto val = setCmd->value();
 
-        if (val->val_type() != ipc::types::AnyValue_Grid) {
+        if (val->val_type() != protocol::AnyValue_Grid) {
             cerr << "Expected Grid, got " << val->val_type() << endl;
             return 1;
         }
@@ -417,11 +417,11 @@ int main() {
         if (grid->data()->size() != 4) { cerr << "Expected 4 scalars" << endl; return 1; }
 
         auto s0 = grid->data()->Get(0);
-        ASSERT_EQ(ipc::types::ScalarValue_Int, s0->val_type(), "S0 type");
+        ASSERT_EQ(protocol::ScalarValue_Int, s0->val_type(), "S0 type");
         ASSERT_EQ(1, s0->val_as_Int()->val(), "S0 val");
 
         auto s1 = grid->data()->Get(1);
-        ASSERT_EQ(ipc::types::ScalarValue_Int, s1->val_type(), "S1 type");
+        ASSERT_EQ(protocol::ScalarValue_Int, s1->val_type(), "S1 type");
         ASSERT_EQ(2, s1->val_as_Int()->val(), "S1 val");
 
         auto s3 = grid->data()->Get(3);
@@ -433,21 +433,21 @@ int main() {
         // 1. Send SetRefCache "K1" = Int(123)
         builder.Reset();
         auto keyOff = builder.CreateString("K1");
-        auto valOff = ipc::types::CreateInt(builder, 123);
-        auto anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_Int, valOff.Union());
-        auto req = ipc::CreateSetRefCacheRequest(builder, keyOff, anyOff);
+        auto valOff = protocol::CreateInt(builder, 123);
+        auto anyOff = protocol::CreateAny(builder, protocol::AnyValue_Int, valOff.Union());
+        auto req = protocol::CreateSetRefCacheRequest(builder, keyOff, anyOff);
         builder.Finish(req);
         vector<uint8_t> respBuf;
         if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)130, respBuf).ValueOr(-1) < 0) return 1;
         // Expect Ack
-        auto ack = flatbuffers::GetRoot<ipc::Ack>(respBuf.data());
+        auto ack = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
         ASSERT_EQ(true, ack->ok(), "SetRefCache Ack");
 
         // 2. Send CheckAny with RefCache("K1") -> Expect "Int:123"
         builder.Reset();
         keyOff = builder.CreateString("K1");
-        auto rcVal = ipc::types::CreateRefCache(builder, keyOff);
-        anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, rcVal.Union());
+        auto rcVal = protocol::CreateRefCache(builder, keyOff);
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq(builder);
         caReq.add_val(anyOff);
         builder.Finish(caReq.Finish());
@@ -463,8 +463,8 @@ int main() {
         // Send CheckAny with RefCache("K1") -> Expect "Int:123"
         builder.Reset();
         keyOff = builder.CreateString("K1");
-        rcVal = ipc::types::CreateRefCache(builder, keyOff);
-        anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, rcVal.Union());
+        rcVal = protocol::CreateRefCache(builder, keyOff);
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq2(builder);
         caReq2.add_val(anyOff);
         builder.Finish(caReq2.Finish());
@@ -479,8 +479,8 @@ int main() {
         // Send CheckAny with RefCache("K1") -> Expect "RefCache:K1"
         builder.Reset();
         keyOff = builder.CreateString("K1");
-        rcVal = ipc::types::CreateRefCache(builder, keyOff);
-        anyOff = ipc::types::CreateAny(builder, ipc::types::AnyValue_RefCache, rcVal.Union());
+        rcVal = protocol::CreateRefCache(builder, keyOff);
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq3(builder);
         caReq3.add_val(anyOff);
         builder.Finish(caReq3.Finish());

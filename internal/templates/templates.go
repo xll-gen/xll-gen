@@ -5,9 +5,9 @@ import (
 	"fmt"
 )
 
-// templatesFS embeds all .tmpl files in the current directory.
+// templatesFS embeds all .tmpl files and .fbs files in the current directory.
 //
-//go:embed *.tmpl
+//go:embed *.tmpl *.fbs
 var templatesFS embed.FS
 
 // Get returns the content of the specified template file.

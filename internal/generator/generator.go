@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/xll-gen/xll-gen/internal/assets"
@@ -64,14 +65,14 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		}
 	}
 
-	// 3. Generate xltypes.fbs
-	xlTypesPath := filepath.Join(genDir, "xltypes.fbs")
-	if err := generateXlTypes(xlTypesPath); err != nil {
+	// 3. Generate protocol.fbs (Static System Types)
+	protocolPath := filepath.Join(genDir, "protocol.fbs")
+	if err := generateProtocol(protocolPath); err != nil {
 		return err
 	}
-	fmt.Println("Generated xltypes.fbs")
+	fmt.Println("Generated protocol.fbs")
 
-	// 4. Generate schema.fbs
+	// 4. Generate schema.fbs (User Types)
 	schemaPath := filepath.Join(genDir, "schema.fbs")
 	if err := generateSchema(cfg, schemaPath); err != nil {
 		return err
@@ -86,32 +87,26 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		return err
 	}
 
-	// Generate Go code for xltypes
-	cmd := exec.Command(flatcPath, "--go", "--go-module-name", goModulePath, "-o", genDir, xlTypesPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("flatc (go xltypes) failed: %w", err)
-	}
-
-	// Generate C++ code for xltypes
-	cmd = exec.Command(flatcPath, "--cpp", "-o", cppDir, xlTypesPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("flatc (cpp xltypes) failed: %w", err)
-	}
-
 	// Generate Go code for schema
-	cmd = exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "-o", genDir, schemaPath)
+	// We use --no-includes to avoid regenerating Go code for protocol.fbs (which is in pkg/protocol).
+	cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "--no-includes", "-o", genDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flatc (go) failed: %w", err)
 	}
+
+	// Post-process generated Go code to fix imports
+	if err := fixGoImports(genDir, goModulePath); err != nil {
+		return fmt.Errorf("failed to fix imports: %w", err)
+	}
+
 	fmt.Println("Generated Flatbuffers Go code")
 
 	// Generate C++ code
+	// We do NOT use --no-includes here because the C++ header for protocol.fbs needs to be available
+	// or generated. In the user project, we want flatc to generate everything self-contained.
+	// However, we are including protocol.fbs.
 	cmd = exec.Command(flatcPath, "--cpp", "-o", cppDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -172,4 +167,40 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	fmt.Println("Done.")
 
 	return nil
+}
+
+// fixGoImports traverses the generated directory and replaces local protocol imports
+// with the correct package path github.com/xll-gen/xll-gen/pkg/protocol.
+func fixGoImports(dir string, goModPath string) error {
+	targetPkg := "github.com/xll-gen/xll-gen/pkg/protocol"
+	targetLine := fmt.Sprintf("\tprotocol \"%s\"", targetPkg)
+
+	// Regex to match:
+	// \t"protocol"  OR  \tprotocol "protocol"
+	// And also for fully qualified path.
+	reShort := regexp.MustCompile(`(?m)^\s*(protocol\s+)?\"protocol\"$`)
+	reLong := regexp.MustCompile(`(?m)^\s*(protocol\s+)?\"` + regexp.QuoteMeta(goModPath+"/protocol") + `\"$`)
+
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".go") {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			s := string(content)
+			s = reShort.ReplaceAllString(s, targetLine)
+			s = reLong.ReplaceAllString(s, targetLine)
+
+			if s != string(content) {
+				if err := os.WriteFile(path, []byte(s), 0644); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }

@@ -5,24 +5,10 @@ import (
 	"time"
 
 	"github.com/xll-gen/xll-gen/pkg/algo"
+	"github.com/xll-gen/xll-gen/pkg/protocol"
 )
 
-type AnyValue byte
-
-const (
-	AnyValueNone        AnyValue = 0
-	AnyValueBool        AnyValue = 1
-	AnyValueNum         AnyValue = 2
-	AnyValueInt         AnyValue = 3
-	AnyValueStr         AnyValue = 4
-	AnyValueErr         AnyValue = 5
-	AnyValueAsyncHandle AnyValue = 6
-	AnyValueNil         AnyValue = 7
-	AnyValueGrid        AnyValue = 8
-	AnyValueNumGrid     AnyValue = 9
-	AnyValueRange       AnyValue = 10
-	AnyValueRefCache    AnyValue = 11
-)
+type AnyValue = protocol.AnyValue
 
 type ScalarValue struct {
 	Type AnyValue
@@ -68,4 +54,11 @@ type QueuedCommand struct {
 	Rects     []algo.Rect
 	ScalarVal ScalarValue
 	FormatStr string
+}
+
+type PendingAsyncResult struct {
+	Handle  uint64
+	Val     interface{}
+	ValType AnyValue
+	Err     string
 }
