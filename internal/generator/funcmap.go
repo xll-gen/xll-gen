@@ -53,6 +53,14 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return false
 		},
+		"hasAsync": func(funcs []config.Function) bool {
+			for _, f := range funcs {
+				if f.Async {
+					return true
+				}
+			}
+			return false
+		},
 
 		// String / Formatting
 		"capitalize": func(s string) string {

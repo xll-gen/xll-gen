@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -562,9 +563,10 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{end}}
 }
 
-{{if .Async}}
+{{end}}
+
+{{if hasAsync .Functions}}
 func queueAsyncResult(handle uint64, val interface{}, valType protocol.AnyValue, errStr string) {
 	asyncBatcher.QueueResult(handle, val, valType, errStr)
 }
-{{end}}
 {{end}}
