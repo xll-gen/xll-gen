@@ -36,17 +36,18 @@
 To minimize generated code size and improve maintainability, the system-level FlatBuffers definitions (Chunking, Acks, Event responses, Grid types) are extracted into a static schema `pkg/protocol/protocol.fbs`.
 
 **Schema Pre-generation Strategy:**
-1.  **Static Protocol:** The `protocol.fbs` file is pre-compiled into the `github.com/xll-gen/xll-gen/pkg/protocol` Go package within the tool's repository.
+1.  **Static Protocol:** The `protocol.fbs` file is pre-compiled into the `github.com/xll-gen/xll-gen/pkg/protocol` Go package within the tool's repository. A corresponding C++ header `protocol_generated.h` is also pre-generated and shipped as an asset.
 2.  **User Project Dependency:** Generated Go projects import `pkg/protocol` for system types (`protocol.Any`, `protocol.Grid`, etc.).
 3.  **Schema Composition:** The user's `schema.fbs` (defining function requests/responses) uses `include "protocol.fbs"`.
 4.  **Code Generation:** When `xll-gen generate` runs:
     -   It copies `protocol.fbs` to the user's `generated/` folder.
     -   It runs `flatc` for `schema.fbs`.
     -   It post-processes the generated Go code to replace local `protocol` imports with `github.com/xll-gen/xll-gen/pkg/protocol`.
+    -   It skips generating C++ code for `protocol.fbs` (`--no-includes`), relying on the pre-generated `include/protocol_generated.h` asset.
     -   This prevents re-generation of static protocol code in the user's project.
 
 **Benefits:**
--   **Reduced Bloat:** `server.go` and generated IPC code are smaller.
+-   **Reduced Bloat:** `server.go`, generated IPC code, and C++ sources are smaller.
 -   **Centralized Logic:** Complex logic for chunking and batching resides in `pkg/server` (compiled library) rather than templates.
 -   **Consistency:** All projects use the exact same protocol implementation.
 

@@ -104,10 +104,10 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	fmt.Println("Generated Flatbuffers Go code")
 
 	// Generate C++ code
-	// We do NOT use --no-includes here because the C++ header for protocol.fbs needs to be available
-	// or generated. In the user project, we want flatc to generate everything self-contained.
-	// However, we are including protocol.fbs.
-	cmd = exec.Command(flatcPath, "--cpp", "-o", cppDir, schemaPath)
+	// We use --no-includes here because protocol_generated.h is shipped as a static asset in include/.
+	// flatc will generate #include "protocol_generated.h" in schema_generated.h, which matches
+	// the file in include/ (assuming include/ is in include path).
+	cmd = exec.Command(flatcPath, "--cpp", "--no-includes", "-o", cppDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

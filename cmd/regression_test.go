@@ -313,6 +313,12 @@ func TestRegression(t *testing.T) {
 		t.Fatalf("runGenerate failed: %v", err)
 	}
 
+    // Debug: List generated files
+    filepath.Walk("generated", func(path string, info os.FileInfo, err error) error {
+        fmt.Println("GEN:", path)
+        return nil
+    })
+
 	if err := os.WriteFile("main.go", []byte(regtest.ServerGo), 0644); err != nil {
 		t.Fatal(err)
 	}
