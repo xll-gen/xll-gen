@@ -38,5 +38,8 @@ if(NOT TARGET shm)
 endif()
 
 add_executable(mock_host main.cpp)
-target_include_directories(mock_host PRIVATE ../generated/cpp)
+target_include_directories(mock_host PRIVATE
+    ../generated/cpp
+    ../generated/cpp/include
+)
 target_link_libraries(mock_host PRIVATE shm flatbuffers)

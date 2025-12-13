@@ -9,6 +9,31 @@ namespace xll {
         HANDLE hShutdownEvent;
     };
 
+    struct LaunchConfig {
+        std::wstring projectName;
+        bool isSingleFile;
+        std::wstring tempDir;      // Used only if logic needs to know temp dir (e.g. for logging)
+        std::string cwd;           // from xll.yaml server.launch.cwd
+        std::string command;       // from xll.yaml server.launch.command
+        std::string shmName;       // Shared Memory Name
+    };
+
+    // Resolves the command to run and the working directory.
+    // xllDir: The directory containing the .xll file.
+    // extractedExe: Path to the extracted executable (if singlefile mode). Empty otherwise.
+    // cfg: Configuration.
+    // outCmd: Output command line (including arguments).
+    // outCwd: Output working directory.
+    // outLogPath: Output path for xll_launch.log
+    void ResolveServerPath(
+        const std::wstring& xllDir,
+        const std::wstring& extractedExe,
+        const LaunchConfig& cfg,
+        std::wstring& outCmd,
+        std::wstring& outCwd,
+        std::wstring& outLogPath
+    );
+
     // Launches the server process with the given command line and working directory.
     // Initializes the Job Object and redirects stdout/stderr to logPath.
     // Returns true on success.

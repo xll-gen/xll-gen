@@ -1,0 +1,113 @@
+namespace protocol;
+
+enum XlError : short {
+  Null = 2000,
+  Div0 = 2007,
+  Value = 2015,
+  Ref = 2023,
+  Name = 2029,
+  Num = 2036,
+  NA = 2042,
+  GettingData = 2043,
+  Spill = 2045,
+  Connect = 2046,
+  Blocked = 2047,
+  Unknown = 2048,
+  Field = 2049,
+  Calc = 2050
+}
+
+table Bool { val: bool; }
+table Num { val: double; }
+table Int { val: int; }
+table Str { val: string; }
+table Err { val: XlError = Null; }
+table AsyncHandle { val: ulong; }
+table Nil { }
+table RefCache { key: string; }
+
+struct Rect {
+  row_first: int;
+  row_last: int;
+  col_first: int;
+  col_last: int;
+}
+
+table Range {
+  sheet_name: string;
+  refs: [Rect];
+}
+
+union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil }
+
+table Scalar {
+  val: ScalarValue;
+}
+
+table Grid {
+  rows: int;
+  cols: int;
+  data: [Scalar];
+}
+
+table NumGrid {
+  rows: int;
+  cols: int;
+  data: [double];
+}
+
+union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Grid, NumGrid, Range, RefCache }
+
+table Any {
+  val: AnyValue;
+}
+
+// System Messages
+
+table Ack {
+  id: ulong;
+  ok: bool;
+}
+
+table Chunk {
+  id: ulong;
+  total_size: uint;
+  offset: uint;
+  data: [ubyte];
+  msg_type: uint;
+}
+
+table SetRefCacheRequest {
+  key: string;
+  val: Any;
+}
+
+table SetCommand {
+  target: Range;
+  value: Any;
+}
+
+table FormatCommand {
+  target: Range;
+  format: string;
+}
+
+union Command { SetCommand, FormatCommand }
+
+table CommandWrapper {
+  cmd: Command;
+}
+
+table CalculationEndedResponse {
+  commands: [CommandWrapper];
+}
+
+table AsyncResult {
+  handle: ulong;
+  result: Any;
+  error: string;
+}
+
+table BatchAsyncResponse {
+  results: [AsyncResult];
+}

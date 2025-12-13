@@ -50,8 +50,8 @@ var typeRegistry = map[string]TypeInfo{
 		DefaultErrorVal: "&g_xlErrValue",
 	},
 	"range": {
-		SchemaType:      "ipc.types.Range",
-		GoType:          "*types.Range",
+		SchemaType:      "protocol.Range",
+		GoType:          "*protocol.Range",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
 		XllType:         "U",
@@ -59,8 +59,8 @@ var typeRegistry = map[string]TypeInfo{
 		DefaultErrorVal: "&g_xlErrValue",
 	},
 	"grid": {
-		SchemaType:      "ipc.types.Grid",
-		GoType:          "*types.Grid",
+		SchemaType:      "protocol.Grid",
+		GoType:          "*protocol.Grid",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
 		XllType:         "U",
@@ -68,8 +68,8 @@ var typeRegistry = map[string]TypeInfo{
 		DefaultErrorVal: "&g_xlErrValue",
 	},
 	"numgrid": {
-		SchemaType:      "ipc.types.NumGrid",
-		GoType:          "*types.NumGrid",
+		SchemaType:      "protocol.NumGrid",
+		GoType:          "*protocol.NumGrid",
 		CppType:         "FP12*",
 		ArgCppType:      "FP12*",
 		XllType:         "K%",
@@ -77,8 +77,8 @@ var typeRegistry = map[string]TypeInfo{
 		DefaultErrorVal: "0",
 	},
 	"any": {
-		SchemaType:      "ipc.types.Any",
-		GoType:          "*types.Any",
+		SchemaType:      "protocol.Any",
+		GoType:          "*protocol.Any",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
 		XllType:         "U",
@@ -86,15 +86,15 @@ var typeRegistry = map[string]TypeInfo{
 		DefaultErrorVal: "&g_xlErrValue",
 	},
 	"int?": {
-		SchemaType: "ipc.types.Int",
+		SchemaType: "protocol.Int",
 		GoType:     "*int32",
 	},
 	"float?": {
-		SchemaType: "ipc.types.Num",
+		SchemaType: "protocol.Num",
 		GoType:     "*float64",
 	},
 	"bool?": {
-		SchemaType: "ipc.types.Bool",
+		SchemaType: "protocol.Bool",
 		GoType:     "*bool",
 	},
 }
