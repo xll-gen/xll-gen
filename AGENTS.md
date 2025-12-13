@@ -408,6 +408,7 @@ client.Handle(func(req []byte, respBuf []byte, msgId uint32) int32 {
 *   **Language Policy**: All documentation, code comments, commit messages, and other project-related text must be in English.
 *   **Versioning**: The version of `xll-gen` is defined in `version/version.go`. All generated files (C++, Go, CMake, etc.) must include a header comment indicating the version of `xll-gen` that created them. This helps in debugging and ensures users know when their artifacts are out of date.
 *   **Testing**: When applying changes due to upstream library updates (e.g., `shm` API changes), ensure that any outdated or incompatible tests are updated or deleted if they are no longer relevant.
+*   **Conflict Resolution**: Before committing or submitting changes, always check for conflicts with the `main` branch and resolve them.
 
 ## 11. Development Workflow
 
