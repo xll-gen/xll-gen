@@ -109,8 +109,6 @@ func TestGenerate_Fixes(t *testing.T) {
 
 	checkContent(t, "generated/cpp/xll_main.cpp",
 		[]string{
-			"case (shm::MsgType)128:", // MSG_BATCH_ASYNC_RESPONSE
-			"return 1;",               // ACK
 			"LPXLOPER12 name",         // Correct String Arg Type
 		},
 		[]string{
@@ -118,6 +116,12 @@ func TestGenerate_Fixes(t *testing.T) {
 			"void __stdcall xlAutoFree12",   // Duplicate definition
 			"xll::MemoryPool",               // Internal usage
 		})
+
+	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_worker.cpp"),
+		[]string{
+			"case (shm::MsgType)128:", // MSG_BATCH_ASYNC_RESPONSE
+			"return 1;",               // ACK
+		}, nil)
 
 	checkContent(t, "generated/server.go",
 		[]string{
