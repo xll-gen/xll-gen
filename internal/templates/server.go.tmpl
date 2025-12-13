@@ -625,6 +625,7 @@ func Serve(handler XllService) {
                 }:
                 default:
                     log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
+                    queueAsyncResult(handle, nil, server.AnyValueNone, "Server Busy: Worker pool full")
                 }
 
                 builder.Reset()
@@ -898,12 +899,11 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{end}}
 }
 
-{{if .Async}}
+{{end}}
+
 func queueAsyncResult(handle uint64, val interface{}, valType server.AnyValue, errStr string) {
 	asyncBatcher.QueueResult(handle, val, valType, errStr)
 }
-{{end}}
-{{end}}
 
 func flushCommands(b *flatbuffers.Builder) []byte {
     flushBuffers()
