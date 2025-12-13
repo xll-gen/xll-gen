@@ -9,7 +9,7 @@ Before we begin, ensure you have the following installed:
 1.  **Go** (v1.24+): [Download Go](https://go.dev/dl/)
 2.  **C++ Compiler**:
     *   **Windows**: Visual Studio Build Tools (MSVC) or MinGW (`winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`).
-3.  **CMake** (v3.14+): [Download CMake](https://cmake.org/download/)
+3.  **CMake** (v3.24+): [Download CMake](https://cmake.org/download/)
 4.  **Task**: [Download Task](https://taskfile.dev/installation/) (Required for building).
 
 ## Step 1: Install xll-gen
@@ -184,7 +184,10 @@ Once loaded:
 
 *   **Excel crashes**: Ensure you are not returning invalid memory. Since we are using `xll-gen` (which uses shared memory), this is handled for you.
 *   **"#VALUE!" Error**: This usually means the Go server is not running or crashed.
-    *   Check `FibDemo.log` (as defined in `xll.yaml`) for server errors.
+    *   Check logs for errors. In **singlefile** mode, logs are in your temporary directory (e.g., `%TEMP%\FibDemo\`):
+        *   `FibDemo.log`: Go server errors.
+        *   `FibDemo_native.log`: C++ XLL errors.
+        *   `xll_launch.log`: Launch details.
     *   If the server crashed, the XLL might display a message box with the error.
 *   **Compilation Errors**: Run `xll-gen doctor` to ensure your C++ compiler is set up correctly.
 

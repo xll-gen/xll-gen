@@ -20,7 +20,7 @@
     -   Writes to **Shared Memory** (`xll-gen/shm`).
     -   Signals the server and waits for a response.
 3.  **User Server (Go)**:
-    -   Standalone executable.
+    -   Standalone executable (embedded in XLL in `singlefile` mode).
     -   Uses generated IPC handling code.
     -   Listens on Shared Memory.
     -   Deserializes requests, routes them to the User's Implementation (Handler).
@@ -78,6 +78,8 @@ server:
   timeout: "5s"
   launch:
     enabled: true
+    # command: "${BIN}" # Default: Resolves to the server executable
+    # cwd: "."          # Default: XLL directory (or Temp dir in singlefile)
 
 # Function Definitions
 functions:
@@ -117,9 +119,12 @@ my-project/
 │   ├── schema.fbs      # Generated Flatbuffers schema
 │   ├── server.go       # Generated Go server logic
 │   ├── interface.go    # Generated Go interface
+│   ├── ipc/            # Generated Go types (Flatbuffers)
 │   └── cpp/            # Generated C++ XLL source
 │       ├── xll_main.cpp
-│       └── flatbuffers/
+│       ├── schema_generated.h
+│       ├── CMakeLists.txt
+│       └── include/    # Static C++ assets (Protocol, Utils, etc.)
 └── build/              # Output directory
 ```
 
@@ -148,8 +153,9 @@ Reads `xll.yaml` and updates the `generated/` directory.
 #### `build`
 Wraps `task build` to compile the project.
 1.  Runs `generate`.
-2.  **Go Build**: Compiles `main.go`.
-3.  **C++ Build**: Compiles `generated/cpp` -> `build/my-project.xll` (embedding the Go binary).
+2.  **Go Build**: Compiles `main.go` into a server binary.
+3.  **C++ Build**: Compiles `generated/cpp` -> `build/my-project.xll`.
+    -   In `singlefile: xll` mode, it uses Zstd to compress the Go binary and embeds it as a Windows resource.
 
 #### `doctor`
 Diagnoses the environment, specifically checking for the presence of a C++ compiler.
@@ -212,6 +218,10 @@ The C++ code must bridge Excel's `XLOPER12` types to Flatbuffers.
 
 ### Build System
 -   The CLI relies on `task` (Taskfile.dev) for build orchestration.
+-   **Dependencies**:
+    -   **Flatbuffers**: v25.9.23
+    -   **SHM**: v0.5.4
+    -   **Zstd**: v1.5.7 (For compression)
 -   **Flatbuffers Compiler (`flatc`)**:
     -   The CLI automatically manages `flatc`.
     -   It detects the latest release from [Google Flatbuffers Releases](https://github.com/google/flatbuffers/releases).
