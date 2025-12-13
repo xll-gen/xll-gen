@@ -150,6 +150,7 @@ func TestRepro_MemoryLeak(t *testing.T) {
 	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_converters.cpp"),
 		[]string{
 			"case ipc::types::AnyValue_Range:", // Missing feature fixed
+			"new char[sizeof(XLMREF12)",        // Correct Allocation for Ref
 		},
 		[]string{
 			"x->xltype = xltypeInt;",  // Missing xlbitDLLFree
