@@ -137,30 +137,13 @@ func flushBuffers() {
 				if end > len(rects) { end = len(rects) }
 				batch := rects[i:end]
 
-				b := flatbuffers.NewBuilder(0)
-				sOff := b.CreateString(sheet)
-
-				types.RangeStartRefsVector(b, len(batch))
-				for j := len(batch) - 1; j >= 0; j-- {
-					types.CreateRect(b, batch[j].RowFirst, batch[j].RowLast, batch[j].ColFirst, batch[j].ColLast)
-				}
-				refsOff := b.EndVector(len(batch))
-
-				types.RangeStart(b)
-				types.RangeAddSheetName(b, sOff)
-				types.RangeAddRefs(b, refsOff)
-				rOff := types.RangeEnd(b)
-
-				vOff := createScalarAny(b, val)
-
-				ipc.SetCommandStart(b)
-				ipc.SetCommandAddTarget(b, rOff)
-				ipc.SetCommandAddValue(b, vOff)
-				uOff := ipc.SetCommandEnd(b)
-				b.Finish(uOff)
-
 				cmdQueueLock.Lock()
-				cmdQueue = append(cmdQueue, server.QueuedCommand{CmdType: 0, Data: b.FinishedBytes()})
+				cmdQueue = append(cmdQueue, server.QueuedCommand{
+					CmdType:   0,
+					Sheet:     sheet,
+					Rects:     batch,
+					ScalarVal: val,
+				})
 				cmdQueueLock.Unlock()
 			}
 		}
@@ -182,30 +165,13 @@ func flushBuffers() {
 				if end > len(rects) { end = len(rects) }
 				batch := rects[i:end]
 
-				b := flatbuffers.NewBuilder(0)
-				sOff := b.CreateString(sheet)
-
-				types.RangeStartRefsVector(b, len(batch))
-				for j := len(batch) - 1; j >= 0; j-- {
-					types.CreateRect(b, batch[j].RowFirst, batch[j].RowLast, batch[j].ColFirst, batch[j].ColLast)
-				}
-				refsOff := b.EndVector(len(batch))
-
-				types.RangeStart(b)
-				types.RangeAddSheetName(b, sOff)
-				types.RangeAddRefs(b, refsOff)
-				rOff := types.RangeEnd(b)
-
-				fOff := b.CreateString(fmt)
-
-				ipc.FormatCommandStart(b)
-				ipc.FormatCommandAddTarget(b, rOff)
-				ipc.FormatCommandAddFormat(b, fOff)
-				uOff := ipc.FormatCommandEnd(b)
-				b.Finish(uOff)
-
 				cmdQueueLock.Lock()
-				cmdQueue = append(cmdQueue, server.QueuedCommand{CmdType: 1, Data: b.FinishedBytes()})
+				cmdQueue = append(cmdQueue, server.QueuedCommand{
+					CmdType:   1,
+					Sheet:     sheet,
+					Rects:     batch,
+					FormatStr: fmt,
+				})
 				cmdQueueLock.Unlock()
 			}
 		}
@@ -954,26 +920,59 @@ func flushCommands(b *flatbuffers.Builder) []byte {
 		var uOff flatbuffers.UOffsetT
 		var uType ipc.Command
 
-		if c.CmdType == 0 {
-			cmd := ipc.GetRootAsSetCommand(c.Data, 0)
-			rOff := cloneRange(b, cmd.Target(nil))
-			vOff := cloneAny(b, cmd.Value(nil))
+		if c.Data == nil {
+			// Optimized Path
+			sOff := b.CreateString(c.Sheet)
 
-			ipc.SetCommandStart(b)
-			ipc.SetCommandAddTarget(b, rOff)
-			ipc.SetCommandAddValue(b, vOff)
-			uOff = ipc.SetCommandEnd(b)
-			uType = ipc.CommandSetCommand
+			types.RangeStartRefsVector(b, len(c.Rects))
+			for j := len(c.Rects) - 1; j >= 0; j-- {
+				types.CreateRect(b, c.Rects[j].RowFirst, c.Rects[j].RowLast, c.Rects[j].ColFirst, c.Rects[j].ColLast)
+			}
+			refsOff := b.EndVector(len(c.Rects))
+
+			types.RangeStart(b)
+			types.RangeAddSheetName(b, sOff)
+			types.RangeAddRefs(b, refsOff)
+			rOff := types.RangeEnd(b)
+
+			if c.CmdType == 0 { // Set
+				vOff := createScalarAny(b, c.ScalarVal)
+				ipc.SetCommandStart(b)
+				ipc.SetCommandAddTarget(b, rOff)
+				ipc.SetCommandAddValue(b, vOff)
+				uOff = ipc.SetCommandEnd(b)
+				uType = ipc.CommandSetCommand
+			} else { // Format
+				fOff := b.CreateString(c.FormatStr)
+				ipc.FormatCommandStart(b)
+				ipc.FormatCommandAddTarget(b, rOff)
+				ipc.FormatCommandAddFormat(b, fOff)
+				uOff = ipc.FormatCommandEnd(b)
+				uType = ipc.CommandFormatCommand
+			}
 		} else {
-			cmd := ipc.GetRootAsFormatCommand(c.Data, 0)
-			rOff := cloneRange(b, cmd.Target(nil))
-			fOff := b.CreateString(string(cmd.Format()))
+			// Legacy / Complex Path
+			if c.CmdType == 0 {
+				cmd := ipc.GetRootAsSetCommand(c.Data, 0)
+				rOff := cloneRange(b, cmd.Target(nil))
+				vOff := cloneAny(b, cmd.Value(nil))
 
-			ipc.FormatCommandStart(b)
-			ipc.FormatCommandAddTarget(b, rOff)
-			ipc.FormatCommandAddFormat(b, fOff)
-			uOff = ipc.FormatCommandEnd(b)
-			uType = ipc.CommandFormatCommand
+				ipc.SetCommandStart(b)
+				ipc.SetCommandAddTarget(b, rOff)
+				ipc.SetCommandAddValue(b, vOff)
+				uOff = ipc.SetCommandEnd(b)
+				uType = ipc.CommandSetCommand
+			} else {
+				cmd := ipc.GetRootAsFormatCommand(c.Data, 0)
+				rOff := cloneRange(b, cmd.Target(nil))
+				fOff := b.CreateString(string(cmd.Format()))
+
+				ipc.FormatCommandStart(b)
+				ipc.FormatCommandAddTarget(b, rOff)
+				ipc.FormatCommandAddFormat(b, fOff)
+				uOff = ipc.FormatCommandEnd(b)
+				uType = ipc.CommandFormatCommand
+			}
 		}
 
 		ipc.CommandWrapperStart(b)

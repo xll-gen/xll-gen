@@ -3,6 +3,8 @@ package server
 import (
 	"sync"
 	"time"
+
+	"github.com/xll-gen/xll-gen/pkg/algo"
 )
 
 type AnyValue byte
@@ -60,4 +62,10 @@ type OutgoingChunk struct {
 type QueuedCommand struct {
 	CmdType int // 0: Set, 1: Format
 	Data    []byte
+
+	// Optimized Intermediate Data (avoids pre-serialization)
+	Sheet     string
+	Rects     []algo.Rect
+	ScalarVal ScalarValue
+	FormatStr string
 }
