@@ -7,6 +7,134 @@
 
 namespace xll {
 
+    // Helper to replace all occurrences of a substring
+    static void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring& to) {
+        if(from.empty()) return;
+        size_t start_pos = 0;
+        while((start_pos = str.find(from, start_pos)) != std::wstring::npos) {
+            str.replace(start_pos, from.length(), to);
+            start_pos += to.length();
+        }
+    }
+
+    static bool FileExists(const std::wstring& path) {
+        DWORD dwAttrib = GetFileAttributesW(path.c_str());
+        return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+    }
+
+    void ResolveServerPath(
+        const std::wstring& xllDir,
+        const std::wstring& extractedExe,
+        const LaunchConfig& cfg,
+        std::wstring& outCmd,
+        std::wstring& outCwd,
+        std::wstring& outLogPath
+    ) {
+        std::wstring cwd = xllDir;
+
+        // Apply Config Cwd
+        if (!cfg.cwd.empty() && cfg.cwd != ".") {
+            std::wstring wCwd = StringToWString(cfg.cwd);
+            bool isAbs = (wCwd.find(L":") != std::wstring::npos || (wCwd.size() > 1 && wCwd[0] == L'\\' && wCwd[1] == L'\\'));
+            if (isAbs) {
+                cwd = wCwd;
+            } else {
+                cwd = xllDir + L"\\" + wCwd;
+            }
+        }
+
+        std::wstring defaultBinPath;
+
+        // 1. Determine Default Binary Path
+        if (!extractedExe.empty()) {
+            defaultBinPath = extractedExe;
+            // In singlefile mode, run from the temp dir so logs appear there
+            size_t lastSlash = defaultBinPath.find_last_of(L"\\");
+            if (lastSlash != std::wstring::npos) {
+                cwd = defaultBinPath.substr(0, lastSlash);
+            }
+        } else {
+             // Fallback: Check standard locations
+             std::wstring sameDir = xllDir + L"\\" + cfg.projectName + L".exe";
+             if (FileExists(sameDir)) {
+                 defaultBinPath = sameDir;
+             } else {
+                 // Check parent directory
+                 size_t lastSlash = xllDir.find_last_of(L"\\");
+                 if (lastSlash != std::wstring::npos) {
+                     std::wstring parentDir = xllDir.substr(0, lastSlash);
+                     std::wstring parentExe = parentDir + L"\\" + cfg.projectName + L".exe";
+                     if (FileExists(parentExe)) {
+                         defaultBinPath = parentExe;
+                     } else {
+                         defaultBinPath = sameDir;
+                     }
+                 } else {
+                      defaultBinPath = sameDir;
+                 }
+             }
+        }
+
+        // 2. Resolve Configured Command
+        std::wstring exePath = defaultBinPath;
+        if (!cfg.command.empty()) {
+            std::string cfgCmd = cfg.command;
+            std::wstring wCmd = StringToWString(cfgCmd);
+
+            // Check for ${BIN} variable
+            std::wstring varBin = L"${BIN}";
+            if (wCmd.find(varBin) != std::wstring::npos) {
+                ReplaceAll(wCmd, varBin, defaultBinPath);
+                exePath = wCmd;
+            } else {
+                if (cfg.isSingleFile) {
+                    // In singlefile mode, if the command explicitly points to the project executable (default config),
+                    // we should ignore it and use the extracted binary path instead.
+                    std::string projExe = WideToUtf8(cfg.projectName) + ".exe";
+                    if (cfgCmd.find(projExe) != std::string::npos) {
+                        // Ignore, keep exePath as defaultBinPath (extracted)
+                    } else {
+                        // Custom command handling
+                        bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
+                        if (isCmdAbs) {
+                            exePath = wCmd;
+                        } else {
+                             if (cfgCmd.find("./") == 0 || cfgCmd.find(".\\") == 0) {
+                                 exePath = cwd + L"\\" + wCmd.substr(2);
+                            } else {
+                                 exePath = cwd + L"\\" + wCmd;
+                            }
+                        }
+                    }
+                } else {
+                    // Standard Mode
+                     bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
+                     if (isCmdAbs) {
+                         exePath = wCmd;
+                     } else {
+                          if (cfgCmd.find("./") == 0 || cfgCmd.find(".\\") == 0) {
+                              exePath = cwd + L"\\" + wCmd.substr(2);
+                         } else {
+                              exePath = cwd + L"\\" + wCmd;
+                         }
+                     }
+                }
+            }
+        }
+
+        // Append SHM Flag
+        std::wstring cmd;
+        if (!exePath.empty() && exePath[0] == L'"') {
+            cmd = exePath + L" -xll-shm=" + StringToWString(cfg.shmName);
+        } else {
+            cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(cfg.shmName);
+        }
+
+        outCmd = cmd;
+        outCwd = cwd;
+        outLogPath = cwd + L"\\xll_launch.log";
+    }
+
     bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo) {
         // Create Job Object
         outInfo.hJob = CreateJobObject(NULL, NULL);

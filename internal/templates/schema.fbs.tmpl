@@ -1,61 +1,13 @@
-include "xltypes.fbs";
+include "protocol.fbs";
 
 namespace ipc;
-
-table Ack {
-  id: ulong;
-  ok: bool;
-}
-
-table Chunk {
-  id: ulong;
-  total_size: uint;
-  offset: uint;
-  data: [ubyte];
-  msg_type: uint;
-}
-
-table SetRefCacheRequest {
-  key: string;
-  val: ipc.types.Any;
-}
-
-table SetCommand {
-  target: ipc.types.Range;
-  value: ipc.types.Any;
-}
-
-table FormatCommand {
-  target: ipc.types.Range;
-  format: string;
-}
-
-union Command { SetCommand, FormatCommand }
-
-table CommandWrapper {
-  cmd: Command;
-}
-
-table CalculationEndedResponse {
-  commands: [CommandWrapper];
-}
-
-table AsyncResult {
-  handle: ulong;
-  result: ipc.types.Any;
-  error: string;
-}
-
-table BatchAsyncResponse {
-  results: [AsyncResult];
-}
 
 {{range .Functions}}
 table {{.Name}}Request {
   {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
   {{end}}
   {{if .Async}}async_handle:ulong (id: {{len .Args}});{{end}}
-  {{if .Caller}}caller:ipc.types.Range (id: {{add (len .Args) (boolToInt .Async)}});{{end}}
+  {{if .Caller}}caller:protocol.Range (id: {{add (len .Args) (boolToInt .Async)}});{{end}}
 }
 
 table {{.Name}}Response {

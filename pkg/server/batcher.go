@@ -1,12 +1,5 @@
 package server
 
-type PendingAsyncResult struct {
-	Handle  uint64
-	ValType AnyValue    // Enum
-	Val     interface{} // Go value or struct
-	Err     string
-}
-
 type AsyncBatcher struct {
 	queue chan PendingAsyncResult
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -13,26 +12,22 @@ import (
 	"runtime"
 	"runtime/debug"
 	"{{.ModName}}/generated/ipc"
-	"{{.ModName}}/generated/ipc/types"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/algo"
 	"github.com/xll-gen/xll-gen/pkg/server"
+	"github.com/xll-gen/xll-gen/pkg/protocol"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
 )
 
-// Force usage of time and ipc/types to avoid unused import error
+// Force usage of time and protocol to avoid unused import error
 var _ = time.Now
-var _ = types.Bool{}
+var _ = protocol.Bool{}
 
 var (
-	cmdQueueLock sync.Mutex
-	cmdQueue     []server.QueuedCommand
-)
-
-var (
-	asyncBatcher = server.NewAsyncBatcher()
-	chunkManager = server.NewChunkManager()
+	asyncBatcher   = server.NewAsyncBatcher()
+	chunkManager   = server.NewChunkManager()
+	commandBatcher = server.NewCommandBatcher()
 
 	// Builder Pool to reduce GC pressure
 	builderPool = sync.Pool{
@@ -49,336 +44,12 @@ var (
 	}
 )
 
-var (
-	bufferedSets      = make(map[string]map[algo.Cell]server.ScalarValue)
-	bufferedFormats   = make(map[string]map[algo.Cell]string)
-	bufferLock        sync.Mutex
-)
-
-func ScheduleSet(r *types.Range, v *types.Any) {
-	scalar, ok := toScalar(v)
-	if ok {
-		sheet := string(r.SheetName())
-		bufferLock.Lock()
-		if bufferedSets[sheet] == nil {
-			bufferedSets[sheet] = make(map[algo.Cell]server.ScalarValue)
-		}
-
-		l := r.RefsLength()
-		for i := 0; i < l; i++ {
-			var rect types.Rect
-			if r.Refs(&rect, i) {
-				for row := rect.RowFirst(); row <= rect.RowLast(); row++ {
-					for col := rect.ColFirst(); col <= rect.ColLast(); col++ {
-						bufferedSets[sheet][algo.Cell{Row: row, Col: col}] = scalar
-					}
-				}
-			}
-		}
-		bufferLock.Unlock()
-		return
-	}
-
-	flushBuffers()
-
-	b := flatbuffers.NewBuilder(0)
-	rOff := cloneRange(b, r)
-	vOff := cloneAny(b, v)
-
-	ipc.SetCommandStart(b)
-	ipc.SetCommandAddTarget(b, rOff)
-	ipc.SetCommandAddValue(b, vOff)
-	root := ipc.SetCommandEnd(b)
-	b.Finish(root)
-
-	cmdQueueLock.Lock()
-	cmdQueue = append(cmdQueue, server.QueuedCommand{CmdType: 0, Data: b.FinishedBytes()})
-	cmdQueueLock.Unlock()
+func ScheduleSet(r *protocol.Range, v *protocol.Any) {
+	commandBatcher.ScheduleSet(r, v)
 }
 
-func ScheduleFormat(r *types.Range, fmtStr string) {
-	sheet := string(r.SheetName())
-	bufferLock.Lock()
-	if bufferedFormats[sheet] == nil {
-		bufferedFormats[sheet] = make(map[algo.Cell]string)
-	}
-
-	l := r.RefsLength()
-	for i := 0; i < l; i++ {
-		var rect types.Rect
-		if r.Refs(&rect, i) {
-			for row := rect.RowFirst(); row <= rect.RowLast(); row++ {
-				for col := rect.ColFirst(); col <= rect.ColLast(); col++ {
-					bufferedFormats[sheet][algo.Cell{Row: row, Col: col}] = fmtStr
-				}
-			}
-		}
-	}
-	bufferLock.Unlock()
-}
-
-func flushBuffers() {
-	bufferLock.Lock()
-	defer bufferLock.Unlock()
-
-	// Process Sets
-	for sheet, cells := range bufferedSets {
-		byVal := make(map[server.ScalarValue][]algo.Cell)
-		for cell, val := range cells {
-			byVal[val] = append(byVal[val], cell)
-		}
-
-		for val, cellList := range byVal {
-			rects := algo.GreedyMesh(cellList)
-
-			// Chunk by 32
-			for i := 0; i < len(rects); i += 32 {
-				end := i + 32
-				if end > len(rects) { end = len(rects) }
-				batch := rects[i:end]
-
-				cmdQueueLock.Lock()
-				cmdQueue = append(cmdQueue, server.QueuedCommand{
-					CmdType:   0,
-					Sheet:     sheet,
-					Rects:     batch,
-					ScalarVal: val,
-				})
-				cmdQueueLock.Unlock()
-			}
-		}
-		delete(bufferedSets, sheet)
-	}
-
-	// Process Formats
-	for sheet, cells := range bufferedFormats {
-		byFmt := make(map[string][]algo.Cell)
-		for cell, fmt := range cells {
-			byFmt[fmt] = append(byFmt[fmt], cell)
-		}
-
-		for fmt, cellList := range byFmt {
-			rects := algo.GreedyMesh(cellList)
-
-			for i := 0; i < len(rects); i += 32 {
-				end := i + 32
-				if end > len(rects) { end = len(rects) }
-				batch := rects[i:end]
-
-				cmdQueueLock.Lock()
-				cmdQueue = append(cmdQueue, server.QueuedCommand{
-					CmdType:   1,
-					Sheet:     sheet,
-					Rects:     batch,
-					FormatStr: fmt,
-				})
-				cmdQueueLock.Unlock()
-			}
-		}
-		delete(bufferedFormats, sheet)
-	}
-}
-
-func toScalar(v *types.Any) (server.ScalarValue, bool) {
-	if v == nil { return server.ScalarValue{}, false }
-	var tbl flatbuffers.Table
-	if !v.Val(&tbl) { return server.ScalarValue{}, false }
-
-	switch v.ValType() {
-	case types.AnyValueInt:
-		var t types.Int; t.Init(tbl.Bytes, tbl.Pos)
-		return server.ScalarValue{Type: server.AnyValueInt, Int: t.Val()}, true
-	case types.AnyValueNum:
-		var t types.Num; t.Init(tbl.Bytes, tbl.Pos)
-		return server.ScalarValue{Type: server.AnyValueNum, Num: t.Val()}, true
-	case types.AnyValueBool:
-		var t types.Bool; t.Init(tbl.Bytes, tbl.Pos)
-		return server.ScalarValue{Type: server.AnyValueBool, Bool: t.Val()}, true
-	case types.AnyValueStr:
-		var t types.Str; t.Init(tbl.Bytes, tbl.Pos)
-		return server.ScalarValue{Type: server.AnyValueStr, Str: string(t.Val())}, true
-	case types.AnyValueErr:
-		var t types.Err; t.Init(tbl.Bytes, tbl.Pos)
-		return server.ScalarValue{Type: server.AnyValueErr, Err: int16(t.Val())}, true
-	}
-	return server.ScalarValue{}, false
-}
-
-func createScalarAny(b *flatbuffers.Builder, val server.ScalarValue) flatbuffers.UOffsetT {
-	var uOff flatbuffers.UOffsetT
-	switch val.Type {
-	case server.AnyValueInt:
-		types.IntStart(b)
-		types.IntAddVal(b, val.Int)
-		uOff = types.IntEnd(b)
-	case server.AnyValueNum:
-		types.NumStart(b)
-		types.NumAddVal(b, val.Num)
-		uOff = types.NumEnd(b)
-	case server.AnyValueBool:
-		types.BoolStart(b)
-		types.BoolAddVal(b, val.Bool)
-		uOff = types.BoolEnd(b)
-	case server.AnyValueStr:
-		sOff := b.CreateString(val.Str)
-		types.StrStart(b)
-		types.StrAddVal(b, sOff)
-		uOff = types.StrEnd(b)
-	case server.AnyValueErr:
-		types.ErrStart(b)
-		types.ErrAddVal(b, types.XlError(val.Err))
-		uOff = types.ErrEnd(b)
-	}
-
-	types.AnyStart(b)
-	types.AnyAddValType(b, types.AnyValue(val.Type))
-	types.AnyAddVal(b, uOff)
-	return types.AnyEnd(b)
-}
-
-func flushAsyncBatch(batch []server.PendingAsyncResult, client *shm.Client) {
-	if len(batch) == 0 {
-		return
-	}
-
-	b := heapBuilderPool.Get().(*flatbuffers.Builder)
-	b.Reset()
-	defer heapBuilderPool.Put(b)
-
-	resultOffsets := make([]flatbuffers.UOffsetT, len(batch))
-
-	for i, res := range batch {
-		var anyOff flatbuffers.UOffsetT
-		var errOff flatbuffers.UOffsetT
-
-		if res.Err != "" {
-			errOff = b.CreateString(res.Err)
-		} else {
-			// Build Any Table
-			var uOff flatbuffers.UOffsetT
-			switch res.ValType {
-			case server.AnyValueInt:
-				types.IntStart(b)
-				types.IntAddVal(b, res.Val.(int32))
-				uOff = types.IntEnd(b)
-			case server.AnyValueNum:
-				types.NumStart(b)
-				types.NumAddVal(b, res.Val.(float64))
-				uOff = types.NumEnd(b)
-			case server.AnyValueBool:
-				types.BoolStart(b)
-				types.BoolAddVal(b, res.Val.(bool))
-				uOff = types.BoolEnd(b)
-			case server.AnyValueStr:
-				sOff := b.CreateString(res.Val.(string))
-				types.StrStart(b)
-				types.StrAddVal(b, sOff)
-				uOff = types.StrEnd(b)
-			case server.AnyValueNil:
-				types.NilStart(b)
-				uOff = types.NilEnd(b)
-			}
-
-			types.AnyStart(b)
-			types.AnyAddValType(b, types.AnyValue(res.ValType))
-			types.AnyAddVal(b, uOff)
-			anyOff = types.AnyEnd(b)
-		}
-
-		ipc.AsyncResultStart(b)
-		ipc.AsyncResultAddHandle(b, res.Handle)
-		if errOff > 0 {
-			ipc.AsyncResultAddError(b, errOff)
-		} else {
-			ipc.AsyncResultAddResult(b, anyOff)
-		}
-		resultOffsets[i] = ipc.AsyncResultEnd(b)
-	}
-
-	ipc.BatchAsyncResponseStartResultsVector(b, len(resultOffsets))
-	for i := len(resultOffsets) - 1; i >= 0; i-- {
-		b.PrependUOffsetT(resultOffsets[i])
-	}
-	resultsVec := b.EndVector(len(resultOffsets))
-
-	ipc.BatchAsyncResponseStart(b)
-	ipc.BatchAsyncResponseAddResults(b, resultsVec)
-	root := ipc.BatchAsyncResponseEnd(b)
-	b.Finish(root)
-
-	// Send Batch Message
-	msgBytes := b.FinishedBytes()
-
-	// Chunking Logic
-	const maxPayload = 950 * 1024 // 1MB - overhead
-	if len(msgBytes) > maxPayload {
-		sendChunkedAsync(msgBytes, client)
-		return
-	}
-
-	// We implement a short retry loop to handle transient buffer fullness.
-	var err error
-	for i := 0; i < 10; i++ {
-		if _, err = client.SendGuestCall(msgBytes, server.MsgBatchAsyncResponse); err == nil {
-			return
-		}
-		// Backoff: 5ms, 10ms, ... 2.5s max total wait
-		time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
-	}
-
-	if err != nil {
-		log.Error("Error sending batch async response after retries", "error", err)
-	}
-}
-
-func sendChunkedAsync(data []byte, client *shm.Client) {
-	transferId := uint64(rand.Int63())
-	total := len(data)
-	offset := 0
-	const chunkSize = 950 * 1024
-
-	for offset < total {
-		end := offset + chunkSize
-		if end > total {
-			end = total
-		}
-		chunkData := data[offset:end]
-
-		b := heapBuilderPool.Get().(*flatbuffers.Builder)
-		b.Reset()
-
-		dataOff := b.CreateByteVector(chunkData)
-		ipc.ChunkStart(b)
-		ipc.ChunkAddId(b, transferId)
-		ipc.ChunkAddTotalSize(b, uint32(total))
-		ipc.ChunkAddOffset(b, uint32(offset))
-		ipc.ChunkAddData(b, dataOff)
-		ipc.ChunkAddMsgType(b, server.MsgBatchAsyncResponse)
-		root := ipc.ChunkEnd(b)
-		b.FinishWithFileIdentifier(root, []byte("XCHN"))
-
-		payload := b.FinishedBytes()
-
-		// Send Chunk with Retry
-		var err error
-		sent := false
-		for i := 0; i < 10; i++ {
-			if _, err = client.SendGuestCall(payload, server.MsgChunk); err == nil {
-				sent = true
-				break
-			}
-			time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
-		}
-
-		heapBuilderPool.Put(b)
-
-		if !sent {
-			log.Error("Failed to send async chunk", "error", err, "id", transferId, "offset", offset)
-			return // Abort transfer
-		}
-
-		offset = end
-	}
+func ScheduleFormat(r *protocol.Range, fmtStr string) {
+	commandBatcher.ScheduleFormat(r, fmtStr)
 }
 
 func Serve(handler XllService) {
@@ -397,7 +68,7 @@ func Serve(handler XllService) {
 
 	client, err := shm.Connect(shm.ClientConfig{ShmName: name})
 	if err != nil {
-		log.Error("Failed to connect to SHM", "error", err)
+		slog.Error("Failed to connect to SHM", "error", err)
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
 	defer client.Close()
@@ -408,7 +79,7 @@ func Serve(handler XllService) {
 
 	// Start Async Worker
 	asyncBatcher.StartWorker(func(batch []server.PendingAsyncResult) {
-		flushAsyncBatch(batch, client)
+		server.FlushAsyncBatch(batch, client)
 	})
 
 	// Configuration
@@ -458,14 +129,14 @@ func Serve(handler XllService) {
                 jobQueue <- func() {
                     defer wg.Done()
                     if err := handler.OnCalculationEnded(context.Background()); err != nil {
-                        log.Error("Event handler OnCalculationEnded failed", "error", err)
+                        slog.Error("Event handler OnCalculationEnded failed", "error", err)
                     }
                 }
                 wg.Wait()
                 {{end}}
 
                 builder.Reset()
-                respBytes := flushCommands(builder)
+                respBytes := commandBatcher.FlushCommands(builder)
                 if len(respBytes) > 0 {
                     // Zero-Copy Return (Negative Size)
                     if cap(builder.Bytes) == cap(respBuf) && len(respBytes) <= len(respBuf) {
@@ -473,7 +144,7 @@ func Serve(handler XllService) {
                     }
 
                     if len(respBytes) > len(respBuf) {
-                        log.Warn("CalculationEnded response too large", "size", len(respBytes))
+                        slog.Warn("CalculationEnded response too large", "size", len(respBytes))
                         return 0, 0
                     }
                     copy(respBuf, respBytes)
@@ -482,26 +153,20 @@ func Serve(handler XllService) {
                 return 0, 0
 
              case server.MsgCalculationCanceled:
-                cmdQueueLock.Lock()
-                cmdQueue = nil
-                cmdQueueLock.Unlock()
-                bufferLock.Lock()
-                bufferedSets = make(map[string]map[algo.Cell]server.ScalarValue)
-                bufferedFormats = make(map[string]map[algo.Cell]string)
-                bufferLock.Unlock()
+                commandBatcher.Clear()
 
                 {{if hasEvent "CalculationCanceled" .Events}}
                 ctx := context.Background()
                 jobQueue <- func() {
                     if err := handler.OnCalculationCanceled(ctx); err != nil {
-                        log.Error("Event handler OnCalculationCanceled failed", "error", err)
+                        slog.Error("Event handler OnCalculationCanceled failed", "error", err)
                     }
                 }
                 {{end}}
                 return 0, 0
 
              case server.MsgSetRefCache:
-                reqObj := ipc.GetRootAsSetRefCacheRequest(data, 0)
+                reqObj := protocol.GetRootAsSetRefCacheRequest(data, 0)
                 key := string(reqObj.Key())
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
@@ -510,9 +175,9 @@ func Serve(handler XllService) {
                 refCache[key] = reqCopy
                 refCacheMutex.Unlock()
 
-                ipc.AckStart(builder)
-                ipc.AckAddOk(builder, true)
-                root := ipc.AckEnd(builder)
+                protocol.AckStart(builder)
+                protocol.AckAddOk(builder, true)
+                root := protocol.AckEnd(builder)
                 builder.Finish(root)
 
                 payload := builder.FinishedBytes()
@@ -524,7 +189,7 @@ func Serve(handler XllService) {
                 return int32(len(payload)), server.MsgAck
 
              case server.MsgAck:
-                reqObj := ipc.GetRootAsAck(data, 0)
+                reqObj := protocol.GetRootAsAck(data, 0)
                 id := reqObj.Id()
 
                 const chunkSize = 950 * 1024
@@ -540,13 +205,13 @@ func Serve(handler XllService) {
 
                 builder.Reset()
                 dataOff := builder.CreateByteVector(chunkData)
-                ipc.ChunkStart(builder)
-                ipc.ChunkAddId(builder, id)
-                ipc.ChunkAddTotalSize(builder, uint32(totalSize))
-                ipc.ChunkAddOffset(builder, uint32(offset))
-                ipc.ChunkAddData(builder, dataOff)
-                ipc.ChunkAddMsgType(builder, msgType)
-                root := ipc.ChunkEnd(builder)
+                protocol.ChunkStart(builder)
+                protocol.ChunkAddId(builder, id)
+                protocol.ChunkAddTotalSize(builder, uint32(totalSize))
+                protocol.ChunkAddOffset(builder, uint32(offset))
+                protocol.ChunkAddData(builder, dataOff)
+                protocol.ChunkAddMsgType(builder, msgType)
+                root := protocol.ChunkEnd(builder)
                 builder.FinishWithFileIdentifier(root, []byte("XCHN"))
 
                 payload := builder.FinishedBytes()
@@ -558,7 +223,7 @@ func Serve(handler XllService) {
                 return int32(len(payload)), server.MsgChunk
 
              case server.MsgChunk:
-                reqObj := ipc.GetRootAsChunk(data, 0)
+                reqObj := protocol.GetRootAsChunk(data, 0)
                 id := reqObj.Id()
                 total := int(reqObj.TotalSize())
                 offset := int(reqObj.Offset())
@@ -580,10 +245,10 @@ func Serve(handler XllService) {
                     return dispatch(buf.Data, respBuf, shm.MsgType(payloadMsgType))
                 }
 
-                ipc.AckStart(builder)
-                ipc.AckAddId(builder, id)
-                ipc.AckAddOk(builder, true)
-                root := ipc.AckEnd(builder)
+                protocol.AckStart(builder)
+                protocol.AckAddId(builder, id)
+                protocol.AckAddOk(builder, true)
+                root := protocol.AckEnd(builder)
                 builder.Finish(root)
 
                 payload := builder.FinishedBytes()
@@ -600,7 +265,7 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 jobQueue <- func() {
                     if err := handler.{{.Name}}(ctx); err != nil {
-                        log.Error("Event handler {{.Name}} failed", "error", err)
+                        slog.Error("Event handler {{.Name}} failed", "error", err)
                     }
                 }
                 return 0, 0
@@ -624,13 +289,13 @@ func Serve(handler XllService) {
                     handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex)
                 }:
                 default:
-                    log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
+                    slog.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
                 }
 
                 builder.Reset()
-                ipc.AckStart(builder)
-                ipc.AckAddOk(builder, true)
-                root := ipc.AckEnd(builder)
+                protocol.AckStart(builder)
+                protocol.AckAddOk(builder, true)
+                root := protocol.AckEnd(builder)
                 builder.Finish(root)
 
                 payload := builder.FinishedBytes()
@@ -694,18 +359,18 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{else if eq .Type "numgrid"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "any"}}
-	var arg_{{.Name}} *types.Any
+	var arg_{{.Name}} *protocol.Any
 	arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
 	if arg_{{.Name}}_raw != nil {
-		if arg_{{.Name}}_raw.ValType() == types.AnyValueRefCache {
-			var rc types.RefCache
+		if arg_{{.Name}}_raw.ValType() == protocol.AnyValueRefCache {
+			var rc protocol.RefCache
 			init := new(flatbuffers.Table)
 			if arg_{{.Name}}_raw.Val(init) {
 				rc.Init(init.Bytes, init.Pos)
 				key := string(rc.Key())
 				refCacheMutex.RLock()
 				if data, ok := refCache[key]; ok {
-					cacheReq := ipc.GetRootAsSetRefCacheRequest(data, 0)
+					cacheReq := protocol.GetRootAsSetRefCacheRequest(data, 0)
 					arg_{{.Name}} = cacheReq.Val(nil)
 				} else {
 					arg_{{.Name}} = arg_{{.Name}}_raw
@@ -730,7 +395,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	handle := request.AsyncHandle()
 
 	if ctx.Err() != nil {
-		queueAsyncResult(handle, nil, server.AnyValueNone, ctx.Err().Error())
+		queueAsyncResult(handle, nil, protocol.AnyValue(0), ctx.Err().Error())
 		return 0, 0
 	}
 
@@ -739,41 +404,41 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
-				log.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
-				queueAsyncResult(handle, nil, server.AnyValueNone, fmt.Sprintf("panic: %v", r))
+				slog.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
+				queueAsyncResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
 			}
 		}()
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
 		if err != nil {
-			queueAsyncResult(handle, nil, server.AnyValueNone, err.Error())
+			queueAsyncResult(handle, nil, protocol.AnyValue(0), err.Error())
 		} else {
 			{{if eq .Return "string"}}
-			queueAsyncResult(handle, res, server.AnyValueStr, "")
+			queueAsyncResult(handle, res, protocol.AnyValueStr, "")
 			{{else if eq .Return "int"}}
-			queueAsyncResult(handle, res, server.AnyValueInt, "")
+			queueAsyncResult(handle, res, protocol.AnyValueInt, "")
 			{{else if eq .Return "int?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, server.AnyValueInt, "")
+				queueAsyncResult(handle, *res, protocol.AnyValueInt, "")
 			} else {
-				queueAsyncResult(handle, nil, server.AnyValueNil, "")
+				queueAsyncResult(handle, nil, protocol.AnyValueNil, "")
 			}
 			{{else if eq .Return "float"}}
-			queueAsyncResult(handle, res, server.AnyValueNum, "")
+			queueAsyncResult(handle, res, protocol.AnyValueNum, "")
 			{{else if eq .Return "float?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, server.AnyValueNum, "")
+				queueAsyncResult(handle, *res, protocol.AnyValueNum, "")
 			} else {
-				queueAsyncResult(handle, nil, server.AnyValueNil, "")
+				queueAsyncResult(handle, nil, protocol.AnyValueNil, "")
 			}
 			{{else if eq .Return "bool"}}
-			queueAsyncResult(handle, res, server.AnyValueBool, "")
+			queueAsyncResult(handle, res, protocol.AnyValueBool, "")
 			{{else if eq .Return "bool?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, server.AnyValueBool, "")
+				queueAsyncResult(handle, *res, protocol.AnyValueBool, "")
 			} else {
-				queueAsyncResult(handle, nil, server.AnyValueNil, "")
+				queueAsyncResult(handle, nil, protocol.AnyValueNil, "")
 			}
 			{{end}}
 		}
@@ -790,7 +455,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
-				log.Error("Panic in sync handler {{.Name}}", "error", r, "stack", string(stack))
+				slog.Error("Panic in sync handler {{.Name}}", "error", r, "stack", string(stack))
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
@@ -811,23 +476,23 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{else if eq .Return "int?"}}
 	var resOffset flatbuffers.UOffsetT
 	if err == nil && res != nil {
-		types.IntStart(b)
-		types.IntAddVal(b, *res)
-		resOffset = types.IntEnd(b)
+		protocol.IntStart(b)
+		protocol.IntAddVal(b, *res)
+		resOffset = protocol.IntEnd(b)
 	}
 	{{else if eq .Return "float?"}}
 	var resOffset flatbuffers.UOffsetT
 	if err == nil && res != nil {
-		types.NumStart(b)
-		types.NumAddVal(b, *res)
-		resOffset = types.NumEnd(b)
+		protocol.NumStart(b)
+		protocol.NumAddVal(b, *res)
+		resOffset = protocol.NumEnd(b)
 	}
 	{{else if eq .Return "bool?"}}
 	var resOffset flatbuffers.UOffsetT
 	if err == nil && res != nil {
-		types.BoolStart(b)
-		types.BoolAddVal(b, *res)
-		resOffset = types.BoolEnd(b)
+		protocol.BoolStart(b)
+		protocol.BoolAddVal(b, *res)
+		resOffset = protocol.BoolEnd(b)
 	}
 	{{end}}
 
@@ -875,13 +540,13 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 
 		b.Reset()
 		dataOff := b.CreateByteVector(out.Data[0:currentSize])
-		ipc.ChunkStart(b)
-		ipc.ChunkAddId(b, transferId)
-		ipc.ChunkAddTotalSize(b, uint32(len(out.Data)))
-		ipc.ChunkAddOffset(b, 0)
-		ipc.ChunkAddData(b, dataOff)
-		ipc.ChunkAddMsgType(b, uint32(msgType))
-		root := ipc.ChunkEnd(b)
+		protocol.ChunkStart(b)
+		protocol.ChunkAddId(b, transferId)
+		protocol.ChunkAddTotalSize(b, uint32(len(out.Data)))
+		protocol.ChunkAddOffset(b, 0)
+		protocol.ChunkAddData(b, dataOff)
+		protocol.ChunkAddMsgType(b, uint32(msgType))
+		root := protocol.ChunkEnd(b)
 		b.FinishWithFileIdentifier(root, []byte("XCHN"))
 
 		out.Offset = currentSize
@@ -899,300 +564,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 }
 
 {{if .Async}}
-func queueAsyncResult(handle uint64, val interface{}, valType server.AnyValue, errStr string) {
+func queueAsyncResult(handle uint64, val interface{}, valType protocol.AnyValue, errStr string) {
 	asyncBatcher.QueueResult(handle, val, valType, errStr)
 }
 {{end}}
 {{end}}
-
-func flushCommands(b *flatbuffers.Builder) []byte {
-    flushBuffers()
-	cmdQueueLock.Lock()
-	defer cmdQueueLock.Unlock()
-
-	if len(cmdQueue) == 0 {
-		return nil
-	}
-
-	wrappers := make([]flatbuffers.UOffsetT, len(cmdQueue))
-
-	for i, c := range cmdQueue {
-		var uOff flatbuffers.UOffsetT
-		var uType ipc.Command
-
-		if c.Data == nil {
-			// Optimized Path
-			sOff := b.CreateString(c.Sheet)
-
-			types.RangeStartRefsVector(b, len(c.Rects))
-			for j := len(c.Rects) - 1; j >= 0; j-- {
-				types.CreateRect(b, c.Rects[j].RowFirst, c.Rects[j].RowLast, c.Rects[j].ColFirst, c.Rects[j].ColLast)
-			}
-			refsOff := b.EndVector(len(c.Rects))
-
-			types.RangeStart(b)
-			types.RangeAddSheetName(b, sOff)
-			types.RangeAddRefs(b, refsOff)
-			rOff := types.RangeEnd(b)
-
-			if c.CmdType == 0 { // Set
-				vOff := createScalarAny(b, c.ScalarVal)
-				ipc.SetCommandStart(b)
-				ipc.SetCommandAddTarget(b, rOff)
-				ipc.SetCommandAddValue(b, vOff)
-				uOff = ipc.SetCommandEnd(b)
-				uType = ipc.CommandSetCommand
-			} else { // Format
-				fOff := b.CreateString(c.FormatStr)
-				ipc.FormatCommandStart(b)
-				ipc.FormatCommandAddTarget(b, rOff)
-				ipc.FormatCommandAddFormat(b, fOff)
-				uOff = ipc.FormatCommandEnd(b)
-				uType = ipc.CommandFormatCommand
-			}
-		} else {
-			// Legacy / Complex Path
-			if c.CmdType == 0 {
-				cmd := ipc.GetRootAsSetCommand(c.Data, 0)
-				rOff := cloneRange(b, cmd.Target(nil))
-				vOff := cloneAny(b, cmd.Value(nil))
-
-				ipc.SetCommandStart(b)
-				ipc.SetCommandAddTarget(b, rOff)
-				ipc.SetCommandAddValue(b, vOff)
-				uOff = ipc.SetCommandEnd(b)
-				uType = ipc.CommandSetCommand
-			} else {
-				cmd := ipc.GetRootAsFormatCommand(c.Data, 0)
-				rOff := cloneRange(b, cmd.Target(nil))
-				fOff := b.CreateString(string(cmd.Format()))
-
-				ipc.FormatCommandStart(b)
-				ipc.FormatCommandAddTarget(b, rOff)
-				ipc.FormatCommandAddFormat(b, fOff)
-				uOff = ipc.FormatCommandEnd(b)
-				uType = ipc.CommandFormatCommand
-			}
-		}
-
-		ipc.CommandWrapperStart(b)
-		ipc.CommandWrapperAddCmdType(b, uType)
-		ipc.CommandWrapperAddCmd(b, uOff)
-		wrappers[i] = ipc.CommandWrapperEnd(b)
-	}
-
-	ipc.CalculationEndedResponseStartCommandsVector(b, len(wrappers))
-	for i := len(wrappers) - 1; i >= 0; i-- {
-		b.PrependUOffsetT(wrappers[i])
-	}
-	cmdsOff := b.EndVector(len(wrappers))
-
-	ipc.CalculationEndedResponseStart(b)
-	ipc.CalculationEndedResponseAddCommands(b, cmdsOff)
-	root := ipc.CalculationEndedResponseEnd(b)
-	b.Finish(root)
-
-	cmdQueue = nil
-	return b.FinishedBytes()
-}
-
-func cloneRange(b *flatbuffers.Builder, r *types.Range) flatbuffers.UOffsetT {
-	if r == nil { return 0 }
-	s := r.SheetName()
-	sOff := b.CreateString(string(s))
-
-	l := r.RefsLength()
-	types.RangeStartRefsVector(b, l)
-	for i := l - 1; i >= 0; i-- {
-		obj := new(types.Rect)
-		if r.Refs(obj, i) {
-			types.CreateRect(b, obj.RowFirst(), obj.RowLast(), obj.ColFirst(), obj.ColLast())
-		}
-	}
-	refsOff := b.EndVector(l)
-
-	types.RangeStart(b)
-	types.RangeAddSheetName(b, sOff)
-	types.RangeAddRefs(b, refsOff)
-	return types.RangeEnd(b)
-}
-
-func cloneAny(b *flatbuffers.Builder, a *types.Any) flatbuffers.UOffsetT {
-	if a == nil { return 0 }
-	var uOff flatbuffers.UOffsetT
-	t := a.ValType()
-
-	var tbl flatbuffers.Table
-	if a.Val(&tbl) {
-		switch t {
-		case types.AnyValueNum:
-			var val types.Num
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.NumStart(b)
-			types.NumAddVal(b, val.Val())
-			uOff = types.NumEnd(b)
-		case types.AnyValueInt:
-			var val types.Int
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.IntStart(b)
-			types.IntAddVal(b, val.Val())
-			uOff = types.IntEnd(b)
-		case types.AnyValueBool:
-			var val types.Bool
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.BoolStart(b)
-			types.BoolAddVal(b, val.Val())
-			uOff = types.BoolEnd(b)
-		case types.AnyValueStr:
-			var val types.Str
-			val.Init(tbl.Bytes, tbl.Pos)
-			sOff := b.CreateString(string(val.Val()))
-			types.StrStart(b)
-			types.StrAddVal(b, sOff)
-			uOff = types.StrEnd(b)
-		case types.AnyValueErr:
-			var val types.Err
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.ErrStart(b)
-			types.ErrAddVal(b, val.Val())
-			uOff = types.ErrEnd(b)
-		case types.AnyValueNumGrid:
-			var val types.NumGrid
-			val.Init(tbl.Bytes, tbl.Pos)
-			l := val.DataLength()
-			types.NumGridStartDataVector(b, l)
-			for i := l - 1; i >= 0; i-- {
-				b.PrependFloat64(val.Data(i))
-			}
-			dataOff := b.EndVector(l)
-
-			types.NumGridStart(b)
-			types.NumGridAddRows(b, val.Rows())
-			types.NumGridAddCols(b, val.Cols())
-			types.NumGridAddData(b, dataOff)
-			uOff = types.NumGridEnd(b)
-		case types.AnyValueGrid:
-			var val types.Grid
-			val.Init(tbl.Bytes, tbl.Pos)
-			uOff = cloneGrid(b, &val)
-		case types.AnyValueRange:
-			var val types.Range
-			val.Init(tbl.Bytes, tbl.Pos)
-			uOff = cloneRange(b, &val)
-		case types.AnyValueRefCache:
-			var val types.RefCache
-			val.Init(tbl.Bytes, tbl.Pos)
-			kOff := b.CreateString(string(val.Key()))
-			types.RefCacheStart(b)
-			types.RefCacheAddKey(b, kOff)
-			uOff = types.RefCacheEnd(b)
-		case types.AnyValueAsyncHandle:
-			var val types.AsyncHandle
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.AsyncHandleStart(b)
-			types.AsyncHandleAddVal(b, val.Val())
-			uOff = types.AsyncHandleEnd(b)
-		default:
-			// Nil
-			types.NilStart(b)
-			uOff = types.NilEnd(b)
-		}
-	} else {
-		types.NilStart(b)
-		uOff = types.NilEnd(b)
-	}
-
-	types.AnyStart(b)
-	types.AnyAddValType(b, t)
-	types.AnyAddVal(b, uOff)
-	return types.AnyEnd(b)
-}
-
-func cloneGrid(b *flatbuffers.Builder, g *types.Grid) flatbuffers.UOffsetT {
-	if g == nil {
-		return 0
-	}
-	l := g.DataLength()
-	offsets := make([]flatbuffers.UOffsetT, l)
-	for i := 0; i < l; i++ {
-		var s types.Scalar
-		if g.Data(&s, i) {
-			offsets[i] = cloneScalar(b, &s)
-		}
-	}
-
-	types.GridStartDataVector(b, l)
-	for i := l - 1; i >= 0; i-- {
-		b.PrependUOffsetT(offsets[i])
-	}
-	dataOff := b.EndVector(l)
-
-	types.GridStart(b)
-	types.GridAddRows(b, g.Rows())
-	types.GridAddCols(b, g.Cols())
-	types.GridAddData(b, dataOff)
-	return types.GridEnd(b)
-}
-
-func cloneScalar(b *flatbuffers.Builder, s *types.Scalar) flatbuffers.UOffsetT {
-	if s == nil {
-		return 0
-	}
-
-	var uOff flatbuffers.UOffsetT
-	t := s.ValType()
-
-	var tbl flatbuffers.Table
-	if s.Val(&tbl) {
-		switch t {
-		case types.ScalarValueInt:
-			var val types.Int
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.IntStart(b)
-			types.IntAddVal(b, val.Val())
-			uOff = types.IntEnd(b)
-		case types.ScalarValueNum:
-			var val types.Num
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.NumStart(b)
-			types.NumAddVal(b, val.Val())
-			uOff = types.NumEnd(b)
-		case types.ScalarValueBool:
-			var val types.Bool
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.BoolStart(b)
-			types.BoolAddVal(b, val.Val())
-			uOff = types.BoolEnd(b)
-		case types.ScalarValueStr:
-			var val types.Str
-			val.Init(tbl.Bytes, tbl.Pos)
-			sOff := b.CreateString(string(val.Val()))
-			types.StrStart(b)
-			types.StrAddVal(b, sOff)
-			uOff = types.StrEnd(b)
-		case types.ScalarValueErr:
-			var val types.Err
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.ErrStart(b)
-			types.ErrAddVal(b, val.Val())
-			uOff = types.ErrEnd(b)
-		case types.ScalarValueAsyncHandle:
-			var val types.AsyncHandle
-			val.Init(tbl.Bytes, tbl.Pos)
-			types.AsyncHandleStart(b)
-			types.AsyncHandleAddVal(b, val.Val())
-			uOff = types.AsyncHandleEnd(b)
-		default:
-			types.NilStart(b)
-			uOff = types.NilEnd(b)
-		}
-	} else {
-		types.NilStart(b)
-		uOff = types.NilEnd(b)
-	}
-
-	types.ScalarStart(b)
-	types.ScalarAddValType(b, t)
-	types.ScalarAddVal(b, uOff)
-	return types.ScalarEnd(b)
-}
