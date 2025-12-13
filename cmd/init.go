@@ -45,7 +45,7 @@ func init() {
 // Returns:
 //   - error: An error if the directory already exists (and force is false) or file creation fails.
 func runInit(projectName string, force bool) error {
-	fmt.Printf("Initializing project %s...\n", projectName)
+	printHeader(fmt.Sprintf("🚀 Initializing project %s...", projectName))
 
 	if _, err := os.Stat(projectName); !os.IsNotExist(err) {
 		if force {
@@ -65,16 +65,19 @@ func runInit(projectName string, force bool) error {
 	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectName, "xll.yaml"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
+	printSuccess("Created", "xll.yaml")
 
 	// 2. Create main.go
 	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectName, "main.go"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
+	printSuccess("Created", "main.go")
 
 	// 3. Create .gitignore
 	if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectName, ".gitignore"), nil); err != nil {
 		return err
 	}
+	printSuccess("Created", ".gitignore")
 
 	// 4. Create .vscode/launch.json
 	vscodeDir := filepath.Join(projectName, ".vscode")
@@ -84,15 +87,17 @@ func runInit(projectName string, force bool) error {
 	if err := generateFileFromTemplate("launch.json.tmpl", filepath.Join(vscodeDir, "launch.json"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
+	printSuccess("Created", ".vscode/launch.json")
 
 	// 5. Initialize go module
 	cmd := exec.Command("go", "mod", "init", projectName)
 	cmd.Dir = projectName
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Println(string(output))
 		return fmt.Errorf("failed to run go mod init: %w", err)
 	}
+	printSuccess("Initialized", "Go module")
 
 	// 6. Generate code and run go mod tidy
 	// We need to change directory to the project folder for generation and tidy
@@ -127,15 +132,16 @@ func runInit(projectName string, force bool) error {
 
 	// Run generator
 	// We use the project name as the module name since we just ran 'go mod init <projectName>'
+	fmt.Println("") // Add spacing
 	opts := generator.Options{}
 	if err := generator.Generate(&cfg, projectName, opts); err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
 
-	fmt.Printf("Project %s initialized successfully!\n", projectName)
-	fmt.Println("Next steps:")
-	fmt.Printf("  cd %s\n", projectName)
-	fmt.Println("  xll-gen build     # (Run this to build the project)")
+	fmt.Printf("\n%s✨ Project %s initialized successfully!%s\n", colorGreen, projectName, colorReset)
+	printHeader("Next steps:")
+	fmt.Printf("  %scd %s%s\n", colorCyan, projectName, colorReset)
+	fmt.Printf("  %sxll-gen build%s\n", colorCyan, colorReset)
 
 	return nil
 }
