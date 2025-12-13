@@ -46,7 +46,7 @@ Traditional Excel XLLs are Dynamic Link Libraries (DLLs) loaded directly into th
 Before using `xll-gen`, ensure you have the following installed:
 
 *   **Go**: Version 1.24 or later.
-*   **CMake**: Version 3.14 or later (required for building the C++ XLL).
+*   **CMake**: Version 3.24 or later (required for building the C++ XLL).
 *   **C++ Compiler**:
     *   **Windows**: MSVC (`cl.exe`) OR MinGW (`g++`/`gcc`).
     *   *Recommendation*: Install MinGW via winget:
@@ -136,8 +136,8 @@ server:
   timeout: "10s"     # Default timeout for synchronous requests
   launch:
     enabled: true    # Automatically start the Go server when XLL loads
-    command: "${BIN}"
-    cwd: "."
+    # command: "${BIN}" # Optional: Defaults to the server executable
+    # cwd: "."          # Optional: Defaults to XLL dir (or Temp in singlefile mode)
 
 functions:
   - name: "Add"
@@ -227,6 +227,13 @@ Run `xll-gen doctor`. It will attempt to download the correct version of the Fla
 
 **"Shared Memory Open Failed"**:
 Ensure the XLL and the Go server are using the same shared memory name.
+
+**"Server Logs"**:
+*   **Standard Mode**: Logs are located in the directory specified by `logging.path` (usually next to the XLL).
+*   **Singlefile Mode**: Logs are located in the temporary directory (e.g., `%TEMP%\<ProjectName>\`).
+    *   `xll_launch.log`: Launch process stdout/stderr.
+    *   `<Project>_native.log`: C++ XLL internal errors.
+    *   `<Project>.log`: Go server logs (if configured).
 
 ## License
 

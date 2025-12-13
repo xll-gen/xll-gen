@@ -20,7 +20,7 @@ Create a `.vscode/launch.json` file with the content below. You may need to adju
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "1. Debug Go Server",
+            "name": "1. Debug Go Server (Launch Manual)",
             "type": "go",
             "request": "launch",
             "mode": "auto",
@@ -28,7 +28,16 @@ Create a `.vscode/launch.json` file with the content below. You may need to adju
             "env": {
                 "GOOS": "windows",
                 "GOARCH": "amd64"
-            }
+            },
+            "description": "Use this if server.launch.enabled is false."
+        },
+        {
+            "name": "1. Debug Go Server (Attach)",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": 0,
+            "description": "Attach to the auto-launched server process."
         },
         {
             "name": "2. Debug XLL (Excel) - MSVC",
@@ -84,8 +93,8 @@ Due to the architecture, **Excel (XLL) must start first** to initialize the Shar
     *   Select **"2. Debug XLL (Excel)..."** in the Run and Debug view.
     *   Press F5. Excel will launch with your Add-in loaded.
 3.  **Start Go Server**:
-    *   With Excel running, select **"1. Debug Go Server"**.
-    *   Press F5. The Go terminal should show connection logs.
+    *   **Auto-Launch Mode** (Default): Select **"1. Debug Go Server (Attach)"** and pick the `YOUR_PROJECT.exe` process spawned by Excel.
+    *   **Manual Mode**: If you disabled `server.launch` in `xll.yaml`, select **"1. Debug Go Server (Launch Manual)"**.
 4.  **Test**:
     *   In Excel, type a formula (e.g., `=Add(1, 2)`) to trigger your code and hit breakpoints.
 
