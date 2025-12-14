@@ -36,14 +36,6 @@ func init() {
 }
 
 // runInit scaffolds a new project directory with the specified name.
-// It creates configuration files, the main Go entry point, and initial assets.
-//
-// Parameters:
-//   - projectName: The name of the project (and directory) to create.
-//   - force: If true, existing directory will be removed.
-//
-// Returns:
-//   - error: An error if the directory already exists (and force is false) or file creation fails.
 func runInit(projectName string, force bool) error {
 	printHeader(fmt.Sprintf("🚀 Initializing project %s...", projectName))
 
@@ -61,25 +53,21 @@ func runInit(projectName string, force bool) error {
 		return err
 	}
 
-	// 1. Create xll.yaml
 	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectName, "xll.yaml"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
 	printSuccess("Created", "xll.yaml")
 
-	// 2. Create main.go
 	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectName, "main.go"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
 	printSuccess("Created", "main.go")
 
-	// 3. Create .gitignore
 	if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectName, ".gitignore"), nil); err != nil {
 		return err
 	}
 	printSuccess("Created", ".gitignore")
 
-	// 4. Create .vscode/launch.json
 	vscodeDir := filepath.Join(projectName, ".vscode")
 	if err := os.MkdirAll(vscodeDir, 0755); err != nil {
 		return err
@@ -89,7 +77,6 @@ func runInit(projectName string, force bool) error {
 	}
 	printSuccess("Created", ".vscode/launch.json")
 
-	// 5. Initialize go module
 	cmd := exec.Command("go", "mod", "init", projectName)
 	cmd.Dir = projectName
 	output, err := cmd.CombinedOutput()
@@ -99,7 +86,6 @@ func runInit(projectName string, force bool) error {
 	}
 	printSuccess("Initialized", "Go module")
 
-	// 6. Generate code and run go mod tidy
 	// We need to change directory to the project folder for generation and tidy
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -113,7 +99,6 @@ func runInit(projectName string, force bool) error {
 		_ = os.Chdir(cwd)
 	}()
 
-	// Read and parse xll.yaml
 	data, err := os.ReadFile("xll.yaml")
 	if err != nil {
 		return fmt.Errorf("failed to read xll.yaml: %w", err)
@@ -130,7 +115,6 @@ func runInit(projectName string, force bool) error {
 		return err
 	}
 
-	// Run generator
 	// We use the project name as the module name since we just ran 'go mod init <projectName>'
 	fmt.Println("") // Add spacing
 	opts := generator.Options{}
@@ -146,15 +130,6 @@ func runInit(projectName string, force bool) error {
 	return nil
 }
 
-// generateFileFromTemplate creates a file at destPath using the specified template and data.
-//
-// Parameters:
-//   - tmplName: The name of the template file to use.
-//   - destPath: The path where the generated file should be written.
-//   - data: The data object to pass to the template.
-//
-// Returns:
-//   - error: An error if the template cannot be read or executed.
 func generateFileFromTemplate(tmplName, destPath string, data interface{}) error {
 	content, err := templates.Get(tmplName)
 	if err != nil {

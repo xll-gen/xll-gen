@@ -19,19 +19,10 @@ var doctorCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		printHeader("🩺 Running System Diagnosis...")
 
-		// Check C++ compiler
 		checkCompiler()
-
-		// Check flatc
 		checkFlatc()
-
-		// Check Go
 		checkGo()
-
-		// Check CMake
 		checkCMake()
-
-		// Check Task
 		checkTask()
 
 		fmt.Println("")

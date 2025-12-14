@@ -32,14 +32,12 @@ type Options struct {
 func Generate(cfg *config.Config, modName string, opts Options) error {
 	fmt.Printf("Generating code for project: %s\n", cfg.Project.Name)
 
-	// 1. Ensure directories
 	genDir := "generated"
 	cppDir := filepath.Join(genDir, "cpp")
 	if err := os.MkdirAll(cppDir, 0755); err != nil {
 		return err
 	}
 
-	// 2. Write Assets (C++ common files)
 	// We handle subdirectory structures (e.g., tools/) by checking the asset name.
 	// Default is include/, but tools/ goes to cpp/tools/.
 	includeDir := filepath.Join(cppDir, "include")
@@ -65,14 +63,12 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		}
 	}
 
-	// 3. Generate protocol.fbs (Static System Types)
 	protocolPath := filepath.Join(genDir, "protocol.fbs")
 	if err := generateProtocol(protocolPath); err != nil {
 		return err
 	}
 	fmt.Println("Generated protocol.fbs")
 
-	// 4. Generate schema.fbs (User Types)
 	schemaPath := filepath.Join(genDir, "schema.fbs")
 	if err := generateSchema(cfg, schemaPath); err != nil {
 		return err
@@ -81,7 +77,6 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 
 	goModulePath := modName + "/generated"
 
-	// 5. Run flatc
 	flatcPath, err := EnsureFlatc()
 	if err != nil {
 		return err
@@ -115,38 +110,32 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	}
 	fmt.Println("Generated Flatbuffers C++ code")
 
-	// 6. Generate interface.go
 	if err := generateInterface(cfg, genDir, modName); err != nil {
 		return err
 	}
 	fmt.Println("Generated interface.go")
 
-	// 7. Generate server.go
 	if err := generateServer(cfg, genDir, modName); err != nil {
 		return err
 	}
 	fmt.Println("Generated server.go")
 
-	// 8. Generate xll_main.cpp
 	shouldAppendPid := !cfg.Gen.DisablePidSuffix && !opts.DisablePidSuffix
 	if err := generateCppMain(cfg, cppDir, shouldAppendPid); err != nil {
 		return err
 	}
 	fmt.Println("Generated xll_main.cpp")
 
-	// 9. Generate CMakeLists.txt
 	if err := generateCMake(cfg, cppDir); err != nil {
 		return err
 	}
 	fmt.Println("Generated CMakeLists.txt")
 
-	// 10. Generate Taskfile.yml
 	if err := generateTaskfile(cfg, "."); err != nil {
 		return err
 	}
 	fmt.Println("Generated Taskfile.yml")
 
-	// 11. Run go get shm@v0.5.4 (Ensure latest SHM for new features)
 	fmt.Println("Updating SHM dependency to v0.5.4...")
 	cmdGet := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
 	cmdGet.Stdout = os.Stdout
@@ -155,7 +144,6 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		fmt.Printf("Warning: 'go get shm' failed: %v\n", err)
 	}
 
-	// 12. Run go mod tidy
 	fmt.Println("Running 'go mod tidy'...")
 	cmdTidy := exec.Command("go", "mod", "tidy")
 	cmdTidy.Stdout = os.Stdout
