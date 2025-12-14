@@ -1,69 +1,140 @@
-#include "include/xll_worker.h"
-#include "include/xll_async.h"
-#include "include/xll_log.h"
-#include "schema_generated.h"
-#include <map>
+#include "xll_ipc.h"
+#include "xll_converters.h"
+#include "xll_utility.h"
 #include <vector>
+#include <string>
+#include <map>
+#include <mutex>
+#include <chrono>
+
+// External declaration
+void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch);
+void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::CommandWrapper>>* commands);
 
 namespace xll {
-    void StartWorker(shm::DirectHost& host) {
-        // Reusable vectors for batch processing
-        std::vector<XLOPER12> handles;
-        std::vector<XLOPER12> values;
-        handles.reserve(256);
-        values.reserve(256);
 
-        host.Start([&handles, &values](const uint8_t* req, int32_t size, uint8_t* resp, uint32_t capacity, shm::MsgType msgId) -> int32_t {
-             static std::map<uint64_t, std::vector<uint8_t>> chunkBuffers;
-             static std::map<uint64_t, size_t> chunkSizes;
+std::atomic<bool> g_workerRunning = false;
 
-             try {
-                 switch (msgId) {
-                 case (shm::MsgType)129: { // MSG_CHUNK
-                     auto chunk = flatbuffers::GetRoot<ipc::Chunk>(req);
-                     uint64_t id = chunk->id();
+// Chunk Reassembly Logic
+struct PartialMessage {
+    std::vector<uint8_t> buffer;
+    size_t receivedSize;
+    size_t totalSize;
+    int32_t finalMsgType;
+    std::chrono::steady_clock::time_point lastUpdate;
+};
 
-                     std::vector<uint8_t>& buf = chunkBuffers[id];
-                     if (buf.empty()) {
-                         buf.resize(chunk->total_size());
-                         chunkSizes[id] = 0;
-                     }
+std::map<uint64_t, PartialMessage> g_partialMessages;
+std::mutex g_partialMessagesMutex;
 
-                     auto data = chunk->data();
-                     if (data) {
-                         size_t offset = chunk->offset();
-                         size_t len = data->size();
-                         if (offset + len <= buf.size()) {
-                             std::memcpy(buf.data() + offset, data->data(), len);
-                             chunkSizes[id] += len;
-                         }
-                     }
+void HandleChunk(const protocol::Chunk* chunk) {
+    if (!chunk) return;
 
-                     if (chunkSizes[id] >= buf.size()) {
-                         shm::MsgType payloadType = (shm::MsgType)chunk->msg_type();
-                         int32_t ret = 0;
-                         if (payloadType == (shm::MsgType)128) {
-                             ret = ProcessAsyncBatchResponse(buf.data(), handles, values);
-                         }
-                         chunkBuffers.erase(id);
-                         chunkSizes.erase(id);
-                         return ret;
-                     }
-                     return 1; // ACK
-                 }
-                 case (shm::MsgType)128: { // MSG_BATCH_ASYNC_RESPONSE
-                     return ProcessAsyncBatchResponse(req, handles, values);
-                 }
-                 default:
-                     return 0;
-                 }
-             } catch (const std::exception& e) {
-                 LogError("Exception in guest call handler: " + std::string(e.what()));
-                 return 0;
-             } catch (...) {
-                 LogError("Unknown exception in guest call handler");
-                 return 0;
-             }
-        });
+    uint64_t msgId = chunk->id();
+
+    std::lock_guard<std::mutex> lock(g_partialMessagesMutex);
+    auto it = g_partialMessages.find(msgId);
+
+    if (it == g_partialMessages.end()) {
+        // New partial message
+        PartialMessage pm;
+        pm.totalSize = chunk->total_size();
+        pm.receivedSize = 0;
+        pm.finalMsgType = chunk->msg_type();
+        pm.buffer.resize(pm.totalSize);
+        pm.lastUpdate = std::chrono::steady_clock::now();
+
+        it = g_partialMessages.insert({msgId, std::move(pm)}).first;
+    }
+
+    PartialMessage& pm = it->second;
+    pm.lastUpdate = std::chrono::steady_clock::now();
+
+    // Validate offset and size
+    if (chunk->offset() + chunk->data()->size() > pm.totalSize) {
+        // Error: Overflow. Discard.
+        g_partialMessages.erase(it);
+        return;
+    }
+
+    // Copy data
+    std::memcpy(pm.buffer.data() + chunk->offset(), chunk->data()->Data(), chunk->data()->size());
+    pm.receivedSize += chunk->data()->size();
+
+    // Check completion
+    if (pm.receivedSize == pm.totalSize) {
+        // Process the full message
+        int32_t type = pm.finalMsgType;
+        const uint8_t* data = pm.buffer.data();
+
+        // Dispatch based on type
+        if (type == MSG_BATCH_ASYNC_RESPONSE) {
+             auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
+             ProcessAsyncBatchResponse(batch);
+        } else if (type == MSG_CALCULATION_ENDED) {
+             auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
+             ExecuteCommands(resp->commands());
+        }
+
+        // Remove from map
+        g_partialMessages.erase(it);
     }
 }
+
+// Cleanup stale chunks
+void CleanupStaleChunks() {
+    std::lock_guard<std::mutex> lock(g_partialMessagesMutex);
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = g_partialMessages.begin(); it != g_partialMessages.end(); ) {
+        if (now - it->second.lastUpdate > std::chrono::seconds(60)) {
+            it = g_partialMessages.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Worker loop
+void WorkerLoop(int numGuestSlots) {
+    g_workerRunning = true;
+
+    auto lastCleanup = std::chrono::steady_clock::now();
+
+    while (g_workerRunning) {
+        bool processed = g_host.ProcessGuestCalls([](const void* data, size_t size, int32_t msgType) -> int32_t {
+            if (msgType == MSG_BATCH_ASYNC_RESPONSE) {
+                auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
+                ProcessAsyncBatchResponse(batch);
+                return 1;
+            } else if (msgType == MSG_CALCULATION_ENDED) {
+                auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
+                ExecuteCommands(resp->commands());
+                return 1;
+            } else if (msgType == MSG_CHUNK) {
+                auto chunk = flatbuffers::GetRoot<protocol::Chunk>(data);
+                HandleChunk(chunk);
+                return 1;
+            }
+
+            return 0; // Unknown
+        }, 50); // 50ms timeout
+
+        // Periodic cleanup
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastCleanup > std::chrono::seconds(10)) {
+            CleanupStaleChunks();
+            lastCleanup = now;
+        }
+    }
+}
+
+void StartWorker(int numGuestSlots) {
+    std::thread t(WorkerLoop, numGuestSlots);
+    t.detach();
+}
+
+void StopWorker() {
+    g_workerRunning = false;
+}
+
+} // namespace xll
