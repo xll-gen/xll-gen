@@ -8,6 +8,12 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/protocol"
 )
 
+const (
+	batchingThreshold = 1024
+	cmdTypeSet        = 0
+	cmdTypeFormat     = 1
+)
+
 type CommandBatcher struct {
 	bufferedSets    map[string]map[algo.Cell]ScalarValue
 	bufferedFormats map[string]map[algo.Cell]string
@@ -35,9 +41,58 @@ func (cb *CommandBatcher) Clear() {
 	cb.bufferLock.Unlock()
 }
 
+func calculateTotalCells(r *protocol.Range) int64 {
+	var totalCells int64
+	l := r.RefsLength()
+	for i := 0; i < l; i++ {
+		var rect protocol.Rect
+		if r.Refs(&rect, i) {
+			rows := int64(rect.RowLast()) - int64(rect.RowFirst()) + 1
+			cols := int64(rect.ColLast()) - int64(rect.ColFirst()) + 1
+			totalCells += rows * cols
+		}
+	}
+	return totalCells
+}
+
+func extractAlgoRects(r *protocol.Range) []algo.Rect {
+	var rects []algo.Rect
+	l := r.RefsLength()
+	for i := 0; i < l; i++ {
+		var rProto protocol.Rect
+		if r.Refs(&rProto, i) {
+			rects = append(rects, algo.Rect{
+				RowFirst: rProto.RowFirst(),
+				RowLast:  rProto.RowLast(),
+				ColFirst: rProto.ColFirst(),
+				ColLast:  rProto.ColLast(),
+			})
+		}
+	}
+	return rects
+}
+
 func (cb *CommandBatcher) ScheduleSet(r *protocol.Range, v *protocol.Any) {
 	scalar, ok := ToScalar(v)
 	if ok {
+		// Optimization: If range is large, bypass buffer to avoid O(Cells) decomposition
+		totalCells := calculateTotalCells(r)
+		if totalCells > batchingThreshold {
+			cb.flushBuffers()
+
+			rects := extractAlgoRects(r)
+
+			cb.cmdQueueLock.Lock()
+			cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
+				CmdType:   cmdTypeSet,
+				Sheet:     string(r.SheetName()),
+				Rects:     rects,
+				ScalarVal: scalar,
+			})
+			cb.cmdQueueLock.Unlock()
+			return
+		}
+
 		sheet := string(r.SheetName())
 		cb.bufferLock.Lock()
 		if cb.bufferedSets[sheet] == nil {
@@ -72,11 +127,28 @@ func (cb *CommandBatcher) ScheduleSet(r *protocol.Range, v *protocol.Any) {
 	b.Finish(root)
 
 	cb.cmdQueueLock.Lock()
-	cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{CmdType: 0, Data: b.FinishedBytes()})
+	cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{CmdType: cmdTypeSet, Data: b.FinishedBytes()})
 	cb.cmdQueueLock.Unlock()
 }
 
 func (cb *CommandBatcher) ScheduleFormat(r *protocol.Range, fmtStr string) {
+	totalCells := calculateTotalCells(r)
+	if totalCells > batchingThreshold {
+		cb.flushBuffers()
+
+		rects := extractAlgoRects(r)
+
+		cb.cmdQueueLock.Lock()
+		cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
+			CmdType:   cmdTypeFormat,
+			Sheet:     string(r.SheetName()),
+			Rects:     rects,
+			FormatStr: fmtStr,
+		})
+		cb.cmdQueueLock.Unlock()
+		return
+	}
+
 	sheet := string(r.SheetName())
 	cb.bufferLock.Lock()
 	if cb.bufferedFormats[sheet] == nil {
@@ -121,7 +193,7 @@ func (cb *CommandBatcher) flushBuffers() {
 
 				cb.cmdQueueLock.Lock()
 				cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
-					CmdType:   0,
+					CmdType:   cmdTypeSet,
 					Sheet:     sheet,
 					Rects:     batch,
 					ScalarVal: val,
@@ -151,7 +223,7 @@ func (cb *CommandBatcher) flushBuffers() {
 
 				cb.cmdQueueLock.Lock()
 				cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
-					CmdType:   1,
+					CmdType:   cmdTypeFormat,
 					Sheet:     sheet,
 					Rects:     batch,
 					FormatStr: fmt,
@@ -193,7 +265,7 @@ func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
 			protocol.RangeAddRefs(b, refsOff)
 			rOff := protocol.RangeEnd(b)
 
-			if c.CmdType == 0 { // Set
+			if c.CmdType == cmdTypeSet { // Set
 				vOff := CreateScalarAny(b, c.ScalarVal)
 				protocol.SetCommandStart(b)
 				protocol.SetCommandAddTarget(b, rOff)
@@ -210,7 +282,7 @@ func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
 			}
 		} else {
 			// Legacy / Complex Path
-			if c.CmdType == 0 {
+			if c.CmdType == cmdTypeSet {
 				cmd := protocol.GetRootAsSetCommand(c.Data, 0)
 				rOff := CloneRange(b, cmd.Target(nil))
 				vOff := CloneAny(b, cmd.Value(nil))
