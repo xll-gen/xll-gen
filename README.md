@@ -177,6 +177,15 @@ functions:
 
 > **Note**: Nullable scalar types (`int?`, `float?`, `bool?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
+### Custom FlatBuffers Includes
+
+The code generator runs `flatc` with the `--no-includes` flag. This means:
+1.  Code is generated **only** for the main `schema.fbs` (derived from `xll.yaml`).
+2.  If you manually modify `schema.fbs` to `include` other custom `.fbs` files, their code will **not** be generated automatically.
+3.  You must manually generate code for any extra included files if you need them.
+
+This design ensures that the pre-compiled `protocol.fbs` (system types) is used efficiently without regeneration.
+
 ## Command Scheduling
 
 You can schedule Excel commands (like `xlSet` or formatting) to run after the calculation cycle ends. This is useful for modifying cells or formatting, which is restricted during function execution.
