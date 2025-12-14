@@ -25,7 +25,6 @@ func EnsureFlatc() (string, error) {
 	const flatcVersion = "v25.9.23"
 	requiredVersion := strings.TrimPrefix(flatcVersion, "v")
 
-	// 1. Check in PATH
 	if path, err := exec.LookPath("flatc"); err == nil {
 		if ver, err := getFlatcVersion(path); err == nil {
 			if ver == requiredVersion {
@@ -35,7 +34,6 @@ func EnsureFlatc() (string, error) {
 		}
 	}
 
-	// 2. Check in Cache
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("error getting cache dir: %w", err)
@@ -51,7 +49,6 @@ func EnsureFlatc() (string, error) {
 		return flatcPath, nil
 	}
 
-	// 3. Download
 	fmt.Println("flatc not found. Attempting to download...")
 	if err := downloadFlatc(binDir, flatcVersion); err != nil {
 		return "", err
@@ -194,7 +191,7 @@ func downloadFlatc(destDir string, version string) error {
 
 	r, err := zip.OpenReader(tmpFile.Name())
 	if err != nil {
-		return fmt.Errorf("failed to open zip: %w", err)
+		return fmt.Errorf("failed to create zip reader: %w", err)
 	}
 	defer r.Close()
 
