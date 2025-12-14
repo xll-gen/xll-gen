@@ -25,6 +25,15 @@ var doctorCmd = &cobra.Command{
 		// Check flatc
 		checkFlatc()
 
+		// Check Go
+		checkGo()
+
+		// Check CMake
+		checkCMake()
+
+		// Check Task
+		checkTask()
+
 		fmt.Println("")
 	},
 }
@@ -91,4 +100,69 @@ func checkFlatc() {
 		return
 	}
 	printSuccess("Flatbuffers", fmt.Sprintf("Found (%s)", path))
+}
+
+func checkGo() {
+	checkTool("Go", "go", []string{"version"}, "https://go.dev/dl/", func(out string) string {
+		parts := strings.Fields(out)
+		if len(parts) >= 3 && parts[0] == "go" && parts[1] == "version" {
+			return parts[2]
+		}
+		return ""
+	})
+}
+
+func checkCMake() {
+	checkTool("CMake", "cmake", []string{"--version"}, "https://cmake.org/download/", func(out string) string {
+		lines := strings.Split(out, "\n")
+		if len(lines) > 0 {
+			parts := strings.Fields(lines[0])
+			if len(parts) >= 3 && parts[0] == "cmake" && parts[1] == "version" {
+				return parts[2]
+			}
+		}
+		return ""
+	})
+}
+
+func checkTask() {
+	exe := "task"
+	if _, err := exec.LookPath("task"); err != nil {
+		if _, err := exec.LookPath("go-task"); err == nil {
+			exe = "go-task"
+		}
+	}
+	checkTool("Task", exe, []string{"--version"}, "https://taskfile.dev/installation/", func(out string) string {
+		parts := strings.Fields(out)
+		for i, p := range parts {
+			if p == "version:" && i+1 < len(parts) {
+				return parts[i+1]
+			}
+		}
+		return ""
+	})
+}
+
+func checkTool(label, exe string, args []string, installUrl string, parser func(string) string) {
+	path, err := exec.LookPath(exe)
+	if err != nil {
+		printError(label, "NOT FOUND")
+		if installUrl != "" {
+			printWarning("Action Required", "Install "+label+": "+installUrl)
+		}
+		return
+	}
+
+	version := ""
+	if parser != nil && len(args) > 0 {
+		cmd := exec.Command(path, args...)
+		out, _ := cmd.Output()
+		version = parser(string(out))
+	}
+
+	if version != "" {
+		printSuccess(label, fmt.Sprintf("Found (%s)", version))
+	} else {
+		printSuccess(label, "Found")
+	}
 }
