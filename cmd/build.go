@@ -29,7 +29,6 @@ func init() {
 // It searches for 'task' or 'go-task' executables in the system PATH.
 // If the build fails, it exits the process with a non-zero status code.
 func runBuildCommand(debug bool) {
-	// 1. Check for Taskfile.yml or Taskfile.yaml
 	if _, err := os.Stat("Taskfile.yml"); os.IsNotExist(err) {
 		if _, err := os.Stat("Taskfile.yaml"); os.IsNotExist(err) {
 			fmt.Println("Error: Taskfile.yml not found. Are you in the project root?")
@@ -37,7 +36,6 @@ func runBuildCommand(debug bool) {
 		}
 	}
 
-	// 2. Determine the task runner command
 	taskExe := "task"
 	if _, err := exec.LookPath("task"); err != nil {
 		if _, err := exec.LookPath("go-task"); err == nil {
@@ -48,7 +46,6 @@ func runBuildCommand(debug bool) {
 		}
 	}
 
-	// 3. Execute 'task build'
 	taskName := "build"
 	if debug {
 		taskName = "build-debug"
