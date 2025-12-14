@@ -146,9 +146,9 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	}
 	fmt.Println("Generated Taskfile.yml")
 
-	// 11. Run go get shm@v0.5.3 (Ensure latest SHM for new features)
-	fmt.Println("Updating SHM dependency to v0.5.3...")
-	cmdGet := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.3")
+	// 11. Run go get shm@v0.5.4 (Ensure latest SHM for new features)
+	fmt.Println("Updating SHM dependency to v0.5.4...")
+	cmdGet := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
 	cmdGet.Stdout = os.Stdout
 	cmdGet.Stderr = os.Stderr
 	if err := cmdGet.Run(); err != nil {
