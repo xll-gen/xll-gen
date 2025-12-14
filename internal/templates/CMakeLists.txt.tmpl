@@ -44,7 +44,6 @@ endif()
 # Embedding Executable in XLL (exe_in_xll mode / singlefile: xll)
 # ==============================================================================
 
-# 1. Fetch Zstd
 FetchContent_Declare(
   zstd
   GIT_REPOSITORY https://github.com/facebook/zstd.git
@@ -58,12 +57,10 @@ set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(zstd)
 
-# 2. Build Compressor Tool
 add_executable(compressor "${CMAKE_CURRENT_SOURCE_DIR}/tools/compressor.cpp")
 target_link_libraries(compressor PRIVATE libzstd_static)
 target_include_directories(compressor PRIVATE ${zstd_SOURCE_DIR}/lib)
 
-# 3. Use Pre-built Go Binary
 if(NOT DEFINED GO_SERVER_EXE_PATH)
     message(FATAL_ERROR "GO_SERVER_EXE_PATH must be defined via -DGO_SERVER_EXE_PATH=...")
 endif()
@@ -77,7 +74,6 @@ if(NOT EXISTS "${GO_EXE}")
     message(FATAL_ERROR "Go binary not found at: ${GO_EXE}. Ensure it is built before running CMake.")
 endif()
 
-# 4. Compress Go Binary
 set(ZSTD_BINARY_NAME "go_server.zst")
 set(ZSTD_OUTPUT_PATH "${CMAKE_CURRENT_BINARY_DIR}/${ZSTD_BINARY_NAME}")
 
@@ -88,7 +84,6 @@ add_custom_command(
     COMMENT "Compressing Go binary with Zstd..."
 )
 
-# 5. Generate Resource File
 if(WIN32)
     set(RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/embedded_resource.rc")
     file(WRITE ${RC_FILE} "101 RCDATA \"${ZSTD_OUTPUT_PATH}\"")

@@ -111,7 +111,6 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         if (workers == 0) workers = 16; // Fallback
     }
 
-    // 1024 queue items, 1MB buffer size per slot
     {{if .ShouldAppendPid}}
     std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
     {{else}}
@@ -126,7 +125,6 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     config.numHostSlots = workers * 2 + 2; // Support nested IPC (depth 1) + margin
     config.payloadSize = 1024 * 1024;      // 1MB per slot
 
-    // Init Host
     if (!g_host.Init(config)) {
         LogError("Failed to initialize Shared Memory with name: " + shmName);
         return 0;
@@ -172,13 +170,11 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
 {{if .Server.Launch}}
 {{if derefBool .Server.Launch.Enabled}}
-    // Launch Logic
     {
         std::wstring xllDir = GetXllDir();
         std::wstring extractedExe = L"";
 
 {{if eq .Build.Singlefile "xll"}}
-        // EMBEDDED MODE
         std::string extractedStr = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
         if (!extractedStr.empty()) {
             extractedExe = StringToWString(extractedStr);

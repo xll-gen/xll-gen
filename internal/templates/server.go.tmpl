@@ -53,7 +53,6 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 }
 
 func Serve(handler XllService) {
-	// Initialize Logger
 	if err := log.Init("{{.Logging.Path}}", "{{.Logging.Level}}"); err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 	}
@@ -73,16 +72,13 @@ func Serve(handler XllService) {
 	}
 	defer client.Close()
 
-	// Global Ref Cache
 	var refCacheMutex sync.RWMutex
 	refCache := make(map[string][]byte)
 
-	// Start Async Worker
 	asyncBatcher.StartWorker(func(batch []server.PendingAsyncResult) {
 		server.FlushAsyncBatch(batch, client)
 	})
 
-	// Configuration
 	{{range .Functions}}
 	{{if .Timeout}}
 	timeout_{{.Name}}, _ := time.ParseDuration("{{.Timeout}}")
@@ -94,7 +90,6 @@ func Serve(handler XllService) {
 		workerCount = n
 	}
 
-	// Worker Pool
 	jobQueue := make(chan func(), workerCount)
 	for i := 0; i < workerCount; i++ {
 		go func() {
@@ -328,7 +323,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 	_ = request
 
-	// Extract args
 	{{range .Args}}
 	{{if eq .Type "string"}}
 	arg_{{.Name}} := string(request.{{.Name|capitalize}}())
@@ -391,7 +385,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{end}}
 
 	{{if .Async}}
-	// Async execution
 	handle := request.AsyncHandle()
 
 	if ctx.Err() != nil {
@@ -399,7 +392,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		return 0, 0
 	}
 
-	// Call handler with panic recovery
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -446,11 +438,9 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 
 	return 0, 0
 	{{else}}
-	// Sync execution
 	var res {{lookupGoType .Return}}
 	var err error
 
-	// Call handler with panic recovery
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
