@@ -134,7 +134,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     g_running = true;
     g_worker = std::thread([]{
-        xll::StartWorker(g_host);
+        xll::StartWorker(g_host.GetGuestSlots()); // Pass guest slots? Actually StartWorker takes int, but it is not used much if DirectHost manages it.
     });
 
     static XLOPER12 xDll;
@@ -254,9 +254,9 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
         }
         std::vector<uint8_t> respBuf;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
-        if (res && res.Value() > 0) {
-             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
-             ExecuteCommands(resp);
+        if (res.Value() > 0) {
+             auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data());
+             ExecuteCommands(resp->commands());
         } else {
             // LogError("Failed to send CalculationEnded event or invalid response");
         }
@@ -284,9 +284,9 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
         }
         std::vector<uint8_t> respBuf;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
-        if (res && res.Value() > 0) {
-             auto resp = flatbuffers::GetRoot<ipc::CalculationEndedResponse>(respBuf.data());
-             ExecuteCommands(resp);
+        if (res.Value() > 0) {
+             auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data());
+             ExecuteCommands(resp->commands());
         }
     } catch (const std::exception& e) {
         LogError("Exception in CalculationEnded: " + std::string(e.what()));
