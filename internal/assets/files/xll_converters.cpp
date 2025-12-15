@@ -272,19 +272,19 @@ LPXLOPER12 RangeToXLOPER12(const protocol::Range* range) {
     op->val.mref.lpmref = (LPXLMREF12) new char[sizeof(XLMREF12) + sizeof(XLREF12) * range->refs()->size()];
     op->val.mref.idSheet = 0;
 
+    // Note: We cannot safely call xlSheetId here because this function might be called
+    // from a background thread (ProcessAsyncBatchResponse), and xlSheetId is not thread-safe.
+    // We ignore the sheet name for now, defaulting to the active sheet (idSheet = 0).
+    /*
     if (range->sheet_name() && range->sheet_name()->size() > 0) {
         std::wstring sName = ConvertToWString(range->sheet_name()->c_str());
-        // Using TempStr12 here is unsafe if we need to call Excel12, because TempStr12 uses static buffer.
-        // But we just need a pointer for xlSheetId.
-        // We used WStringToPascalString in memory, but that needs free if it returns new buffer.
-        // Let's use TempStr12 which is safe for immediate Excel call.
-
         XLOPER12 xId;
         if (Excel12(xlSheetId, &xId, 1, TempStr12(sName.c_str())) == xlretSuccess) {
             op->val.mref.idSheet = xId.val.mref.idSheet;
             Excel12(xlFree, 0, 1, &xId);
         }
     }
+    */
 
     op->val.mref.lpmref->count = (WORD)range->refs()->size();
     for(size_t i=0; i<range->refs()->size(); ++i) {

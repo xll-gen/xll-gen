@@ -25,13 +25,13 @@ std::string WideToUtf8(const std::wstring& wstr) {
 }
 
 LPXLOPER12 TempStr12(const wchar_t* txt) {
-    static XLOPER12 xOp[10];
-    static int i = 0;
+    static thread_local XLOPER12 xOp[10];
+    static thread_local int i = 0;
     i = (i + 1) % 10;
     LPXLOPER12 op = &xOp[i];
 
     op->xltype = xltypeStr;
-    static wchar_t strBuf[10][256];
+    static thread_local wchar_t strBuf[10][256];
     size_t len = 0;
     if (txt) len = wcslen(txt);
     if (len > 255) len = 255;
@@ -44,8 +44,8 @@ LPXLOPER12 TempStr12(const wchar_t* txt) {
 }
 
 LPXLOPER12 TempInt12(int val) {
-    static XLOPER12 xOp[10];
-    static int i = 0;
+    static thread_local XLOPER12 xOp[10];
+    static thread_local int i = 0;
     i = (i + 1) % 10;
     LPXLOPER12 op = &xOp[i];
     op->xltype = xltypeInt;
