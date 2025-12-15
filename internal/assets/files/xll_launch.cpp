@@ -31,29 +31,10 @@ namespace xll {
         std::wstring& outCwd,
         std::wstring& outLogPath
     ) {
-        std::wstring cwd = xllDir;
-
-        // Apply Config Cwd
-        if (!cfg.cwd.empty() && cfg.cwd != ".") {
-            std::wstring wCwd = StringToWString(cfg.cwd);
-            bool isAbs = (wCwd.find(L":") != std::wstring::npos || (wCwd.size() > 1 && wCwd[0] == L'\\' && wCwd[1] == L'\\'));
-            if (isAbs) {
-                cwd = wCwd;
-            } else {
-                cwd = xllDir + L"\\" + wCwd;
-            }
-        }
-
-        std::wstring defaultBinPath;
-
         // 1. Determine Default Binary Path
+        std::wstring defaultBinPath;
         if (!extractedExe.empty()) {
             defaultBinPath = extractedExe;
-            // In singlefile mode, run from the temp dir so logs appear there
-            size_t lastSlash = defaultBinPath.find_last_of(L"\\");
-            if (lastSlash != std::wstring::npos) {
-                cwd = defaultBinPath.substr(0, lastSlash);
-            }
         } else {
              // Fallback: Check standard locations
              std::wstring sameDir = xllDir + L"\\" + cfg.projectName + L".exe";
@@ -76,7 +57,45 @@ namespace xll {
              }
         }
 
-        // 2. Resolve Configured Command
+        // Determine Bin Dir
+        std::wstring binDir = xllDir;
+        size_t lastSlashBin = defaultBinPath.find_last_of(L"\\");
+        if (lastSlashBin != std::wstring::npos) {
+            binDir = defaultBinPath.substr(0, lastSlashBin);
+        }
+
+        // 2. Resolve Cwd
+        std::wstring cwd = binDir; // Default to BIN_DIR
+        if (!cfg.cwd.empty()) {
+            std::wstring wCwdCfg = StringToWString(cfg.cwd);
+
+            // Perform variable substitution
+            ReplaceAll(wCwdCfg, L"${BIN_DIR}", binDir);
+            ReplaceAll(wCwdCfg, L"${XLL_DIR}", xllDir);
+
+            // Check if absolute
+            bool isAbs = (wCwdCfg.find(L":") != std::wstring::npos || (wCwdCfg.size() > 1 && wCwdCfg[0] == L'\\' && wCwdCfg[1] == L'\\'));
+            if (isAbs) {
+                cwd = wCwdCfg;
+            } else {
+                // If relative, it's relative to XLL_DIR by convention if no var was used,
+                // BUT if the user explicitly wants relative to XLL_DIR they should use ${XLL_DIR}/sub
+                // However, preserving old behavior: if it was ".", it meant XLL dir?
+                // Actually, old code:
+                // if (!cfg.cwd.empty() && cfg.cwd != ".") ... else cwd = xllDir (or temp).
+                //
+                // If the user provided a relative path without variables, we need a base.
+                // The prompt implies we want flexible configuration.
+                // Let's assume relative paths are relative to the *default* cwd, which is binDir.
+                // Wait, typically relative paths in configs are relative to the config file (XLL).
+                // But the user wants default ${BIN_DIR}.
+                // If I set cwd to "data", and binDir is TEMP, do I mean TEMP/data? Probably.
+
+                cwd = binDir + L"\\" + wCwdCfg;
+            }
+        }
+
+        // 3. Resolve Configured Command
         std::wstring exePath = defaultBinPath;
         if (!cfg.command.empty()) {
             std::string cfgCmd = cfg.command;

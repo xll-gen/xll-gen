@@ -31,8 +31,13 @@ Traditional Excel XLLs are Dynamic Link Libraries (DLLs) loaded directly into th
 
 ## Architecture
 
+The system operates in a `singlefile` mode by default, providing a seamless user experience:
+
 1.  **Excel Process**: Loads `project.xll`.
-2.  **XLL Shim**: Initializes a shared memory region. It automatically extracts and spawns the embedded User Server (in `singlefile` mode).
+2.  **XLL Shim**:
+    - Automatically extracts the embedded Go server executable to a temporary directory (using Zstd compression).
+    - Initializes a shared memory region.
+    - Spawns the extracted User Server process.
 3.  **User Server**: Connects to the shared memory region and listens for requests.
 4.  **Data Flow**:
     - Excel calls a function (e.g., `=Add(1, 2)`).
@@ -129,7 +134,7 @@ build:
 
 logging:
   level: "info"
-  path: "my-project.log"
+  dir: "" # Defaults to xll directory
 
 server:
   workers: 0         # 0 = Use runtime.NumCPU()
@@ -137,7 +142,7 @@ server:
   launch:
     enabled: true    # Automatically start the Go server when XLL loads
     # command: "${BIN}" # Optional: Defaults to the server executable
-    # cwd: "."          # Optional: Defaults to XLL dir (or Temp in singlefile mode)
+    # cwd: "${BIN_DIR}" # Optional: Defaults to the directory containing the executable
 
 functions:
   - name: "Add"
@@ -161,6 +166,14 @@ functions:
     return: "float"
     async: true      # Asynchronous function
 ```
+
+### Launch Configuration Variables
+
+The `server.launch` section supports the following variables in `command` and `cwd`:
+
+*   `${BIN}`: Resolves to the full path of the server executable.
+*   `${BIN_DIR}`: Resolves to the directory containing the server executable. In `singlefile` mode, this is the temporary extraction directory.
+*   `${XLL_DIR}`: Resolves to the directory containing the `.xll` file.
 
 ### Supported Types
 
@@ -238,7 +251,7 @@ Run `xll-gen doctor`. It will attempt to download the correct version of the Fla
 Ensure the XLL and the Go server are using the same shared memory name.
 
 **"Server Logs"**:
-*   **Standard Mode**: Logs are located in the directory specified by `logging.path` (usually next to the XLL).
+*   **Standard Mode**: Logs are located in the directory specified by `logging.path` (or `logging.dir`).
 *   **Singlefile Mode**: Logs are located in the temporary directory (e.g., `%TEMP%\<ProjectName>\`).
     *   `xll_launch.log`: Launch process stdout/stderr.
     *   `<Project>_native.log`: C++ XLL internal errors.
