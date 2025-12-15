@@ -86,7 +86,6 @@ static void LogHandler(shm::LogLevel level, const std::string& msg) {
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
-    {{if .Logging.Path}}
     // Setup Native Logging
     std::string tempPattern = "";
     std::string projName = "{{.ProjectName}}";
@@ -97,8 +96,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     tempPattern = "{{.Build.TempDir}}";
     {{end}}
 
-    InitLog(L"{{.Logging.Path}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
-    {{end}}
+    InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
 
 #ifdef SHM_DEBUG
     shm::SetLogHandler(LogHandler);

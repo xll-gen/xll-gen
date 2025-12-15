@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -53,8 +54,18 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 }
 
 func Serve(handler XllService) {
-	logPath := "{{.Logging.Path}}"
-	logPath = strings.ReplaceAll(logPath, "${XLL}", os.Getenv("XLL_DIR"))
+	exePath, _ := os.Executable()
+	binDir := filepath.Dir(exePath)
+
+	logDir := "{{.Logging.Dir}}"
+	logDir = strings.ReplaceAll(logDir, "${XLL_DIR}", os.Getenv("XLL_DIR"))
+	logDir = strings.ReplaceAll(logDir, "${BIN_DIR}", binDir)
+
+	if logDir == "" {
+		logDir = "."
+	}
+	logPath := filepath.Join(logDir, "{{.ProjectName}}_go.log")
+
 	if err := log.Init(logPath, "{{.Logging.Level}}"); err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 	}
@@ -178,7 +189,7 @@ func Serve(handler XllService) {
                 builder.Finish(root)
 
                 // Debug Log: ACK Prepared
-                slog.Debug("ACK sent", "func", "{{.Name}}")
+                slog.Debug("ACK sent", "func", "SetRefCache")
 
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {

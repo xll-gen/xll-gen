@@ -29,8 +29,8 @@ type Config struct {
 type LoggingConfig struct {
 	// Level is the log level (debug, info, warn, error).
 	Level string `yaml:"level"`
-	// Path is the log file path.
-	Path string `yaml:"path"`
+	// Dir is the log directory.
+	Dir string `yaml:"dir"`
 }
 
 // Event defines a subscription to a specific Excel event.
