@@ -92,6 +92,36 @@ static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
     return std::wstring(buffer);
 }
 
+// Helper to expand environment variables (Wide)
+static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
+    std::wstring p = pattern;
+    // Replace ${VAR} with %VAR%
+    size_t start_pos = 0;
+    while((start_pos = p.find(L"${", start_pos)) != std::wstring::npos) {
+        size_t end_pos = p.find(L"}", start_pos);
+        if (end_pos != std::wstring::npos) {
+            p.replace(end_pos, 1, L"%");
+            p.replace(start_pos, 2, L"%");
+            start_pos += 1;
+        } else {
+            break;
+        }
+    }
+
+    wchar_t buffer[MAX_PATH];
+    DWORD res = ExpandEnvironmentStringsW(p.c_str(), buffer, MAX_PATH);
+    if (res == 0 || res > MAX_PATH) {
+        if (res > MAX_PATH) {
+             std::vector<wchar_t> largeBuf(res);
+             if (ExpandEnvironmentStringsW(p.c_str(), largeBuf.data(), res) != 0) {
+                 return std::wstring(largeBuf.data());
+             }
+        }
+        return pattern; // Fallback
+    }
+    return std::wstring(buffer);
+}
+
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
     // Parse Level
     std::string lvl = level;

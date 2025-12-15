@@ -48,32 +48,31 @@ func TestRepro_ZstdConfig(t *testing.T) {
 			if strings.Contains(string(content), "zstd") {
 				t.Errorf("CMakeLists.txt should NOT contain 'zstd' when singlefile is empty, but it does.")
 			}
-		} else { // "Missing" (Default) OR "XllSinglefile" -> Enabled
+		} else { // "XllSinglefile" -> Enabled
 			if !strings.Contains(string(content), "zstd") {
-				t.Errorf("CMakeLists.txt SHOULD contain 'zstd' when singlefile is default/xll, but it does not.")
+				t.Errorf("CMakeLists.txt SHOULD contain 'zstd' when singlefile is 'xll', but it does not.")
 			}
 		}
 	}
 
-	// Case 1: Singlefile is nil (Missing) -> Should HAVE zstd (Default)
-	t.Run("MissingSinglefile", func(t *testing.T) {
+	// Case 1: Singlefile is "xll" -> Should HAVE zstd
+	t.Run("XllSinglefile", func(t *testing.T) {
 		cfg := &config.Config{
-			Project: config.ProjectConfig{Name: "TestProjMissing", Version: "0.1.0"},
+			Project: config.ProjectConfig{Name: "TestProjZstd", Version: "0.1.0"},
 			Build: config.BuildConfig{
-				Singlefile: nil, // Missing
+				Singlefile: "xll",
 			},
 			Logging: config.LoggingConfig{Level: "info"},
 		}
-		runGen(t, cfg, "MissingSinglefile")
+		runGen(t, cfg, "XllSinglefile")
 	})
 
-	// Case 2: Singlefile is empty ptr (Explicitly disabled) -> Should NOT have zstd
+	// Case 2: Singlefile is empty (Explicitly disabled or default if not set) -> Should NOT have zstd
 	t.Run("EmptySinglefile", func(t *testing.T) {
-		empty := ""
 		cfg := &config.Config{
 			Project: config.ProjectConfig{Name: "TestProjNoZstd", Version: "0.1.0"},
 			Build: config.BuildConfig{
-				Singlefile: &empty, // Explicit empty
+				Singlefile: "", // Empty
 			},
 			Logging: config.LoggingConfig{Level: "info"},
 		}
