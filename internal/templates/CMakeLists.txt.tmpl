@@ -39,7 +39,7 @@ if(NOT TARGET shm)
   target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
 endif()
 
-{{ if eq .Build.Singlefile "xll" }}
+{{ if eq (derefString .Build.Singlefile) "xll" }}
 # ==============================================================================
 # Embedding Executable in XLL (exe_in_xll mode / singlefile: xll)
 # ==============================================================================
@@ -99,7 +99,7 @@ file(GLOB SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.cpp"
 )
 
-{{ if eq .Build.Singlefile "xll" }}
+{{ if eq (derefString .Build.Singlefile) "xll" }}
 if(WIN32)
     list(APPEND SOURCES ${RC_FILE})
 endif()
@@ -117,7 +117,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   flatbuffers
 )
 
-{{ if eq .Build.Singlefile "xll" }}
+{{ if eq (derefString .Build.Singlefile) "xll" }}
 target_link_libraries(${PROJECT_NAME} PRIVATE libzstd_static)
 target_include_directories(${PROJECT_NAME} PRIVATE ${zstd_SOURCE_DIR}/lib)
 {{ end }}

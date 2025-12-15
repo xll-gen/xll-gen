@@ -87,6 +87,12 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return *b
 		},
+		"derefString": func(s *string) string {
+			if s == nil {
+				return ""
+			}
+			return *s
+		},
 
 		// Path Helpers
 		"fileBase": func(s string) string {
