@@ -4,7 +4,6 @@ package {{.Package}}
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -404,7 +403,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	handle := request.AsyncHandle()
 
 	// Debug Log: Function Start
-	slog.Debug("Async function start", "func", "{{.Name}}", "reqID", handle)
+	log.Debug("Async function start", "func", "{{.Name}}", "reqID", handle)
 
 	if ctx.Err() != nil {
 		queueAsyncResult(handle, nil, protocol.AnyValue(0), ctx.Err().Error())
@@ -415,11 +414,11 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
-				slog.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
+				log.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
 				queueAsyncResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
 			}
 			// Debug Log: Function End
-			slog.Debug("Async function end", "func", "{{.Name}}", "reqID", handle)
+			log.Debug("Async function end", "func", "{{.Name}}", "reqID", handle)
 		}()
 
 		// Debug Log: Ack Sent (Implicitly handled by return 0,0 below which sends ACK)
@@ -427,7 +426,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		// The caller of handle{{.Name}} sends the ACK immediately after this returns 0,0.
 		// So we can log "ACK Sent" here? No, the caller sends it.
 		// Let's log "Processing" here.
-		slog.Debug("Processing async request", "func", "{{.Name}}", "reqID", handle)
+		log.Debug("Processing async request", "func", "{{.Name}}", "reqID", handle)
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
@@ -469,16 +468,16 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	var res {{lookupGoType .Return}}
 	var err error
 
-	slog.Debug("Sync function start", "func", "{{.Name}}")
+	log.Debug("Sync function start", "func", "{{.Name}}")
 
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				stack := debug.Stack()
-				slog.Error("Panic in sync handler {{.Name}}", "error", r, "stack", string(stack))
+				log.Error("Panic in sync handler {{.Name}}", "error", r, "stack", string(stack))
 				err = fmt.Errorf("panic: %v", r)
 			}
-			slog.Debug("Sync function end", "func", "{{.Name}}")
+			log.Debug("Sync function end", "func", "{{.Name}}")
 		}()
 		res, err = handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 	}()

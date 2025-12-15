@@ -14,6 +14,9 @@ var (
 )
 
 // Init initializes the global logger.
+// It configures the default slog logger to write to the specified path (or stdout)
+// at the specified level.
+//
 // path: Log file path. If empty, logs to stdout.
 // level: Log level ("debug", "info", "warn", "error"). Defaults to "info".
 func Init(path string, level string) error {
@@ -59,24 +62,4 @@ func parseLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
-}
-
-// Debug logs at Debug level.
-func Debug(msg string, args ...any) {
-	slog.Debug(msg, args...)
-}
-
-// Info logs at Info level.
-func Info(msg string, args ...any) {
-	slog.Info(msg, args...)
-}
-
-// Warn logs at Warn level.
-func Warn(msg string, args ...any) {
-	slog.Warn(msg, args...)
-}
-
-// Error logs at Error level.
-func Error(msg string, args ...any) {
-	slog.Error(msg, args...)
 }
