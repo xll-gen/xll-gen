@@ -1,13 +1,13 @@
 package server
 
 import (
-	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/shm/go"
+	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/protocol"
 )
 
@@ -109,7 +109,7 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 	}
 
 	if err != nil {
-		slog.Error("Error sending batch async response after retries", "error", err)
+		log.Error("Error sending batch async response after retries", "error", err)
 	}
 }
 
@@ -155,7 +155,7 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 		heapBuilderPool.Put(b)
 
 		if !sent {
-			slog.Error("Failed to send async chunk", "error", err, "id", transferId, "offset", offset)
+			log.Error("Failed to send async chunk", "error", err, "id", transferId, "offset", offset)
 			return // Abort transfer
 		}
 
