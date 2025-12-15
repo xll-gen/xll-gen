@@ -437,3 +437,54 @@ When creating a tag message, adhere to the following format:
 * [4d5e6f](http://url...) Optimized IPC
 * [7g8h9i](http://url...) Fixed typo in README
 ```
+
+## 13. Reference: Optional & Variable Arguments
+
+This section describes how to handle **Optional Arguments** and **Variable Arguments** in Excel XLL development.
+
+Since the Excel C API does not support variable arguments like C's `va_list`, the standard approach is **"Accept pointers up to a maximum count and check for `xltypeMissing`"**.
+
+### 13.1 Core Mechanism
+
+*   **Register Types**: Always use `P`, `Q`, or `U` (`XLOPER12` variants). Never use scalar types (`B`, `J`) as they cannot represent "missing".
+*   **Check Missing**: In C++, check `arg->xltype == xltypeMissing` to identify omitted arguments.
+*   **UI Hint**: Use brackets `[Name]` in `xlfRegister`'s argument text to indicate optionality to the user.
+
+### 13.2 Optional Arguments Example
+
+**Scenario:** `CalcWithOption(Value, [Multiplier])` where `Multiplier` defaults to 1.0.
+
+```cpp
+// C++: Check for xltypeMissing
+extern "C" __declspec(dllexport) LPXLOPER12 WINAPI CalcWithOption(LPXLOPER12 pxVal, LPXLOPER12 pxMul) {
+    // ...
+    double multiplier = 1.0; // Default
+    if (pxMul->xltype != xltypeMissing) {
+        // Coerce/Read pxMul if present
+    }
+    // ...
+}
+```
+
+```cpp
+// Register: Note "QQQ" and "[Multiplier]"
+Excel12(xlfRegister, 0, 10, ..., TempStr12(L"QQQ"), TempStr12(L"Value, [Multiplier]"), ...);
+```
+
+### 13.3 Variable Arguments Example
+
+**Scenario:** `MySum(v1, [v2], ... [v10])`. Define a max count (Sparse Arguments).
+
+```cpp
+#define MAX_ARGS 10
+extern "C" __declspec(dllexport) LPXLOPER12 WINAPI MySum(LPXLOPER12 p1, ..., LPXLOPER12 p10) {
+    LPXLOPER12 args[MAX_ARGS] = { p1, ..., p10 };
+    for (int i = 0; i < MAX_ARGS; i++) {
+        if (args[i]->xltype == xltypeMissing) continue; // Skip
+        // Process args[i]
+    }
+    // ...
+}
+```
+
+**Recommendation:** If you need more than 10-20 arguments, accept a single `Range` (`U`) or `Array` (`Q`) instead. It's cleaner to loop over `xltypeMulti` in C++ than to register 30 arguments.
