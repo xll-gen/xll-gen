@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
+#include <vector>
 
 std::string g_logPath;
 LogLevel g_logLevel = LogLevel::ERROR; // Default
@@ -59,6 +60,36 @@ void LogDebug(const std::string& msg) {
     }
 }
 
+// Helper to expand environment variables (Wide)
+static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
+    std::wstring p = pattern;
+    // Replace ${VAR} with %VAR%
+    size_t start_pos = 0;
+    while((start_pos = p.find(L"${", start_pos)) != std::wstring::npos) {
+        size_t end_pos = p.find(L"}", start_pos);
+        if (end_pos != std::wstring::npos) {
+            p.replace(end_pos, 1, L"%");
+            p.replace(start_pos, 2, L"%");
+            start_pos += 1;
+        } else {
+            break;
+        }
+    }
+
+    wchar_t buffer[MAX_PATH];
+    DWORD res = ExpandEnvironmentStringsW(p.c_str(), buffer, MAX_PATH);
+    if (res == 0 || res > MAX_PATH) {
+        if (res > MAX_PATH) {
+             std::vector<wchar_t> largeBuf(res);
+             if (ExpandEnvironmentStringsW(p.c_str(), largeBuf.data(), res) != 0) {
+                 return std::wstring(largeBuf.data());
+             }
+        }
+        return pattern; // Fallback
+    }
+    return std::wstring(buffer);
+}
+
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
     // Parse Level
     std::string lvl = level;
@@ -71,32 +102,38 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
     else g_logLevel = LogLevel::INFO; // Default to INFO if unspecified or unknown
 
     std::wstring xllDir = GetXllDir();
-    std::wstring logDir = xllDir;
 
-    // Default path if empty
-    std::wstring wPath = configuredPath;
-    if (wPath.empty()) {
-        wPath = L"xll.log";
-    }
+    // 1. Substitute Internal Variables FIRST
+    // Replace ${XLL_DIR} and ${XLL} before calling ExpandEnvVarsW to prevent them
+    // from being converted to %XLL_DIR% (which ExpandEnvironmentStringsW won't resolve).
+    std::wstring wConfigured = configuredPath;
+    ReplaceString(wConfigured, L"${XLL_DIR}", xllDir);
+    ReplaceString(wConfigured, L"${XLL}", xllDir);
 
-    // Handle ${XLL} variable
-    if (wPath.find(L"${XLL}") != std::wstring::npos) {
-        ReplaceString(wPath, L"${XLL}", xllDir);
+    // 2. Expand Environment Variables
+    wConfigured = ExpandEnvVarsW(wConfigured);
+
+    std::wstring wPath;
+
+    // 3. Default if empty
+    if (wConfigured.empty()) {
+        // Default: xll.log in the XLL directory
+        wPath = xllDir + L"\\xll.log";
     } else {
-        // Legacy logic
-        if (isSingleFile && !tempDirPattern.empty()) {
-            std::string expandedTemp = embed::ExpandEnvVars(tempDirPattern);
-            if (!expandedTemp.empty()) {
-                std::string targetDir = expandedTemp + "\\" + projName;
-                CreateDirectoryA(targetDir.c_str(), NULL);
-                logDir = StringToWString(targetDir);
-            }
-        }
+        wPath = wConfigured;
 
+        // 4. Handle Absolute Path
         bool isAbs = (wPath.find(L":") != std::wstring::npos || (wPath.size() > 1 && wPath[0] == L'\\' && wPath[1] == L'\\'));
         if (!isAbs) {
-            wPath = logDir + L"\\" + wPath;
+            wPath = xllDir + L"\\" + wPath;
         }
+
+        // 5. Treat as Directory: Append \xll.log
+        // Ensure separator
+        if (!wPath.empty() && wPath.back() != L'\\' && wPath.back() != L'/') {
+            wPath += L"\\";
+        }
+        wPath += L"xll.log";
     }
 
     // Inject _native
