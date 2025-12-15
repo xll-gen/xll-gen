@@ -97,7 +97,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     tempPattern = "{{.Build.TempDir}}";
     {{end}}
 
-    InitLog(L"{{.Logging.Path}}", tempPattern, projName, isSingleFile);
+    InitLog(L"{{.Logging.Path}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
     {{end}}
 
 #ifdef SHM_DEBUG
@@ -193,7 +193,11 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::wstring cmd, cwd, logPath;
         xll::ResolveServerPath(xllDir, extractedExe, cfg, cmd, cwd, logPath);
 
-        if (xll::LaunchProcess(cmd, cwd, logPath, g_procInfo)) {
+        // Pass XLL directory to the child process via environment variable
+        std::map<std::wstring, std::wstring> env;
+        env[L"XLL_DIR"] = xllDir;
+
+        if (xll::LaunchProcess(cmd, cwd, logPath, g_procInfo, env)) {
             g_monitor = std::thread([logPath]{
                 xll::MonitorProcess(g_procInfo, logPath);
             });
@@ -385,6 +389,8 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         auto res = slot.Send(reqSize, (shm::MsgType)({{add 133 $i}}), {{ $ackTimeout }});
         if (res.HasError()) {
             LogError("Failed to send async request for {{.Name}}");
+        } else {
+            LogDebug("ACK received for {{.Name}}");
         }
         return;
         {{else}}
