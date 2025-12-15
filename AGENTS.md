@@ -488,3 +488,40 @@ extern "C" __declspec(dllexport) LPXLOPER12 WINAPI MySum(LPXLOPER12 p1, ..., LPX
 ```
 
 **Recommendation:** If you need more than 10-20 arguments, accept a single `Range` (`U`) or `Array` (`Q`) instead. It's cleaner to loop over `xltypeMulti` in C++ than to register 30 arguments.
+
+## 14. Architecture & Dependency Graph
+
+When modifying the system, understand the ripple effects using this map:
+
+```mermaid
+graph TD
+    Config[xll.yaml] -->|Input| Generator[xll-gen CLI]
+    Templates[internal/templates/*.tmpl] -->|Blueprint| Generator
+    Assets[internal/assets/files/*.cpp/h] -->|Embedded| Generator
+
+    Generator -->|Generates| GenGo[generated/server.go]
+    Generator -->|Generates| GenCPP[generated/cpp/xll_main.cpp]
+    Generator -->|Generates| Schema[generated/schema.fbs]
+
+    GenGo -->|Imports| PkgServer[pkg/server]
+    GenGo -->|Imports| PkgProtocol[pkg/protocol]
+
+    GenCPP -->|Compiles with| SHM[shm Library]
+    GenGo -->|Imports| SHM_Go[shm Go Client]
+```
+
+### Critical: Synchronized Updates
+**The components shown above are tightly coupled.** When a shared dependency (like `shm` or `protocol`) is updated, **all** related parts (`xll.yaml` schema logic, C++ assets, Go templates, and Go packages) must be updated synchronously to maintain compatibility. Partial updates will break the system.
+
+### Change Propagation Rules
+
+Use this guide to understand what needs to be updated when you make a change in a specific area.
+
+| If you change... | You must also... |
+| :--- | :--- |
+| **`xll.yaml`** | Run `xll-gen generate` in the user project. |
+| **`internal/templates/*.tmpl`** | 1. Rebuild `xll-gen` (or run `go install .`).<br>2. Run `xll-gen generate` in the user project to see changes. |
+| **`internal/assets/files/*`** | 1. Rebuild `xll-gen` (assets are embedded).<br>2. Run `xll-gen generate` in the user project (overwrites C++ files). |
+| **`pkg/protocol`** | 1. Update `internal/templates/protocol.fbs` if the FlatBuffers schema changed.<br>2. Rebuild `xll-gen`.<br>3. Run `xll-gen generate`. |
+| **`pkg/server`** | 1. Update `server.go.tmpl` if the API used by the generated code changes.<br>2. Rebuild `xll-gen` (if template changed).<br>3. Run `go get -u github.com/xll-gen/xll-gen/pkg/server` in the user project (or replace directive in tests). |
+| **`shm` Library** | 1. Update `go.mod` in `xll-gen`.<br>2. Update `GIT_TAG` in `internal/templates/CMakeLists.txt.tmpl`.<br>3. Update C++ assets (`xll_ipc.cpp`, etc.) if C++ API changed.<br>4. Update Go assets (`pkg/server`, templates) if Go API changed. |
