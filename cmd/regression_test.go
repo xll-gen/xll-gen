@@ -153,7 +153,7 @@ func TestRepro_MemoryLeak(t *testing.T) {
 	// 2. xll_converters.cpp (AnyToXLOPER12 leaks and missing features)
 	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_converters.cpp"),
 		[]string{
-			"case ipc::types::AnyValue_Range:", // Missing feature fixed
+			"case protocol::AnyValue_Range:",   // Missing feature fixed
 			"new char[sizeof(XLMREF12)",        // Correct Allocation for Ref
 		},
 		[]string{
@@ -164,10 +164,10 @@ func TestRepro_MemoryLeak(t *testing.T) {
 			"x->xltype = xltypeSRef;", // RangeToXLOPER12 leak
 		})
 
-	// 3. xll_async.cpp (Range leak in manual cleanup)
+	// 3. xll_async.cpp (Use safe cleanup)
 	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_async.cpp"),
 		[]string{
-			"v.xltype & xltypeRef", // Cleanup loop handled
+			"xlAutoFree12(pxResult)", // Safe cleanup used
 		}, nil)
 }
 

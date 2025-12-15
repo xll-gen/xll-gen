@@ -19,4 +19,10 @@ std::vector<wchar_t> WStringToPascalString(const std::wstring& w_str);
 // Converts an Excel 12 Pascal-style string to a standard wide string.
 std::wstring PascalString12ToWString(const wchar_t* pascal_str);
 
+// Alias for PascalString12ToWString
+std::wstring PascalToWString(const wchar_t* pascal_str);
+
+// Creates a new Pascal string on the heap (caller must free or manage).
+wchar_t* WStringToNewPascalString(const std::wstring& w_str);
+
 #endif // PASCAL_STRING_H

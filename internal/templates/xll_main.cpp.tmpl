@@ -132,7 +132,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     g_running = true;
     g_worker = std::thread([]{
-        xll::StartWorker(g_host.GetGuestSlots()); // Pass guest slots? Actually StartWorker takes int, but it is not used much if DirectHost manages it.
+        xll::StartWorker();
     });
 
     static XLOPER12 xDll;
