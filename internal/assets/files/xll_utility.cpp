@@ -10,6 +10,12 @@ std::wstring StringToWString(const std::string& str) {
     return wstrTo;
 }
 
+std::wstring ConvertToWString(const char* str) {
+    if (!str) return std::wstring();
+    std::string s(str);
+    return StringToWString(s);
+}
+
 std::string WideToUtf8(const std::wstring& wstr) {
     if (wstr.empty()) return "";
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -64,6 +70,26 @@ const char* ConvertExcelString(const wchar_t* wstr) {
     else g_strBuf[0] = '\0';
 
     return g_strBuf.data();
+}
+
+bool IsSingleCell(LPXLOPER12 pxRef) {
+    if (!pxRef) return false;
+    if (pxRef->xltype & xltypeSRef) {
+        int h = pxRef->val.sref.ref.rwLast - pxRef->val.sref.ref.rwFirst + 1;
+        int w = pxRef->val.sref.ref.colLast - pxRef->val.sref.ref.colFirst + 1;
+        return (h == 1 && w == 1);
+    }
+    if (pxRef->xltype & xltypeRef) {
+        // Multi-area reference
+        // Check if only 1 area and it is 1x1
+        if (pxRef->val.mref.lpmref->count == 1) {
+            const auto& r = pxRef->val.mref.lpmref->reftbl[0];
+            int h = r.rwLast - r.rwFirst + 1;
+            int w = r.colLast - r.colFirst + 1;
+            return (h == 1 && w == 1);
+        }
+    }
+    return false;
 }
 
 std::wstring GetXllDir() {

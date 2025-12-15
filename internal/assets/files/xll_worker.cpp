@@ -1,6 +1,7 @@
 #include "xll_ipc.h"
 #include "xll_converters.h"
 #include "xll_utility.h"
+#include "include/xll_worker.h"
 #include <vector>
 #include <string>
 #include <map>
@@ -68,10 +69,10 @@ void HandleChunk(const protocol::Chunk* chunk) {
         const uint8_t* data = pm.buffer.data();
 
         // Dispatch based on type
-        if (type == MSG_BATCH_ASYNC_RESPONSE) {
+        if (type == (int32_t)MSG_BATCH_ASYNC_RESPONSE) {
              auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
              ProcessAsyncBatchResponse(batch);
-        } else if (type == MSG_CALCULATION_ENDED) {
+        } else if (type == (int32_t)MSG_CALCULATION_ENDED) {
              auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
              ExecuteCommands(resp->commands());
         }
@@ -95,23 +96,24 @@ void CleanupStaleChunks() {
 }
 
 // Worker loop
-void WorkerLoop(int numGuestSlots) {
+void WorkerLoop() {
     g_workerRunning = true;
 
     auto lastCleanup = std::chrono::steady_clock::now();
 
     while (g_workerRunning) {
-        bool processed = g_host.ProcessGuestCalls([](const void* data, size_t size, int32_t msgType) -> int32_t {
-            if (msgType == MSG_BATCH_ASYNC_RESPONSE) {
-                auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
+        // Updated Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType)
+        bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType) -> int32_t {
+            if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE) {
+                auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(reqBuf);
                 ProcessAsyncBatchResponse(batch);
                 return 1;
-            } else if (msgType == MSG_CALCULATION_ENDED) {
-                auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
+            } else if (msgType == (shm::MsgType)MSG_CALCULATION_ENDED) {
+                auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(reqBuf);
                 ExecuteCommands(resp->commands());
                 return 1;
-            } else if (msgType == MSG_CHUNK) {
-                auto chunk = flatbuffers::GetRoot<protocol::Chunk>(data);
+            } else if (msgType == (shm::MsgType)MSG_CHUNK) {
+                auto chunk = flatbuffers::GetRoot<protocol::Chunk>(reqBuf);
                 HandleChunk(chunk);
                 return 1;
             }
@@ -128,8 +130,8 @@ void WorkerLoop(int numGuestSlots) {
     }
 }
 
-void StartWorker(int numGuestSlots) {
-    std::thread t(WorkerLoop, numGuestSlots);
+void StartWorker() {
+    std::thread t(WorkerLoop);
     t.detach();
 }
 
