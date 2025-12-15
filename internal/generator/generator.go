@@ -10,6 +10,7 @@ import (
 
 	"github.com/xll-gen/xll-gen/internal/assets"
 	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/ui"
 )
 
 // Options contains optional flags for the code generation process.
@@ -30,7 +31,7 @@ type Options struct {
 // Returns:
 //   - error: An error if any step of the generation fails.
 func Generate(cfg *config.Config, modName string, opts Options) error {
-	fmt.Printf("Generating code for project: %s\n", cfg.Project.Name)
+	ui.PrintHeader(fmt.Sprintf("Generating code for project: %s", cfg.Project.Name))
 
 	genDir := "generated"
 	cppDir := filepath.Join(genDir, "cpp")
@@ -67,13 +68,13 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	if err := generateProtocol(protocolPath); err != nil {
 		return err
 	}
-	fmt.Println("Generated protocol.fbs")
+	ui.PrintSuccess("Generated", "protocol.fbs")
 
 	schemaPath := filepath.Join(genDir, "schema.fbs")
 	if err := generateSchema(cfg, schemaPath); err != nil {
 		return err
 	}
-	fmt.Println("Generated schema.fbs")
+	ui.PrintSuccess("Generated", "schema.fbs")
 
 	goModulePath := modName + "/generated"
 
@@ -96,7 +97,7 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		return fmt.Errorf("failed to fix imports: %w", err)
 	}
 
-	fmt.Println("Generated Flatbuffers Go code")
+	ui.PrintSuccess("Generated", "Flatbuffers Go code")
 
 	// Generate C++ code
 	// We use --no-includes here because protocol_generated.h is shipped as a static asset in include/.
@@ -108,51 +109,53 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flatc (cpp) failed: %w", err)
 	}
-	fmt.Println("Generated Flatbuffers C++ code")
+	ui.PrintSuccess("Generated", "Flatbuffers C++ code")
 
 	if err := generateInterface(cfg, genDir, modName); err != nil {
 		return err
 	}
-	fmt.Println("Generated interface.go")
+	ui.PrintSuccess("Generated", "interface.go")
 
 	if err := generateServer(cfg, genDir, modName); err != nil {
 		return err
 	}
-	fmt.Println("Generated server.go")
+	ui.PrintSuccess("Generated", "server.go")
 
 	shouldAppendPid := !cfg.Gen.DisablePidSuffix && !opts.DisablePidSuffix
 	if err := generateCppMain(cfg, cppDir, shouldAppendPid); err != nil {
 		return err
 	}
-	fmt.Println("Generated xll_main.cpp")
+	ui.PrintSuccess("Generated", "xll_main.cpp")
 
 	if err := generateCMake(cfg, cppDir); err != nil {
 		return err
 	}
-	fmt.Println("Generated CMakeLists.txt")
+	ui.PrintSuccess("Generated", "CMakeLists.txt")
 
 	if err := generateTaskfile(cfg, "."); err != nil {
 		return err
 	}
-	fmt.Println("Generated Taskfile.yml")
+	ui.PrintSuccess("Generated", "Taskfile.yml")
 
-	fmt.Println("Updating SHM dependency to v0.5.4...")
+	ui.PrintHeader("Dependencies:")
+
+	ui.PrintSuccess("Updating", "SHM dependency to v0.5.4")
 	cmdGet := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
 	cmdGet.Stdout = os.Stdout
 	cmdGet.Stderr = os.Stderr
 	if err := cmdGet.Run(); err != nil {
-		fmt.Printf("Warning: 'go get shm' failed: %v\n", err)
+		ui.PrintWarning("Warning", fmt.Sprintf("'go get shm' failed: %v", err))
 	}
 
-	fmt.Println("Running 'go mod tidy'...")
+	ui.PrintSuccess("Running", "'go mod tidy'")
 	cmdTidy := exec.Command("go", "mod", "tidy")
 	cmdTidy.Stdout = os.Stdout
 	cmdTidy.Stderr = os.Stderr
 	if err := cmdTidy.Run(); err != nil {
-		fmt.Printf("Warning: 'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.\n", err)
+		ui.PrintWarning("Warning", fmt.Sprintf("'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.", err))
 	}
 
-	fmt.Println("Done.")
+	fmt.Println("") // Spacing
 
 	return nil
 }
