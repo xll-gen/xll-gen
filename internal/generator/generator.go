@@ -18,6 +18,9 @@ type Options struct {
 	// DisablePidSuffix, if true, overrides the configuration to disable PID suffixes.
 	// This is useful for deterministic testing.
 	DisablePidSuffix bool
+
+	// DevMode, if true, configures the project to use development versions of dependencies.
+	DevMode bool
 }
 
 // Generate orchestrates the entire code generation process.
@@ -145,6 +148,16 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	cmdGet.Stderr = os.Stderr
 	if err := cmdGet.Run(); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go get shm' failed: %v", err))
+	}
+
+	if opts.DevMode {
+		ui.PrintSuccess("Updating", "xll-gen dependency to main")
+		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
+		cmdGetXll.Stdout = os.Stdout
+		cmdGetXll.Stderr = os.Stderr
+		if err := cmdGetXll.Run(); err != nil {
+			ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
+		}
 	}
 
 	ui.PrintSuccess("Running", "'go mod tidy'")

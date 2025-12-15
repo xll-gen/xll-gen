@@ -14,7 +14,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var force bool
+var (
+	force bool
+	dev   bool
+)
 
 // initCmd represents the init command.
 var initCmd = &cobra.Command{
@@ -23,7 +26,7 @@ var initCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		projectName := args[0]
-		if err := runInit(projectName, force); err != nil {
+		if err := runInit(projectName, force, dev); err != nil {
 			fmt.Printf("Error initializing project: %v\n", err)
 			os.Exit(1)
 		}
@@ -33,10 +36,11 @@ var initCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().BoolVarP(&force, "force", "f", false, "Force overwrite of existing directory")
+	initCmd.Flags().BoolVar(&dev, "dev", false, "Use main branch for xll-gen dependency")
 }
 
 // runInit scaffolds a new project directory with the specified name.
-func runInit(projectName string, force bool) error {
+func runInit(projectName string, force, dev bool) error {
 	printHeader(fmt.Sprintf("🚀 Initializing project %s...", projectName))
 
 	if _, err := os.Stat(projectName); !os.IsNotExist(err) {
@@ -117,7 +121,9 @@ func runInit(projectName string, force bool) error {
 
 	// We use the project name as the module name since we just ran 'go mod init <projectName>'
 	fmt.Println("") // Add spacing
-	opts := generator.Options{}
+	opts := generator.Options{
+		DevMode: dev,
+	}
 	if err := generator.Generate(&cfg, projectName, opts); err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
