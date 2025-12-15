@@ -13,11 +13,18 @@ func (s *MyService) Add(ctx context.Context, a int32, b int32) (int32, error) {
 	return a + b, nil
 }
 
-func (s *MyService) GetPrice(ctx context.Context) (float64, error) {
+func (s *MyService) GetPrice(ctx context.Context, ticker string) (float64, error) {
 	// Simulate async work
 	select {
 	case <-time.After(100 * time.Millisecond):
-		return 123.45, nil
+		switch ticker {
+		case "AAPL":
+			return 150.0, nil
+		case "GOOG":
+			return 2800.0, nil
+		default:
+			return 100.0, nil
+		}
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}

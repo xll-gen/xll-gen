@@ -119,8 +119,8 @@ func TestGenerate_Fixes(t *testing.T) {
 
 	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_worker.cpp"),
 		[]string{
-			"case (shm::MsgType)128:", // MSG_BATCH_ASYNC_RESPONSE
-			"return 1;",               // ACK
+			"if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE)", // MSG_BATCH_ASYNC_RESPONSE
+			"return 1;",                                              // ACK
 		}, nil)
 
 	checkContent(t, "generated/server.go",
