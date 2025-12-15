@@ -68,7 +68,7 @@ func Serve(handler XllService) {
 	if err := log.Init(logPath, "{{.Logging.Level}}"); err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 	}
-	shm.SetLogger(slog.Default())
+	shm.SetLogger(log.Default())
 
 	name := "{{.ProjectName}}"
 	for _, arg := range os.Args {
@@ -79,7 +79,7 @@ func Serve(handler XllService) {
 
 	client, err := shm.Connect(shm.ClientConfig{ShmName: name})
 	if err != nil {
-		slog.Error("Failed to connect to SHM", "error", err)
+		log.Error("Failed to connect to SHM", "error", err)
 		panic(fmt.Errorf("failed to connect to SHM: %w", err))
 	}
 	defer client.Close()
@@ -136,7 +136,7 @@ func Serve(handler XllService) {
                 jobQueue <- func() {
                     defer wg.Done()
                     if err := handler.OnCalculationEnded(context.Background()); err != nil {
-                        slog.Error("Event handler OnCalculationEnded failed", "error", err)
+                        log.Error("Event handler OnCalculationEnded failed", "error", err)
                     }
                 }
                 wg.Wait()
@@ -151,7 +151,7 @@ func Serve(handler XllService) {
                     }
 
                     if len(respBytes) > len(respBuf) {
-                        slog.Warn("CalculationEnded response too large", "size", len(respBytes))
+                        log.Warn("CalculationEnded response too large", "size", len(respBytes))
                         return 0, 0
                     }
                     copy(respBuf, respBytes)
@@ -166,7 +166,7 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 jobQueue <- func() {
                     if err := handler.OnCalculationCanceled(ctx); err != nil {
-                        slog.Error("Event handler OnCalculationCanceled failed", "error", err)
+                        log.Error("Event handler OnCalculationCanceled failed", "error", err)
                     }
                 }
                 {{end}}
@@ -188,7 +188,7 @@ func Serve(handler XllService) {
                 builder.Finish(root)
 
                 // Debug Log: ACK Prepared
-                slog.Debug("ACK sent", "func", "SetRefCache")
+                log.Debug("ACK sent", "func", "SetRefCache")
 
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
@@ -275,7 +275,7 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 jobQueue <- func() {
                     if err := handler.{{.Name}}(ctx); err != nil {
-                        slog.Error("Event handler {{.Name}} failed", "error", err)
+                        log.Error("Event handler {{.Name}} failed", "error", err)
                     }
                 }
                 return 0, 0
@@ -299,7 +299,7 @@ func Serve(handler XllService) {
                     handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex)
                 }:
                 default:
-                    slog.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
+                    log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
                 }
 
                 builder.Reset()
