@@ -47,6 +47,12 @@ void LogError(const std::string& msg) {
     }
 }
 
+void LogInfo(const std::string& msg) {
+    if (g_logLevel <= LogLevel::INFO) {
+        WriteLog("INFO", msg);
+    }
+}
+
 void LogDebug(const std::string& msg) {
     if (g_logLevel <= LogLevel::DEBUG) {
         WriteLog("DEBUG", msg);
