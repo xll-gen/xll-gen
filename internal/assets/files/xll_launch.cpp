@@ -4,6 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <map>
 
 namespace xll {
 
@@ -135,7 +136,43 @@ namespace xll {
         outLogPath = cwd + L"\\xll_launch.log";
     }
 
-    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo) {
+    // Helper to create environment block
+    std::vector<wchar_t> CreateEnvBlock(const std::map<std::wstring, std::wstring>& env) {
+        std::vector<wchar_t> block;
+        // Get current environment
+        LPWCH currEnv = GetEnvironmentStringsW();
+        if (currEnv) {
+            LPWCH ptr = currEnv;
+            while (*ptr) {
+                size_t len = wcslen(ptr);
+                std::wstring entry(ptr, len);
+
+                // Parse key
+                size_t eqPos = entry.find(L'=');
+                if (eqPos != std::wstring::npos) {
+                    std::wstring key = entry.substr(0, eqPos);
+                    // Only add if not overridden
+                    if (env.find(key) == env.end()) {
+                        block.insert(block.end(), entry.begin(), entry.end());
+                        block.push_back(0);
+                    }
+                }
+                ptr += len + 1;
+            }
+            FreeEnvironmentStringsW(currEnv);
+        }
+
+        // Add new variables
+        for (const auto& kv : env) {
+            std::wstring entry = kv.first + L"=" + kv.second;
+            block.insert(block.end(), entry.begin(), entry.end());
+            block.push_back(0);
+        }
+        block.push_back(0); // Double null termination
+        return block;
+    }
+
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv) {
         // Create Job Object
         outInfo.hJob = CreateJobObject(NULL, NULL);
         if (outInfo.hJob) {
@@ -170,7 +207,16 @@ namespace xll {
         std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
         cmdBuf.push_back(0);
 
-        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, 0, NULL, cwd.c_str(), &si, &pi)) {
+        void* envBlock = NULL;
+        std::vector<wchar_t> envVec;
+        if (!extraEnv.empty()) {
+            envVec = CreateEnvBlock(extraEnv);
+            envBlock = envVec.data();
+        }
+
+        DWORD flags = CREATE_UNICODE_ENVIRONMENT;
+
+        if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, flags, envBlock, cwd.c_str(), &si, &pi)) {
             outInfo.hProcess = pi.hProcess;
             CloseHandle(pi.hThread);
             if (outInfo.hJob) {
@@ -186,6 +232,12 @@ namespace xll {
             CloseHandle(hLog);
             return false;
         }
+    }
+
+    // Overload for backward compatibility/simplicity
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo) {
+        std::map<std::wstring, std::wstring> emptyEnv;
+        return LaunchProcess(cmd, cwd, logPath, outInfo, emptyEnv);
     }
 
     void MonitorProcess(const ProcessInfo& info, const std::wstring& logPath) {

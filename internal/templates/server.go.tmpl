@@ -53,7 +53,9 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 }
 
 func Serve(handler XllService) {
-	if err := log.Init("{{.Logging.Path}}", "{{.Logging.Level}}"); err != nil {
+	logPath := "{{.Logging.Path}}"
+	logPath = strings.ReplaceAll(logPath, "${XLL}", os.Getenv("XLL_DIR"))
+	if err := log.Init(logPath, "{{.Logging.Level}}"); err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 	}
 	shm.SetLogger(slog.Default())
@@ -174,6 +176,9 @@ func Serve(handler XllService) {
                 protocol.AckAddOk(builder, true)
                 root := protocol.AckEnd(builder)
                 builder.Finish(root)
+
+                // Debug Log: ACK Prepared
+                slog.Debug("ACK sent", "func", "{{.Name}}")
 
                 payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
@@ -387,6 +392,9 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{if .Async}}
 	handle := request.AsyncHandle()
 
+	// Debug Log: Function Start
+	slog.Debug("Async function start", "func", "{{.Name}}", "reqID", handle)
+
 	if ctx.Err() != nil {
 		queueAsyncResult(handle, nil, protocol.AnyValue(0), ctx.Err().Error())
 		return 0, 0
@@ -399,7 +407,16 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 				slog.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
 				queueAsyncResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
 			}
+			// Debug Log: Function End
+			slog.Debug("Async function end", "func", "{{.Name}}", "reqID", handle)
 		}()
+
+		// Debug Log: Ack Sent (Implicitly handled by return 0,0 below which sends ACK)
+		// But we want to log it explicitly if requested.
+		// The caller of handle{{.Name}} sends the ACK immediately after this returns 0,0.
+		// So we can log "ACK Sent" here? No, the caller sends it.
+		// Let's log "Processing" here.
+		slog.Debug("Processing async request", "func", "{{.Name}}", "reqID", handle)
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
@@ -441,6 +458,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	var res {{lookupGoType .Return}}
 	var err error
 
+	slog.Debug("Sync function start", "func", "{{.Name}}")
+
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -448,6 +467,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 				slog.Error("Panic in sync handler {{.Name}}", "error", r, "stack", string(stack))
 				err = fmt.Errorf("panic: %v", r)
 			}
+			slog.Debug("Sync function end", "func", "{{.Name}}")
 		}()
 		res, err = handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 	}()

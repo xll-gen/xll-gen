@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <map>
 
 namespace xll {
     struct ProcessInfo {
@@ -38,6 +39,9 @@ namespace xll {
     // Initializes the Job Object and redirects stdout/stderr to logPath.
     // Returns true on success.
     bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo);
+
+    // Overload allowing extra environment variables
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv);
 
     // blocking function that monitors the child process.
     // It waits for the process to exit or for hShutdownEvent to be signaled.
