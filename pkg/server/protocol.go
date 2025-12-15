@@ -1,7 +1,6 @@
 package server
 
 import (
-	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
