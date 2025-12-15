@@ -78,4 +78,17 @@ func TestRepro_ZstdConfig(t *testing.T) {
 		}
 		runGen(t, cfg, "EmptySinglefile")
 	})
+
+	// Case 3: Singlefile is "xll" -> Should HAVE zstd
+	t.Run("XllSinglefile", func(t *testing.T) {
+		xll := "xll"
+		cfg := &config.Config{
+			Project: config.ProjectConfig{Name: "TestProjZstd", Version: "0.1.0"},
+			Build: config.BuildConfig{
+				Singlefile: &xll,
+			},
+			Logging: config.LoggingConfig{Level: "info"},
+		}
+		runGen(t, cfg, "XllSinglefile")
+	})
 }
