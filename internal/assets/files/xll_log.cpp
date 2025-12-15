@@ -54,11 +54,13 @@ void LogInfo(const std::string& msg) {
     }
 }
 
+#ifdef XLL_DEBUG_LOGGING
 void LogDebug(const std::string& msg) {
     if (g_logLevel <= LogLevel::DEBUG) {
         WriteLog("DEBUG", msg);
     }
 }
+#endif
 
 // Helper to expand environment variables (Wide)
 static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {

@@ -2,6 +2,7 @@
 #include "xll_converters.h"
 #include "xll_utility.h"
 #include "include/xll_worker.h"
+#include "include/xll_log.h"
 #include <vector>
 #include <string>
 #include <map>
@@ -120,6 +121,10 @@ void WorkerLoop() {
 
             return 0; // Unknown
         }, 50); // 50ms timeout
+
+        if (processed) {
+            LogDebug("Call return guest call receive complete");
+        }
 
         // Periodic cleanup
         auto now = std::chrono::steady_clock::now();
