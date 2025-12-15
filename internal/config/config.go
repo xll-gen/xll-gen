@@ -237,6 +237,9 @@ func ApplyDefaults(config *Config) {
 			t := true
 			config.Server.Launch.Enabled = &t
 		}
+		if config.Server.Launch.Cwd == "" {
+			config.Server.Launch.Cwd = "${BIN_DIR}"
+		}
 	}
 
 	if config.Logging.Level == "" {

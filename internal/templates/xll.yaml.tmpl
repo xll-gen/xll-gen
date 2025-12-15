@@ -26,7 +26,7 @@ server:
   launch:
     enabled: true # If true, the XLL automatically launches the Go server.
     command: "${BIN}" # Optional: Command to launch the server. ${BIN} resolves to the executable path.
-    cwd: "." # Optional: Working directory for the server process. Defaults to the XLL directory.
+    cwd: "${BIN_DIR}" # Optional: Working directory for the server process. Defaults to the directory containing the executable.
 
 # Function Definitions
 # Supported argument/return types: int, float, string, bool, range, grid, numgrid, any
