@@ -10,7 +10,6 @@
 **  which are used in the Microsoft Excel C API.
 **
 */
-#pragma once
 
 #ifndef _WINDOWS_
 #include <windows.h>

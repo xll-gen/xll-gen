@@ -17,6 +17,9 @@ extern LogLevel g_logLevel;
 // Log an error message to the configured log file
 void LogError(const std::string& msg);
 
+// Log an info message
+void LogInfo(const std::string& msg);
+
 // Log a debug message
 void LogDebug(const std::string& msg);
 
