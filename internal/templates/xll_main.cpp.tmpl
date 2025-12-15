@@ -123,6 +123,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     shm::HostConfig config;
     config.shmName = shmName;
     config.numHostSlots = workers * 2 + 2; // Support nested IPC (depth 1) + margin
+    config.numGuestSlots = 2;              // Allow Guest (Go) to send async batch responses
     config.payloadSize = 1024 * 1024;      // 1MB per slot
 
     if (!g_host.Init(config)) {

@@ -54,7 +54,10 @@ functions:
   - name: "GetPrice"
     description: "Fetches price (Async simulation)"
     category: "Finance"
-    args: []
+    args:
+      - name: "ticker"
+        type: "string"
+        description: "Ticker symbol (e.g., AAPL, GOOG)"
     return: "float"
     async: true
 
