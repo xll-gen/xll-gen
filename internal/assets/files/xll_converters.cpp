@@ -56,7 +56,7 @@ flatbuffers::Offset<protocol::Scalar> ConvertScalar(const XLOPER12& cell, flatbu
         return protocol::CreateScalar(builder, protocol::ScalarValue_Bool, protocol::CreateBool(builder, cell.val.xbool != 0).Union());
     } else if (cell.xltype & xltypeStr) {
         std::wstring ws = PascalToWString(cell.val.str);
-        std::string s = ConvertExcelString(ws.c_str()); // Corrected usage: ConvertExcelString takes wchar_t*
+        std::string s = ConvertExcelString(ws.c_str());
         return protocol::CreateScalar(builder, protocol::ScalarValue_Str, protocol::CreateStrDirect(builder, s.c_str()).Union());
     } else if (cell.xltype & xltypeErr) {
         return protocol::CreateScalar(builder, protocol::ScalarValue_Err, protocol::CreateErr(builder, (protocol::XlError)cell.val.err).Union());
@@ -82,23 +82,42 @@ flatbuffers::Offset<protocol::Any> ConvertMultiToAny(const XLOPER12& xMulti, fla
     return protocol::CreateAny(builder, protocol::AnyValue_Grid, grid.Union());
 }
 
-flatbuffers::Offset<protocol::Grid> ConvertGrid(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
-    if (op->xltype & xltypeMulti) {
-        int rows = op->val.array.rows;
-        int cols = op->val.array.columns;
+// Helper function to convert a value XLOPER (Multi, Scalar, Missing/Nil) to a Grid offset.
+static flatbuffers::Offset<protocol::Grid> ConvertValueToGrid(const XLOPER12& op, flatbuffers::FlatBufferBuilder& builder) {
+    if (op.xltype & xltypeMulti) {
+        int rows = op.val.array.rows;
+        int cols = op.val.array.columns;
         std::vector<flatbuffers::Offset<protocol::Scalar>> data;
         data.reserve(rows * cols);
         for(int i=0; i<rows*cols; ++i) {
-            data.push_back(ConvertScalar(op->val.array.lparray[i], builder));
+            data.push_back(ConvertScalar(op.val.array.lparray[i], builder));
         }
         return protocol::CreateGridDirect(builder, rows, cols, &data);
-    } else if (op->xltype & xltypeMissing || op->xltype & xltypeNil) {
+    } else if (op.xltype & (xltypeMissing | xltypeNil)) {
         return protocol::CreateGrid(builder, 0, 0, 0);
     } else {
         std::vector<flatbuffers::Offset<protocol::Scalar>> data;
-        data.push_back(ConvertScalar(*op, builder));
+        data.push_back(ConvertScalar(op, builder));
         return protocol::CreateGridDirect(builder, 1, 1, &data);
     }
+}
+
+flatbuffers::Offset<protocol::Grid> ConvertGrid(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
+    if (op->xltype & (xltypeRef | xltypeSRef)) {
+        XLOPER12 xRes;
+        XLOPER12 xDestType;
+        xDestType.xltype = xltypeMissing; // Equivalent to omitting, coerces to Multi (block) or Value (single)
+
+        if (Excel12(xlCoerce, &xRes, 2, op, &xDestType) == xlretSuccess) {
+            auto result = ConvertValueToGrid(xRes, builder);
+            Excel12(xlFree, 0, 1, &xRes);
+            return result;
+        } else {
+            // Coercion failed, return empty grid
+            return protocol::CreateGrid(builder, 0, 0, 0);
+        }
+    }
+    return ConvertValueToGrid(*op, builder);
 }
 
 flatbuffers::Offset<protocol::NumGrid> ConvertNumGrid(FP12* fp, flatbuffers::FlatBufferBuilder& builder) {
@@ -128,8 +147,7 @@ flatbuffers::Offset<protocol::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBu
         return protocol::CreateAny(builder, protocol::AnyValue_Err, protocol::CreateErr(builder, (protocol::XlError)op->val.err).Union());
     } else if (op->xltype & (xltypeRef | xltypeSRef)) {
         size_t cellCount = 0;
-        // Fix: Use xlfRows/xlfCols or calculate from range
-        // Since we are not sending it to Excel here, we calculate manually.
+
         if (op->xltype & xltypeSRef) {
             int h = op->val.sref.ref.rwLast - op->val.sref.ref.rwFirst + 1;
             int w = op->val.sref.ref.colLast - op->val.sref.ref.colFirst + 1;
@@ -144,14 +162,7 @@ flatbuffers::Offset<protocol::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBu
         if (cellCount > 100) {
             std::wstring sheet = GetSheetName(op);
             XLOPER12 xAddr;
-            // xlfReftext expects R1C1 or A1? Default A1.
-            // Using xlfReftext might fail if not on active sheet?
-            // Actually xlfReftext(ref, true) gives A1 style absolute.
-            // Using true (A1) or false (R1C1).
-            // But we need to pass a bool XLOPER.
-            // Simplified: Just use ConvertAny logic from memory (using xlfReftext).
 
-            // To call xlfReftext we need the reference.
             if (Excel12(xlfReftext, &xAddr, 1, op) == xlretSuccess && (xAddr.xltype & xltypeStr)) {
                  std::wstring addr = PascalToWString(xAddr.val.str);
                  Excel12(xlFree, 0, 1, &xAddr);
@@ -225,7 +236,7 @@ LPXLOPER12 AnyToXLOPER12(const protocol::Any* any) {
             return op;
         }
         case protocol::AnyValue_Str: {
-            std::wstring ws = StringToWString(any->val_as_Str()->val()->str()); // Fix: Use StringToWString
+            std::wstring ws = StringToWString(any->val_as_Str()->val()->str());
             return NewExcelString(ws);
         }
         case protocol::AnyValue_Err: {
@@ -271,20 +282,6 @@ LPXLOPER12 RangeToXLOPER12(const protocol::Range* range) {
     op->xltype = xltypeRef | xlbitDLLFree;
     op->val.mref.lpmref = (LPXLMREF12) new char[sizeof(XLMREF12) + sizeof(XLREF12) * range->refs()->size()];
     op->val.mref.idSheet = 0;
-
-    // Note: We cannot safely call xlSheetId here because this function might be called
-    // from a background thread (ProcessAsyncBatchResponse), and xlSheetId is not thread-safe.
-    // We ignore the sheet name for now, defaulting to the active sheet (idSheet = 0).
-    /*
-    if (range->sheet_name() && range->sheet_name()->size() > 0) {
-        std::wstring sName = ConvertToWString(range->sheet_name()->c_str());
-        XLOPER12 xId;
-        if (Excel12(xlSheetId, &xId, 1, TempStr12(sName.c_str())) == xlretSuccess) {
-            op->val.mref.idSheet = xId.val.mref.idSheet;
-            Excel12(xlFree, 0, 1, &xId);
-        }
-    }
-    */
 
     op->val.mref.lpmref->count = (WORD)range->refs()->size();
     for(size_t i=0; i<range->refs()->size(); ++i) {
