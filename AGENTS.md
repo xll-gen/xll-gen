@@ -437,3 +437,155 @@ When creating a tag message, adhere to the following format:
 * [4d5e6f](http://url...) Optimized IPC
 * [7g8h9i](http://url...) Fixed typo in README
 ```
+
+## 13. Reference: Optional & Variable Arguments
+
+This section describes how to handle **Optional Arguments** and **Variable Arguments** in Excel XLL development.
+
+Since the Excel C API does not support variable arguments like C's `va_list`, the standard approach is **"Accept pointers up to a maximum count and check for `xltypeMissing`"**.
+
+### 13.1 Core Mechanism
+
+There are 3 key rules for handling omitted arguments in an Excel XLL:
+
+1.  **Type Registration (`pxTypeText`)**: You must register argument types as `P`, `Q` (XLOPER/XLOPER12), or `U`, `R` (Range). Basic types like `double(B)` cannot be used because they are converted to 0 or cause errors when omitted.
+2.  **Missing Detection (`xltypeMissing`)**: In the C++ code, check if the `xltype` of the received `XLOPER12` is `xltypeMissing`.
+3.  **UI Treatment (`pxArgumentText`)**: To indicate optional values to the user, enclose the argument name in brackets `[ ]` during registration.
+
+### 13.2 Optional Arguments Implementation Example
+
+A simple function accepting 1 required argument and 1 optional argument.
+
+**Scenario:** `CalcWithOption(Value, [Multiplier])`
+*   `Value`: Required
+*   `Multiplier`: Optional (Default value 1.0 if omitted)
+
+#### C++ Implementation
+
+```cpp
+#include <windows.h>
+#include "xlcall.h"
+
+// Registered Type String: "QQQ" (Return Q, Arg1 Q, Arg2 Q)
+extern "C" __declspec(dllexport) LPXLOPER12 WINAPI CalcWithOption(LPXLOPER12 pxVal, LPXLOPER12 pxMul)
+{
+    static XLOPER12 xResult;
+    double value = 0.0;
+    double multiplier = 1.0; // Default Value
+
+    // 1. Extract Required Argument
+    if (pxVal->xltype == xltypeNum) {
+        value = pxVal->val.num;
+    } else {
+        xResult.xltype = xltypeErr;
+        xResult.val.err = xlerrValue;
+        return &xResult;
+    }
+
+    // 2. Handle Optional Argument (Core Logic)
+    // If omitted, Excel passes xltypeMissing
+    if (pxMul->xltype != xltypeMissing) {
+        // Read value only if not missing
+        if (pxMul->xltype == xltypeNum) {
+            multiplier = pxMul->val.num;
+        }
+        // Add Coerce logic if necessary
+    }
+
+    // 3. Return Result
+    xResult.xltype = xltypeNum;
+    xResult.val.num = value * multiplier;
+
+    return &xResult;
+}
+```
+
+#### xlfRegister
+
+```cpp
+Excel12(xlfRegister, 0, 10,
+    (LPXLOPER12)pxModuleText,
+    (LPXLOPER12)TempStr12(L"CalcWithOption"), // C++ Function Name
+    (LPXLOPER12)TempStr12(L"QQQ"),            // Type String
+    (LPXLOPER12)TempStr12(L"CalcWithOption"), // Excel Function Name
+    (LPXLOPER12)TempStr12(L"Value, [Multiplier]"), // UI: Brackets for optional
+    (LPXLOPER12)TempStr12(L"1"),              // Function(1)
+    (LPXLOPER12)TempStr12(L"MyAddin"),        // Category
+    (LPXLOPER12)TempStr12(L""),               // Shortcut
+    (LPXLOPER12)TempStr12(L""),               // Help Topic
+    (LPXLOPER12)TempStr12(L"Calculates value with optional multiplier.") // Description
+);
+```
+
+### 13.3 Variable Arguments Implementation Example
+
+Excel does not directly support variable arguments like `SUM(n1, n2, ...)`. You must use the **Sparse Arguments** approach, defining a maximum count (e.g., 10) and listing all arguments.
+
+**Scenario:** `MySum(v1, [v2], ... [v10])`
+*   Accepts up to 10 numbers and calculates the sum.
+
+#### C++ Implementation (Loop)
+
+```cpp
+#define MAX_ARGS 10
+
+// Explicitly declare all 10 arguments
+extern "C" __declspec(dllexport) LPXLOPER12 WINAPI MySum(
+    LPXLOPER12 p1, LPXLOPER12 p2, LPXLOPER12 p3, LPXLOPER12 p4, LPXLOPER12 p5,
+    LPXLOPER12 p6, LPXLOPER12 p7, LPXLOPER12 p8, LPXLOPER12 p9, LPXLOPER12 p10
+) {
+    static XLOPER12 xResult;
+    double sum = 0.0;
+
+    // 1. Group arguments into an array for looping
+    LPXLOPER12 args[MAX_ARGS] = { p1, p2, p3, p4, p5, p6, p7, p8, p9, p10 };
+
+    // 2. Iterate and sum non-missing values
+    for (int i = 0; i < MAX_ARGS; i++) {
+        // Skip missing arguments
+        if (args[i]->xltype == xltypeMissing) {
+            continue;
+        }
+
+        if (args[i]->xltype == xltypeNum) {
+            sum += args[i]->val.num;
+        }
+        // Real implementation should handle xltypeSRef, xltypeMulti (xlCoerce)
+    }
+
+    xResult.xltype = xltypeNum;
+    xResult.val.num = sum;
+    return &xResult;
+}
+```
+
+#### xlfRegister
+
+```cpp
+// Type String: Return(Q) + 10 Args(Q...Q) = 11 Qs
+// Argument Text: "v1, [v2], [v3], ... [v10]"
+
+Excel12(xlfRegister, 0, 5,
+    (LPXLOPER12)pxModuleText,
+    (LPXLOPER12)TempStr12(L"MySum"),          // C++ Function Name
+    (LPXLOPER12)TempStr12(L"QQQQQQQQQQQ"),    // Type: 11 Qs
+    (LPXLOPER12)TempStr12(L"MySum"),          // Excel Function Name
+    (LPXLOPER12)TempStr12(L"v1, [v2], [v3], [v4], [v5], [v6], [v7], [v8], [v9], [v10]") // UI Text
+);
+```
+
+### 13.4 Summary and Recommendations
+
+| Category | Approach | Note |
+| :--- | :--- | :--- |
+| **Type** | `P`, `Q` (XLOPER/12) or `U` | Cannot use basic types like `double` |
+| **Check** | `arg->xltype == xltypeMissing` | Handle default value when missing |
+| **UI** | `[ArgName]` format | Write directly in `pxArgumentText` |
+| **Variable Args** | List max count of arguments | Limit to ~20-30 (Excel limit is 255) |
+
+#### Tip: Too Many Arguments
+Listing `p1...p30` is inefficient. In this case, design the function to accept a **Single `xltypeMulti` (Range/Array) argument**.
+
+*   **Before:** `=MyFunc(A1, B1, C1, ...)` (Argument List)
+*   **After:** `=MyFunc(A1:C1)` or `=MyFunc((A1, B1, C1))` (Multi-area Reference)
+    *   This only requires registering 1 argument (`Q` or `U`) and looping through the array in C++, which is much cleaner.
