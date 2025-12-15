@@ -24,7 +24,7 @@ func TestRunInit(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	projectName := "my-test-project"
-	if err := runInit(projectName, false); err != nil {
+	if err := runInit(projectName, false, false); err != nil {
 		t.Fatalf("runInit failed: %v", err)
 	}
 

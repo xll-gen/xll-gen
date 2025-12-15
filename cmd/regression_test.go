@@ -60,7 +60,7 @@ func setupGenTest(t *testing.T, name string) (string, func()) {
 		t.Fatal(err)
 	}
 
-	if err := runInit(name, true); err != nil {
+	if err := runInit(name, true, false); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestRegression(t *testing.T) {
 	}
 	defer os.Chdir(origWd)
 
-	if err := runInit(projectName, false); err != nil {
+	if err := runInit(projectName, false, false); err != nil {
 		t.Fatalf("runInit failed: %v", err)
 	}
 
