@@ -225,9 +225,6 @@ func allowedTypesList(m map[string]bool) string {
 // Parameters:
 //   - config: The Config object to modify.
 func ApplyDefaults(config *Config) {
-	if config.Build.Singlefile == "" {
-		config.Build.Singlefile = "xll"
-	}
 	if config.Build.TempDir == "" {
 		config.Build.TempDir = "${TEMP}"
 	}

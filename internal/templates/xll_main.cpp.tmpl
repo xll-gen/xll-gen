@@ -29,7 +29,7 @@
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
-{{if eq .Build.Singlefile "xll"}}
+{{if eq (derefString .Build.Singlefile) "xll"}}
 #include "include/xll_embed.h"
 {{end}}
 
@@ -91,7 +91,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::string projName = "{{.ProjectName}}";
     bool isSingleFile = false;
 
-    {{if eq .Build.Singlefile "xll"}}
+    {{if eq (derefString .Build.Singlefile) "xll"}}
     isSingleFile = true;
     tempPattern = "{{.Build.TempDir}}";
     {{end}}
@@ -173,7 +173,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::wstring xllDir = GetXllDir();
         std::wstring extractedExe = L"";
 
-{{if eq .Build.Singlefile "xll"}}
+{{if eq (derefString .Build.Singlefile) "xll"}}
         std::string extractedStr = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
         if (!extractedStr.empty()) {
             extractedExe = StringToWString(extractedStr);
@@ -182,7 +182,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
         xll::LaunchConfig cfg;
         cfg.projectName = L"{{.ProjectName}}";
-        cfg.isSingleFile = {{if eq .Build.Singlefile "xll"}}true{{else}}false{{end}};
+        cfg.isSingleFile = {{if eq (derefString .Build.Singlefile) "xll"}}true{{else}}false{{end}};
         cfg.tempDir = L"{{.Build.TempDir}}";
         cfg.cwd = "{{.Server.Launch.Cwd}}";
         cfg.command = "{{.Server.Launch.Command}}";

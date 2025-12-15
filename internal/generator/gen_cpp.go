@@ -61,5 +61,5 @@ func generateCMake(cfg *config.Config, dir string) error {
 		Build:       cfg.Build,
 	}
 
-	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)
+	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, GetCommonFuncMap())
 }

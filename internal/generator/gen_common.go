@@ -27,5 +27,5 @@ func generateTaskfile(cfg *config.Config, dir string) error {
 		Build:       cfg.Build,
 	}
 
-	return executeTemplate("Taskfile.yml.tmpl", filepath.Join(dir, "Taskfile.yml"), data, nil)
+	return executeTemplate("Taskfile.yml.tmpl", filepath.Join(dir, "Taskfile.yml"), data, GetCommonFuncMap())
 }

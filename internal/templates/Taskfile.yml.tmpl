@@ -16,7 +16,7 @@ tasks:
     cmds:
       - task: build-cpp-debug
 
-{{if eq .Build.Singlefile "xll"}}
+{{if eq (derefString .Build.Singlefile) "xll"}}
   # For 'singlefile: xll' mode, Taskfile ensures the Go server is built before C++.
   build-cpp:
     desc: Build C++ XLL (Release)
