@@ -214,6 +214,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 }
 
 __declspec(dllexport) int __stdcall xlAutoClose() {
+    LogInfo("Unloading XLL...");
     if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
     g_running = false;
