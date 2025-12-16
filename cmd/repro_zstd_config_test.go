@@ -85,7 +85,7 @@ func TestRepro_ZstdConfig(t *testing.T) {
 		cfg := &config.Config{
 			Project: config.ProjectConfig{Name: "TestProjZstd", Version: "0.1.0"},
 			Build: config.BuildConfig{
-				Singlefile: &xll,
+				Singlefile: xll,
 			},
 			Logging: config.LoggingConfig{Level: "info"},
 		}
