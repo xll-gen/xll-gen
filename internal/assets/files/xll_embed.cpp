@@ -4,7 +4,9 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
+#ifdef EMBED_GO_SERVER
 #include <zstd.h>
+#endif
 #include <process.h>
 #include <sstream>
 #include <iomanip>
@@ -16,17 +18,6 @@
 extern HMODULE g_hModule;
 
 namespace embed {
-
-// FNV-1a Hash for Checksum
-uint32_t FNV1a(const void* data, size_t size) {
-    uint32_t hash = 2166136261u;
-    const uint8_t* p = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < size; ++i) {
-        hash ^= p[i];
-        hash *= 16777619u;
-    }
-    return hash;
-}
 
 // Helper to expand environment variables like %TEMP% or ${TEMP}
 std::string ExpandEnvVars(const std::string& pattern) {
@@ -50,6 +41,19 @@ std::string ExpandEnvVars(const std::string& pattern) {
         return pattern; // Fallback or empty?
     }
     return std::string(buffer);
+}
+
+#ifdef EMBED_GO_SERVER
+
+// FNV-1a Hash for Checksum
+uint32_t FNV1a(const void* data, size_t size) {
+    uint32_t hash = 2166136261u;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= p[i];
+        hash *= 16777619u;
+    }
+    return hash;
 }
 
 bool DecompressAndWrite(void* pSrc, size_t srcSize, const std::string& destPath) {
@@ -143,5 +147,13 @@ std::string ExtractEmbeddedExe(const std::string& tempDirPattern, const std::str
 
     return "";
 }
+
+#else
+
+std::string ExtractEmbeddedExe(const std::string& tempDirPattern, const std::string& projectName) {
+    return "";
+}
+
+#endif
 
 } // namespace embed
