@@ -104,6 +104,8 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
     else g_logLevel = LogLevel::INFO; // Default to INFO if unspecified or unknown
 
     std::wstring xllDir = GetXllDir();
+    std::wstring wProjName = StringToWString(projName);
+    if (wProjName.empty()) wProjName = L"xll";
 
     // 1. Substitute Internal Variables FIRST
     // Replace ${XLL_DIR} and ${XLL} before calling ExpandEnvVarsW to prevent them
@@ -119,8 +121,8 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
 
     // 3. Default if empty
     if (wConfigured.empty()) {
-        // Default: xll.log in the XLL directory
-        wPath = xllDir + L"\\xll.log";
+        // Default: <ProjName>.log in the XLL directory
+        wPath = xllDir + L"\\" + wProjName + L".log";
     } else {
         wPath = wConfigured;
 
@@ -130,12 +132,12 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
             wPath = xllDir + L"\\" + wPath;
         }
 
-        // 5. Treat as Directory: Append \xll.log
+        // 5. Treat as Directory: Append \<ProjName>.log
         // Ensure separator
         if (!wPath.empty() && wPath.back() != L'\\' && wPath.back() != L'/') {
             wPath += L"\\";
         }
-        wPath += L"xll.log";
+        wPath += wProjName + L".log";
     }
 
     // Inject _native
