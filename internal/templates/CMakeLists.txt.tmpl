@@ -121,6 +121,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 {{ if eq .Build.Singlefile "xll" }}
 target_link_libraries(${PROJECT_NAME} PRIVATE libzstd_static)
 target_include_directories(${PROJECT_NAME} PRIVATE ${zstd_SOURCE_DIR}/lib)
+target_compile_definitions(${PROJECT_NAME} PRIVATE EMBED_GO_SERVER)
 {{ end }}
 
 if(XLL_DEBUG)
