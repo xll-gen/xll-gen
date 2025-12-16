@@ -381,6 +381,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         int32_t reqSize = -((int32_t)builder.GetSize());
 
         {{if .Async}}
+        LogDebug("Async function start for {{.Name}}");
         // Async Handshake Timeout: Function override OR Global AsyncAckTimeout (default 2000)
         {{ $ackTimeout := parseTimeout .Timeout 0 }}
         {{ if eq $ackTimeout 0 }}{{ $ackTimeout = parseTimeout $.Server.AsyncAckTimeout 2000 }}{{ end }}
@@ -390,6 +391,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         } else {
             LogDebug("ACK received for {{.Name}}");
         }
+        LogDebug("Async function return for {{.Name}}");
         return;
         {{else}}
         // Sync Calculation Timeout: Function override OR Global Timeout (default 2000)
