@@ -67,8 +67,9 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 			anyOff = protocol.AnyEnd(b)
 		}
 
+		hOff := b.CreateByteVector(res.Handle)
 		protocol.AsyncResultStart(b)
-		protocol.AsyncResultAddHandle(b, res.Handle)
+		protocol.AsyncResultAddHandle(b, hOff)
 		if errOff > 0 {
 			protocol.AsyncResultAddError(b, errOff)
 		} else {
@@ -326,8 +327,9 @@ func CloneAny(b *flatbuffers.Builder, a *protocol.Any) flatbuffers.UOffsetT {
 		case protocol.AnyValueAsyncHandle:
 			var val protocol.AsyncHandle
 			val.Init(tbl.Bytes, tbl.Pos)
+			hOff := b.CreateByteVector(val.ValBytes())
 			protocol.AsyncHandleStart(b)
-			protocol.AsyncHandleAddVal(b, val.Val())
+			protocol.AsyncHandleAddVal(b, hOff)
 			uOff = protocol.AsyncHandleEnd(b)
 		default:
 			// Nil
@@ -416,8 +418,9 @@ func CloneScalar(b *flatbuffers.Builder, s *protocol.Scalar) flatbuffers.UOffset
 		case protocol.ScalarValueAsyncHandle:
 			var val protocol.AsyncHandle
 			val.Init(tbl.Bytes, tbl.Pos)
+			hOff := b.CreateByteVector(val.ValBytes())
 			protocol.AsyncHandleStart(b)
-			protocol.AsyncHandleAddVal(b, val.Val())
+			protocol.AsyncHandleAddVal(b, hOff)
 			uOff = protocol.AsyncHandleEnd(b)
 		default:
 			protocol.NilStart(b)

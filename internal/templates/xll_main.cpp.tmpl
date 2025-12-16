@@ -371,7 +371,8 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
         {{end}}
         {{if .Async}}
-        reqBuilder.add_async_handle((uint64_t)asyncHandle);
+        auto asyncHandle_vec = builder.CreateVector((const uint8_t*)asyncHandle, sizeof(XLOPER12));
+        reqBuilder.add_async_handle(asyncHandle_vec);
         {{end}}
         auto req = reqBuilder.Finish();
         builder.Finish(req);

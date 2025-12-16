@@ -83,41 +83,41 @@ struct AsyncResultBuilder;
 struct BatchAsyncResponse;
 struct BatchAsyncResponseBuilder;
 
-enum XlError : int16_t {
-  XlError_Null = 2000,
-  XlError_Div0 = 2007,
-  XlError_Value = 2015,
-  XlError_Ref = 2023,
-  XlError_Name = 2029,
-  XlError_Num = 2036,
-  XlError_NA = 2042,
-  XlError_GettingData = 2043,
-  XlError_Spill = 2045,
-  XlError_Connect = 2046,
-  XlError_Blocked = 2047,
-  XlError_Unknown = 2048,
-  XlError_Field = 2049,
-  XlError_Calc = 2050,
-  XlError_MIN = XlError_Null,
-  XlError_MAX = XlError_Calc
+enum class XlError : int16_t {
+  Null = 2000,
+  Div0 = 2007,
+  Value = 2015,
+  Ref = 2023,
+  Name = 2029,
+  Num = 2036,
+  NA = 2042,
+  GettingData = 2043,
+  Spill = 2045,
+  Connect = 2046,
+  Blocked = 2047,
+  Unknown = 2048,
+  Field = 2049,
+  Calc = 2050,
+  MIN = Null,
+  MAX = Calc
 };
 
 inline const XlError (&EnumValuesXlError())[14] {
   static const XlError values[] = {
-    XlError_Null,
-    XlError_Div0,
-    XlError_Value,
-    XlError_Ref,
-    XlError_Name,
-    XlError_Num,
-    XlError_NA,
-    XlError_GettingData,
-    XlError_Spill,
-    XlError_Connect,
-    XlError_Blocked,
-    XlError_Unknown,
-    XlError_Field,
-    XlError_Calc
+    XlError::Null,
+    XlError::Div0,
+    XlError::Value,
+    XlError::Ref,
+    XlError::Name,
+    XlError::Num,
+    XlError::NA,
+    XlError::GettingData,
+    XlError::Spill,
+    XlError::Connect,
+    XlError::Blocked,
+    XlError::Unknown,
+    XlError::Field,
+    XlError::Calc
   };
   return values;
 }
@@ -181,34 +181,34 @@ inline const char * const *EnumNamesXlError() {
 }
 
 inline const char *EnumNameXlError(XlError e) {
-  if (::flatbuffers::IsOutRange(e, XlError_Null, XlError_Calc)) return "";
-  const size_t index = static_cast<size_t>(e) - static_cast<size_t>(XlError_Null);
+  if (::flatbuffers::IsOutRange(e, XlError::Null, XlError::Calc)) return "";
+  const size_t index = static_cast<size_t>(e) - static_cast<size_t>(XlError::Null);
   return EnumNamesXlError()[index];
 }
 
-enum ScalarValue : uint8_t {
-  ScalarValue_NONE = 0,
-  ScalarValue_Bool = 1,
-  ScalarValue_Num = 2,
-  ScalarValue_Int = 3,
-  ScalarValue_Str = 4,
-  ScalarValue_Err = 5,
-  ScalarValue_AsyncHandle = 6,
-  ScalarValue_Nil = 7,
-  ScalarValue_MIN = ScalarValue_NONE,
-  ScalarValue_MAX = ScalarValue_Nil
+enum class ScalarValue : uint8_t {
+  NONE = 0,
+  Bool = 1,
+  Num = 2,
+  Int = 3,
+  Str = 4,
+  Err = 5,
+  AsyncHandle = 6,
+  Nil = 7,
+  MIN = NONE,
+  MAX = Nil
 };
 
 inline const ScalarValue (&EnumValuesScalarValue())[8] {
   static const ScalarValue values[] = {
-    ScalarValue_NONE,
-    ScalarValue_Bool,
-    ScalarValue_Num,
-    ScalarValue_Int,
-    ScalarValue_Str,
-    ScalarValue_Err,
-    ScalarValue_AsyncHandle,
-    ScalarValue_Nil
+    ScalarValue::NONE,
+    ScalarValue::Bool,
+    ScalarValue::Num,
+    ScalarValue::Int,
+    ScalarValue::Str,
+    ScalarValue::Err,
+    ScalarValue::AsyncHandle,
+    ScalarValue::Nil
   };
   return values;
 }
@@ -229,77 +229,77 @@ inline const char * const *EnumNamesScalarValue() {
 }
 
 inline const char *EnumNameScalarValue(ScalarValue e) {
-  if (::flatbuffers::IsOutRange(e, ScalarValue_NONE, ScalarValue_Nil)) return "";
+  if (::flatbuffers::IsOutRange(e, ScalarValue::NONE, ScalarValue::Nil)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesScalarValue()[index];
 }
 
 template<typename T> struct ScalarValueTraits {
-  static const ScalarValue enum_value = ScalarValue_NONE;
+  static const ScalarValue enum_value = ScalarValue::NONE;
 };
 
 template<> struct ScalarValueTraits<protocol::Bool> {
-  static const ScalarValue enum_value = ScalarValue_Bool;
+  static const ScalarValue enum_value = ScalarValue::Bool;
 };
 
 template<> struct ScalarValueTraits<protocol::Num> {
-  static const ScalarValue enum_value = ScalarValue_Num;
+  static const ScalarValue enum_value = ScalarValue::Num;
 };
 
 template<> struct ScalarValueTraits<protocol::Int> {
-  static const ScalarValue enum_value = ScalarValue_Int;
+  static const ScalarValue enum_value = ScalarValue::Int;
 };
 
 template<> struct ScalarValueTraits<protocol::Str> {
-  static const ScalarValue enum_value = ScalarValue_Str;
+  static const ScalarValue enum_value = ScalarValue::Str;
 };
 
 template<> struct ScalarValueTraits<protocol::Err> {
-  static const ScalarValue enum_value = ScalarValue_Err;
+  static const ScalarValue enum_value = ScalarValue::Err;
 };
 
 template<> struct ScalarValueTraits<protocol::AsyncHandle> {
-  static const ScalarValue enum_value = ScalarValue_AsyncHandle;
+  static const ScalarValue enum_value = ScalarValue::AsyncHandle;
 };
 
 template<> struct ScalarValueTraits<protocol::Nil> {
-  static const ScalarValue enum_value = ScalarValue_Nil;
+  static const ScalarValue enum_value = ScalarValue::Nil;
 };
 
 bool VerifyScalarValue(::flatbuffers::Verifier &verifier, const void *obj, ScalarValue type);
-bool VerifyScalarValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types);
+bool VerifyScalarValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<ScalarValue> *types);
 
-enum AnyValue : uint8_t {
-  AnyValue_NONE = 0,
-  AnyValue_Bool = 1,
-  AnyValue_Num = 2,
-  AnyValue_Int = 3,
-  AnyValue_Str = 4,
-  AnyValue_Err = 5,
-  AnyValue_AsyncHandle = 6,
-  AnyValue_Nil = 7,
-  AnyValue_Grid = 8,
-  AnyValue_NumGrid = 9,
-  AnyValue_Range = 10,
-  AnyValue_RefCache = 11,
-  AnyValue_MIN = AnyValue_NONE,
-  AnyValue_MAX = AnyValue_RefCache
+enum class AnyValue : uint8_t {
+  NONE = 0,
+  Bool = 1,
+  Num = 2,
+  Int = 3,
+  Str = 4,
+  Err = 5,
+  AsyncHandle = 6,
+  Nil = 7,
+  Grid = 8,
+  NumGrid = 9,
+  Range = 10,
+  RefCache = 11,
+  MIN = NONE,
+  MAX = RefCache
 };
 
 inline const AnyValue (&EnumValuesAnyValue())[12] {
   static const AnyValue values[] = {
-    AnyValue_NONE,
-    AnyValue_Bool,
-    AnyValue_Num,
-    AnyValue_Int,
-    AnyValue_Str,
-    AnyValue_Err,
-    AnyValue_AsyncHandle,
-    AnyValue_Nil,
-    AnyValue_Grid,
-    AnyValue_NumGrid,
-    AnyValue_Range,
-    AnyValue_RefCache
+    AnyValue::NONE,
+    AnyValue::Bool,
+    AnyValue::Num,
+    AnyValue::Int,
+    AnyValue::Str,
+    AnyValue::Err,
+    AnyValue::AsyncHandle,
+    AnyValue::Nil,
+    AnyValue::Grid,
+    AnyValue::NumGrid,
+    AnyValue::Range,
+    AnyValue::RefCache
   };
   return values;
 }
@@ -324,75 +324,75 @@ inline const char * const *EnumNamesAnyValue() {
 }
 
 inline const char *EnumNameAnyValue(AnyValue e) {
-  if (::flatbuffers::IsOutRange(e, AnyValue_NONE, AnyValue_RefCache)) return "";
+  if (::flatbuffers::IsOutRange(e, AnyValue::NONE, AnyValue::RefCache)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesAnyValue()[index];
 }
 
 template<typename T> struct AnyValueTraits {
-  static const AnyValue enum_value = AnyValue_NONE;
+  static const AnyValue enum_value = AnyValue::NONE;
 };
 
 template<> struct AnyValueTraits<protocol::Bool> {
-  static const AnyValue enum_value = AnyValue_Bool;
+  static const AnyValue enum_value = AnyValue::Bool;
 };
 
 template<> struct AnyValueTraits<protocol::Num> {
-  static const AnyValue enum_value = AnyValue_Num;
+  static const AnyValue enum_value = AnyValue::Num;
 };
 
 template<> struct AnyValueTraits<protocol::Int> {
-  static const AnyValue enum_value = AnyValue_Int;
+  static const AnyValue enum_value = AnyValue::Int;
 };
 
 template<> struct AnyValueTraits<protocol::Str> {
-  static const AnyValue enum_value = AnyValue_Str;
+  static const AnyValue enum_value = AnyValue::Str;
 };
 
 template<> struct AnyValueTraits<protocol::Err> {
-  static const AnyValue enum_value = AnyValue_Err;
+  static const AnyValue enum_value = AnyValue::Err;
 };
 
 template<> struct AnyValueTraits<protocol::AsyncHandle> {
-  static const AnyValue enum_value = AnyValue_AsyncHandle;
+  static const AnyValue enum_value = AnyValue::AsyncHandle;
 };
 
 template<> struct AnyValueTraits<protocol::Nil> {
-  static const AnyValue enum_value = AnyValue_Nil;
+  static const AnyValue enum_value = AnyValue::Nil;
 };
 
 template<> struct AnyValueTraits<protocol::Grid> {
-  static const AnyValue enum_value = AnyValue_Grid;
+  static const AnyValue enum_value = AnyValue::Grid;
 };
 
 template<> struct AnyValueTraits<protocol::NumGrid> {
-  static const AnyValue enum_value = AnyValue_NumGrid;
+  static const AnyValue enum_value = AnyValue::NumGrid;
 };
 
 template<> struct AnyValueTraits<protocol::Range> {
-  static const AnyValue enum_value = AnyValue_Range;
+  static const AnyValue enum_value = AnyValue::Range;
 };
 
 template<> struct AnyValueTraits<protocol::RefCache> {
-  static const AnyValue enum_value = AnyValue_RefCache;
+  static const AnyValue enum_value = AnyValue::RefCache;
 };
 
 bool VerifyAnyValue(::flatbuffers::Verifier &verifier, const void *obj, AnyValue type);
-bool VerifyAnyValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types);
+bool VerifyAnyValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<AnyValue> *types);
 
-enum Command : uint8_t {
-  Command_NONE = 0,
-  Command_SetCommand = 1,
-  Command_FormatCommand = 2,
-  Command_MIN = Command_NONE,
-  Command_MAX = Command_FormatCommand
+enum class Command : uint8_t {
+  NONE = 0,
+  SetCommand = 1,
+  FormatCommand = 2,
+  MIN = NONE,
+  MAX = FormatCommand
 };
 
 inline const Command (&EnumValuesCommand())[3] {
   static const Command values[] = {
-    Command_NONE,
-    Command_SetCommand,
-    Command_FormatCommand
+    Command::NONE,
+    Command::SetCommand,
+    Command::FormatCommand
   };
   return values;
 }
@@ -408,25 +408,25 @@ inline const char * const *EnumNamesCommand() {
 }
 
 inline const char *EnumNameCommand(Command e) {
-  if (::flatbuffers::IsOutRange(e, Command_NONE, Command_FormatCommand)) return "";
+  if (::flatbuffers::IsOutRange(e, Command::NONE, Command::FormatCommand)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesCommand()[index];
 }
 
 template<typename T> struct CommandTraits {
-  static const Command enum_value = Command_NONE;
+  static const Command enum_value = Command::NONE;
 };
 
 template<> struct CommandTraits<protocol::SetCommand> {
-  static const Command enum_value = Command_SetCommand;
+  static const Command enum_value = Command::SetCommand;
 };
 
 template<> struct CommandTraits<protocol::FormatCommand> {
-  static const Command enum_value = Command_FormatCommand;
+  static const Command enum_value = Command::FormatCommand;
 };
 
 bool VerifyCommand(::flatbuffers::Verifier &verifier, const void *obj, Command type);
-bool VerifyCommandVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types);
+bool VerifyCommandVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<Command> *types);
 
 FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Rect FLATBUFFERS_FINAL_CLASS {
  private:
@@ -436,6 +436,7 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Rect FLATBUFFERS_FINAL_CLASS {
   int32_t col_last_;
 
  public:
+  struct Traits;
   Rect()
       : row_first_(0),
         row_last_(0),
@@ -463,8 +464,13 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Rect FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(Rect, 16);
 
+struct Rect::Traits {
+  using type = Rect;
+};
+
 struct Bool FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef BoolBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -504,8 +510,14 @@ inline ::flatbuffers::Offset<Bool> CreateBool(
   return builder_.Finish();
 }
 
+struct Bool::Traits {
+  using type = Bool;
+  static auto constexpr Create = CreateBool;
+};
+
 struct Num FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef NumBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -545,8 +557,14 @@ inline ::flatbuffers::Offset<Num> CreateNum(
   return builder_.Finish();
 }
 
+struct Num::Traits {
+  using type = Num;
+  static auto constexpr Create = CreateNum;
+};
+
 struct Int FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef IntBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -586,8 +604,14 @@ inline ::flatbuffers::Offset<Int> CreateInt(
   return builder_.Finish();
 }
 
+struct Int::Traits {
+  using type = Int;
+  static auto constexpr Create = CreateInt;
+};
+
 struct Str FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef StrBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -628,6 +652,11 @@ inline ::flatbuffers::Offset<Str> CreateStr(
   return builder_.Finish();
 }
 
+struct Str::Traits {
+  using type = Str;
+  static auto constexpr Create = CreateStr;
+};
+
 inline ::flatbuffers::Offset<Str> CreateStrDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *val = nullptr) {
@@ -639,6 +668,7 @@ inline ::flatbuffers::Offset<Str> CreateStrDirect(
 
 struct Err FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ErrBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -672,23 +702,30 @@ struct ErrBuilder {
 
 inline ::flatbuffers::Offset<Err> CreateErr(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    protocol::XlError val = protocol::XlError_Null) {
+    protocol::XlError val = protocol::XlError::Null) {
   ErrBuilder builder_(_fbb);
   builder_.add_val(val);
   return builder_.Finish();
 }
 
+struct Err::Traits {
+  using type = Err;
+  static auto constexpr Create = CreateErr;
+};
+
 struct AsyncHandle FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AsyncHandleBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
-  uint64_t val() const {
-    return GetField<uint64_t>(VT_VAL, 0);
+  const ::flatbuffers::Vector<uint8_t> *val() const {
+    return GetPointer<const ::flatbuffers::Vector<uint8_t> *>(VT_VAL);
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
-           VerifyField<uint64_t>(verifier, VT_VAL, 8) &&
+           VerifyOffset(verifier, VT_VAL) &&
+           verifier.VerifyVector(val()) &&
            verifier.EndTable();
   }
 };
@@ -697,8 +734,8 @@ struct AsyncHandleBuilder {
   typedef AsyncHandle Table;
   ::flatbuffers::FlatBufferBuilder &fbb_;
   ::flatbuffers::uoffset_t start_;
-  void add_val(uint64_t val) {
-    fbb_.AddElement<uint64_t>(AsyncHandle::VT_VAL, val, 0);
+  void add_val(::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> val) {
+    fbb_.AddOffset(AsyncHandle::VT_VAL, val);
   }
   explicit AsyncHandleBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -713,14 +750,29 @@ struct AsyncHandleBuilder {
 
 inline ::flatbuffers::Offset<AsyncHandle> CreateAsyncHandle(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    uint64_t val = 0) {
+    ::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> val = 0) {
   AsyncHandleBuilder builder_(_fbb);
   builder_.add_val(val);
   return builder_.Finish();
 }
 
+struct AsyncHandle::Traits {
+  using type = AsyncHandle;
+  static auto constexpr Create = CreateAsyncHandle;
+};
+
+inline ::flatbuffers::Offset<AsyncHandle> CreateAsyncHandleDirect(
+    ::flatbuffers::FlatBufferBuilder &_fbb,
+    const std::vector<uint8_t> *val = nullptr) {
+  auto val__ = val ? _fbb.CreateVector<uint8_t>(*val) : 0;
+  return protocol::CreateAsyncHandle(
+      _fbb,
+      val__);
+}
+
 struct Nil FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef NilBuilder Builder;
+  struct Traits;
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            verifier.EndTable();
@@ -748,8 +800,14 @@ inline ::flatbuffers::Offset<Nil> CreateNil(
   return builder_.Finish();
 }
 
+struct Nil::Traits {
+  using type = Nil;
+  static auto constexpr Create = CreateNil;
+};
+
 struct RefCache FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef RefCacheBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_KEY = 4
   };
@@ -790,6 +848,11 @@ inline ::flatbuffers::Offset<RefCache> CreateRefCache(
   return builder_.Finish();
 }
 
+struct RefCache::Traits {
+  using type = RefCache;
+  static auto constexpr Create = CreateRefCache;
+};
+
 inline ::flatbuffers::Offset<RefCache> CreateRefCacheDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *key = nullptr) {
@@ -801,6 +864,7 @@ inline ::flatbuffers::Offset<RefCache> CreateRefCacheDirect(
 
 struct Range FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef RangeBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_SHEET_NAME = 4,
     VT_REFS = 6
@@ -852,6 +916,11 @@ inline ::flatbuffers::Offset<Range> CreateRange(
   return builder_.Finish();
 }
 
+struct Range::Traits {
+  using type = Range;
+  static auto constexpr Create = CreateRange;
+};
+
 inline ::flatbuffers::Offset<Range> CreateRangeDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *sheet_name = nullptr,
@@ -866,6 +935,7 @@ inline ::flatbuffers::Offset<Range> CreateRangeDirect(
 
 struct Scalar FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ScalarBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL_TYPE = 4,
     VT_VAL = 6
@@ -878,25 +948,25 @@ struct Scalar FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
   template<typename T> const T *val_as() const;
   const protocol::Bool *val_as_Bool() const {
-    return val_type() == protocol::ScalarValue_Bool ? static_cast<const protocol::Bool *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::Bool ? static_cast<const protocol::Bool *>(val()) : nullptr;
   }
   const protocol::Num *val_as_Num() const {
-    return val_type() == protocol::ScalarValue_Num ? static_cast<const protocol::Num *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::Num ? static_cast<const protocol::Num *>(val()) : nullptr;
   }
   const protocol::Int *val_as_Int() const {
-    return val_type() == protocol::ScalarValue_Int ? static_cast<const protocol::Int *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::Int ? static_cast<const protocol::Int *>(val()) : nullptr;
   }
   const protocol::Str *val_as_Str() const {
-    return val_type() == protocol::ScalarValue_Str ? static_cast<const protocol::Str *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::Str ? static_cast<const protocol::Str *>(val()) : nullptr;
   }
   const protocol::Err *val_as_Err() const {
-    return val_type() == protocol::ScalarValue_Err ? static_cast<const protocol::Err *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::Err ? static_cast<const protocol::Err *>(val()) : nullptr;
   }
   const protocol::AsyncHandle *val_as_AsyncHandle() const {
-    return val_type() == protocol::ScalarValue_AsyncHandle ? static_cast<const protocol::AsyncHandle *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::AsyncHandle ? static_cast<const protocol::AsyncHandle *>(val()) : nullptr;
   }
   const protocol::Nil *val_as_Nil() const {
-    return val_type() == protocol::ScalarValue_Nil ? static_cast<const protocol::Nil *>(val()) : nullptr;
+    return val_type() == protocol::ScalarValue::Nil ? static_cast<const protocol::Nil *>(val()) : nullptr;
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
@@ -958,7 +1028,7 @@ struct ScalarBuilder {
 
 inline ::flatbuffers::Offset<Scalar> CreateScalar(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    protocol::ScalarValue val_type = protocol::ScalarValue_NONE,
+    protocol::ScalarValue val_type = protocol::ScalarValue::NONE,
     ::flatbuffers::Offset<void> val = 0) {
   ScalarBuilder builder_(_fbb);
   builder_.add_val(val);
@@ -966,8 +1036,14 @@ inline ::flatbuffers::Offset<Scalar> CreateScalar(
   return builder_.Finish();
 }
 
+struct Scalar::Traits {
+  using type = Scalar;
+  static auto constexpr Create = CreateScalar;
+};
+
 struct Grid FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef GridBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ROWS = 4,
     VT_COLS = 6,
@@ -1029,6 +1105,11 @@ inline ::flatbuffers::Offset<Grid> CreateGrid(
   return builder_.Finish();
 }
 
+struct Grid::Traits {
+  using type = Grid;
+  static auto constexpr Create = CreateGrid;
+};
+
 inline ::flatbuffers::Offset<Grid> CreateGridDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     int32_t rows = 0,
@@ -1044,6 +1125,7 @@ inline ::flatbuffers::Offset<Grid> CreateGridDirect(
 
 struct NumGrid FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef NumGridBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ROWS = 4,
     VT_COLS = 6,
@@ -1104,6 +1186,11 @@ inline ::flatbuffers::Offset<NumGrid> CreateNumGrid(
   return builder_.Finish();
 }
 
+struct NumGrid::Traits {
+  using type = NumGrid;
+  static auto constexpr Create = CreateNumGrid;
+};
+
 inline ::flatbuffers::Offset<NumGrid> CreateNumGridDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     int32_t rows = 0,
@@ -1119,6 +1206,7 @@ inline ::flatbuffers::Offset<NumGrid> CreateNumGridDirect(
 
 struct Any FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AnyBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL_TYPE = 4,
     VT_VAL = 6
@@ -1131,37 +1219,37 @@ struct Any FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
   template<typename T> const T *val_as() const;
   const protocol::Bool *val_as_Bool() const {
-    return val_type() == protocol::AnyValue_Bool ? static_cast<const protocol::Bool *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Bool ? static_cast<const protocol::Bool *>(val()) : nullptr;
   }
   const protocol::Num *val_as_Num() const {
-    return val_type() == protocol::AnyValue_Num ? static_cast<const protocol::Num *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Num ? static_cast<const protocol::Num *>(val()) : nullptr;
   }
   const protocol::Int *val_as_Int() const {
-    return val_type() == protocol::AnyValue_Int ? static_cast<const protocol::Int *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Int ? static_cast<const protocol::Int *>(val()) : nullptr;
   }
   const protocol::Str *val_as_Str() const {
-    return val_type() == protocol::AnyValue_Str ? static_cast<const protocol::Str *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Str ? static_cast<const protocol::Str *>(val()) : nullptr;
   }
   const protocol::Err *val_as_Err() const {
-    return val_type() == protocol::AnyValue_Err ? static_cast<const protocol::Err *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Err ? static_cast<const protocol::Err *>(val()) : nullptr;
   }
   const protocol::AsyncHandle *val_as_AsyncHandle() const {
-    return val_type() == protocol::AnyValue_AsyncHandle ? static_cast<const protocol::AsyncHandle *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::AsyncHandle ? static_cast<const protocol::AsyncHandle *>(val()) : nullptr;
   }
   const protocol::Nil *val_as_Nil() const {
-    return val_type() == protocol::AnyValue_Nil ? static_cast<const protocol::Nil *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Nil ? static_cast<const protocol::Nil *>(val()) : nullptr;
   }
   const protocol::Grid *val_as_Grid() const {
-    return val_type() == protocol::AnyValue_Grid ? static_cast<const protocol::Grid *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Grid ? static_cast<const protocol::Grid *>(val()) : nullptr;
   }
   const protocol::NumGrid *val_as_NumGrid() const {
-    return val_type() == protocol::AnyValue_NumGrid ? static_cast<const protocol::NumGrid *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::NumGrid ? static_cast<const protocol::NumGrid *>(val()) : nullptr;
   }
   const protocol::Range *val_as_Range() const {
-    return val_type() == protocol::AnyValue_Range ? static_cast<const protocol::Range *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::Range ? static_cast<const protocol::Range *>(val()) : nullptr;
   }
   const protocol::RefCache *val_as_RefCache() const {
-    return val_type() == protocol::AnyValue_RefCache ? static_cast<const protocol::RefCache *>(val()) : nullptr;
+    return val_type() == protocol::AnyValue::RefCache ? static_cast<const protocol::RefCache *>(val()) : nullptr;
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
@@ -1239,7 +1327,7 @@ struct AnyBuilder {
 
 inline ::flatbuffers::Offset<Any> CreateAny(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    protocol::AnyValue val_type = protocol::AnyValue_NONE,
+    protocol::AnyValue val_type = protocol::AnyValue::NONE,
     ::flatbuffers::Offset<void> val = 0) {
   AnyBuilder builder_(_fbb);
   builder_.add_val(val);
@@ -1247,8 +1335,14 @@ inline ::flatbuffers::Offset<Any> CreateAny(
   return builder_.Finish();
 }
 
+struct Any::Traits {
+  using type = Any;
+  static auto constexpr Create = CreateAny;
+};
+
 struct Ack FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AckBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ID = 4,
     VT_OK = 6
@@ -1298,8 +1392,14 @@ inline ::flatbuffers::Offset<Ack> CreateAck(
   return builder_.Finish();
 }
 
+struct Ack::Traits {
+  using type = Ack;
+  static auto constexpr Create = CreateAck;
+};
+
 struct Chunk FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ChunkBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ID = 4,
     VT_TOTAL_SIZE = 6,
@@ -1380,6 +1480,11 @@ inline ::flatbuffers::Offset<Chunk> CreateChunk(
   return builder_.Finish();
 }
 
+struct Chunk::Traits {
+  using type = Chunk;
+  static auto constexpr Create = CreateChunk;
+};
+
 inline ::flatbuffers::Offset<Chunk> CreateChunkDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     uint64_t id = 0,
@@ -1399,6 +1504,7 @@ inline ::flatbuffers::Offset<Chunk> CreateChunkDirect(
 
 struct SetRefCacheRequest FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef SetRefCacheRequestBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_KEY = 4,
     VT_VAL = 6
@@ -1450,6 +1556,11 @@ inline ::flatbuffers::Offset<SetRefCacheRequest> CreateSetRefCacheRequest(
   return builder_.Finish();
 }
 
+struct SetRefCacheRequest::Traits {
+  using type = SetRefCacheRequest;
+  static auto constexpr Create = CreateSetRefCacheRequest;
+};
+
 inline ::flatbuffers::Offset<SetRefCacheRequest> CreateSetRefCacheRequestDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *key = nullptr,
@@ -1463,6 +1574,7 @@ inline ::flatbuffers::Offset<SetRefCacheRequest> CreateSetRefCacheRequestDirect(
 
 struct SetCommand FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef SetCommandBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_TARGET = 4,
     VT_VALUE = 6
@@ -1514,8 +1626,14 @@ inline ::flatbuffers::Offset<SetCommand> CreateSetCommand(
   return builder_.Finish();
 }
 
+struct SetCommand::Traits {
+  using type = SetCommand;
+  static auto constexpr Create = CreateSetCommand;
+};
+
 struct FormatCommand FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef FormatCommandBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_TARGET = 4,
     VT_FORMAT = 6
@@ -1567,6 +1685,11 @@ inline ::flatbuffers::Offset<FormatCommand> CreateFormatCommand(
   return builder_.Finish();
 }
 
+struct FormatCommand::Traits {
+  using type = FormatCommand;
+  static auto constexpr Create = CreateFormatCommand;
+};
+
 inline ::flatbuffers::Offset<FormatCommand> CreateFormatCommandDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<protocol::Range> target = 0,
@@ -1580,6 +1703,7 @@ inline ::flatbuffers::Offset<FormatCommand> CreateFormatCommandDirect(
 
 struct CommandWrapper FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef CommandWrapperBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_CMD_TYPE = 4,
     VT_CMD = 6
@@ -1592,10 +1716,10 @@ struct CommandWrapper FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
   template<typename T> const T *cmd_as() const;
   const protocol::SetCommand *cmd_as_SetCommand() const {
-    return cmd_type() == protocol::Command_SetCommand ? static_cast<const protocol::SetCommand *>(cmd()) : nullptr;
+    return cmd_type() == protocol::Command::SetCommand ? static_cast<const protocol::SetCommand *>(cmd()) : nullptr;
   }
   const protocol::FormatCommand *cmd_as_FormatCommand() const {
-    return cmd_type() == protocol::Command_FormatCommand ? static_cast<const protocol::FormatCommand *>(cmd()) : nullptr;
+    return cmd_type() == protocol::Command::FormatCommand ? static_cast<const protocol::FormatCommand *>(cmd()) : nullptr;
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
@@ -1637,7 +1761,7 @@ struct CommandWrapperBuilder {
 
 inline ::flatbuffers::Offset<CommandWrapper> CreateCommandWrapper(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    protocol::Command cmd_type = protocol::Command_NONE,
+    protocol::Command cmd_type = protocol::Command::NONE,
     ::flatbuffers::Offset<void> cmd = 0) {
   CommandWrapperBuilder builder_(_fbb);
   builder_.add_cmd(cmd);
@@ -1645,8 +1769,14 @@ inline ::flatbuffers::Offset<CommandWrapper> CreateCommandWrapper(
   return builder_.Finish();
 }
 
+struct CommandWrapper::Traits {
+  using type = CommandWrapper;
+  static auto constexpr Create = CreateCommandWrapper;
+};
+
 struct CalculationEndedResponse FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef CalculationEndedResponseBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_COMMANDS = 4
   };
@@ -1688,6 +1818,11 @@ inline ::flatbuffers::Offset<CalculationEndedResponse> CreateCalculationEndedRes
   return builder_.Finish();
 }
 
+struct CalculationEndedResponse::Traits {
+  using type = CalculationEndedResponse;
+  static auto constexpr Create = CreateCalculationEndedResponse;
+};
+
 inline ::flatbuffers::Offset<CalculationEndedResponse> CreateCalculationEndedResponseDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<::flatbuffers::Offset<protocol::CommandWrapper>> *commands = nullptr) {
@@ -1699,13 +1834,14 @@ inline ::flatbuffers::Offset<CalculationEndedResponse> CreateCalculationEndedRes
 
 struct AsyncResult FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AsyncResultBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_HANDLE = 4,
     VT_RESULT = 6,
     VT_ERROR = 8
   };
-  uint64_t handle() const {
-    return GetField<uint64_t>(VT_HANDLE, 0);
+  const ::flatbuffers::Vector<uint8_t> *handle() const {
+    return GetPointer<const ::flatbuffers::Vector<uint8_t> *>(VT_HANDLE);
   }
   const protocol::Any *result() const {
     return GetPointer<const protocol::Any *>(VT_RESULT);
@@ -1715,7 +1851,8 @@ struct AsyncResult FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
-           VerifyField<uint64_t>(verifier, VT_HANDLE, 8) &&
+           VerifyOffset(verifier, VT_HANDLE) &&
+           verifier.VerifyVector(handle()) &&
            VerifyOffset(verifier, VT_RESULT) &&
            verifier.VerifyTable(result()) &&
            VerifyOffset(verifier, VT_ERROR) &&
@@ -1728,8 +1865,8 @@ struct AsyncResultBuilder {
   typedef AsyncResult Table;
   ::flatbuffers::FlatBufferBuilder &fbb_;
   ::flatbuffers::uoffset_t start_;
-  void add_handle(uint64_t handle) {
-    fbb_.AddElement<uint64_t>(AsyncResult::VT_HANDLE, handle, 0);
+  void add_handle(::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> handle) {
+    fbb_.AddOffset(AsyncResult::VT_HANDLE, handle);
   }
   void add_result(::flatbuffers::Offset<protocol::Any> result) {
     fbb_.AddOffset(AsyncResult::VT_RESULT, result);
@@ -1750,31 +1887,38 @@ struct AsyncResultBuilder {
 
 inline ::flatbuffers::Offset<AsyncResult> CreateAsyncResult(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    uint64_t handle = 0,
+    ::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> handle = 0,
     ::flatbuffers::Offset<protocol::Any> result = 0,
     ::flatbuffers::Offset<::flatbuffers::String> error = 0) {
   AsyncResultBuilder builder_(_fbb);
-  builder_.add_handle(handle);
   builder_.add_error(error);
   builder_.add_result(result);
+  builder_.add_handle(handle);
   return builder_.Finish();
 }
 
+struct AsyncResult::Traits {
+  using type = AsyncResult;
+  static auto constexpr Create = CreateAsyncResult;
+};
+
 inline ::flatbuffers::Offset<AsyncResult> CreateAsyncResultDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
-    uint64_t handle = 0,
+    const std::vector<uint8_t> *handle = nullptr,
     ::flatbuffers::Offset<protocol::Any> result = 0,
     const char *error = nullptr) {
+  auto handle__ = handle ? _fbb.CreateVector<uint8_t>(*handle) : 0;
   auto error__ = error ? _fbb.CreateString(error) : 0;
   return protocol::CreateAsyncResult(
       _fbb,
-      handle,
+      handle__,
       result,
       error__);
 }
 
 struct BatchAsyncResponse FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef BatchAsyncResponseBuilder Builder;
+  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_RESULTS = 4
   };
@@ -1816,6 +1960,11 @@ inline ::flatbuffers::Offset<BatchAsyncResponse> CreateBatchAsyncResponse(
   return builder_.Finish();
 }
 
+struct BatchAsyncResponse::Traits {
+  using type = BatchAsyncResponse;
+  static auto constexpr Create = CreateBatchAsyncResponse;
+};
+
 inline ::flatbuffers::Offset<BatchAsyncResponse> CreateBatchAsyncResponseDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<::flatbuffers::Offset<protocol::AsyncResult>> *results = nullptr) {
@@ -1827,34 +1976,34 @@ inline ::flatbuffers::Offset<BatchAsyncResponse> CreateBatchAsyncResponseDirect(
 
 inline bool VerifyScalarValue(::flatbuffers::Verifier &verifier, const void *obj, ScalarValue type) {
   switch (type) {
-    case ScalarValue_NONE: {
+    case ScalarValue::NONE: {
       return true;
     }
-    case ScalarValue_Bool: {
+    case ScalarValue::Bool: {
       auto ptr = reinterpret_cast<const protocol::Bool *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case ScalarValue_Num: {
+    case ScalarValue::Num: {
       auto ptr = reinterpret_cast<const protocol::Num *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case ScalarValue_Int: {
+    case ScalarValue::Int: {
       auto ptr = reinterpret_cast<const protocol::Int *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case ScalarValue_Str: {
+    case ScalarValue::Str: {
       auto ptr = reinterpret_cast<const protocol::Str *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case ScalarValue_Err: {
+    case ScalarValue::Err: {
       auto ptr = reinterpret_cast<const protocol::Err *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case ScalarValue_AsyncHandle: {
+    case ScalarValue::AsyncHandle: {
       auto ptr = reinterpret_cast<const protocol::AsyncHandle *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case ScalarValue_Nil: {
+    case ScalarValue::Nil: {
       auto ptr = reinterpret_cast<const protocol::Nil *>(obj);
       return verifier.VerifyTable(ptr);
     }
@@ -1862,7 +2011,7 @@ inline bool VerifyScalarValue(::flatbuffers::Verifier &verifier, const void *obj
   }
 }
 
-inline bool VerifyScalarValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types) {
+inline bool VerifyScalarValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<ScalarValue> *types) {
   if (!values || !types) return !values && !types;
   if (values->size() != types->size()) return false;
   for (::flatbuffers::uoffset_t i = 0; i < values->size(); ++i) {
@@ -1876,50 +2025,50 @@ inline bool VerifyScalarValueVector(::flatbuffers::Verifier &verifier, const ::f
 
 inline bool VerifyAnyValue(::flatbuffers::Verifier &verifier, const void *obj, AnyValue type) {
   switch (type) {
-    case AnyValue_NONE: {
+    case AnyValue::NONE: {
       return true;
     }
-    case AnyValue_Bool: {
+    case AnyValue::Bool: {
       auto ptr = reinterpret_cast<const protocol::Bool *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Num: {
+    case AnyValue::Num: {
       auto ptr = reinterpret_cast<const protocol::Num *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Int: {
+    case AnyValue::Int: {
       auto ptr = reinterpret_cast<const protocol::Int *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Str: {
+    case AnyValue::Str: {
       auto ptr = reinterpret_cast<const protocol::Str *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Err: {
+    case AnyValue::Err: {
       auto ptr = reinterpret_cast<const protocol::Err *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_AsyncHandle: {
+    case AnyValue::AsyncHandle: {
       auto ptr = reinterpret_cast<const protocol::AsyncHandle *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Nil: {
+    case AnyValue::Nil: {
       auto ptr = reinterpret_cast<const protocol::Nil *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Grid: {
+    case AnyValue::Grid: {
       auto ptr = reinterpret_cast<const protocol::Grid *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_NumGrid: {
+    case AnyValue::NumGrid: {
       auto ptr = reinterpret_cast<const protocol::NumGrid *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_Range: {
+    case AnyValue::Range: {
       auto ptr = reinterpret_cast<const protocol::Range *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case AnyValue_RefCache: {
+    case AnyValue::RefCache: {
       auto ptr = reinterpret_cast<const protocol::RefCache *>(obj);
       return verifier.VerifyTable(ptr);
     }
@@ -1927,7 +2076,7 @@ inline bool VerifyAnyValue(::flatbuffers::Verifier &verifier, const void *obj, A
   }
 }
 
-inline bool VerifyAnyValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types) {
+inline bool VerifyAnyValueVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<AnyValue> *types) {
   if (!values || !types) return !values && !types;
   if (values->size() != types->size()) return false;
   for (::flatbuffers::uoffset_t i = 0; i < values->size(); ++i) {
@@ -1941,14 +2090,14 @@ inline bool VerifyAnyValueVector(::flatbuffers::Verifier &verifier, const ::flat
 
 inline bool VerifyCommand(::flatbuffers::Verifier &verifier, const void *obj, Command type) {
   switch (type) {
-    case Command_NONE: {
+    case Command::NONE: {
       return true;
     }
-    case Command_SetCommand: {
+    case Command::SetCommand: {
       auto ptr = reinterpret_cast<const protocol::SetCommand *>(obj);
       return verifier.VerifyTable(ptr);
     }
-    case Command_FormatCommand: {
+    case Command::FormatCommand: {
       auto ptr = reinterpret_cast<const protocol::FormatCommand *>(obj);
       return verifier.VerifyTable(ptr);
     }
@@ -1956,7 +2105,7 @@ inline bool VerifyCommand(::flatbuffers::Verifier &verifier, const void *obj, Co
   }
 }
 
-inline bool VerifyCommandVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<uint8_t> *types) {
+inline bool VerifyCommandVector(::flatbuffers::Verifier &verifier, const ::flatbuffers::Vector<::flatbuffers::Offset<void>> *values, const ::flatbuffers::Vector<Command> *types) {
   if (!values || !types) return !values && !types;
   if (values->size() != types->size()) return false;
   for (::flatbuffers::uoffset_t i = 0; i < values->size(); ++i) {

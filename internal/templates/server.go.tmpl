@@ -400,10 +400,10 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{end}}
 
 	{{if .Async}}
-	handle := request.AsyncHandle()
+	handle := request.AsyncHandleBytes()
 
 	// Debug Log: Function Start
-	log.Debug("Async function start", "func", "{{.Name}}", "reqID", handle)
+	log.Debug("Async function start", "func", "{{.Name}}")
 
 	if ctx.Err() != nil {
 		queueAsyncResult(handle, nil, protocol.AnyValue(0), ctx.Err().Error())
@@ -418,7 +418,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 				queueAsyncResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
 			}
 			// Debug Log: Function End
-			log.Debug("Async function end", "func", "{{.Name}}", "reqID", handle)
+			log.Debug("Async function end", "func", "{{.Name}}")
 		}()
 
 		// Debug Log: Ack Sent (Implicitly handled by return 0,0 below which sends ACK)
@@ -426,7 +426,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		// The caller of handle{{.Name}} sends the ACK immediately after this returns 0,0.
 		// So we can log "ACK Sent" here? No, the caller sends it.
 		// Let's log "Processing" here.
-		log.Debug("Processing async request", "func", "{{.Name}}", "reqID", handle)
+		log.Debug("Processing async request", "func", "{{.Name}}")
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
@@ -586,7 +586,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 {{end}}
 
 {{if hasAsync .Functions}}
-func queueAsyncResult(handle uint64, val interface{}, valType protocol.AnyValue, errStr string) {
+func queueAsyncResult(handle []byte, val interface{}, valType protocol.AnyValue, errStr string) {
 	asyncBatcher.QueueResult(handle, val, valType, errStr)
 }
 {{end}}

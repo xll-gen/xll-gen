@@ -41,16 +41,38 @@ func (rcv *AsyncResult) Table() flatbuffers.Table {
 	return rcv._tab
 }
 
-func (rcv *AsyncResult) Handle() uint64 {
+func (rcv *AsyncResult) Handle(j int) byte {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
 	if o != 0 {
-		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
 	}
 	return 0
 }
 
-func (rcv *AsyncResult) MutateHandle(n uint64) bool {
-	return rcv._tab.MutateUint64Slot(4, n)
+func (rcv *AsyncResult) HandleLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *AsyncResult) HandleBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *AsyncResult) MutateHandle(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
 }
 
 func (rcv *AsyncResult) Result(obj *Any) *Any {
@@ -77,8 +99,11 @@ func (rcv *AsyncResult) Error() []byte {
 func AsyncResultStart(builder *flatbuffers.Builder) {
 	builder.StartObject(3)
 }
-func AsyncResultAddHandle(builder *flatbuffers.Builder, handle uint64) {
-	builder.PrependUint64Slot(0, handle, 0)
+func AsyncResultAddHandle(builder *flatbuffers.Builder, handle flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(handle), 0)
+}
+func AsyncResultStartHandleVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
 }
 func AsyncResultAddResult(builder *flatbuffers.Builder, result flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(result), 0)

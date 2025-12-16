@@ -30,6 +30,7 @@ int main() {
     shm::HostConfig config;
     config.shmName = "smoke_proj";
     config.numHostSlots = 16;
+    config.numGuestSlots = 2;
     config.payloadSize = 1024*1024;
 
     if (!host.Init(config)) {
@@ -129,7 +130,7 @@ int main() {
     {
         builder.Reset();
         auto val = protocol::CreateInt(builder, 10);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue_Int, val.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue::Int, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -144,7 +145,7 @@ int main() {
         builder.Reset();
         auto s = builder.CreateString("hello");
         auto val = protocol::CreateStr(builder, s);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue_Str, val.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue::Str, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -158,7 +159,7 @@ int main() {
     {
         builder.Reset();
         auto val = protocol::CreateNum(builder, 1.5);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue_Num, val.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue::Num, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -175,7 +176,7 @@ int main() {
         std::vector<double> data = {1.1, 2.2};
         auto dataOff = builder.CreateVector(data);
         auto arr = protocol::CreateNumGrid(builder, 1, 2, dataOff);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue_NumGrid, arr.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue::NumGrid, arr.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -190,14 +191,14 @@ int main() {
     {
         builder.Reset();
         auto val1 = protocol::CreateInt(builder, 1);
-        auto s1 = protocol::CreateScalar(builder, protocol::ScalarValue_Int, val1.Union());
+        auto s1 = protocol::CreateScalar(builder, protocol::ScalarValue::Int, val1.Union());
         auto val2 = protocol::CreateBool(builder, true);
-        auto s2 = protocol::CreateScalar(builder, protocol::ScalarValue_Bool, val2.Union());
+        auto s2 = protocol::CreateScalar(builder, protocol::ScalarValue::Bool, val2.Union());
 
         std::vector<flatbuffers::Offset<protocol::Scalar>> data = {s1, s2};
         auto dataOff = builder.CreateVector(data);
         auto arr = protocol::CreateGrid(builder, 1, 2, dataOff);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue_Grid, arr.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue::Grid, arr.Union());
 
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
@@ -240,15 +241,95 @@ int main() {
         ASSERT_EQ(-1, resp->result(), "TimeoutFunc");
     }
 
-    // 8. CalculationEnded Commands - Set (ID 140)
+    // 8. AsyncEchoInt (ID 140)
+    // Async requests have a different flow:
+    // 1. Send Request -> Receive ACK (immediately)
+    // 2. Poll for BatchAsyncResponse (MSG_ID 128)
     {
-        // 1. Call ScheduleCmd (ID 140)
+        int32_t val = 999;
+
+        // Construct Async Handle (simulate 32-byte XLOPER12 struct)
+        std::vector<uint8_t> handle(32, 0);
+        handle[0] = 0xAA; // Marker to verify echo
+
+        builder.Reset();
+        auto hOff = builder.CreateVector(handle);
+        ipc::AsyncEchoIntRequestBuilder req(builder);
+        req.add_val(val);
+        req.add_async_handle(hOff);
+        builder.Finish(req.Finish());
+
+        vector<uint8_t> respBuf;
+
+        // 1. Send Request -> Expect ACK
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)140, respBuf).ValueOr(-1);
+        if (sz < 0) return 1;
+        auto ack = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
+        if (!ack->ok()) { cerr << "AsyncEchoInt Ack failed" << endl; return 1; }
+
+        // 2. Wait for Async Response (MSG_BATCH_ASYNC_RESPONSE = 128)
+        // Since mock host is not running a loop, we rely on the Guest to send it.
+        // Guest sends it unsolicited. DirectHost receives it via ProcessGuestCalls or we need to peek?
+        // Wait, DirectHost.Send is synchronous.
+        // But for unsolicited messages from Guest (like BatchAsyncResponse),
+        // DirectHost usually needs a listening mechanism or we call Receive?
+        // `host.Send` sends a request and waits for a response on the SAME slot.
+        // Async results come on a DIFFERENT slot or as a separate message?
+        // The Guest sends BatchAsyncResponse (128) to the Host.
+        // In real XLL, `ProcessGuestCalls` handles this.
+        // Here, we can simulate `ProcessGuestCalls` by checking the guest slots.
+
+        bool received = false;
+        auto start = chrono::steady_clock::now();
+        while(chrono::steady_clock::now() - start < chrono::seconds(5)) {
+             // Iterate guest slots to find pending messages
+             // DirectHost API doesn't expose manual slot iteration easily without `ProcessGuestCalls`.
+             // But we can use `ProcessGuestCalls` with a callback.
+
+             host.ProcessGuestCalls([&](const uint8_t* data, int32_t size, uint8_t* respBuf, int32_t maxRespSize, shm::MsgType type) -> int32_t {
+                 if (type == (shm::MsgType)128) { // MSG_BATCH_ASYNC_RESPONSE
+                     auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
+                     if (batch->results()->size() > 0) {
+                         const protocol::AsyncResult* res = batch->results()->Get(0);
+
+                         // Verify Handle
+                         // res->handle() returns a pointer to Vector<uint8_t> in standard FlatBuffers.
+                         // However, if strict alignment or some other flag is used, it might return a Span or similar.
+                         // But we are using default flatc.
+                         // If the compiler says "base operand of -> is not a pointer", it means res->handle() IS NOT A POINTER.
+                         // So we try dot notation.
+                         if (res->handle()->size() != 32) { cerr << "Invalid handle size" << endl; return 0; }
+                         if (res->handle()->Get(0) != 0xAA) { cerr << "Invalid handle content" << endl; return 0; }
+
+                         // Verify Result
+                         if (res->result()->val_type() != protocol::AnyValue::Int) { cerr << "Invalid result type" << endl; return 0; }
+                         if (res->result()->val_as_Int()->val() != val) { cerr << "Invalid result value" << endl; return 0; }
+
+                         received = true;
+                         return 1; // Handled
+                     }
+                 }
+                 return 0;
+             });
+
+             if (received) break;
+             this_thread::sleep_for(chrono::milliseconds(10));
+        }
+
+        if (!received) { cerr << "AsyncEchoInt timed out" << endl; return 1; }
+    }
+
+    // 9. CalculationEnded Commands - Set (ID 141)
+    {
+        // 1. Call ScheduleCmd (ID 141)
         builder.Reset();
         ipc::ScheduleCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)140, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)141, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleCmdResponse>(respBuf.data());
+        if (resp->error() && resp->error()->size() > 0) { cerr << "ScheduleCmd Error: " << resp->error()->str() << endl; }
+        cerr << "ScheduleCmd Result: " << resp->result() << endl;
         ASSERT_EQ(1, resp->result(), "ScheduleCmd");
 
         // 2. Send CalculationEnded (ID 131)
@@ -264,25 +345,25 @@ int main() {
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 command" << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        if (wrapper->cmd_type() != protocol::Command_SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
+        if (wrapper->cmd_type() != protocol::Command::SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
 
         auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
         auto rng = setCmd->target();
         ASSERT_STREQ("Sheet1", rng->sheet_name()->str(), "SetCommand Sheet");
 
         auto val = setCmd->value();
-        ASSERT_EQ(protocol::AnyValue_Int, val->val_type(), "SetCommand ValType");
+        ASSERT_EQ((int)protocol::AnyValue::Int, (int)val->val_type(), "SetCommand ValType");
         ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
     }
 
-    // 9. CalculationEnded Commands - Format (ID 141)
+    // 10. CalculationEnded Commands - Format (ID 142)
     {
-        // 1. Call ScheduleFormatCmd (ID 141)
+        // 1. Call ScheduleFormatCmd (ID 142)
         builder.Reset();
         ipc::ScheduleFormatCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)141, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)142, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleFormatCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleFormatCmd");
 
@@ -295,7 +376,7 @@ int main() {
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 format command" << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        if (wrapper->cmd_type() != protocol::Command_FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
+        if (wrapper->cmd_type() != protocol::Command::FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
 
         auto fmtCmd = static_cast<const protocol::FormatCommand*>(wrapper->cmd());
         auto rng = fmtCmd->target();
@@ -304,14 +385,14 @@ int main() {
         ASSERT_STREQ("General", fmtCmd->format()->str(), "FormatCommand Format");
     }
 
-    // 10. CalculationEnded Commands - Multi (ID 142)
+    // 11. CalculationEnded Commands - Multi (ID 143)
     {
-        // 1. Call ScheduleMultiCmd (ID 142)
+        // 1. Call ScheduleMultiCmd (ID 143)
         builder.Reset();
         ipc::ScheduleMultiCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)142, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)143, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMultiCmdResponse>(respBuf.data());
         ASSERT_EQ(2, resp->result(), "ScheduleMultiCmd");
 
@@ -326,7 +407,7 @@ int main() {
         // First: Set
         {
             auto wrapper = eventResp->commands()->Get(0);
-            if (wrapper->cmd_type() != protocol::Command_SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
+            if (wrapper->cmd_type() != protocol::Command::SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
             auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
             auto val = setCmd->value();
             ASSERT_EQ(200, val->val_as_Int()->val(), "Multi SetCommand Val");
@@ -334,20 +415,20 @@ int main() {
         // Second: Format
         {
             auto wrapper = eventResp->commands()->Get(1);
-            if (wrapper->cmd_type() != protocol::Command_FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
+            if (wrapper->cmd_type() != protocol::Command::FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
             auto fmtCmd = static_cast<const protocol::FormatCommand*>(wrapper->cmd());
             ASSERT_STREQ("Number", fmtCmd->format()->str(), "Multi FormatCommand Format");
         }
     }
 
-    // 11. ScheduleMassive (ID 143)
+    // 11. ScheduleMassive (ID 144)
     {
         // 1. Call ScheduleMassive
         builder.Reset();
         ipc::ScheduleMassiveRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)143, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMassiveResponse>(respBuf.data());
         ASSERT_EQ(100, resp->result(), "ScheduleMassive");
 
@@ -370,7 +451,7 @@ int main() {
 
         for (unsigned int i=0; i<eventResp->commands()->size(); ++i) {
              auto wrapper = eventResp->commands()->Get(i);
-             if (wrapper->cmd_type() == protocol::Command_SetCommand) {
+             if (wrapper->cmd_type() == protocol::Command::SetCommand) {
                  auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
                  auto val = setCmd->value()->val_as_Int()->val();
                  if (val == 100) count100++;
@@ -381,14 +462,14 @@ int main() {
         ASSERT_EQ(2, count200, "Count 200 commands");
     }
 
-    // 12. ScheduleGridCmd (ID 144)
+    // 12. ScheduleGridCmd (ID 145)
     {
         // 1. Call ScheduleGridCmd
         builder.Reset();
         ipc::ScheduleGridCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)145, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleGridCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleGridCmd");
 
@@ -405,8 +486,8 @@ int main() {
         auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
         auto val = setCmd->value();
 
-        if (val->val_type() != protocol::AnyValue_Grid) {
-            cerr << "Expected Grid, got " << val->val_type() << endl;
+        if (val->val_type() != protocol::AnyValue::Grid) {
+            cerr << "Expected Grid, got " << (int)val->val_type() << endl;
             return 1;
         }
 
@@ -418,11 +499,11 @@ int main() {
         if (grid->data()->size() != 4) { cerr << "Expected 4 scalars" << endl; return 1; }
 
         auto s0 = grid->data()->Get(0);
-        ASSERT_EQ(protocol::ScalarValue_Int, s0->val_type(), "S0 type");
+        ASSERT_EQ((int)protocol::ScalarValue::Int, (int)s0->val_type(), "S0 type");
         ASSERT_EQ(1, s0->val_as_Int()->val(), "S0 val");
 
         auto s1 = grid->data()->Get(1);
-        ASSERT_EQ(protocol::ScalarValue_Int, s1->val_type(), "S1 type");
+        ASSERT_EQ((int)protocol::ScalarValue::Int, (int)s1->val_type(), "S1 type");
         ASSERT_EQ(2, s1->val_as_Int()->val(), "S1 val");
 
         auto s3 = grid->data()->Get(3);
@@ -435,7 +516,7 @@ int main() {
         builder.Reset();
         auto keyOff = builder.CreateString("K1");
         auto valOff = protocol::CreateInt(builder, 123);
-        auto anyOff = protocol::CreateAny(builder, protocol::AnyValue_Int, valOff.Union());
+        auto anyOff = protocol::CreateAny(builder, protocol::AnyValue::Int, valOff.Union());
         auto req = protocol::CreateSetRefCacheRequest(builder, keyOff, anyOff);
         builder.Finish(req);
         vector<uint8_t> respBuf;
@@ -448,7 +529,7 @@ int main() {
         builder.Reset();
         keyOff = builder.CreateString("K1");
         auto rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq(builder);
         caReq.add_val(anyOff);
         builder.Finish(caReq.Finish());
@@ -465,7 +546,7 @@ int main() {
         builder.Reset();
         keyOff = builder.CreateString("K1");
         rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq2(builder);
         caReq2.add_val(anyOff);
         builder.Finish(caReq2.Finish());
@@ -481,7 +562,7 @@ int main() {
         builder.Reset();
         keyOff = builder.CreateString("K1");
         rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq3(builder);
         caReq3.add_val(anyOff);
         builder.Finish(caReq3.Finish());

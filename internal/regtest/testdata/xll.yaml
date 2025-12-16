@@ -10,6 +10,10 @@ gen:
   go:
     package: "generated"
 
+logging:
+  level: "debug"
+  path: "server.log"
+
 server:
   workers: 10
   timeout: "5s"
@@ -41,6 +45,12 @@ functions:
     args: [{name: "val", type: "int"}]
     return: "int"
     timeout: "100ms"
+
+  # Async
+  - name: "AsyncEchoInt"
+    args: [{name: "val", type: "int"}]
+    return: "int"
+    async: true
 
   # Schedule Commands
   - name: "ScheduleCmd"

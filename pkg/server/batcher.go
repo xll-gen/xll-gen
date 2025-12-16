@@ -10,7 +10,7 @@ func NewAsyncBatcher() *AsyncBatcher {
 	}
 }
 
-func (ab *AsyncBatcher) QueueResult(handle uint64, val interface{}, valType AnyValue, errStr string) {
+func (ab *AsyncBatcher) QueueResult(handle []byte, val interface{}, valType AnyValue, errStr string) {
 	ab.queue <- PendingAsyncResult{
 		Handle:  handle,
 		Val:     val,
