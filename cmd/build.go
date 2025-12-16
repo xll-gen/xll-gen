@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -29,9 +30,11 @@ func init() {
 // It searches for 'task' or 'go-task' executables in the system PATH.
 // If the build fails, it exits the process with a non-zero status code.
 func runBuildCommand(debug bool) {
+	start := time.Now()
+
 	if _, err := os.Stat("Taskfile.yml"); os.IsNotExist(err) {
 		if _, err := os.Stat("Taskfile.yaml"); os.IsNotExist(err) {
-			fmt.Println("Error: Taskfile.yml not found. Are you in the project root?")
+			printError("Error", "Taskfile.yml not found. Are you in the project root?")
 			os.Exit(1)
 		}
 	}
@@ -41,7 +44,7 @@ func runBuildCommand(debug bool) {
 		if _, err := exec.LookPath("go-task"); err == nil {
 			taskExe = "go-task"
 		} else {
-			fmt.Println("Error: 'task' command not found. Please install Taskfile runner (https://taskfile.dev).")
+			printError("Error", "'task' command not found. Please install Taskfile runner (https://taskfile.dev).")
 			os.Exit(1)
 		}
 	}
@@ -51,15 +54,17 @@ func runBuildCommand(debug bool) {
 		taskName = "build-debug"
 	}
 
-	fmt.Printf("Building project using '%s %s'...\n", taskExe, taskName)
+	printHeader(fmt.Sprintf("Building project using '%s %s'...", taskExe, taskName))
+
 	cmd := exec.Command(taskExe, taskName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("Build failed: %v\n", err)
+		printError("Build", fmt.Sprintf("Failed: %v", err))
 		os.Exit(1)
 	}
 
-	fmt.Println("Build completed successfully.")
+	duration := time.Since(start).Round(time.Millisecond)
+	printSuccess("Build", fmt.Sprintf("Completed in %v", duration))
 }
