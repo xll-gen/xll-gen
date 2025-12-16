@@ -25,6 +25,13 @@ server:
   workers: 0 # Size of the worker pool for processing requests. 0 means use runtime.NumCPU().
   launch:
     enabled: true # If true, the XLL automatically launches the Go server.
+    # Variable substitution:
+    #   ${BIN}      - The full path to the server executable. (Available in 'command')
+    #   ${BIN_DIR}  - The directory containing the server executable. (Available in 'cwd')
+    #   ${XLL_DIR}  - The directory containing the XLL file. (Available in 'cwd')
+    #
+    # Examples:
+    #   cwd: "${XLL_DIR}/data"
     command: "${BIN}" # Optional: Command to launch the server. ${BIN} resolves to the executable path.
     cwd: "${BIN_DIR}" # Optional: Working directory for the server process. Defaults to the directory containing the executable.
 
