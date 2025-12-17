@@ -18,10 +18,8 @@ import (
 // Returns:
 //   - error: An error if generation fails.
 func generateInterface(cfg *config.Config, dir string, modName string) error {
-	pkg := cfg.Gen.Go.Package
-	if pkg == "" {
-		pkg = "generated"
-	}
+	// Package defaults to "generated" as Gen.Go.Package field is missing
+	pkg := "generated"
 
 	data := struct {
 		Package   string
@@ -51,10 +49,8 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 // Returns:
 //   - error: An error if generation fails.
 func generateServer(cfg *config.Config, dir string, modName string) error {
-	pkg := cfg.Gen.Go.Package
-	if pkg == "" {
-		pkg = "generated"
-	}
+	// Package defaults to "generated"
+	pkg := "generated"
 
 	data := struct {
 		Package       string

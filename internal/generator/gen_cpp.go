@@ -34,6 +34,21 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 	return executeTemplate("xll_main.cpp.tmpl", filepath.Join(dir, "xll_main.cpp"), data, GetCommonFuncMap())
 }
 
+// generateCMake generates the CMakeLists.txt file.
+func generateCMake(cfg *config.Config, dir string) error {
+	data := struct {
+		ProjectName string
+		Build       config.BuildConfig // Renamed from Embed to Build to match template usage
+		Version     string
+	}{
+		ProjectName: cfg.Project.Name,
+		Build:       cfg.Build,
+		Version:     version.Version,
+	}
+
+	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)
+}
+
 // generateCppLaunch generates the C++ launch configuration
 func generateCppLaunch(cfg *config.Config, dir string) error {
 	// Not implemented yet - using static asset for now

@@ -73,46 +73,70 @@ func GetCommonFuncMap() template.FuncMap {
 		"Title": strings.Title,
 		"Lower": strings.ToLower,
 		"Upper": strings.ToUpper,
+		"capitalize": func(s string) string {
+			if len(s) == 0 {
+				return ""
+			}
+			return strings.ToUpper(s[:1]) + s[1:]
+		},
 		// Type lookup helpers
 		"lookupSchemaType": func(t string) string {
-			if v, ok := schemaTypeMap[t]; ok {
-				return v
-			}
-			return "protocol.Any" // Default fallback, though validation should catch this
+			return LookupSchemaType(t)
 		},
 		"lookupGoType": func(t string) string {
-			if v, ok := goTypeMap[t]; ok {
-				return v
-			}
-			return "interface{}"
+			return LookupGoType(t)
 		},
 		"lookupCppType": func(t string) string {
-			if v, ok := cppTypeMap[t]; ok {
-				return v
-			}
-			return "LPXLOPER12"
+			return LookupCppType(t)
 		},
 		"lookupXllType": func(t string) string {
-			if v, ok := xllTypeMap[t]; ok {
-				return v
-			}
-			return "Q" // Default to XLOPER12
+			return LookupXllType(t)
 		},
 		"lookupCppArgType": func(t string) string {
-			// Special handling for argument types in C++ wrapper
-			// Scalar types (int, float, bool) are passed as pointers (J, B, A)
-			// but we need to match the C++ signature expected by Excel
-			if v, ok := cppArgTypeMap[t]; ok {
-				return v
+			return LookupArgCppType(t)
+		},
+		"defaultErrorVal": func(t string) string {
+			return DefaultErrorVal(t)
+		},
+		"lookupEventCode": func(t string) string {
+			// Map event types to xlEvent... constants
+			switch t {
+			case "CalculationEnded":
+				return "xleventCalculationEnded"
+			case "CalculationCanceled":
+				return "xleventCalculationCanceled"
+			default:
+				return "0"
 			}
-			return "LPXLOPER12"
+		},
+		"lookupEventId": func(t string) string {
+			// Map event types to system MsgIDs?
+			// The server needs to know MsgIDs for events if it receives them.
+			// Currently events like CalculationEnded are MsgID 131.
+			switch t {
+			case "CalculationEnded":
+				return "131"
+			case "CalculationCanceled":
+				return "132"
+			default:
+				return "0"
+			}
 		},
 		// Arithmetic helpers
 		"add": func(a, b int) int {
 			return a + b
 		},
+		"sub": func(a, b int) int {
+			return a - b
+		},
 		"mul": func(a, b int) int {
 			return a * b
+		},
+		"boolToInt": func(b bool) int {
+			if b {
+				return 1
+			}
+			return 0
 		},
 		// Timeout parsing helper
 		"parseTimeout": func(s string, defaultMs int) int {
