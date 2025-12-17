@@ -365,8 +365,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "numgrid"}}
 	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
-	{{else if eq .Type "numgrid"}}
-	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
 	{{else if eq .Type "any"}}
 	var arg_{{.Name}} *protocol.Any
 	arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
