@@ -60,18 +60,28 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD  ul_reason_for_call, LPVOID lpReserv
 // XLL Interface Functions
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
-    static XLOPER12 xDLL;
+    XLL_SAFE_BLOCK_BEGIN
+        // Setup Native Logging
+        std::string tempPattern = "";
+        std::string projName = "{{.ProjectName}}";
+        bool isSingleFile = false;
 
-    // Set up logging
-    // Get XLL directory
-    std::wstring xllDir = GetXllDir(g_hModule);
-    std::wstring logDir = L"{{.Logging.Dir}}";
-    if (logDir.empty()) {
-        logDir = xllDir;
-    } else {
-        // Resolve relative path
-        if (std::filesystem::path(logDir).is_relative()) {
-            logDir = (std::filesystem::path(xllDir) / logDir).wstring();
+        {{if eq .Build.Singlefile "xll"}}
+        isSingleFile = true;
+        tempPattern = "{{.Build.TempDir}}";
+        {{end}}
+
+        InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
+
+#ifdef SHM_DEBUG
+        shm::SetLogHandler(LogHandler);
+#endif
+
+        // Determine worker count
+        int workers = {{.Server.Workers}};
+        if (workers <= 0) {
+            workers = std::thread::hardware_concurrency();
+            if (workers == 0) workers = 16; // Fallback
         }
     }
 
@@ -190,22 +200,15 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
     // Stop Worker
     StopWorker();
 
-    // Signal Shutdown
-    if (g_hShutdownEvent) {
-        SetEvent(g_hShutdownEvent);
-    }
-
-    // Cleanup Shared Memory
-    // g_host destructor handles it? No, explicit Close/Unmap might be needed if shm lib doesn't do it in dtor.
-    // DirectHost dtor does unmap.
-
-    return 1;
+        Excel12(xlFree, 0, 1, &xDll);
+        return 1;
+    XLL_SAFE_BLOCK_END(0)
 }
 
-__declspec(dllexport) LPXLOPER12 __stdcall xlAutoRegister12(LPXLOPER12 pxName) {
-    static XLOPER12 xDLL, xRegId;
-    xRegId.xltype = xltypeErr;
-    xRegId.val.err = xlerrValue;
+__declspec(dllexport) int __stdcall xlAutoClose() {
+    XLL_SAFE_BLOCK_BEGIN
+        LogInfo("Unloading XLL...");
+        if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
     Excel12(xlGetName, &xDLL, 0);
     Excel12(xlfRegister, &xRegId, 2, (LPXLOPER12)&xDLL, pxName);
@@ -218,19 +221,20 @@ __declspec(dllexport) int __stdcall xlAutoAdd(void) {
     return 1;
 }
 
-__declspec(dllexport) int __stdcall xlAutoRemove(void) {
-    return 1;
-}
-
-__declspec(dllexport) void __stdcall xlAutoFree12(LPXLOPER12 px) {
-    // Dispatch to memory manager
-    // IMPORTANT: Only free if xlbitDLLFree is set?
-    // Excel calls this for return values marked with xlbitDLLFree.
-    // We must identify if it belongs to our pool or specific allocation.
-
-    if (px && (px->xltype & xlbitDLLFree)) {
-        xll::FreeXLOPER12(px);
-    }
+        if (g_procInfo.hProcess) {
+            CloseHandle(g_procInfo.hProcess);
+            g_procInfo.hProcess = NULL;
+        }
+        if (g_procInfo.hJob) {
+            CloseHandle(g_procInfo.hJob);
+            g_procInfo.hJob = NULL;
+        }
+        if (g_procInfo.hShutdownEvent) {
+            CloseHandle(g_procInfo.hShutdownEvent);
+            g_procInfo.hShutdownEvent = NULL;
+        }
+        return 1;
+    XLL_SAFE_BLOCK_END(1)
 }
 
 // User Functions
@@ -443,7 +447,39 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
                 }
             }
         }
+        {{end}}
+
+        {{if .Async}}
+        auto asyncHandle_vec = builder.CreateVector((const uint8_t*)asyncHandle, sizeof(XLOPER12));
+        {{end}}
+
+        ipc::{{.Name}}RequestBuilder reqBuilder(builder);
+        {{range .Args}}
+        {{if eq .Type "string"}}
+        reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "int?"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "float?"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "bool?"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "range"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "grid"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "numgrid"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else if eq .Type "any"}}
+        if ({{.Name}}_off.o != 0) reqBuilder.add_{{.Name}}({{.Name}}_off);
+        {{else}}
+        reqBuilder.add_{{.Name}}({{.Name}});
+        {{end}}
+        {{end}}
+        {{if .Caller}}
         if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
+        {{end}}
+        {{if .Async}}
+        reqBuilder.add_async_handle(asyncHandle_vec);
         {{end}}
         auto req = reqBuilder.Finish();
         builder.Finish(req);
