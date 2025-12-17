@@ -14,7 +14,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Functions       []config.Function
 		Events          []config.Event
 		Server          config.ServerConfig
-		Embed           config.BuildConfig
+		Build           config.BuildConfig
 		ShouldAppendPid bool
 		Version         string
 		Logging         config.LoggingConfig
@@ -24,7 +24,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Functions:       cfg.Functions,
 		Events:          cfg.Events,
 		Server:          cfg.Server,
-		Embed:           cfg.Build,
+		Build:           cfg.Build,
 		ShouldAppendPid: shouldAppendPid,
 		Version:         version.Version,
 		Logging:         cfg.Logging,
