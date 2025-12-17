@@ -58,7 +58,7 @@ The project is defined by a `xll.yaml` file. This is the source of truth for cod
 ```yaml
 project:
   name: "my-quant-lib"
-  version: "0.1.0"
+  version: "0.2.0"
 
 # Code generation settings
 gen:
@@ -71,7 +71,7 @@ build:
 
 logging:
   level: info
-  path: "server.log"
+  dir: "."
 
 server:
   workers: 0
@@ -263,7 +263,7 @@ For types with multiple representation options, we stick to the following canoni
 | **Async** | `X` | `void *` | Async handle (Excel 2010+). |
 
 **Strict Value Policy:**
-We do **not** use optional/nullable scalar pointer types (e.g., `int?` -> `N` (int*), `float?` -> `E` (double*), `bool?` -> `L` (short*)).
+We do **not** use optional/nullable scalar pointer types (e.g., `int?`, `float?`, `bool?`, `string?`).
 *   **Reason**: Excel passes a valid pointer to a zero value (0, 0.0, false) for empty cells, making it impossible to distinguish between an explicit zero and a missing argument.
 *   **Solution**: Users requiring optional inputs must use `any` (or `scalar`), which receives the raw `XLOPER12`. The generated code or user logic can then check `xltypeMissing` or empty variants.
 
@@ -556,6 +556,7 @@ graph TD
 
     GenGo -->|Imports| PkgServer[pkg/server]
     GenGo -->|Imports| PkgProtocol[pkg/protocol]
+    GenGo -->|Imports| PkgLog[pkg/log]
 
     GenCPP -->|Compiles with| SHM[shm Library]
     GenGo -->|Imports| SHM_Go[shm Go Client]
@@ -576,6 +577,44 @@ Use this guide to understand what needs to be updated when you make a change in 
 | **`pkg/protocol`** | 1. Update `internal/templates/protocol.fbs` if the FlatBuffers schema changed.<br>2. Rebuild `xll-gen`.<br>3. Run `xll-gen generate`. |
 | **`pkg/server`** | 1. Update `server.go.tmpl` if the API used by the generated code changes.<br>2. Rebuild `xll-gen` (if template changed).<br>3. Run `go get -u github.com/xll-gen/xll-gen/pkg/server` in the user project (or replace directive in tests). |
 | **`shm` Library** | 1. Update `go.mod` in `xll-gen`.<br>2. Update `GIT_TAG` in `internal/templates/CMakeLists.txt.tmpl`.<br>3. Update C++ assets (`xll_ipc.cpp`, etc.) if C++ API changed.<br>4. Update Go assets (`pkg/server`, templates) if Go API changed. |
+
+### Co-Change Clusters
+
+The following diagram illustrates the files that typically need to be modified together ("Sets").
+
+```mermaid
+graph TD
+    subgraph Protocol_Set [Protocol & Schema]
+        P_FBS[internal/templates/protocol.fbs]
+        P_PKG[pkg/protocol]
+        P_H[internal/assets/files/protocol_generated.h]
+
+        P_FBS <-->|Must Sync| P_PKG
+        P_FBS <-->|Must Sync| P_H
+    end
+
+    subgraph SHM_Set [Shared Memory Integration]
+        SHM[shm Library Update]
+        GO_MOD[go.mod]
+        CMAKE[internal/templates/CMakeLists.txt.tmpl]
+        CPP_IPC[internal/assets/files/xll_ipc.cpp]
+        PKG_SRV[pkg/server]
+
+        SHM -->|Version| GO_MOD
+        SHM -->|GIT_TAG| CMAKE
+        SHM -->|API Usage| CPP_IPC
+        SHM -->|API Usage| PKG_SRV
+    end
+
+    subgraph Generator_Set [Generator & Templates]
+        TMPL[internal/templates/*.tmpl]
+        GEN[internal/generator/*.go]
+        TYPES[internal/generator/types.go]
+
+        TMPL <-->|Logic| GEN
+        GEN <-->|Definitions| TYPES
+    end
+```
 
 ## 15. Reference: Async UDF & RTD
 
