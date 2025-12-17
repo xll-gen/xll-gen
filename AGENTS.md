@@ -267,6 +267,11 @@ We do **not** use optional/nullable scalar pointer types (e.g., `int?` -> `N` (i
 *   **Reason**: Excel passes a valid pointer to a zero value (0, 0.0, false) for empty cells, making it impossible to distinguish between an explicit zero and a missing argument.
 *   **Solution**: Users requiring optional inputs must use `any` (or `scalar`), which receives the raw `XLOPER12`. The generated code or user logic can then check `xltypeMissing` or empty variants.
 
+**Nullable Returns:**
+Nullable scalar returns (e.g., returning `int*` to represent `int` or `null`) are **strictly unsupported**.
+*   **Reason**: Explicitly matching pointer types for returns adds unnecessary complexity to the generator.
+*   **Rule**: Always use `any` (which maps to `AnyValue` in protocol) if you need to return `nil`/`null` from a function.
+
 **Note**: Do not use the legacy 8-bit string types (`C`, `D`, `F`, `G`), `XLOPER` (`P`, `R`), or legacy `FP` (`K`). Always use the wide-char / `12` variants (e.g., `FP12` / `K%`).
 
 **Thread Safety (`$`)**
