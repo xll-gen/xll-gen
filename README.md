@@ -11,6 +11,7 @@
 
 - [Overview](#overview)
 - [Architecture](#architecture)
+- [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -45,6 +46,13 @@ The system operates in a `singlefile` mode by default, providing a seamless user
     - User Server reads the request, computes the result, and writes the response back.
     - XLL deserializes the response and returns it to Excel.
 5.  **Failure Handling**: If the User Server crashes, the XLL detects the process termination and alerts the user via a message box.
+
+## Features
+
+*   **Functions**: Support for both **Synchronous** and **Asynchronous** User Defined Functions (UDFs). Asynchronous functions prevent Excel UI freezing during long computations.
+*   **Events**: Ability to handle Excel events, such as `CalculationEnded`, to trigger post-calculation logic.
+*   **Commands**: Mechanism to schedule write operations (`xlSet`) and formatting changes (`xlcFormatNumber`) that are executed safely after the calculation cycle.
+*   **Real-Time Data (RTD)**: *In Progress*. Support for real-time data streaming is currently under development.
 
 ## Prerequisites
 
