@@ -9,7 +9,7 @@ This project uses the following open source software during build time via CMake
 
 ## xll-gen/shm
 *   **Description**: Shared Memory IPC Library
-*   **License**: Apache-2.0
+*   **License**: GPL-3.0
 *   **Upstream**: https://github.com/xll-gen/shm
 
 ## Zstandard (Zstd)
