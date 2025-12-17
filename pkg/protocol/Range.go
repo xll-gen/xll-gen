@@ -68,8 +68,16 @@ func (rcv *Range) RefsLength() int {
 	return 0
 }
 
+func (rcv *Range) Format() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
 func RangeStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
+	builder.StartObject(3)
 }
 func RangeAddSheetName(builder *flatbuffers.Builder, sheetName flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(sheetName), 0)
@@ -79,6 +87,9 @@ func RangeAddRefs(builder *flatbuffers.Builder, refs flatbuffers.UOffsetT) {
 }
 func RangeStartRefsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(16, numElems, 4)
+}
+func RangeAddFormat(builder *flatbuffers.Builder, format flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(format), 0)
 }
 func RangeEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

@@ -436,7 +436,6 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Rect FLATBUFFERS_FINAL_CLASS {
   int32_t col_last_;
 
  public:
-  struct Traits;
   Rect()
       : row_first_(0),
         row_last_(0),
@@ -464,13 +463,8 @@ FLATBUFFERS_MANUALLY_ALIGNED_STRUCT(4) Rect FLATBUFFERS_FINAL_CLASS {
 };
 FLATBUFFERS_STRUCT_END(Rect, 16);
 
-struct Rect::Traits {
-  using type = Rect;
-};
-
 struct Bool FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef BoolBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -510,14 +504,8 @@ inline ::flatbuffers::Offset<Bool> CreateBool(
   return builder_.Finish();
 }
 
-struct Bool::Traits {
-  using type = Bool;
-  static auto constexpr Create = CreateBool;
-};
-
 struct Num FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef NumBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -557,14 +545,8 @@ inline ::flatbuffers::Offset<Num> CreateNum(
   return builder_.Finish();
 }
 
-struct Num::Traits {
-  using type = Num;
-  static auto constexpr Create = CreateNum;
-};
-
 struct Int FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef IntBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -604,14 +586,8 @@ inline ::flatbuffers::Offset<Int> CreateInt(
   return builder_.Finish();
 }
 
-struct Int::Traits {
-  using type = Int;
-  static auto constexpr Create = CreateInt;
-};
-
 struct Str FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef StrBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -652,11 +628,6 @@ inline ::flatbuffers::Offset<Str> CreateStr(
   return builder_.Finish();
 }
 
-struct Str::Traits {
-  using type = Str;
-  static auto constexpr Create = CreateStr;
-};
-
 inline ::flatbuffers::Offset<Str> CreateStrDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *val = nullptr) {
@@ -668,7 +639,6 @@ inline ::flatbuffers::Offset<Str> CreateStrDirect(
 
 struct Err FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ErrBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -708,14 +678,8 @@ inline ::flatbuffers::Offset<Err> CreateErr(
   return builder_.Finish();
 }
 
-struct Err::Traits {
-  using type = Err;
-  static auto constexpr Create = CreateErr;
-};
-
 struct AsyncHandle FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AsyncHandleBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL = 4
   };
@@ -756,11 +720,6 @@ inline ::flatbuffers::Offset<AsyncHandle> CreateAsyncHandle(
   return builder_.Finish();
 }
 
-struct AsyncHandle::Traits {
-  using type = AsyncHandle;
-  static auto constexpr Create = CreateAsyncHandle;
-};
-
 inline ::flatbuffers::Offset<AsyncHandle> CreateAsyncHandleDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<uint8_t> *val = nullptr) {
@@ -772,7 +731,6 @@ inline ::flatbuffers::Offset<AsyncHandle> CreateAsyncHandleDirect(
 
 struct Nil FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef NilBuilder Builder;
-  struct Traits;
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            verifier.EndTable();
@@ -800,14 +758,8 @@ inline ::flatbuffers::Offset<Nil> CreateNil(
   return builder_.Finish();
 }
 
-struct Nil::Traits {
-  using type = Nil;
-  static auto constexpr Create = CreateNil;
-};
-
 struct RefCache FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef RefCacheBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_KEY = 4
   };
@@ -848,11 +800,6 @@ inline ::flatbuffers::Offset<RefCache> CreateRefCache(
   return builder_.Finish();
 }
 
-struct RefCache::Traits {
-  using type = RefCache;
-  static auto constexpr Create = CreateRefCache;
-};
-
 inline ::flatbuffers::Offset<RefCache> CreateRefCacheDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *key = nullptr) {
@@ -864,10 +811,10 @@ inline ::flatbuffers::Offset<RefCache> CreateRefCacheDirect(
 
 struct Range FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef RangeBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_SHEET_NAME = 4,
-    VT_REFS = 6
+    VT_REFS = 6,
+    VT_FORMAT = 8
   };
   const ::flatbuffers::String *sheet_name() const {
     return GetPointer<const ::flatbuffers::String *>(VT_SHEET_NAME);
@@ -875,12 +822,17 @@ struct Range FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   const ::flatbuffers::Vector<const protocol::Rect *> *refs() const {
     return GetPointer<const ::flatbuffers::Vector<const protocol::Rect *> *>(VT_REFS);
   }
+  const ::flatbuffers::String *format() const {
+    return GetPointer<const ::flatbuffers::String *>(VT_FORMAT);
+  }
   bool Verify(::flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, VT_SHEET_NAME) &&
            verifier.VerifyString(sheet_name()) &&
            VerifyOffset(verifier, VT_REFS) &&
            verifier.VerifyVector(refs()) &&
+           VerifyOffset(verifier, VT_FORMAT) &&
+           verifier.VerifyString(format()) &&
            verifier.EndTable();
   }
 };
@@ -894,6 +846,9 @@ struct RangeBuilder {
   }
   void add_refs(::flatbuffers::Offset<::flatbuffers::Vector<const protocol::Rect *>> refs) {
     fbb_.AddOffset(Range::VT_REFS, refs);
+  }
+  void add_format(::flatbuffers::Offset<::flatbuffers::String> format) {
+    fbb_.AddOffset(Range::VT_FORMAT, format);
   }
   explicit RangeBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
@@ -909,33 +864,32 @@ struct RangeBuilder {
 inline ::flatbuffers::Offset<Range> CreateRange(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<::flatbuffers::String> sheet_name = 0,
-    ::flatbuffers::Offset<::flatbuffers::Vector<const protocol::Rect *>> refs = 0) {
+    ::flatbuffers::Offset<::flatbuffers::Vector<const protocol::Rect *>> refs = 0,
+    ::flatbuffers::Offset<::flatbuffers::String> format = 0) {
   RangeBuilder builder_(_fbb);
+  builder_.add_format(format);
   builder_.add_refs(refs);
   builder_.add_sheet_name(sheet_name);
   return builder_.Finish();
 }
 
-struct Range::Traits {
-  using type = Range;
-  static auto constexpr Create = CreateRange;
-};
-
 inline ::flatbuffers::Offset<Range> CreateRangeDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *sheet_name = nullptr,
-    const std::vector<protocol::Rect> *refs = nullptr) {
+    const std::vector<protocol::Rect> *refs = nullptr,
+    const char *format = nullptr) {
   auto sheet_name__ = sheet_name ? _fbb.CreateString(sheet_name) : 0;
   auto refs__ = refs ? _fbb.CreateVectorOfStructs<protocol::Rect>(*refs) : 0;
+  auto format__ = format ? _fbb.CreateString(format) : 0;
   return protocol::CreateRange(
       _fbb,
       sheet_name__,
-      refs__);
+      refs__,
+      format__);
 }
 
 struct Scalar FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ScalarBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL_TYPE = 4,
     VT_VAL = 6
@@ -1036,14 +990,8 @@ inline ::flatbuffers::Offset<Scalar> CreateScalar(
   return builder_.Finish();
 }
 
-struct Scalar::Traits {
-  using type = Scalar;
-  static auto constexpr Create = CreateScalar;
-};
-
 struct Grid FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef GridBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ROWS = 4,
     VT_COLS = 6,
@@ -1105,11 +1053,6 @@ inline ::flatbuffers::Offset<Grid> CreateGrid(
   return builder_.Finish();
 }
 
-struct Grid::Traits {
-  using type = Grid;
-  static auto constexpr Create = CreateGrid;
-};
-
 inline ::flatbuffers::Offset<Grid> CreateGridDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     int32_t rows = 0,
@@ -1125,7 +1068,6 @@ inline ::flatbuffers::Offset<Grid> CreateGridDirect(
 
 struct NumGrid FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef NumGridBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ROWS = 4,
     VT_COLS = 6,
@@ -1186,11 +1128,6 @@ inline ::flatbuffers::Offset<NumGrid> CreateNumGrid(
   return builder_.Finish();
 }
 
-struct NumGrid::Traits {
-  using type = NumGrid;
-  static auto constexpr Create = CreateNumGrid;
-};
-
 inline ::flatbuffers::Offset<NumGrid> CreateNumGridDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     int32_t rows = 0,
@@ -1206,7 +1143,6 @@ inline ::flatbuffers::Offset<NumGrid> CreateNumGridDirect(
 
 struct Any FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AnyBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_VAL_TYPE = 4,
     VT_VAL = 6
@@ -1335,14 +1271,8 @@ inline ::flatbuffers::Offset<Any> CreateAny(
   return builder_.Finish();
 }
 
-struct Any::Traits {
-  using type = Any;
-  static auto constexpr Create = CreateAny;
-};
-
 struct Ack FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AckBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ID = 4,
     VT_OK = 6
@@ -1392,14 +1322,8 @@ inline ::flatbuffers::Offset<Ack> CreateAck(
   return builder_.Finish();
 }
 
-struct Ack::Traits {
-  using type = Ack;
-  static auto constexpr Create = CreateAck;
-};
-
 struct Chunk FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef ChunkBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_ID = 4,
     VT_TOTAL_SIZE = 6,
@@ -1480,11 +1404,6 @@ inline ::flatbuffers::Offset<Chunk> CreateChunk(
   return builder_.Finish();
 }
 
-struct Chunk::Traits {
-  using type = Chunk;
-  static auto constexpr Create = CreateChunk;
-};
-
 inline ::flatbuffers::Offset<Chunk> CreateChunkDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     uint64_t id = 0,
@@ -1504,7 +1423,6 @@ inline ::flatbuffers::Offset<Chunk> CreateChunkDirect(
 
 struct SetRefCacheRequest FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef SetRefCacheRequestBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_KEY = 4,
     VT_VAL = 6
@@ -1556,11 +1474,6 @@ inline ::flatbuffers::Offset<SetRefCacheRequest> CreateSetRefCacheRequest(
   return builder_.Finish();
 }
 
-struct SetRefCacheRequest::Traits {
-  using type = SetRefCacheRequest;
-  static auto constexpr Create = CreateSetRefCacheRequest;
-};
-
 inline ::flatbuffers::Offset<SetRefCacheRequest> CreateSetRefCacheRequestDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const char *key = nullptr,
@@ -1574,7 +1487,6 @@ inline ::flatbuffers::Offset<SetRefCacheRequest> CreateSetRefCacheRequestDirect(
 
 struct SetCommand FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef SetCommandBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_TARGET = 4,
     VT_VALUE = 6
@@ -1626,14 +1538,8 @@ inline ::flatbuffers::Offset<SetCommand> CreateSetCommand(
   return builder_.Finish();
 }
 
-struct SetCommand::Traits {
-  using type = SetCommand;
-  static auto constexpr Create = CreateSetCommand;
-};
-
 struct FormatCommand FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef FormatCommandBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_TARGET = 4,
     VT_FORMAT = 6
@@ -1685,11 +1591,6 @@ inline ::flatbuffers::Offset<FormatCommand> CreateFormatCommand(
   return builder_.Finish();
 }
 
-struct FormatCommand::Traits {
-  using type = FormatCommand;
-  static auto constexpr Create = CreateFormatCommand;
-};
-
 inline ::flatbuffers::Offset<FormatCommand> CreateFormatCommandDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     ::flatbuffers::Offset<protocol::Range> target = 0,
@@ -1703,7 +1604,6 @@ inline ::flatbuffers::Offset<FormatCommand> CreateFormatCommandDirect(
 
 struct CommandWrapper FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef CommandWrapperBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_CMD_TYPE = 4,
     VT_CMD = 6
@@ -1769,14 +1669,8 @@ inline ::flatbuffers::Offset<CommandWrapper> CreateCommandWrapper(
   return builder_.Finish();
 }
 
-struct CommandWrapper::Traits {
-  using type = CommandWrapper;
-  static auto constexpr Create = CreateCommandWrapper;
-};
-
 struct CalculationEndedResponse FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef CalculationEndedResponseBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_COMMANDS = 4
   };
@@ -1818,11 +1712,6 @@ inline ::flatbuffers::Offset<CalculationEndedResponse> CreateCalculationEndedRes
   return builder_.Finish();
 }
 
-struct CalculationEndedResponse::Traits {
-  using type = CalculationEndedResponse;
-  static auto constexpr Create = CreateCalculationEndedResponse;
-};
-
 inline ::flatbuffers::Offset<CalculationEndedResponse> CreateCalculationEndedResponseDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<::flatbuffers::Offset<protocol::CommandWrapper>> *commands = nullptr) {
@@ -1834,7 +1723,6 @@ inline ::flatbuffers::Offset<CalculationEndedResponse> CreateCalculationEndedRes
 
 struct AsyncResult FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef AsyncResultBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_HANDLE = 4,
     VT_RESULT = 6,
@@ -1897,11 +1785,6 @@ inline ::flatbuffers::Offset<AsyncResult> CreateAsyncResult(
   return builder_.Finish();
 }
 
-struct AsyncResult::Traits {
-  using type = AsyncResult;
-  static auto constexpr Create = CreateAsyncResult;
-};
-
 inline ::flatbuffers::Offset<AsyncResult> CreateAsyncResultDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,
     const std::vector<uint8_t> *handle = nullptr,
@@ -1918,7 +1801,6 @@ inline ::flatbuffers::Offset<AsyncResult> CreateAsyncResultDirect(
 
 struct BatchAsyncResponse FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
   typedef BatchAsyncResponseBuilder Builder;
-  struct Traits;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
     VT_RESULTS = 4
   };
@@ -1959,11 +1841,6 @@ inline ::flatbuffers::Offset<BatchAsyncResponse> CreateBatchAsyncResponse(
   builder_.add_results(results);
   return builder_.Finish();
 }
-
-struct BatchAsyncResponse::Traits {
-  using type = BatchAsyncResponse;
-  static auto constexpr Create = CreateBatchAsyncResponse;
-};
 
 inline ::flatbuffers::Offset<BatchAsyncResponse> CreateBatchAsyncResponseDirect(
     ::flatbuffers::FlatBufferBuilder &_fbb,

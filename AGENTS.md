@@ -347,6 +347,24 @@ The Go server allows scheduling Excel commands to be executed by the C++ XLL dur
 *   When `CalculationEnded` is triggered, the Go server serializes these commands into the response.
 *   The C++ XLL receives the response and executes the commands using `xlSet` and `xlcFormatNumber`.
 
+### 8.5 Caller Information & Number Format
+
+To access the cell that called the function (e.g., for formatting awareness), use `xlfCaller`.
+
+**Retrieving Caller:**
+*   Call `xlfCaller`.
+*   Result is a Reference (`xltypeRef` or `xltypeSRef`).
+
+**Retrieving Number Format:**
+To get the number format of the caller (e.g., to preserve it or use it):
+*   Call `xlfGetCell` with type `7`.
+*   Result is a string (e.g., "General", "0.00").
+
+**References:**
+*   [xlfCaller](https://learn.microsoft.com/en-us/office/client-developer/excel/xlfcaller)
+*   [GET.CELL (Type 7)](https://xlladdins.github.io/Excel4Macros/get.cell.html)
+*   [Excel C API Programming](https://learn.microsoft.com/en-us/office/client-developer/excel/programming-with-the-c-api-in-excel)
+
 ## 9. Reference: Shared Memory (IPC)
 
 The `xll-gen/shm` library provides low-latency IPC. For maximum performance, we use **Zero-Copy** operations where possible, especially for FlatBuffers.

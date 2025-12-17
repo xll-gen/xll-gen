@@ -36,6 +36,7 @@ struct Rect {
 table Range {
   sheet_name: string;
   refs: [Rect];
+  format: string;
 }
 
 union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil }
