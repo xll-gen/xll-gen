@@ -5,52 +5,7 @@
 #include "xll_ipc.h"
 #include <mutex>
 #include <map>
-
-// Helper to convert std::string to std::wstring
-std::wstring StringToWString(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
-    std::wstring wstrTo(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
-    return wstrTo;
-}
-
-// Helper to convert std::wstring to std::string
-std::string WStringToString(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
-    return strTo;
-}
-
-// Convert Excel Pascal string (first char is length) to standard wstring
-std::wstring PascalToWString(const XCHAR* pstr) {
-    if (!pstr) return L"";
-    int len = pstr[0];
-    return std::wstring(pstr + 1, len);
-}
-
-// Convert wstring to Excel Pascal string
-std::vector<XCHAR> WStringToPascalString(const std::wstring& str) {
-    size_t len = str.length();
-    if (len > 32767) len = 32767; // Max Excel string length
-    std::vector<XCHAR> vec(len + 1);
-    vec[0] = (XCHAR)len;
-    if (len > 0) {
-        wmemcpy(&vec[1], str.c_str(), len);
-    }
-    return vec;
-}
-
-// Optimized string conversion using thread-local buffer
-const char* ConvertExcelString(const XCHAR* pstr) {
-    if (!pstr) return "";
-    static thread_local std::string s_strBuffer;
-    std::wstring ws = PascalToWString(pstr);
-    s_strBuffer = WStringToString(ws);
-    return s_strBuffer.c_str();
-}
+#include <algorithm> // for std::copy
 
 // FlatBuffers Converters
 
@@ -389,11 +344,9 @@ LPXLOPER12 GridToXLOPER12(const protocol::Grid* grid) {
             case protocol::ScalarValue::Str: {
                 cell.xltype = xltypeStr;
                 std::wstring ws = StringToWString(scalar->val_as_Str()->val()->str());
-                size_t len = ws.length();
-                if (len > 32767) len = 32767;
-                cell.val.str = new XCHAR[len + 1];
-                cell.val.str[0] = (XCHAR)len;
-                wmemcpy(cell.val.str + 1, ws.c_str(), len);
+                auto vec = WStringToPascalString(ws);
+                cell.val.str = new XCHAR[vec.size()];
+                std::copy(vec.begin(), vec.end(), cell.val.str);
                 break;
             }
             case protocol::ScalarValue::Err:
@@ -413,10 +366,7 @@ FP12* NumGridToFP12(const protocol::NumGrid* grid) {
     int rows = grid->rows();
     int cols = grid->cols();
 
-    size_t bytes = sizeof(FP12) + (rows * cols - 1) * sizeof(double);
-    FP12* fp = (FP12*)malloc(bytes);
-    fp->rows = rows;
-    fp->columns = cols;
+    FP12* fp = NewFP12(rows, cols);
 
     const auto* data = grid->data();
     for(int i=0; i<rows*cols; ++i) {
