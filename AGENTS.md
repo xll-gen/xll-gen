@@ -279,6 +279,13 @@ Starting in Excel 2007, Excel can perform multithreaded workbook recalculation. 
 To do this, append a `$` character to the end of the `pxTypeText` string.
 *   Example: `QJJ$` (Returns Value, takes two Ints, Thread-Safe).
 
+**Async Functions (`>...X`)**
+For asynchronous functions (Excel 2010+), the registration string format changes:
+1.  **Prefix**: The string must start with `>`.
+2.  **Return Type**: The return type code is **omitted** (implied void).
+3.  **Suffix**: The string must end with `X` (Async Handle).
+*   Example: `>JJX` (Async function taking 2 Ints. The return type code is replaced by `>` and `X` is added at the end).
+
 **Registration Arguments (Form 1)**
 The generator implements `xlfRegister` (Form 1) fully, passing:
 1.  `module_text` (DLL name)
@@ -530,3 +537,21 @@ Use this guide to understand what needs to be updated when you make a change in 
 | **`pkg/protocol`** | 1. Update `internal/templates/protocol.fbs` if the FlatBuffers schema changed.<br>2. Rebuild `xll-gen`.<br>3. Run `xll-gen generate`. |
 | **`pkg/server`** | 1. Update `server.go.tmpl` if the API used by the generated code changes.<br>2. Rebuild `xll-gen` (if template changed).<br>3. Run `go get -u github.com/xll-gen/xll-gen/pkg/server` in the user project (or replace directive in tests). |
 | **`shm` Library** | 1. Update `go.mod` in `xll-gen`.<br>2. Update `GIT_TAG` in `internal/templates/CMakeLists.txt.tmpl`.<br>3. Update C++ assets (`xll_ipc.cpp`, etc.) if C++ API changed.<br>4. Update Go assets (`pkg/server`, templates) if Go API changed. |
+
+## 15. Reference: Async UDF & RTD
+
+This section provides external references for implementing and understanding Async UDF (native async) and RTD (Real-Time Data) in XLL.
+
+### Async UDF (XLL, native)
+*   **Asynchronous user-defined functions** (Concept, Signature, Flow, `xlAsyncReturn`): [Microsoft Learn](https://learn.microsoft.com/en-us/office/client-developer/excel/asynchronous-user-defined-functions)
+*   **xlAsyncReturn** (Callback restrictions, Signature): [Microsoft Learn](https://learn.microsoft.com/en-us/office/client-developer/excel/xlasyncreturn)
+*   **Programming with the C API in Excel** (Context for Excel12/Excel4 callbacks): [Microsoft Learn](https://learn.microsoft.com/en-us/office/client-developer/excel/programming-with-the-c-api-in-excel)
+*   **C API Functions that can be called only from a DLL or XLL** (Scope of callbacks): [Microsoft Learn](https://learn.microsoft.com/en-us/office/client-developer/excel/c-api-functions-that-can-be-called-only-from-a-dll-or-xll)
+
+### RTD (Excel Side)
+*   **RTD function** (Worksheet usage): [Microsoft Support](https://support.microsoft.com/ko-kr/office/rtd-%ED%95%A8%EC%88%98-e0cc001a-56f0-470a-9b19-9455dc0eb593)
+*   **RTD object (Excel)** (VBA/COM Object Model): [Microsoft Learn](https://learn.microsoft.com/en-us/office/vba/api/excel.rtd)
+
+### Implementation Guides & Samples
+*   **Excel-DNA: Excel C API Guide** (Overview): [Excel-DNA Docs](https://excel-dna.github.io/docs/guides-basic/excel-programming-interfaces/excel-c-api/)
+*   **Excel-DNA Google Group** (Discussions on async/native async): [Google Groups](https://groups.google.com/g/exceldna/c/njGaROmQLzI)
