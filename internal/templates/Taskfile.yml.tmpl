@@ -66,6 +66,7 @@ tasks:
   build-cpp-debug:
     desc: Build C++ XLL (Debug)
     cmds:
+      - task: build-go-debug
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Debug -DXLL_DEBUG=ON
       - cmake --build build/cpp --config Debug
 
