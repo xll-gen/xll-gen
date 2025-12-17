@@ -49,22 +49,22 @@ flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::Fl
 
 flatbuffers::Offset<protocol::Scalar> ConvertScalar(const XLOPER12& cell, flatbuffers::FlatBufferBuilder& builder) {
     if (cell.xltype & xltypeNum) {
-        return protocol::CreateScalar(builder, protocol::ScalarValue_Num, protocol::CreateNum(builder, cell.val.num).Union());
+        return protocol::CreateScalar(builder, protocol::ScalarValue::Num, protocol::CreateNum(builder, cell.val.num).Union());
     } else if (cell.xltype & xltypeInt) {
-        return protocol::CreateScalar(builder, protocol::ScalarValue_Int, protocol::CreateInt(builder, cell.val.w).Union());
+        return protocol::CreateScalar(builder, protocol::ScalarValue::Int, protocol::CreateInt(builder, cell.val.w).Union());
     } else if (cell.xltype & xltypeBool) {
-        return protocol::CreateScalar(builder, protocol::ScalarValue_Bool, protocol::CreateBool(builder, cell.val.xbool != 0).Union());
+        return protocol::CreateScalar(builder, protocol::ScalarValue::Bool, protocol::CreateBool(builder, cell.val.xbool != 0).Union());
     } else if (cell.xltype & xltypeStr) {
         std::wstring ws = PascalToWString(cell.val.str);
         std::string s = ConvertExcelString(ws.c_str());
-        return protocol::CreateScalar(builder, protocol::ScalarValue_Str, protocol::CreateStrDirect(builder, s.c_str()).Union());
+        return protocol::CreateScalar(builder, protocol::ScalarValue::Str, protocol::CreateStrDirect(builder, s.c_str()).Union());
     } else if (cell.xltype & xltypeErr) {
-        return protocol::CreateScalar(builder, protocol::ScalarValue_Err, protocol::CreateErr(builder, (protocol::XlError)cell.val.err).Union());
+        return protocol::CreateScalar(builder, protocol::ScalarValue::Err, protocol::CreateErr(builder, (protocol::XlError)cell.val.err).Union());
     } else if (cell.xltype & (xltypeMissing | xltypeNil)) {
-        return protocol::CreateScalar(builder, protocol::ScalarValue_Nil, protocol::CreateNil(builder).Union());
+        return protocol::CreateScalar(builder, protocol::ScalarValue::Nil, protocol::CreateNil(builder).Union());
     }
 
-    return protocol::CreateScalar(builder, protocol::ScalarValue_Nil, protocol::CreateNil(builder).Union());
+    return protocol::CreateScalar(builder, protocol::ScalarValue::Nil, protocol::CreateNil(builder).Union());
 }
 
 flatbuffers::Offset<protocol::Any> ConvertMultiToAny(const XLOPER12& xMulti, flatbuffers::FlatBufferBuilder& builder) {
@@ -79,7 +79,7 @@ flatbuffers::Offset<protocol::Any> ConvertMultiToAny(const XLOPER12& xMulti, fla
     }
 
     auto grid = protocol::CreateGridDirect(builder, rows, cols, &data);
-    return protocol::CreateAny(builder, protocol::AnyValue_Grid, grid.Union());
+    return protocol::CreateAny(builder, protocol::AnyValue::Grid, grid.Union());
 }
 
 // Helper function to convert a value XLOPER (Multi, Scalar, Missing/Nil) to a Grid offset.
@@ -134,17 +134,17 @@ static thread_local int g_conversionDepth = 0;
 
 flatbuffers::Offset<protocol::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
     if (op->xltype & xltypeNum) {
-        return protocol::CreateAny(builder, protocol::AnyValue_Num, protocol::CreateNum(builder, op->val.num).Union());
+        return protocol::CreateAny(builder, protocol::AnyValue::Num, protocol::CreateNum(builder, op->val.num).Union());
     } else if (op->xltype & xltypeInt) {
-        return protocol::CreateAny(builder, protocol::AnyValue_Int, protocol::CreateInt(builder, op->val.w).Union());
+        return protocol::CreateAny(builder, protocol::AnyValue::Int, protocol::CreateInt(builder, op->val.w).Union());
     } else if (op->xltype & xltypeBool) {
-        return protocol::CreateAny(builder, protocol::AnyValue_Bool, protocol::CreateBool(builder, op->val.xbool != 0).Union());
+        return protocol::CreateAny(builder, protocol::AnyValue::Bool, protocol::CreateBool(builder, op->val.xbool != 0).Union());
     } else if (op->xltype & xltypeStr) {
         std::wstring ws = PascalToWString(op->val.str);
         std::string s = ConvertExcelString(ws.c_str());
-        return protocol::CreateAny(builder, protocol::AnyValue_Str, protocol::CreateStrDirect(builder, s.c_str()).Union());
+        return protocol::CreateAny(builder, protocol::AnyValue::Str, protocol::CreateStrDirect(builder, s.c_str()).Union());
     } else if (op->xltype & xltypeErr) {
-        return protocol::CreateAny(builder, protocol::AnyValue_Err, protocol::CreateErr(builder, (protocol::XlError)op->val.err).Union());
+        return protocol::CreateAny(builder, protocol::AnyValue::Err, protocol::CreateErr(builder, (protocol::XlError)op->val.err).Union());
     } else if (op->xltype & (xltypeRef | xltypeSRef)) {
         size_t cellCount = 0;
 
@@ -198,57 +198,57 @@ flatbuffers::Offset<protocol::Any> ConvertAny(LPXLOPER12 op, flatbuffers::FlatBu
                      }
                  }
 
-                 return protocol::CreateAny(builder, protocol::AnyValue_RefCache, protocol::CreateRefCacheDirect(builder, key.c_str()).Union());
+                 return protocol::CreateAny(builder, protocol::AnyValue::RefCache, protocol::CreateRefCacheDirect(builder, key.c_str()).Union());
             }
         }
 
-        return protocol::CreateAny(builder, protocol::AnyValue_Range, ConvertRange(op, builder).Union());
+        return protocol::CreateAny(builder, protocol::AnyValue::Range, ConvertRange(op, builder).Union());
 
     } else if (op->xltype & xltypeMulti) {
         return ConvertMultiToAny(*op, builder);
     } else if (op->xltype & (xltypeMissing | xltypeNil)) {
-         return protocol::CreateAny(builder, protocol::AnyValue_Nil, protocol::CreateNil(builder).Union());
+         return protocol::CreateAny(builder, protocol::AnyValue::Nil, protocol::CreateNil(builder).Union());
     }
 
-    return protocol::CreateAny(builder, protocol::AnyValue_Nil, protocol::CreateNil(builder).Union());
+    return protocol::CreateAny(builder, protocol::AnyValue::Nil, protocol::CreateNil(builder).Union());
 }
 
 LPXLOPER12 AnyToXLOPER12(const protocol::Any* any) {
     if (!any) return NULL;
 
     switch (any->val_type()) {
-        case protocol::AnyValue_Num: {
+        case protocol::AnyValue::Num: {
             LPXLOPER12 op = NewXLOPER12();
             op->xltype = xltypeNum | xlbitDLLFree;
             op->val.num = any->val_as_Num()->val();
             return op;
         }
-        case protocol::AnyValue_Int: {
+        case protocol::AnyValue::Int: {
             LPXLOPER12 op = NewXLOPER12();
             op->xltype = xltypeInt | xlbitDLLFree;
             op->val.w = any->val_as_Int()->val();
             return op;
         }
-        case protocol::AnyValue_Bool: {
+        case protocol::AnyValue::Bool: {
             LPXLOPER12 op = NewXLOPER12();
             op->xltype = xltypeBool | xlbitDLLFree;
             op->val.xbool = any->val_as_Bool()->val();
             return op;
         }
-        case protocol::AnyValue_Str: {
+        case protocol::AnyValue::Str: {
             std::wstring ws = StringToWString(any->val_as_Str()->val()->str());
             return NewExcelString(ws);
         }
-        case protocol::AnyValue_Err: {
+        case protocol::AnyValue::Err: {
              LPXLOPER12 op = NewXLOPER12();
              op->xltype = xltypeErr | xlbitDLLFree;
              op->val.err = (int)any->val_as_Err()->val();
              return op;
         }
-        case protocol::AnyValue_Grid: {
+        case protocol::AnyValue::Grid: {
              return GridToXLOPER12(any->val_as_Grid());
         }
-        case protocol::AnyValue_NumGrid: {
+        case protocol::AnyValue::NumGrid: {
              const protocol::NumGrid* ng = any->val_as_NumGrid();
              int rows = ng->rows();
              int cols = ng->cols();
@@ -265,10 +265,10 @@ LPXLOPER12 AnyToXLOPER12(const protocol::Any* any) {
              }
              return op;
         }
-        case protocol::AnyValue_Range: {
+        case protocol::AnyValue::Range: {
             return RangeToXLOPER12(any->val_as_Range());
         }
-        case protocol::AnyValue_Nil:
+        case protocol::AnyValue::Nil:
         default: {
              return NULL;
         }
@@ -313,19 +313,19 @@ LPXLOPER12 GridToXLOPER12(const protocol::Grid* grid) {
         cell.xltype = xltypeNil; // Default
 
         switch(scalar->val_type()) {
-            case protocol::ScalarValue_Num:
+            case protocol::ScalarValue::Num:
                 cell.xltype = xltypeNum;
                 cell.val.num = scalar->val_as_Num()->val();
                 break;
-            case protocol::ScalarValue_Int:
+            case protocol::ScalarValue::Int:
                 cell.xltype = xltypeInt;
                 cell.val.w = scalar->val_as_Int()->val();
                 break;
-            case protocol::ScalarValue_Bool:
+            case protocol::ScalarValue::Bool:
                 cell.xltype = xltypeBool;
                 cell.val.xbool = scalar->val_as_Bool()->val();
                 break;
-            case protocol::ScalarValue_Str: {
+            case protocol::ScalarValue::Str: {
                 cell.xltype = xltypeStr;
                 std::wstring ws = StringToWString(scalar->val_as_Str()->val()->str());
                 size_t len = ws.length();
@@ -335,7 +335,7 @@ LPXLOPER12 GridToXLOPER12(const protocol::Grid* grid) {
                 wmemcpy(cell.val.str + 1, ws.c_str(), len);
                 break;
             }
-            case protocol::ScalarValue_Err:
+            case protocol::ScalarValue::Err:
                 cell.xltype = xltypeErr;
                 cell.val.err = (int)scalar->val_as_Err()->val();
                 break;

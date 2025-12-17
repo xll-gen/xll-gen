@@ -141,6 +141,8 @@ else()
   target_compile_options(${PROJECT_NAME} PRIVATE
     -Wno-stringop-overread
     -Wno-pragma-once-outside-header
+    # Needed to allow try/catch to handle signals (e.g. SIGSEGV) on MinGW
+    -fnon-call-exceptions
     $<$<CONFIG:Release>:-O3>
     $<$<CONFIG:Release>:-mavx2>
     $<$<CONFIG:Release>:-flto>
