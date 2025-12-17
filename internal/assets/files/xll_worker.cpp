@@ -3,6 +3,7 @@
 #include "xll_utility.h"
 #include "include/xll_worker.h"
 #include "include/xll_log.h"
+#include <windows.h>
 #include <vector>
 #include <string>
 #include <map>
@@ -102,36 +103,40 @@ void WorkerLoop() {
 
     auto lastCleanup = std::chrono::steady_clock::now();
 
-    while (g_workerRunning) {
-        // Updated Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType)
-        bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType) -> int32_t {
-            if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE) {
-                auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(reqBuf);
-                ProcessAsyncBatchResponse(batch);
-                return 1;
-            } else if (msgType == (shm::MsgType)MSG_CALCULATION_ENDED) {
-                auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(reqBuf);
-                ExecuteCommands(resp->commands());
-                return 1;
-            } else if (msgType == (shm::MsgType)MSG_CHUNK) {
-                auto chunk = flatbuffers::GetRoot<protocol::Chunk>(reqBuf);
-                HandleChunk(chunk);
-                return 1;
+    __try {
+        while (g_workerRunning) {
+            // Updated Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType)
+            bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType) -> int32_t {
+                if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE) {
+                    auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(reqBuf);
+                    ProcessAsyncBatchResponse(batch);
+                    return 1;
+                } else if (msgType == (shm::MsgType)MSG_CALCULATION_ENDED) {
+                    auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(reqBuf);
+                    ExecuteCommands(resp->commands());
+                    return 1;
+                } else if (msgType == (shm::MsgType)MSG_CHUNK) {
+                    auto chunk = flatbuffers::GetRoot<protocol::Chunk>(reqBuf);
+                    HandleChunk(chunk);
+                    return 1;
+                }
+
+                return 0; // Unknown
+            }, 50); // 50ms timeout
+
+            if (processed) {
+                LogDebug("Call return guest call receive complete");
             }
 
-            return 0; // Unknown
-        }, 50); // 50ms timeout
-
-        if (processed) {
-            LogDebug("Call return guest call receive complete");
+            // Periodic cleanup
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastCleanup > std::chrono::seconds(10)) {
+                CleanupStaleChunks();
+                lastCleanup = now;
+            }
         }
-
-        // Periodic cleanup
-        auto now = std::chrono::steady_clock::now();
-        if (now - lastCleanup > std::chrono::seconds(10)) {
-            CleanupStaleChunks();
-            lastCleanup = now;
-        }
+    } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
+        // Worker crashed
     }
 }
 

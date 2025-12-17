@@ -9,6 +9,7 @@
 #include <iostream>
 #include <iomanip>
 #include <vector>
+#include <sstream>
 
 std::string g_logPath;
 LogLevel g_logLevel = LogLevel::ERROR; // Default
@@ -61,6 +62,27 @@ void LogDebug(const std::string& msg) {
     }
 }
 #endif
+
+// Log SEH Exception
+void LogException(unsigned int code, void* exceptionPointers) {
+    std::stringstream ss;
+    ss << "CRITICAL EXCEPTION DETECTED! Code: 0x" << std::hex << std::uppercase << code;
+
+    // Try to identify common codes
+    if (code == EXCEPTION_ACCESS_VIOLATION) ss << " (ACCESS_VIOLATION)";
+    else if (code == EXCEPTION_STACK_OVERFLOW) ss << " (STACK_OVERFLOW)";
+    else if (code == EXCEPTION_ILLEGAL_INSTRUCTION) ss << " (ILLEGAL_INSTRUCTION)";
+    else if (code == EXCEPTION_INT_DIVIDE_BY_ZERO) ss << " (INT_DIVIDE_BY_ZERO)";
+
+    std::string msg = ss.str();
+
+    // Force write to log
+    WriteLog("CRASH", msg);
+
+    // Show MessageBox
+    std::wstring wMsg = StringToWString(msg);
+    MessageBoxW(NULL, wMsg.c_str(), L"XLL Crash Detected", MB_ICONERROR | MB_OK | MB_TOPMOST);
+}
 
 // Helper to expand environment variables (Wide)
 static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {

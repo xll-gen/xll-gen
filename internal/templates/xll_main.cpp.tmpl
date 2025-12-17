@@ -87,59 +87,60 @@ static void LogHandler(shm::LogLevel level, const std::string& msg) {
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
-    // Setup Native Logging
-    std::string tempPattern = "";
-    std::string projName = "{{.ProjectName}}";
-    bool isSingleFile = false;
+    __try {
+        // Setup Native Logging
+        std::string tempPattern = "";
+        std::string projName = "{{.ProjectName}}";
+        bool isSingleFile = false;
 
-    {{if eq .Build.Singlefile "xll"}}
-    isSingleFile = true;
-    tempPattern = "{{.Build.TempDir}}";
-    {{end}}
+        {{if eq .Build.Singlefile "xll"}}
+        isSingleFile = true;
+        tempPattern = "{{.Build.TempDir}}";
+        {{end}}
 
-    InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
+        InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
 
 #ifdef SHM_DEBUG
-    shm::SetLogHandler(LogHandler);
+        shm::SetLogHandler(LogHandler);
 #endif
 
-    // Determine worker count
-    int workers = {{.Server.Workers}};
-    if (workers <= 0) {
-        workers = std::thread::hardware_concurrency();
-        if (workers == 0) workers = 16; // Fallback
-    }
+        // Determine worker count
+        int workers = {{.Server.Workers}};
+        if (workers <= 0) {
+            workers = std::thread::hardware_concurrency();
+            if (workers == 0) workers = 16; // Fallback
+        }
 
-    {{if .ShouldAppendPid}}
-    std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
-    {{else}}
-    std::string shmName = "{{.ProjectName}}";
-    {{end}}
+        {{if .ShouldAppendPid}}
+        std::string shmName = "{{.ProjectName}}_" + std::to_string(GetCurrentProcessId());
+        {{else}}
+        std::string shmName = "{{.ProjectName}}";
+        {{end}}
 
-    g_procInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        g_procInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-    // Configure SHM
-    shm::HostConfig config;
-    config.shmName = shmName;
-    config.numHostSlots = workers * 2 + 2; // Support nested IPC (depth 1) + margin
-    config.numGuestSlots = 2;              // Allow Guest (Go) to send async batch responses
-    config.payloadSize = 1024 * 1024;      // 1MB per slot
+        // Configure SHM
+        shm::HostConfig config;
+        config.shmName = shmName;
+        config.numHostSlots = workers * 2 + 2; // Support nested IPC (depth 1) + margin
+        config.numGuestSlots = 2;              // Allow Guest (Go) to send async batch responses
+        config.payloadSize = 1024 * 1024;      // 1MB per slot
 
-    if (!g_host.Init(config)) {
-        LogError("Failed to initialize Shared Memory with name: " + shmName);
-        return 0;
-    }
+        if (!g_host.Init(config)) {
+            LogError("Failed to initialize Shared Memory with name: " + shmName);
+            return 0;
+        }
 
-    g_running = true;
-    g_worker = std::thread([]{
-        xll::StartWorker();
-    });
+        g_running = true;
+        g_worker = std::thread([]{
+            xll::StartWorker();
+        });
 
-    static XLOPER12 xDll;
-    Excel12(xlGetName, &xDll, 0);
+        static XLOPER12 xDll;
+        Excel12(xlGetName, &xDll, 0);
 
 {{range .Events}}
-    Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Name}}"), TempInt12({{lookupEventCode .Type}}));
+        Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Name}}"), TempInt12({{lookupEventCode .Type}}));
 {{end}}
     {{if hasEvent "CalculationEnded" .Events}}
     {{else}}
@@ -161,98 +162,105 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{end}}
 
 {{range $i, $fn := .Functions}}
-    {
-        Excel12(xlfRegister, 0, {{registerCount $fn}},
-            &xDll,
-            TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{if .Async}}>{{else}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}$"),
-            TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{joinArgNames $fn}}"),
-            TempStr12(L"1"),
-            TempStr12(L"{{withDefault .Category $.ProjectName}}"),
-            TempStr12(L"{{.Shortcut}}"),
-            TempStr12(L"{{.HelpTopic}}"),
-            TempStr12(L"{{.Description}}"){{if .Args}},{{end}}
-            {{range $j, $arg := .Args}}TempStr12(L"{{$arg.Description}}"){{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}
-        );
-    }
+        {
+            Excel12(xlfRegister, 0, {{registerCount $fn}},
+                &xDll,
+                TempStr12(L"{{.Name}}"),
+                TempStr12(L"{{if .Async}}>{{else}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}$"),
+                TempStr12(L"{{.Name}}"),
+                TempStr12(L"{{joinArgNames $fn}}"),
+                TempStr12(L"1"),
+                TempStr12(L"{{withDefault .Category $.ProjectName}}"),
+                TempStr12(L"{{.Shortcut}}"),
+                TempStr12(L"{{.HelpTopic}}"),
+                TempStr12(L"{{.Description}}"){{if .Args}},{{end}}
+                {{range $j, $arg := .Args}}TempStr12(L"{{$arg.Description}}"){{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}
+            );
+        }
 {{end}}
 
 {{if .Server.Launch}}
 {{if derefBool .Server.Launch.Enabled}}
-    {
-        std::wstring xllDir = GetXllDir();
-        std::wstring extractedExe = L"";
+        {
+            std::wstring xllDir = GetXllDir();
+            std::wstring extractedExe = L"";
 
 {{if eq .Build.Singlefile "xll"}}
-        std::string extractedStr = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
-        if (!extractedStr.empty()) {
-            extractedExe = StringToWString(extractedStr);
-        }
+            std::string extractedStr = embed::ExtractEmbeddedExe("{{.Build.TempDir}}", "{{.ProjectName}}");
+            if (!extractedStr.empty()) {
+                extractedExe = StringToWString(extractedStr);
+            }
 {{end}}
 
-        xll::LaunchConfig cfg;
-        cfg.projectName = L"{{.ProjectName}}";
-        cfg.isSingleFile = {{if eq .Build.Singlefile "xll"}}true{{else}}false{{end}};
-        cfg.tempDir = L"{{.Build.TempDir}}";
-        cfg.cwd = "{{.Server.Launch.Cwd}}";
-        cfg.command = "{{.Server.Launch.Command}}";
-        cfg.shmName = shmName;
+            xll::LaunchConfig cfg;
+            cfg.projectName = L"{{.ProjectName}}";
+            cfg.isSingleFile = {{if eq .Build.Singlefile "xll"}}true{{else}}false{{end}};
+            cfg.tempDir = L"{{.Build.TempDir}}";
+            cfg.cwd = "{{.Server.Launch.Cwd}}";
+            cfg.command = "{{.Server.Launch.Command}}";
+            cfg.shmName = shmName;
 
-        std::wstring cmd, cwd, logPath;
-        xll::ResolveServerPath(xllDir, extractedExe, cfg, cmd, cwd, logPath);
+            std::wstring cmd, cwd, logPath;
+            xll::ResolveServerPath(xllDir, extractedExe, cfg, cmd, cwd, logPath);
 
-        // Pass XLL directory to the child process via environment variable
-        std::map<std::wstring, std::wstring> env;
-        env[L"XLL_DIR"] = xllDir;
+            // Pass XLL directory to the child process via environment variable
+            std::map<std::wstring, std::wstring> env;
+            env[L"XLL_DIR"] = xllDir;
 
-        if (xll::LaunchProcess(cmd, cwd, logPath, g_procInfo, env)) {
-            g_monitor = std::thread([logPath]{
-                xll::MonitorProcess(g_procInfo, logPath);
-            });
-        } else {
-            // Launch failed. Cleanup.
-            g_running = false;
-            if (g_worker.joinable()) g_worker.join();
-            g_host.Shutdown();
-            Excel12(xlFree, 0, 1, &xDll);
-            return 0;
+            if (xll::LaunchProcess(cmd, cwd, logPath, g_procInfo, env)) {
+                g_monitor = std::thread([logPath]{
+                    xll::MonitorProcess(g_procInfo, logPath);
+                });
+            } else {
+                // Launch failed. Cleanup.
+                g_running = false;
+                if (g_worker.joinable()) g_worker.join();
+                g_host.Shutdown();
+                Excel12(xlFree, 0, 1, &xDll);
+                return 0;
+            }
         }
+{{end}}
+{{end}}
+
+        Excel12(xlFree, 0, 1, &xDll);
+        return 1;
+    } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
     }
-{{end}}
-{{end}}
-
-    Excel12(xlFree, 0, 1, &xDll);
-    return 1;
 }
 
 __declspec(dllexport) int __stdcall xlAutoClose() {
-    LogInfo("Unloading XLL...");
-    if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
+    __try {
+        LogInfo("Unloading XLL...");
+        if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
-    g_running = false;
-    if (g_worker.joinable()) g_worker.join();
-    g_host.Shutdown();
+        g_running = false;
+        if (g_worker.joinable()) g_worker.join();
+        g_host.Shutdown();
 
-    if (g_procInfo.hProcess) {
-        TerminateProcess(g_procInfo.hProcess, 0);
-    }
+        if (g_procInfo.hProcess) {
+            TerminateProcess(g_procInfo.hProcess, 0);
+        }
 
-    if (g_monitor.joinable()) g_monitor.join();
+        if (g_monitor.joinable()) g_monitor.join();
 
-    if (g_procInfo.hProcess) {
-        CloseHandle(g_procInfo.hProcess);
-        g_procInfo.hProcess = NULL;
+        if (g_procInfo.hProcess) {
+            CloseHandle(g_procInfo.hProcess);
+            g_procInfo.hProcess = NULL;
+        }
+        if (g_procInfo.hJob) {
+            CloseHandle(g_procInfo.hJob);
+            g_procInfo.hJob = NULL;
+        }
+        if (g_procInfo.hShutdownEvent) {
+            CloseHandle(g_procInfo.hShutdownEvent);
+            g_procInfo.hShutdownEvent = NULL;
+        }
+        return 1;
+    } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
+        return 1;
     }
-    if (g_procInfo.hJob) {
-        CloseHandle(g_procInfo.hJob);
-        g_procInfo.hJob = NULL;
-    }
-    if (g_procInfo.hShutdownEvent) {
-        CloseHandle(g_procInfo.hShutdownEvent);
-        g_procInfo.hShutdownEvent = NULL;
-    }
-    return 1;
 }
 
 {{range .Events}}
@@ -332,8 +340,59 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         cacheConfig.ttl = std::chrono::milliseconds({{parseDurationToMs $ttl}});
         cacheConfig.jitter = std::chrono::milliseconds({{parseDurationToMs $.Cache.Jitter}});
 
-        std::vector<LPXLOPER12> cacheArgs = { {{range .Args}}{{if eq .Type "string"}}(LPXLOPER12){{.Name}}{{else}}(LPXLOPER12){{.Name}}{{end}}, {{end}} };
+        // Prepare temporary XLOPERs for non-pointer arguments
+        std::vector<XLOPER12> tempArgs({{len .Args}});
+        std::vector<LPXLOPER12> cacheArgs;
+        cacheArgs.reserve({{len .Args}});
+
+        {{range $j, $arg := .Args}}
+        {
+            XLOPER12& xArg = tempArgs[{{$j}}];
+            {{if eq .Type "int"}}
+            xArg.xltype = xltypeInt;
+            xArg.val.w = {{.Name}};
+            cacheArgs.push_back(&xArg);
+            {{else if eq .Type "float"}}
+            xArg.xltype = xltypeNum;
+            xArg.val.num = {{.Name}};
+            cacheArgs.push_back(&xArg);
+            {{else if eq .Type "bool"}}
+            xArg.xltype = xltypeBool;
+            xArg.val.xbool = {{.Name}} ? 1 : 0;
+            cacheArgs.push_back(&xArg);
+            {{else if eq .Type "string"}}
+            // Convert string to temp XLOPER12 (requires creating a Pascal String buffer)
+            // But we don't want to alloc. We just want to wrap it for MakeCacheKey serialization.
+            // Since MakeCacheKey uses SerializeXLOPER which expects xltypeStr with Pascal String,
+            // we must conform.
+            xArg.xltype = xltypeStr;
+            // WStringToPascalString returns std::vector<wchar_t>. We need to keep it alive.
+            // This is tricky inside this scope.
+            // Alternative: MakeCacheKey should accept a variant or we serialize manually here.
+            // Simpler: Just make the vector locally.
+            // But we are in a loop.
+            // Let's defer string handling or alloc.
+            // For now, let's just create it. The vector will die at end of scope? No.
+            // We can define a thread_local buffer or just alloc/free.
+            // Actually, we can just use CreateStringXLOPER helper which allocs, then free it.
+            xArg = CreateStringXLOPER(({{.Name}}) ? StringToWString({{.Name}}) : L"");
+            xArg.xltype |= xlbitDLLFree; // Mark for freeing if we use xlAutoFree? No, we handle it manually.
+            cacheArgs.push_back(&xArg);
+            {{else}}
+            // Already a pointer (range, grid, numgrid, any, or pointer-to-scalar)
+            cacheArgs.push_back((LPXLOPER12){{.Name}});
+            {{end}}
+        }
+        {{end}}
+
         std::string cacheKey = xll::MakeCacheKey("{{.Name}}", cacheArgs);
+
+        // Cleanup temporary string allocations
+        {{range $j, $arg := .Args}}
+        {{if eq .Type "string"}}
+        delete[] tempArgs[{{$j}}].val.str;
+        {{end}}
+        {{end}}
 
         std::vector<uint8_t> cachedData;
         if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
