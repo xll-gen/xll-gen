@@ -103,7 +103,7 @@ void WorkerLoop() {
 
     auto lastCleanup = std::chrono::steady_clock::now();
 
-    __try {
+    XLL_SAFE_BLOCK_BEGIN
         while (g_workerRunning) {
             // Updated Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType)
             bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType) -> int32_t {
@@ -135,9 +135,7 @@ void WorkerLoop() {
                 lastCleanup = now;
             }
         }
-    } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
-        // Worker crashed
-    }
+    XLL_SAFE_BLOCK_END_VOID
 }
 
 void StartWorker() {
