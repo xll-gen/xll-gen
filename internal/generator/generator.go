@@ -54,8 +54,12 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		if strings.HasPrefix(name, "tools/") {
 			// e.g. tools/compressor.cpp -> generated/cpp/tools/compressor.cpp
 			destPath = filepath.Join(cppDir, name)
+		} else if strings.HasPrefix(name, "include/") {
+			// e.g. include/SHMAllocator.h -> generated/cpp/include/SHMAllocator.h
+			// We join with cppDir because 'name' already includes 'include/'
+			destPath = filepath.Join(cppDir, name)
 		} else {
-			// default: include/
+			// default: files in root map to include/
 			destPath = filepath.Join(includeDir, name)
 		}
 
