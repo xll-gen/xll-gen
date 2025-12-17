@@ -268,3 +268,5 @@ Ensure the XLL and the Go server are using the same shared memory name.
 ## License
 
 This project is licensed under the GNU General Public License v3.0. Note that the generated Excel SDK files are subject to their own license terms.
+
+This project uses third-party libraries during the build process via `FetchContent`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
