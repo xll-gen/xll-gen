@@ -22,7 +22,7 @@ table Num { val: double; }
 table Int { val: int; }
 table Str { val: string; }
 table Err { val: XlError = Null; }
-table AsyncHandle { val: ulong; }
+table AsyncHandle { val: [ubyte]; }
 table Nil { }
 table RefCache { key: string; }
 
@@ -36,6 +36,7 @@ struct Rect {
 table Range {
   sheet_name: string;
   refs: [Rect];
+  format: string;
 }
 
 union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil }
@@ -103,7 +104,7 @@ table CalculationEndedResponse {
 }
 
 table AsyncResult {
-  handle: ulong;
+  handle: [ubyte];
   result: Any;
   error: string;
 }

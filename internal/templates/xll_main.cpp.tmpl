@@ -337,7 +337,18 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         {
             XLOPER12 xCaller;
             if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
-                caller_off = ConvertRange(&xCaller, builder);
+                std::string callerFormat = "";
+                XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
+                XLOPER12 xFormat;
+                if (Excel12(xlfGetCell, &xFormat, 2, &xType, &xCaller) == xlretSuccess) {
+                    if (xFormat.xltype == xltypeStr) {
+                         std::wstring ws = PascalToWString(xFormat.val.str);
+                         callerFormat = ConvertExcelString(ws.c_str());
+                    }
+                    Excel12(xlFree, 0, 1, &xFormat);
+                }
+
+                caller_off = ConvertRange(&xCaller, builder, callerFormat);
                 if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
                     Excel12(xlFree, 0, 1, &xCaller);
                 }

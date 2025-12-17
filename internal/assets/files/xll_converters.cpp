@@ -28,7 +28,7 @@ std::wstring GetSheetName(LPXLOPER12 pxRef) {
     return L"";
 }
 
-flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
+flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder, const std::string& format) {
     std::wstring sheet = GetSheetName(op);
 
     std::vector<protocol::Rect> rects;
@@ -44,7 +44,7 @@ flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::Fl
         rects.emplace_back(r.rwFirst, r.rwLast, r.colFirst, r.colLast);
     }
 
-    return protocol::CreateRangeDirect(builder, std::string(sheet.begin(), sheet.end()).c_str(), &rects);
+    return protocol::CreateRangeDirect(builder, std::string(sheet.begin(), sheet.end()).c_str(), &rects, format.empty() ? nullptr : format.c_str());
 }
 
 flatbuffers::Offset<protocol::Scalar> ConvertScalar(const XLOPER12& cell, flatbuffers::FlatBufferBuilder& builder) {
