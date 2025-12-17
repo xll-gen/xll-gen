@@ -129,6 +129,16 @@ func TestGenerate_Fixes(t *testing.T) {
 			"case jobQueue <- func() {",
 			"default:",
 		}, nil)
+
+	// Check xll_log.cpp fixes
+	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_log.cpp"),
+		[]string{
+			"g_logPath = WideToUtf8(path)", // Check correct assignment
+			"g_logLevel = LogLevel::INFO;", // Check default or assignment
+		},
+		[]string{
+			"base + L\"_native\" + ext", // Check bad assignment
+		})
 }
 
 // TestRepro_MemoryLeak verifies that memory leak fixes are present.
