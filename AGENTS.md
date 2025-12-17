@@ -577,6 +577,44 @@ Use this guide to understand what needs to be updated when you make a change in 
 | **`pkg/server`** | 1. Update `server.go.tmpl` if the API used by the generated code changes.<br>2. Rebuild `xll-gen` (if template changed).<br>3. Run `go get -u github.com/xll-gen/xll-gen/pkg/server` in the user project (or replace directive in tests). |
 | **`shm` Library** | 1. Update `go.mod` in `xll-gen`.<br>2. Update `GIT_TAG` in `internal/templates/CMakeLists.txt.tmpl`.<br>3. Update C++ assets (`xll_ipc.cpp`, etc.) if C++ API changed.<br>4. Update Go assets (`pkg/server`, templates) if Go API changed. |
 
+### Co-Change Clusters
+
+The following diagram illustrates the files that typically need to be modified together ("Sets").
+
+```mermaid
+graph TD
+    subgraph Protocol_Set [Protocol & Schema]
+        P_FBS[internal/templates/protocol.fbs]
+        P_PKG[pkg/protocol]
+        P_H[internal/assets/files/protocol_generated.h]
+
+        P_FBS <-->|Must Sync| P_PKG
+        P_FBS <-->|Must Sync| P_H
+    end
+
+    subgraph SHM_Set [Shared Memory Integration]
+        SHM[shm Library Update]
+        GO_MOD[go.mod]
+        CMAKE[internal/templates/CMakeLists.txt.tmpl]
+        CPP_IPC[internal/assets/files/xll_ipc.cpp]
+        PKG_SRV[pkg/server]
+
+        SHM -->|Version| GO_MOD
+        SHM -->|GIT_TAG| CMAKE
+        SHM -->|API Usage| CPP_IPC
+        SHM -->|API Usage| PKG_SRV
+    end
+
+    subgraph Generator_Set [Generator & Templates]
+        TMPL[internal/templates/*.tmpl]
+        GEN[internal/generator/*.go]
+        TYPES[internal/generator/types.go]
+
+        TMPL <-->|Logic| GEN
+        GEN <-->|Definitions| TYPES
+    end
+```
+
 ## 15. Reference: Async UDF & RTD
 
 This section provides external references for implementing and understanding Async UDF (native async) and RTD (Real-Time Data) in XLL.
