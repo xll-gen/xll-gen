@@ -58,7 +58,7 @@ The project is defined by a `xll.yaml` file. This is the source of truth for cod
 ```yaml
 project:
   name: "my-quant-lib"
-  version: "0.1.0"
+  version: "0.2.0"
 
 # Code generation settings
 gen:
@@ -71,7 +71,7 @@ build:
 
 logging:
   level: info
-  path: "server.log"
+  dir: "."
 
 server:
   workers: 0
@@ -263,7 +263,7 @@ For types with multiple representation options, we stick to the following canoni
 | **Async** | `X` | `void *` | Async handle (Excel 2010+). |
 
 **Strict Value Policy:**
-We do **not** use optional/nullable scalar pointer types (e.g., `int?` -> `N` (int*), `float?` -> `E` (double*), `bool?` -> `L` (short*)).
+We do **not** use optional/nullable scalar pointer types (e.g., `int?`, `float?`, `bool?`, `string?`).
 *   **Reason**: Excel passes a valid pointer to a zero value (0, 0.0, false) for empty cells, making it impossible to distinguish between an explicit zero and a missing argument.
 *   **Solution**: Users requiring optional inputs must use `any` (or `scalar`), which receives the raw `XLOPER12`. The generated code or user logic can then check `xltypeMissing` or empty variants.
 
@@ -556,6 +556,7 @@ graph TD
 
     GenGo -->|Imports| PkgServer[pkg/server]
     GenGo -->|Imports| PkgProtocol[pkg/protocol]
+    GenGo -->|Imports| PkgLog[pkg/log]
 
     GenCPP -->|Compiles with| SHM[shm Library]
     GenGo -->|Imports| SHM_Go[shm Go Client]

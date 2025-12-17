@@ -142,7 +142,7 @@ build:
 
 logging:
   level: "info"
-  dir: "" # Defaults to xll directory
+  dir: "" # Defaults to working directory
 
 server:
   workers: 0         # 0 = Use runtime.NumCPU()
@@ -196,7 +196,7 @@ The `server.launch` section supports the following variables in `command` and `c
 | `grid` | Generic 2D Array | `*types.Grid` | `Array` |
 | `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
 
-> **Note**: Nullable scalar types (`int?`, `float?`, `bool?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
+> **Note**: Nullable scalar types (`int?`, `float?`, `bool?`, `string?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
 ### Custom FlatBuffers Includes
 
@@ -259,7 +259,7 @@ Run `xll-gen doctor`. It will attempt to download the correct version of the Fla
 Ensure the XLL and the Go server are using the same shared memory name.
 
 **"Server Logs"**:
-*   **Standard Mode**: Logs are located in the directory specified by `logging.path` (or `logging.dir`).
+*   **Standard Mode**: Logs are located in the directory specified by `logging.dir`.
 *   **Singlefile Mode**: Logs are located in the temporary directory (e.g., `%TEMP%\<ProjectName>\`).
     *   `xll_launch.log`: Launch process stdout/stderr.
     *   `<Project>_native.log`: C++ XLL internal errors.
