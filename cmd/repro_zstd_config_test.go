@@ -12,6 +12,7 @@ import (
 )
 
 func TestRepro_ZstdConfig(t *testing.T) {
+	t.Parallel()
 	tmpDir, err := os.MkdirTemp("", "repro_zstd_config")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -27,14 +28,8 @@ func TestRepro_ZstdConfig(t *testing.T) {
 	runGen := func(t *testing.T, cfg *config.Config, name string) {
 		config.ApplyDefaults(cfg)
 
-		cwd, _ := os.Getwd()
-		defer os.Chdir(cwd)
-		if err := os.Chdir(tmpDir); err != nil {
-			t.Fatalf("Failed to chdir: %v", err)
-		}
-
 		opts := generator.Options{DisablePidSuffix: true}
-		if err := generator.Generate(cfg, "repro_zstd", opts); err != nil {
+		if err := generator.Generate(cfg, tmpDir, "repro_zstd", opts); err != nil {
 			t.Fatalf("Generate failed: %v", err)
 		}
 

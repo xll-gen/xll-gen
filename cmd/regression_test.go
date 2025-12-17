@@ -3,7 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"github.com/xll-gen/xll-gen/internal/regtest"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,13 +11,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/regtest"
+	"gopkg.in/yaml.v3"
 )
 
 // --- Helpers ---
 
-// setupMockFlatc creates a dummy flatc binary in the temp dir and adds it to PATH.
-// Returns a cleanup function to restore PATH.
-func setupMockFlatc(t *testing.T, tempDir string) func() {
+// setupMockFlatc creates a dummy flatc binary in the temp dir.
+// Returns the path to the binary and a cleanup function.
+func setupMockFlatc(t *testing.T, tempDir string) (string, func()) {
 	binDir := filepath.Join(tempDir, "bin")
 	if err := os.MkdirAll(binDir, 0755); err != nil {
 		t.Fatal(err)
@@ -38,38 +43,69 @@ func setupMockFlatc(t *testing.T, tempDir string) func() {
 		t.Fatal(err)
 	}
 
-	// Update PATH
-	oldPath := os.Getenv("PATH")
-	os.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
+	// Make executable on unix
+	if runtime.GOOS != "windows" {
+		os.Chmod(flatcPath, 0755)
+	}
 
-	return func() {
-		os.Setenv("PATH", oldPath)
+	return flatcPath, func() {
+		os.Remove(flatcPath)
 	}
 }
 
-// setupGenTest prepares a temporary directory, runs init, and changes WD.
-// It returns the tempDir and a cleanup function.
+// runGenerateInDir runs the generator in the specified directory.
+func runGenerateInDir(t *testing.T, dir string, opts generator.Options) {
+	// Read xll.yaml
+	cfgPath := filepath.Join(dir, "xll.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read xll.yaml: %v", err)
+	}
+	var cfg config.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("failed to parse xll.yaml: %v", err)
+	}
+	config.ApplyDefaults(&cfg)
+	if err := config.Validate(&cfg); err != nil {
+		t.Fatalf("config validate failed: %v", err)
+	}
+
+	// Read go.mod for module name
+	goModPath := filepath.Join(dir, "go.mod")
+	modData, err := os.ReadFile(goModPath)
+	if err != nil {
+		t.Fatalf("failed to read go.mod: %v", err)
+	}
+	modName := ""
+	for _, line := range strings.Split(string(modData), "\n") {
+		if strings.HasPrefix(line, "module ") {
+			modName = strings.TrimSpace(strings.TrimPrefix(line, "module "))
+			break
+		}
+	}
+	if modName == "" {
+		t.Fatalf("module name not found in go.mod")
+	}
+
+	if err := generator.Generate(&cfg, dir, modName, opts); err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+}
+
+// setupGenTest prepares a temporary directory and runs init.
+// It returns the projectDir (inside tempDir) and a cleanup function.
 func setupGenTest(t *testing.T, name string) (string, func()) {
 	tempDir, err := os.MkdirTemp("", "xll-test-"+name)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	origWd, _ := os.Getwd()
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := runInit(name, true, false); err != nil {
+	projectDir := filepath.Join(tempDir, name)
+	if err := runInit(projectDir, true, false); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	if err := os.Chdir(name); err != nil {
-		t.Fatalf("Chdir failed: %v", err)
-	}
-
-	return tempDir, func() {
-		os.Chdir(origWd)
+	return projectDir, func() {
 		os.RemoveAll(tempDir)
 	}
 }
@@ -97,19 +133,18 @@ func checkContent(t *testing.T, path string, mustContain []string, mustNotContai
 
 // TestGenerate_Fixes verifies that specific bugs are not present in the generated code.
 func TestGenerate_Fixes(t *testing.T) {
-	tempDir, cleanup := setupGenTest(t, "repro_project")
+	t.Parallel()
+	projectDir, cleanup := setupGenTest(t, "repro_project")
 	defer cleanup()
 
-	pathCleanup := setupMockFlatc(t, tempDir)
+	flatcPath, pathCleanup := setupMockFlatc(t, filepath.Dir(projectDir))
 	defer pathCleanup()
 
-	if err := runGenerate(); err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
+	runGenerateInDir(t, projectDir, generator.Options{FlatcPath: flatcPath})
 
-	checkContent(t, "generated/cpp/xll_main.cpp",
+	checkContent(t, filepath.Join(projectDir, "generated/cpp/xll_main.cpp"),
 		[]string{
-			"LPXLOPER12 name",         // Correct String Arg Type
+			"LPXLOPER12 name", // Correct String Arg Type
 		},
 		[]string{
 			"const XLL_PASCAL_STRING* name", // Incorrect String Arg Type
@@ -117,13 +152,13 @@ func TestGenerate_Fixes(t *testing.T) {
 			"xll::MemoryPool",               // Internal usage
 		})
 
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_worker.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_worker.cpp"),
 		[]string{
 			"if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE)", // MSG_BATCH_ASYNC_RESPONSE
 			"return 1;",                                              // ACK
 		}, nil)
 
-	checkContent(t, "generated/server.go",
+	checkContent(t, filepath.Join(projectDir, "generated/server.go"),
 		[]string{
 			"select {",
 			"case jobQueue <- func() {",
@@ -131,7 +166,7 @@ func TestGenerate_Fixes(t *testing.T) {
 		}, nil)
 
 	// Check xll_log.cpp fixes
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_log.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_log.cpp"),
 		[]string{
 			"g_logPath = WideToUtf8(path)", // Check correct assignment
 			"g_logLevel = LogLevel::INFO;", // Check default or assignment
@@ -143,28 +178,27 @@ func TestGenerate_Fixes(t *testing.T) {
 
 // TestRepro_MemoryLeak verifies that memory leak fixes are present.
 func TestRepro_MemoryLeak(t *testing.T) {
-	tempDir, cleanup := setupGenTest(t, "mem_check")
+	t.Parallel()
+	projectDir, cleanup := setupGenTest(t, "mem_check")
 	defer cleanup()
 
-	pathCleanup := setupMockFlatc(t, tempDir)
+	flatcPath, pathCleanup := setupMockFlatc(t, filepath.Dir(projectDir))
 	defer pathCleanup()
 
-	if err := runGenerate(); err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
+	runGenerateInDir(t, projectDir, generator.Options{FlatcPath: flatcPath})
 
 	// 1. xll_mem.cpp (xlAutoFree12 leak)
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_mem.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_mem.cpp"),
 		[]string{
-			"xltypeRef", // Handled
+			"xltypeRef",                          // Handled
 			"delete[] (char*)p->val.mref.lpmref", // Correct deletion
 		}, nil)
 
 	// 2. xll_converters.cpp (AnyToXLOPER12 leaks and missing features)
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_converters.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_converters.cpp"),
 		[]string{
-			"case protocol::AnyValue::Range:",  // Missing feature fixed
-			"new char[sizeof(XLMREF12)",        // Correct Allocation for Ref
+			"case protocol::AnyValue::Range:", // Missing feature fixed
+			"new char[sizeof(XLMREF12)",       // Correct Allocation for Ref
 		},
 		[]string{
 			"x->xltype = xltypeInt;",  // Missing xlbitDLLFree
@@ -175,7 +209,7 @@ func TestRepro_MemoryLeak(t *testing.T) {
 		})
 
 	// 3. xll_async.cpp (Use safe cleanup)
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_async.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_async.cpp"),
 		[]string{
 			"xlAutoFree12(pxResult)", // Safe cleanup used
 		}, nil)
@@ -183,30 +217,26 @@ func TestRepro_MemoryLeak(t *testing.T) {
 
 // TestRepro_NestedIPC_Corruption verifies that nested IPC calls do not corrupt the zero-copy slot.
 func TestRepro_NestedIPC_Corruption(t *testing.T) {
-	tempDir, cleanup := setupGenTest(t, "repro_project")
+	t.Parallel()
+	projectDir, cleanup := setupGenTest(t, "repro_project")
 	defer cleanup()
 
-	pathCleanup := setupMockFlatc(t, tempDir)
+	flatcPath, pathCleanup := setupMockFlatc(t, filepath.Dir(projectDir))
 	defer pathCleanup()
 
-	if err := runGenerate(); err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
+	runGenerateInDir(t, projectDir, generator.Options{FlatcPath: flatcPath})
 
 	// Verify ConvertAny does not use GetZeroCopySlot
-	// We read the file manually to scope the check to ConvertAny function if possible,
-	// but simple global check is likely sufficient given the context.
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_converters.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_converters.cpp"),
 		[]string{
 			"g_host.Send(", // Must use Send
 		},
 		[]string{
 			// "g_host.GetZeroCopySlot()", // This might appear in OTHER functions, so we can't globally ban it.
-			// We need to check specifically in ConvertAny.
 		})
 
 	// Specific check for ConvertAny body
-	content, _ := os.ReadFile(filepath.Join("generated", "cpp", "include", "xll_converters.cpp"))
+	content, _ := os.ReadFile(filepath.Join(projectDir, "generated", "cpp", "include", "xll_converters.cpp"))
 	sContent := string(content)
 	start := "flatbuffers::Offset<ipc::types::Any> ConvertAny"
 	idx := strings.Index(sContent, start)
@@ -220,6 +250,7 @@ func TestRepro_NestedIPC_Corruption(t *testing.T) {
 
 // TestGenerateStringArgRepro verifies that string arguments are correctly handled.
 func TestGenerateStringArgRepro(t *testing.T) {
+	t.Parallel()
 	// Custom setup because we need specific xll.yaml
 	tempDir, err := os.MkdirTemp("", "xll-gen-string-repro")
 	if err != nil {
@@ -227,14 +258,8 @@ func TestGenerateStringArgRepro(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	pathCleanup := setupMockFlatc(t, tempDir)
+	flatcPath, pathCleanup := setupMockFlatc(t, tempDir)
 	defer pathCleanup()
-
-	origWd, _ := os.Getwd()
-	defer os.Chdir(origWd)
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatal(err)
-	}
 
 	xllContent := `project:
   name: "repro-string-arg"
@@ -250,19 +275,17 @@ functions:
         type: "string"
     return: "string"
 `
-	if err := os.WriteFile("xll.yaml", []byte(xllContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, "xll.yaml"), []byte(xllContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Dummy go.mod
-	if err := os.WriteFile("go.mod", []byte("module repro-string-arg\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module repro-string-arg\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := runGenerate(); err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
+	runGenerateInDir(t, tempDir, generator.Options{FlatcPath: flatcPath})
 
-	checkContent(t, filepath.Join("generated", "cpp", "xll_main.cpp"),
+	checkContent(t, filepath.Join(tempDir, "generated", "cpp", "xll_main.cpp"),
 		[]string{
 			"ConvertExcelString",
 		},
@@ -270,7 +293,7 @@ functions:
 			"WStringToString(msg)",
 		})
 
-	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_utility.cpp"),
+	checkContent(t, filepath.Join(tempDir, "generated", "cpp", "include", "xll_utility.cpp"),
 		[]string{
 			"std::string ConvertExcelString(const wchar_t* wstr)",
 		}, nil)
@@ -278,6 +301,7 @@ functions:
 
 // TestRegression runs an end-to-end regression test.
 func TestRegression(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping regression test in short mode")
 	}
@@ -289,68 +313,59 @@ func TestRegression(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// 2. Init Project
+	// 2. Init Project with Unique Name and SHM
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 	projectName := "smoke_proj"
+	shmName := fmt.Sprintf("smoke_proj_%d", rnd.Intn(100000))
 
 	origWd, _ := os.Getwd()
 	repoRoot := origWd
 	if filepath.Base(repoRoot) == "cmd" {
 		repoRoot = filepath.Dir(repoRoot)
 	}
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(origWd)
 
-	if err := runInit(projectName, false, false); err != nil {
+	projectDir := filepath.Join(tempDir, projectName)
+	if err := runInit(projectDir, false, false); err != nil {
 		t.Fatalf("runInit failed: %v", err)
 	}
 
-	if err := os.Chdir(projectName); err != nil {
-		t.Fatal(err)
-	}
-
+	// Go Mod Replace
 	editCmd := exec.Command("go", "mod", "edit", "-replace", "github.com/xll-gen/xll-gen="+repoRoot)
+	editCmd.Dir = projectDir
 	if out, err := editCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go mod edit replace failed: %v\nOutput: %s", err, out)
 	}
 
-	if err := os.WriteFile("xll.yaml", []byte(regtest.XllYaml), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "xll.yaml"), []byte(regtest.XllYaml), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := runGenerate(); err != nil {
-		t.Fatalf("runGenerate failed: %v", err)
-	}
+	runGenerateInDir(t, projectDir, generator.Options{})
 
-    // Debug: List generated files
-    filepath.Walk("generated", func(path string, info os.FileInfo, err error) error {
-        fmt.Println("GEN:", path)
-        return nil
-    })
-
-	if err := os.WriteFile("main.go", []byte(regtest.ServerGo), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte(regtest.ServerGo), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = projectDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy failed: %v\nOutput: %s", err, out)
 	}
 
-	serverBin := "smoke_proj"
+	serverBin := projectName
 	if runtime.GOOS == "windows" {
 		serverBin += ".exe"
 	}
-	if err := os.MkdirAll("build", 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, "build"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	cmd = exec.Command("go", "build", "-o", filepath.Join("build", serverBin), "main.go")
+	cmd.Dir = projectDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\nOutput: %s", err, out)
 	}
 
-	simDir := "temp_simulation"
+	simDir := filepath.Join(projectDir, "temp_simulation")
 	if err := os.MkdirAll(simDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +406,8 @@ func TestRegression(t *testing.T) {
 		}
 	}
 
-	mockCmd := exec.Command(mockBin)
+	// Run Mock Host with unique SHM name
+	mockCmd := exec.Command(mockBin, shmName)
 	mockStdout, err := mockCmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +440,11 @@ func TestRegression(t *testing.T) {
 		t.Fatal("Mock Host timed out waiting for READY")
 	}
 
-	serverCmd := exec.Command(filepath.Join("build", serverBin), "-xll-shm=smoke_proj")
+	// Run Server with unique SHM name
+	// The server reads xll.yaml, but we are launching it directly.
+	// The -xll-shm flag overrides the generated SHM name.
+	serverCmd := exec.Command(filepath.Join(projectDir, "build", serverBin), "-xll-shm="+shmName)
+	serverCmd.Dir = projectDir
 	serverCmd.Stdout = os.Stdout
 	serverCmd.Stderr = os.Stderr
 	if err := serverCmd.Start(); err != nil {

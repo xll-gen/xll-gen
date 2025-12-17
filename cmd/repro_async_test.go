@@ -8,10 +8,11 @@ import (
 )
 
 func TestRepro_MultipleAsync(t *testing.T) {
-	tempDir, cleanup := setupGenTest(t, "repro_async")
+	t.Parallel()
+	projectDir, cleanup := setupGenTest(t, "repro_async")
 	defer cleanup()
 
-	pathCleanup := setupMockFlatc(t, tempDir)
+	pathCleanup := setupMockFlatc(t, filepath.Dir(projectDir))
 	defer pathCleanup()
 
 	xllContent := `project:
@@ -30,19 +31,17 @@ functions:
     return: "int"
     async: true
 `
-	if err := os.WriteFile("xll.yaml", []byte(xllContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "xll.yaml"), []byte(xllContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Dummy go.mod
-	if err := os.WriteFile("go.mod", []byte("module repro-async\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module repro-async\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := runGenerate(); err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
+	runGenerateInDir(t, projectDir)
 
-	content, err := os.ReadFile(filepath.Join("generated", "server.go"))
+	content, err := os.ReadFile(filepath.Join(projectDir, "generated", "server.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

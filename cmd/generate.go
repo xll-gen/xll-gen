@@ -64,7 +64,7 @@ func runGenerate() error {
 		DisablePidSuffix: disablePidSuffix,
 	}
 
-	return generator.Generate(&cfg, modName, opts)
+	return generator.Generate(&cfg, ".", modName, opts)
 }
 
 // getModuleName extracts the Go module name from the go.mod file in the current directory.

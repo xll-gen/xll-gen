@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/xll-gen/xll-gen/internal/ui"
 )
+
+var flatcMu sync.Mutex
 
 // EnsureFlatc checks for the presence of the 'flatc' compiler.
 // It searches in the system PATH and the user's cache directory.
@@ -23,6 +26,9 @@ import (
 //   - string: The absolute path to the flatc executable.
 //   - error: An error if flatc cannot be found or downloaded.
 func EnsureFlatc() (string, error) {
+	flatcMu.Lock()
+	defer flatcMu.Unlock()
+
 	// Pin to specific version to match CMake configuration
 	const flatcVersion = "v25.9.23"
 	requiredVersion := strings.TrimPrefix(flatcVersion, "v")
