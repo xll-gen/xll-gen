@@ -1,6 +1,7 @@
 #include "include/xll_launch.h"
 #include "include/xll_utility.h"
 #include "include/xll_log.h"
+#include "include/xll_embed.h"
 #include <vector>
 #include <sstream>
 #include <fstream>
@@ -11,7 +12,6 @@
 
 namespace xll {
 
-    // Helper to replace all occurrences of a substring
     static void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring& to) {
         if(from.empty()) return;
         size_t start_pos = 0;
@@ -34,17 +34,14 @@ namespace xll {
         std::wstring& outCwd,
         std::wstring& outLogPath
     ) {
-        // 1. Determine Default Binary Path
         std::wstring defaultBinPath;
         if (!extractedExe.empty()) {
             defaultBinPath = extractedExe;
         } else {
-             // Fallback: Check standard locations
              std::wstring sameDir = xllDir + L"\\" + cfg.projectName + L".exe";
              if (FileExists(sameDir)) {
                  defaultBinPath = sameDir;
              } else {
-                 // Check parent directory
                  size_t lastSlash = xllDir.find_last_of(L"\\");
                  if (lastSlash != std::wstring::npos) {
                      std::wstring parentDir = xllDir.substr(0, lastSlash);
@@ -60,23 +57,18 @@ namespace xll {
              }
         }
 
-        // Determine Bin Dir
         std::wstring binDir = xllDir;
         size_t lastSlashBin = defaultBinPath.find_last_of(L"\\");
         if (lastSlashBin != std::wstring::npos) {
             binDir = defaultBinPath.substr(0, lastSlashBin);
         }
 
-        // 2. Resolve Cwd
-        std::wstring cwd = binDir; // Default to BIN_DIR
+        std::wstring cwd = binDir;
         if (!cfg.cwd.empty()) {
             std::wstring wCwdCfg = StringToWString(cfg.cwd);
-
-            // Perform variable substitution
             ReplaceAll(wCwdCfg, L"${BIN_DIR}", binDir);
             ReplaceAll(wCwdCfg, L"${XLL_DIR}", xllDir);
 
-            // Check if absolute
             bool isAbs = (wCwdCfg.find(L":") != std::wstring::npos || (wCwdCfg.size() > 1 && wCwdCfg[0] == L'\\' && wCwdCfg[1] == L'\\'));
             if (isAbs) {
                 cwd = wCwdCfg;
@@ -85,26 +77,20 @@ namespace xll {
             }
         }
 
-        // 3. Resolve Configured Command
         std::wstring exePath = defaultBinPath;
         if (!cfg.command.empty()) {
             std::string cfgCmd = cfg.command;
             std::wstring wCmd = StringToWString(cfgCmd);
 
-            // Check for ${BIN} variable
             std::wstring varBin = L"${BIN}";
             if (wCmd.find(varBin) != std::wstring::npos) {
                 ReplaceAll(wCmd, varBin, defaultBinPath);
                 exePath = wCmd;
             } else {
                 if (cfg.isSingleFile) {
-                    // In singlefile mode, if the command explicitly points to the project executable (default config),
-                    // we should ignore it and use the extracted binary path instead.
                     std::string projExe = WideToUtf8(cfg.projectName) + ".exe";
                     if (cfgCmd.find(projExe) != std::string::npos) {
-                        // Ignore, keep exePath as defaultBinPath (extracted)
                     } else {
-                        // Custom command handling
                         bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
                         if (isCmdAbs) {
                             exePath = wCmd;
@@ -117,7 +103,6 @@ namespace xll {
                         }
                     }
                 } else {
-                    // Standard Mode
                      bool isCmdAbs = (wCmd.find(L":") != std::wstring::npos || (wCmd.size() > 1 && wCmd[0] == L'\\' && wCmd[1] == L'\\'));
                      if (isCmdAbs) {
                          exePath = wCmd;
@@ -132,7 +117,6 @@ namespace xll {
             }
         }
 
-        // Append SHM Flag
         std::wstring cmd;
         if (!exePath.empty() && exePath[0] == L'"') {
             cmd = exePath + L" -xll-shm=" + StringToWString(cfg.shmName);
@@ -145,47 +129,62 @@ namespace xll {
         outLogPath = cwd + L"\\xll_launch.log";
     }
 
-    // Helper to create environment block
+    bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo, std::wstring& outLogPath) {
+        std::wstring extractedExe = L"";
+        if (cfg.isSingleFile) {
+            if (!embed::ExtractEmbeddedExe(cfg.projectName, extractedExe)) {
+                 LogInfo("No embedded executable found or extraction failed. Trying external...");
+            }
+        }
+
+        std::wstring launchCmd, launchCwd;
+        ResolveServerPath(xllDir, extractedExe, cfg, launchCmd, launchCwd, outLogPath);
+
+        LogInfo("Launching Server: " + WideToUtf8(launchCmd));
+
+        std::map<std::wstring, std::wstring> env;
+        env[L"XLL_DIR"] = xllDir;
+        env[L"XLL_SHM"] = StringToWString(cfg.shmName);
+
+        outInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+        if (!LaunchProcess(launchCmd, launchCwd, outLogPath, outInfo, env)) {
+             MessageBoxA(NULL, "Failed to launch server process. See xll_launch.log.", "XLL Error", MB_OK | MB_ICONERROR);
+             return false;
+        }
+        return true;
+    }
+
     std::vector<wchar_t> CreateEnvBlock(const std::map<std::wstring, std::wstring>& env) {
         std::vector<wchar_t> block;
         std::set<std::wstring> seenKeys;
 
-        // Add overrides first (they take precedence in our logic, or we just add them and skip duplicates from system)
         for (const auto& kv : env) {
             std::wstring entry = kv.first + L"=" + kv.second;
             block.insert(block.end(), entry.begin(), entry.end());
             block.push_back(0);
-
             std::wstring keyUpper = kv.first;
             std::transform(keyUpper.begin(), keyUpper.end(), keyUpper.begin(), ::towupper);
             seenKeys.insert(keyUpper);
         }
 
-        // Get current environment
         LPWCH currEnv = GetEnvironmentStringsW();
         if (currEnv) {
             LPWCH ptr = currEnv;
             while (*ptr) {
                 size_t len = wcslen(ptr);
                 std::wstring entry(ptr, len);
-
-                // Parse key
                 size_t eqPos = entry.find(L'=');
                 if (eqPos != std::wstring::npos) {
                     std::wstring key = entry.substr(0, eqPos);
-
-                    // Skip if key starts with = (e.g. =C:, =ExitCode) - internal variables
                     if (!key.empty() && key[0] != L'=') {
                         std::wstring keyUpper = key;
                         std::transform(keyUpper.begin(), keyUpper.end(), keyUpper.begin(), ::towupper);
-
-                        // Only add if not overridden
                         if (seenKeys.find(keyUpper) == seenKeys.end()) {
                             block.insert(block.end(), entry.begin(), entry.end());
                             block.push_back(0);
                         }
                     } else {
-                        // Pass through internal vars
                          block.insert(block.end(), entry.begin(), entry.end());
                          block.push_back(0);
                     }
@@ -194,13 +193,11 @@ namespace xll {
             }
             FreeEnvironmentStringsW(currEnv);
         }
-
-        block.push_back(0); // Double null termination
+        block.push_back(0);
         return block;
     }
 
     bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv) {
-        // Create Job Object
         outInfo.hJob = CreateJobObject(NULL, NULL);
         if (outInfo.hJob) {
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = { 0 };
@@ -261,7 +258,6 @@ namespace xll {
         }
     }
 
-    // Overload for backward compatibility/simplicity
     bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo) {
         std::map<std::wstring, std::wstring> emptyEnv;
         return LaunchProcess(cmd, cwd, logPath, outInfo, emptyEnv);
@@ -272,9 +268,7 @@ namespace xll {
         DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
 
         if (res == WAIT_OBJECT_0) {
-            // Process exited. Check if shutdown was requested concurrently.
             if (WaitForSingleObject(info.hShutdownEvent, 0) == WAIT_TIMEOUT) {
-                // It was a crash (or unexpected exit)
                 DWORD exitCode = 0;
                 GetExitCodeProcess(info.hProcess, &exitCode);
 
