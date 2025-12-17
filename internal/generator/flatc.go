@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/xll-gen/xll-gen/internal/ui"
 )
 
 // EnsureFlatc checks for the presence of the 'flatc' compiler.
@@ -158,7 +160,8 @@ func downloadFlatc(destDir string, version string) error {
 		return fmt.Errorf("no suitable binary found for %s/%s", osName, arch)
 	}
 
-	fmt.Printf("Downloading %s...\n", assetName)
+	s := ui.StartSpinner(fmt.Sprintf("Downloading %s...", assetName))
+	defer s.Stop()
 
 	// Create temp file for zip
 	tmpFile, err := os.CreateTemp("", "flatc-*.zip")
@@ -216,6 +219,7 @@ func downloadFlatc(destDir string, version string) error {
 			if err != nil {
 				return err
 			}
+			s.Stop()
 			fmt.Printf("Extracted %s to %s\n", f.Name, destPath)
 		}
 	}

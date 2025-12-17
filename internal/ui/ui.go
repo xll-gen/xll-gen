@@ -2,6 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"strings"
+	"sync"
+	"time"
 )
 
 var (
@@ -28,4 +31,49 @@ func PrintError(label, detail string) {
 
 func PrintWarning(label, detail string) {
 	fmt.Printf("  %s!%s %-15s %s%s\n", ColorYellow, ColorReset, label, ColorYellow, detail+ColorReset)
+}
+
+// Spinner represents a loading indicator
+type Spinner struct {
+	msg      string
+	stopChan chan struct{}
+	doneChan chan struct{}
+	stopOnce sync.Once
+}
+
+// StartSpinner starts a new spinner with the given message
+func StartSpinner(msg string) *Spinner {
+	s := &Spinner{
+		msg:      msg,
+		stopChan: make(chan struct{}),
+		doneChan: make(chan struct{}),
+	}
+	go s.run()
+	return s
+}
+
+func (s *Spinner) run() {
+	defer close(s.doneChan)
+	chars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	i := 0
+	for {
+		select {
+		case <-s.stopChan:
+			return
+		default:
+			fmt.Printf("\r%s%s%s %s", ColorCyan, chars[i], ColorReset, s.msg)
+			time.Sleep(100 * time.Millisecond)
+			i = (i + 1) % len(chars)
+		}
+	}
+}
+
+// Stop stops the spinner and clears the line. Safe to call multiple times.
+func (s *Spinner) Stop() {
+	s.stopOnce.Do(func() {
+		close(s.stopChan)
+	})
+	<-s.doneChan // Wait for goroutine to finish
+	// Clear line
+	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.msg)+10))
 }
