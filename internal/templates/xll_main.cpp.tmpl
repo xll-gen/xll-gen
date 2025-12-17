@@ -66,9 +66,9 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::string projName = "{{.ProjectName}}";
         bool isSingleFile = false;
 
-        {{if eq .Build.Singlefile "xll"}}
+        {{if eq .Embed.Singlefile "xll"}}
         isSingleFile = true;
-        tempPattern = "{{.Build.TempDir}}";
+        tempPattern = "{{.Embed.TempDir}}";
         {{end}}
 
         InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);

@@ -119,6 +119,16 @@ std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
 }
 
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
+    // Parse Level
+    std::string l = level;
+    std::transform(l.begin(), l.end(), l.begin(), ::tolower);
+    if (l == "debug") g_logLevel = LogLevel::DEBUG;
+    else if (l == "info") g_logLevel = LogLevel::INFO;
+    else if (l == "warn") g_logLevel = LogLevel::WARN;
+    else if (l == "error") g_logLevel = LogLevel::ERROR;
+    else if (l == "none") g_logLevel = LogLevel::NONE;
+    else g_logLevel = LogLevel::INFO; // Default
+
     // Determine path
     std::wstring path = configuredPath;
 
@@ -147,6 +157,5 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
         path = tempDir + L"\\" + logFileName;
     }
 
-    std::wstring wLogName = base + L"_native" + ext;
-    g_logPath = WideToUtf8(wLogName);
+    g_logPath = WideToUtf8(path);
 }
