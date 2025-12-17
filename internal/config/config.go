@@ -96,7 +96,7 @@ type ProjectConfig struct {
 
 // GenConfig controls the code generation process.
 type GenConfig struct {
-	// Go contains Go-specific generation settings.
+	// Go contains Go-specific code generation settings.
 	Go               GoConfig `yaml:"go"`
 	// DisablePidSuffix, if true, prevents appending the PID to the shared memory name.
 	DisablePidSuffix bool     `yaml:"disable_pid_suffix"`
@@ -111,25 +111,25 @@ type GoConfig struct {
 // Function represents a single Excel function definition.
 type Function struct {
 	// Name is the name of the function as exposed to Excel.
-	Name        string               `yaml:"name"`
+	Name        string `yaml:"name"`
 	// Description is the help text displayed in the Excel function wizard.
-	Description string               `yaml:"description"`
+	Description string `yaml:"description"`
 	// Args is the list of arguments accepted by the function.
-	Args        []Arg                `yaml:"args"`
+	Args        []Arg  `yaml:"args"`
 	// Return is the return type of the function (e.g., "int", "string", "any").
-	Return      string               `yaml:"return"`
+	Return      string `yaml:"return"`
 	// Volatile marks the function as volatile (recalculated on every sheet change).
-	Volatile    bool                 `yaml:"volatile"`
+	Volatile    bool   `yaml:"volatile"`
 	// Async marks the function as asynchronous.
-	Async       bool                 `yaml:"async"`
+	Async       bool   `yaml:"async"`
 	// Category is the category under which the function appears in Excel.
-	Category    string               `yaml:"category"`
+	Category    string `yaml:"category"`
 	// Shortcut is the keyboard shortcut for the function (e.g., "Ctrl+Shift+A").
-	Shortcut    string               `yaml:"shortcut"`
+	Shortcut    string `yaml:"shortcut"`
 	// HelpTopic is the URL or path to the help topic.
-	HelpTopic   string               `yaml:"help_topic"`
+	HelpTopic   string `yaml:"help_topic"`
 	// Timeout is the execution timeout for this specific function.
-	Timeout     string               `yaml:"timeout"`
+	Timeout     string `yaml:"timeout"`
 	// Caller indicates if the function requires information about the calling cell.
 	Caller      bool                 `yaml:"caller"`
 	// Cache configures caching for this specific function.
