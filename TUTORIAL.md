@@ -52,7 +52,7 @@ Replace the contents with the following:
 ```yaml
 project:
   name: "FibDemo"
-  version: "0.1.0"
+  version: "0.2.0"
 
 gen:
   go:
@@ -63,7 +63,7 @@ build:
 
 logging:
   level: info
-  path: FibDemo.log
+  dir: "."
 
 server:
   workers: 0 # Use all CPUs
