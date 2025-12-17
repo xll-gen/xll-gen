@@ -15,7 +15,7 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
         if (!wrapper) continue;
 
         switch (wrapper->cmd_type()) {
-            case protocol::Command_SetCommand: {
+            case protocol::Command::SetCommand: {
                 const auto* cmd = wrapper->cmd_as_SetCommand();
                 if (!cmd || !cmd->target()) continue;
 
@@ -31,7 +31,7 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                 if (pxValue) xlAutoFree12(pxValue);
                 break;
             }
-            case protocol::Command_FormatCommand: {
+            case protocol::Command::FormatCommand: {
                 const auto* cmd = wrapper->cmd_as_FormatCommand();
                 if (!cmd || !cmd->target() || !cmd->format()) continue;
 
