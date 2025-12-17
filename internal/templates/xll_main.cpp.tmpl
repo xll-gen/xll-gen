@@ -360,6 +360,10 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         }
         {{end}}
 
+        {{if .Async}}
+        auto asyncHandle_vec = builder.CreateVector((const uint8_t*)asyncHandle, sizeof(XLOPER12));
+        {{end}}
+
         ipc::{{.Name}}RequestBuilder reqBuilder(builder);
         {{range .Args}}
         {{if eq .Type "string"}}
@@ -386,7 +390,6 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
         {{end}}
         {{if .Async}}
-        auto asyncHandle_vec = builder.CreateVector((const uint8_t*)asyncHandle, sizeof(XLOPER12));
         reqBuilder.add_async_handle(asyncHandle_vec);
         {{end}}
         auto req = reqBuilder.Finish();
