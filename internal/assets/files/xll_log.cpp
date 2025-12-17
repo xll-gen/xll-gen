@@ -1,6 +1,5 @@
 #include "include/xll_log.h"
-#include "include/xll_utility.h"
-#include "include/xll_embed.h"
+#include "include/xll_utility.h" // For StringToWString
 #include <windows.h>
 #include <fstream>
 #include <chrono>
@@ -89,10 +88,14 @@ unsigned long LogException(unsigned long exceptionCode, void* exceptionPointers)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-// Helper to expand environment variables (Wide)
-static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
+// Helper to expand environment variables
+std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
+    // ExpandEnvironmentStringsW handles %VAR% natively
+    // It doesn't handle ${VAR}, so we might need simple replacement if templates use ${}
+    // However, xll_embed's ExpandEnvVars handled ${} to %.
+    // Let's implement simple ${} -> % conversion for consistency.
+
     std::wstring p = pattern;
-    // Replace ${VAR} with %VAR%
     size_t start_pos = 0;
     while((start_pos = p.find(L"${", start_pos)) != std::wstring::npos) {
         size_t end_pos = p.find(L"}", start_pos);
@@ -105,114 +108,43 @@ static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
         }
     }
 
-    wchar_t buffer[MAX_PATH];
-    DWORD res = ExpandEnvironmentStringsW(p.c_str(), buffer, MAX_PATH);
-    if (res == 0 || res > MAX_PATH) {
-        if (res > MAX_PATH) {
-             std::vector<wchar_t> largeBuf(res);
-             if (ExpandEnvironmentStringsW(p.c_str(), largeBuf.data(), res) != 0) {
-                 return std::wstring(largeBuf.data());
-             }
-        }
-        return pattern; // Fallback
-    }
-    return std::wstring(buffer);
-}
+    DWORD reqSize = ExpandEnvironmentStringsW(p.c_str(), NULL, 0);
+    if (reqSize == 0) return pattern;
 
-// Wrapper to match template usage InitLogger
-void InitLogger(const std::wstring& configuredPath, const std::string& level) {
-    // For now, pass defaults for the extra params required by InitLog
-    // Assuming standard XLL dir context
-    InitLog(configuredPath, level, "${TEMP}", "xll", false);
+    std::vector<wchar_t> buffer(reqSize);
+    DWORD res = ExpandEnvironmentStringsW(p.c_str(), buffer.data(), reqSize);
+    if (res == 0 || res > reqSize) return pattern;
+
+    return std::wstring(buffer.data());
 }
 
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
-    // Parse Level
-    std::string lvl = level;
-    std::transform(lvl.begin(), lvl.end(), lvl.begin(), ::tolower);
-    if (lvl == "debug") g_logLevel = LogLevel::DEBUG;
-    else if (lvl == "info") g_logLevel = LogLevel::INFO;
-    else if (lvl == "warn") g_logLevel = LogLevel::WARN;
-    else if (lvl == "error") g_logLevel = LogLevel::ERROR;
-    else if (lvl == "none") g_logLevel = LogLevel::NONE;
-    else g_logLevel = LogLevel::INFO; // Default to INFO if unspecified or unknown
-
-    // Assume GetXllDir handles NULL or missing module handle gracefully by using GetModuleHandle(NULL)
-    // In many DLL contexts, GetModuleHandle(NULL) returns the host EXE (Excel), which is NOT what we want.
-    // We usually need the HMODULE of the DLL.
-    // However, xll_launch/utility typically stores g_hModule or has a way to get it.
-    // Given the context constraints, we'll assume GetXllDir() (no args or NULL) tries its best.
-    // If we are called from xll_main, we might have resolved paths earlier.
-
-    // NOTE: g_hModule is global in xll_main.cpp, but not extern-ed to here.
-    // Ideally InitLog should take the resolved path.
-    // xll_main.cpp resolves paths and calls InitLogger(logPath, level).
-    // So if 'configuredPath' is already absolute, we are good.
-
-    std::wstring xllDir = L"";
-    // We only call GetXllDir if we need to resolve relative paths.
-
-    // ... (rest of logic handles relative paths)
-
-    // If xll_main passes an absolute path, we might not need xllDir.
-    // But let's keep the existing logic structure.
-
-    // To fix the build error "GetXllDir(NULL)", we check if GetXllDir is declared to take args.
-    // xll_launch.h typically: std::wstring GetXllDir(HANDLE hModule);
-    // Passing NULL is valid C++ (0).
-    xllDir = GetXllDir(NULL);
+    // Determine path
+    std::wstring path = configuredPath;
 
     std::wstring wProjName = StringToWString(projName);
-    if (wProjName.empty()) wProjName = L"xll";
-
-    // 1. Substitute Internal Variables FIRST
-    std::wstring wConfigured = configuredPath;
-    ReplaceString(wConfigured, L"${XLL_DIR}", xllDir);
-    ReplaceString(wConfigured, L"${XLL}", xllDir);
-
-    // 2. Expand Environment Variables
-    wConfigured = ExpandEnvVarsW(wConfigured);
-
-    std::wstring wPath;
-
-    // 3. Default if empty
-    if (wConfigured.empty()) {
-        wPath = xllDir + L"\\" + wProjName + L".log";
-    } else {
-        wPath = wConfigured;
-
-        // 4. Handle Absolute Path
-        bool isAbs = (wPath.find(L":") != std::wstring::npos || (wPath.size() > 1 && wPath[0] == L'\\' && wPath[1] == L'\\'));
-        if (!isAbs) {
-            wPath = xllDir + L"\\" + wPath;
-        }
-
-        // 5. Treat as Directory
-        if (!wPath.empty() && wPath.back() != L'\\' && wPath.back() != L'/') {
-            wPath += L"\\";
-        }
-        // Check if it looks like a directory (simplistic check: ends in separator or no extension?)
-        // Actually the logic in the branch was:
-        // if (lastDot == npos ... ) append filename.
-        // But here we just append if it ends in slash?
-        // Let's stick to the simpler check.
-        // If it ends in separator, append filename.
-        if (wPath.back() == L'\\') {
-             wPath += wProjName + L".log";
-        }
+    std::wstring logFileName = wProjName + L"_native.log";
+    if (logFileName == L"_native.log") {
+        logFileName = L"xll_native.log"; // Fallback if projName empty
     }
 
-    // Inject _native
-    size_t lastDot = wPath.find_last_of(L".");
-    size_t lastSlash = wPath.find_last_of(L"\\");
+    if (path.empty()) {
+        path = logFileName;
+    }
 
-    std::wstring base, ext;
-    if (lastDot != std::wstring::npos && (lastSlash == std::wstring::npos || lastDot > lastSlash)) {
-        base = wPath.substr(0, lastDot);
-        ext = wPath.substr(lastDot);
-    } else {
-        base = wPath;
-        ext = L"";
+    if (isSingleFile) {
+        // Construct path in temp dir
+        // tempDirPattern is the temp dir path
+        // projName is project name
+        std::wstring wTempDirPattern = StringToWString(tempDirPattern);
+        std::wstring tempDir = ExpandEnvVarsW(wTempDirPattern);
+
+        // Remove trailing slash if any
+        if (!tempDir.empty() && (tempDir.back() == L'\\' || tempDir.back() == L'/')) {
+            tempDir.pop_back();
+        }
+
+        path = tempDir + L"\\" + logFileName;
     }
 
     std::wstring wLogName = base + L"_native" + ext;
