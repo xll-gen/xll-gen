@@ -377,6 +377,27 @@ To get the number format of the caller (e.g., to preserve it or use it):
 *   [GET.CELL (Type 7)](https://xlladdins.github.io/Excel4Macros/get.cell.html)
 *   [Excel C API Programming](https://learn.microsoft.com/en-us/office/client-developer/excel/programming-with-the-c-api-in-excel)
 
+### 8.6 Safe Block Macros
+
+To ensure robust crash handling across different compilers (MSVC and MinGW) and to prevent the Excel process from terminating abruptly due to unhandled exceptions in the XLL, all entry points (e.g., `xlAutoOpen`, `xlAutoClose`, and `xlAutoFree12`) must be guarded by Safe Block macros.
+
+**Macros:**
+*   `XLL_SAFE_BLOCK_BEGIN`: Starts the try/except block.
+*   `XLL_SAFE_BLOCK_END(ret_val)`: Ends the block and returns `ret_val` on exception.
+*   `XLL_SAFE_BLOCK_END_VOID`: Ends the block and returns void on exception.
+
+**Usage:**
+```cpp
+extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
+    XLL_SAFE_BLOCK_BEGIN
+        // Implementation...
+        return 1;
+    XLL_SAFE_BLOCK_END(0)
+}
+```
+
+These macros are defined in `include/xll_log.h` and handle platform-specific differences (SEH for MSVC, standard try-catch for others).
+
 ## 9. Reference: Shared Memory (IPC)
 
 The `xll-gen/shm` library provides low-latency IPC. For maximum performance, we use **Zero-Copy** operations where possible, especially for FlatBuffers.

@@ -86,7 +86,7 @@ static void LogHandler(shm::LogLevel level, const std::string& msg) {
 extern "C" {
 
 __declspec(dllexport) int __stdcall xlAutoOpen() {
-    __try {
+    XLL_SAFE_BLOCK_BEGIN
         // Setup Native Logging
         std::string tempPattern = "";
         std::string projName = "{{.ProjectName}}";
@@ -214,13 +214,11 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
 
         Excel12(xlFree, 0, 1, &xDll);
         return 1;
-    } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
+    XLL_SAFE_BLOCK_END(0)
 }
 
 __declspec(dllexport) int __stdcall xlAutoClose() {
-    __try {
+    XLL_SAFE_BLOCK_BEGIN
         LogInfo("Unloading XLL...");
         if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
@@ -247,9 +245,7 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
             g_procInfo.hShutdownEvent = NULL;
         }
         return 1;
-    } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
-        return 1;
-    }
+    XLL_SAFE_BLOCK_END(1)
 }
 
 {{range .Events}}
