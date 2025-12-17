@@ -34,6 +34,10 @@ func TestGenGrid(t *testing.T) {
         Server: config.ServerConfig{
             Launch: &config.LaunchConfig{Enabled: new(bool)},
         },
+        Build: config.BuildConfig{
+            Singlefile: "xll",
+            TempDir:    "temp_%PROJECT%",
+        },
 		Functions: []config.Function{
 			{
 				Name:        "GridFunc",

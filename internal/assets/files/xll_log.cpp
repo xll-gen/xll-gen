@@ -160,7 +160,7 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
     // To fix the build error "GetXllDir(NULL)", we check if GetXllDir is declared to take args.
     // xll_launch.h typically: std::wstring GetXllDir(HANDLE hModule);
     // Passing NULL is valid C++ (0).
-    xllDir = GetXllDir(NULL);
+    xllDir = GetXllDir();
 
     std::wstring wProjName = StringToWString(projName);
     if (wProjName.empty()) wProjName = L"xll";
