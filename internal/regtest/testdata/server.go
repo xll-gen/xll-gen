@@ -39,6 +39,12 @@ func (s *Service) TimeoutFunc(ctx context.Context, val int32) (int32, error) {
 	}
 }
 
+// AsyncEchoInt returns the input integer asynchronously.
+func (s *Service) AsyncEchoInt(ctx context.Context, val int32) (int32, error) {
+	fmt.Printf("SERVER: AsyncEchoInt val=%d\n", val)
+	return val, nil
+}
+
 // CheckAny inspects the generic Any value and returns a string description of the type and content.
 func (s *Service) CheckAny(ctx context.Context, val *types.Any) (string, error) {
 	if val == nil {
@@ -104,6 +110,7 @@ func (s *Service) CheckRange(ctx context.Context, val *types.Range) (string, err
 }
 
 func (s *Service) ScheduleCmd(ctx context.Context) (int32, error) {
+    fmt.Println("SERVER: ScheduleCmd executing")
     // Schedule Set Sheet1!0:0:0:0 = 100
     b := flatbuffers.NewBuilder(0)
 

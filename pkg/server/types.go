@@ -57,7 +57,7 @@ type QueuedCommand struct {
 }
 
 type PendingAsyncResult struct {
-	Handle  uint64
+	Handle  []byte
 	Val     interface{}
 	ValType AnyValue
 	Err     string

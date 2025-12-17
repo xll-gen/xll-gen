@@ -41,23 +41,48 @@ func (rcv *AsyncHandle) Table() flatbuffers.Table {
 	return rcv._tab
 }
 
-func (rcv *AsyncHandle) Val() uint64 {
+func (rcv *AsyncHandle) Val(j int) byte {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
 	if o != 0 {
-		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
 	}
 	return 0
 }
 
-func (rcv *AsyncHandle) MutateVal(n uint64) bool {
-	return rcv._tab.MutateUint64Slot(4, n)
+func (rcv *AsyncHandle) ValLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *AsyncHandle) ValBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *AsyncHandle) MutateVal(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
 }
 
 func AsyncHandleStart(builder *flatbuffers.Builder) {
 	builder.StartObject(1)
 }
-func AsyncHandleAddVal(builder *flatbuffers.Builder, val uint64) {
-	builder.PrependUint64Slot(0, val, 0)
+func AsyncHandleAddVal(builder *flatbuffers.Builder, val flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(val), 0)
+}
+func AsyncHandleStartValVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
 }
 func AsyncHandleEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

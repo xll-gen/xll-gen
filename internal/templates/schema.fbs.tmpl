@@ -6,13 +6,13 @@ namespace ipc;
 table {{.Name}}Request {
   {{range $i, $arg := .Args}}{{$arg.Name}}:{{lookupSchemaType $arg.Type}} (id: {{$i}});
   {{end}}
-  {{if .Async}}async_handle:ulong (id: {{len .Args}});{{end}}
+  {{if .Async}}async_handle:[ubyte] (id: {{len .Args}});{{end}}
   {{if .Caller}}caller:protocol.Range (id: {{add (len .Args) (boolToInt .Async)}});{{end}}
 }
 
 table {{.Name}}Response {
   result:{{lookupSchemaType .Return}};
   error:string;
-  {{if .Async}}async_handle:ulong;{{end}}
+  {{if .Async}}async_handle:[ubyte];{{end}}
 }
 {{end}}
