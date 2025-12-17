@@ -12,5 +12,5 @@ var _ = protocol.Bool{}
 type XllService interface {
 {{range .Functions}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *protocol.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}
-{{range .Events}}	{{.Name}}(ctx context.Context) error
+{{range .Events}}	{{.Handler}}(ctx context.Context) error
 {{end}}}

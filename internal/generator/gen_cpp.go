@@ -7,59 +7,50 @@ import (
 	"github.com/xll-gen/xll-gen/version"
 )
 
-// generateCppMain generates the C++ entry point (xll_main.cpp) for the XLL.
-// It populates the template with function registrations, event handlers, and IPC logic.
-//
-// Parameters:
-//   - cfg: The project configuration.
-//   - dir: The directory where the file should be generated.
-//   - shouldAppendPid: Whether to append the process ID to the shared memory name.
-//
-// Returns:
-//   - error: An error if generation fails.
+// generateCppMain generates the main C++ file (xll_main.cpp)
 func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error {
 	data := struct {
 		ProjectName     string
 		Functions       []config.Function
 		Events          []config.Event
 		Server          config.ServerConfig
-		Build           config.BuildConfig
+		Embed           config.BuildConfig
 		ShouldAppendPid bool
 		Version         string
 		Logging         config.LoggingConfig
+		Cache           config.CacheConfig
 	}{
 		ProjectName:     cfg.Project.Name,
 		Functions:       cfg.Functions,
 		Events:          cfg.Events,
 		Server:          cfg.Server,
-		Build:           cfg.Build,
+		Embed:           cfg.Build,
 		ShouldAppendPid: shouldAppendPid,
 		Version:         version.Version,
 		Logging:         cfg.Logging,
+		Cache:           cfg.Cache,
 	}
 
 	return executeTemplate("xll_main.cpp.tmpl", filepath.Join(dir, "xll_main.cpp"), data, GetCommonFuncMap())
 }
 
-// generateCMake generates the CMakeLists.txt build file.
-// It configures the C++ build system for the XLL, including dependencies.
-//
-// Parameters:
-//   - cfg: The project configuration.
-//   - dir: The directory where the file should be generated.
-//
-// Returns:
-//   - error: An error if generation fails.
+// generateCMake generates the CMakeLists.txt file.
 func generateCMake(cfg *config.Config, dir string) error {
 	data := struct {
 		ProjectName string
+		Build       config.BuildConfig // Renamed from Embed to Build to match template usage
 		Version     string
-		Build       config.BuildConfig
 	}{
 		ProjectName: cfg.Project.Name,
-		Version:     version.Version,
 		Build:       cfg.Build,
+		Version:     version.Version,
 	}
 
-	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, GetCommonFuncMap())
+	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)
+}
+
+// generateCppLaunch generates the C++ launch configuration
+func generateCppLaunch(cfg *config.Config, dir string) error {
+	// Not implemented yet - using static asset for now
+	return nil
 }

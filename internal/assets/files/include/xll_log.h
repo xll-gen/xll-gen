@@ -58,3 +58,6 @@ void LogDebug(const std::string& msg);
 
 // Initialize logging (determines log path based on configuration and mode)
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile);
+
+// Convenience wrapper for backward compatibility / simpler usage
+void InitLogger(const std::wstring& configuredPath, const std::string& level);

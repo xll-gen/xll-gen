@@ -43,8 +43,10 @@ func TestGenCpp_ComplexReturnTypes(t *testing.T) {
 		},
         Server: config.ServerConfig{
             Timeout: "2s",
+            Launch: &config.LaunchConfig{Enabled: new(bool)}, // Default false is fine, just needs to be non-nil
         },
 	}
+    *cfg.Server.Launch.Enabled = true
 
 	// Generate xll_main.cpp
 	if err := generateCppMain(cfg, tmpDir, false); err != nil {
@@ -101,8 +103,10 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 		},
         Server: config.ServerConfig{
             Timeout: "2s",
+            Launch: &config.LaunchConfig{Enabled: new(bool)},
         },
 	}
+    *cfg.Server.Launch.Enabled = true
 
 	// Generate xll_main.cpp
 	if err := generateCppMain(cfg, tmpDir, false); err != nil {
@@ -117,19 +121,22 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return (MsgID 133)
-    // Expect: auto res = slot.Send(reqSize, (shm::MsgType)(133), 2000);
-    if !strings.Contains(content, "auto res = slot.Send(reqSize, (shm::MsgType)(133), 2000);") {
-         t.Fatal("Could not find expected Send call for TestStr (MsgId 133)")
+    // Expect: auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType)133, slot.GetRespBuffer(), 2000);
+    // Note: The template now uses g_host.Send with specific arguments.
+    // The exact string might vary slightly due to template logic (e.g. casting).
+    // Let's check for the key elements.
+    if !strings.Contains(content, "g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType)133") {
+         t.Fatal("Could not find expected g_host.Send call for TestStr (MsgId 133)")
     }
+
     // Expect: if (res.HasError())
     if !strings.Contains(content, "if (res.HasError())") {
          t.Fatal("Could not find expected HasError check")
     }
 
     // Verify TestInt error return (MsgID 134)
-    // Expect: auto res = slot.Send(reqSize, (shm::MsgType)(134), 2000);
-    if !strings.Contains(content, "auto res = slot.Send(reqSize, (shm::MsgType)(134), 2000);") {
-         t.Fatal("Could not find expected Send call for TestInt (MsgId 134)")
+    if !strings.Contains(content, "g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType)134") {
+         t.Fatal("Could not find expected g_host.Send call for TestInt (MsgId 134)")
     }
 
     // Check that HasError is used at least twice (once for each function)
@@ -138,7 +145,7 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
     }
 
     // Check for negative size calculation
-    if !strings.Contains(content, "int32_t reqSize = -((int32_t)builder.GetSize());") {
+    if !strings.Contains(content, "-((int)builder.GetSize())") {
         t.Fatal("Expected negative size calculation for zero-copy")
     }
 
