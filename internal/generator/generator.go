@@ -40,6 +40,14 @@ type Options struct {
 func Generate(cfg *config.Config, baseDir string, modName string, opts Options) error {
 	ui.PrintHeader(fmt.Sprintf("Generating code for project: %s", cfg.Project.Name))
 
+	// Resolve baseDir to absolute path to avoid relative path issues when cmd.Dir is set.
+	// If baseDir is empty, filepath.Abs returns the current working directory.
+	absBaseDir, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute path for baseDir: %w", err)
+	}
+	baseDir = absBaseDir
+
 	genDir := filepath.Join(baseDir, "generated")
 	cppDir := filepath.Join(genDir, "cpp")
 	if err := os.MkdirAll(cppDir, 0755); err != nil {
