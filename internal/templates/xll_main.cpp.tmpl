@@ -72,9 +72,9 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::string projName = "{{.ProjectName}}";
         bool isSingleFile = false;
 
-        {{if eq .Embed.Singlefile "xll"}}
+        {{if eq .Build.Singlefile "xll"}}
         isSingleFile = true;
-        tempPattern = "{{.Embed.TempDir}}";
+        tempPattern = "{{.Build.TempDir}}";
         {{end}}
 
         InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
@@ -164,7 +164,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
         // Register Events
 {{range .Events}}
-        Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Name}}"), TempInt12({{lookupEventCode .Type}}));
+        Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Type}}"), TempInt12({{lookupEventCode .Type}}));
 {{end}}
         {{if hasEvent "CalculationEnded" .Events}}
         {{else}}
@@ -259,7 +259,7 @@ __declspec(dllexport) void __stdcall {{.Handler}}() {
         std::vector<uint8_t> respBuf;
         // Construct Request (Event)
         // Currently not fully implemented for named events
-        LogInfo("Event {{.Name}} triggered");
+        LogInfo("Event {{.Type}} triggered");
     XLL_SAFE_BLOCK_END_VOID
 }
 {{end}}
