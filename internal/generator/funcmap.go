@@ -1,86 +1,62 @@
 package generator
 
 import (
-	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/xll-gen/xll-gen/internal/config"
 )
 
-// GetCommonFuncMap returns a map of functions available to all templates.
-// It aggregates type lookups, event lookups, and general utility functions.
+// Helper to check if a slice of functions contains any async functions
+func hasAsync(funcs []config.Function) bool {
+	for _, f := range funcs {
+		if f.Async {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper to check if a slice of functions contains any resizable functions
+func hasResizable(funcs []config.Function) bool {
+	for _, f := range funcs {
+		if f.Resizable {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper to check if a specific event type is registered
+func hasEvent(eventType string, events []config.Event) bool {
+	for _, e := range events {
+		if e.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper to parse duration string to milliseconds
+func parseDurationToMs(s string, defaultMs int) int {
+	if s == "" {
+		return defaultMs
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return defaultMs
+	}
+	return int(d.Milliseconds())
+}
+
+// GetCommonFuncMap returns a map of common template functions used across different generators.
+// This centralization ensures consistency and avoids code duplication.
 func GetCommonFuncMap() template.FuncMap {
 	return template.FuncMap{
-		// Math
-		"add": func(a, b int) int { return a + b },
-		"sub": func(a, b int) int { return a - b },
-
-		// Types
-		"lookupSchemaType": LookupSchemaType,
-		"lookupGoType":     LookupGoType,
-		"lookupCppType":    LookupCppType,
-		"lookupArgCppType": LookupArgCppType,
-		"lookupXllType":    LookupXllType,
-		"lookupArgXllType": LookupArgXllType,
-		"defaultErrorVal":  DefaultErrorVal,
-
-		// Events
-		"lookupEventId": func(evtType string) int {
-			// Returns offset from User Start
-			if evtType == "CalculationEnded" {
-				return 1
-			}
-			if evtType == "CalculationCanceled" {
-				return 2
-			}
-			return 0
-		},
-		"lookupEventCode": func(evtType string) string {
-			if evtType == "CalculationEnded" {
-				return "xleventCalculationEnded"
-			}
-			if evtType == "CalculationCanceled" {
-				return "xleventCalculationCanceled"
-			}
-			return "0"
-		},
-		"hasEvent": func(name string, events []config.Event) bool {
-			for _, e := range events {
-				if e.Type == name {
-					return true
-				}
-			}
-			return false
-		},
-		"hasAsync": func(funcs []config.Function) bool {
-			for _, f := range funcs {
-				if f.Async {
-					return true
-				}
-			}
-			return false
-		},
-
-		// String / Formatting
-		"capitalize": func(s string) string {
-			if len(s) == 0 {
-				return ""
-			}
-			return strings.ToUpper(s[:1]) + s[1:]
-		},
-		"withDefault": func(val, def string) string {
-			if val == "" {
-				return def
-			}
-			return val
-		},
-		"boolToInt": func(b bool) int {
-			if b {
-				return 1
-			}
-			return 0
-		},
+		"hasAsync":     hasAsync,
+		"hasResizable": hasResizable,
+		"hasEvent":     hasEvent,
 		"derefBool": func(b *bool) bool {
 			if b == nil {
 				return false
@@ -93,32 +69,57 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return *s
 		},
-
-		// Path Helpers
-		"fileBase": func(s string) string {
-			return strings.TrimSuffix(s, filepath.Ext(s))
-		},
-		"fileExt": func(s string) string {
-			return filepath.Ext(s)
-		},
-
-		// Config Helpers
-		"registerCount": func(f config.Function) int {
-			// Async functions have an implicit handle argument, but we do not register a help string for it
-			// because Excel hides it. Therefore, we do not increment the count for Async functions.
-			c := 10 + len(f.Args)
-			return c
-		},
-		"joinArgNames": func(f config.Function) string {
-			var names []string
-			for _, a := range f.Args {
-				names = append(names, a.Name)
+		// Case conversion helpers
+		"Title": strings.Title,
+		"Lower": strings.ToLower,
+		"Upper": strings.ToUpper,
+		// Type lookup helpers
+		"lookupSchemaType": func(t string) string {
+			if v, ok := schemaTypeMap[t]; ok {
+				return v
 			}
-			// Do not append "asyncHandle" to argument text, as it is implicit/hidden in Excel.
-			return strings.Join(names, ",")
+			return "protocol.Any" // Default fallback, though validation should catch this
 		},
+		"lookupGoType": func(t string) string {
+			if v, ok := goTypeMap[t]; ok {
+				return v
+			}
+			return "interface{}"
+		},
+		"lookupCppType": func(t string) string {
+			if v, ok := cppTypeMap[t]; ok {
+				return v
+			}
+			return "LPXLOPER12"
+		},
+		"lookupXllType": func(t string) string {
+			if v, ok := xllTypeMap[t]; ok {
+				return v
+			}
+			return "Q" // Default to XLOPER12
+		},
+		"lookupCppArgType": func(t string) string {
+			// Special handling for argument types in C++ wrapper
+			// Scalar types (int, float, bool) are passed as pointers (J, B, A)
+			// but we need to match the C++ signature expected by Excel
+			if v, ok := cppArgTypeMap[t]; ok {
+				return v
+			}
+			return "LPXLOPER12"
+		},
+		// Arithmetic helpers
+		"add": func(a, b int) int {
+			return a + b
+		},
+		"mul": func(a, b int) int {
+			return a * b
+		},
+		// Timeout parsing helper
 		"parseTimeout": func(s string, defaultMs int) int {
 			return parseDurationToMs(s, defaultMs)
+		},
+		"parseDurationToMs": func(s string) int {
+			return parseDurationToMs(s, 0)
 		},
 	}
 }

@@ -34,6 +34,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(shm)
 
+# Parallel Hashmap
+FetchContent_Declare(
+  phmap
+  GIT_REPOSITORY https://github.com/greg7mdp/parallel-hashmap.git
+  GIT_TAG v2.0.0
+)
+set(PHMAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(PHMAP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(phmap)
+
 if(NOT TARGET shm)
   add_library(shm INTERFACE)
   target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
@@ -116,6 +126,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE
   shm
   flatbuffers
+  phmap
 )
 
 {{ if eq .Build.Singlefile "xll" }}
