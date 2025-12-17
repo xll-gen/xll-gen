@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xll-gen/xll-gen/internal/generator"
 )
 
 func TestRepro_MultipleAsync(t *testing.T) {
@@ -12,7 +14,7 @@ func TestRepro_MultipleAsync(t *testing.T) {
 	projectDir, cleanup := setupGenTest(t, "repro_async")
 	defer cleanup()
 
-	pathCleanup := setupMockFlatc(t, filepath.Dir(projectDir))
+	flatcPath, pathCleanup := setupMockFlatc(t, filepath.Dir(projectDir))
 	defer pathCleanup()
 
 	xllContent := `project:
@@ -39,7 +41,7 @@ functions:
 		t.Fatal(err)
 	}
 
-	runGenerateInDir(t, projectDir)
+	runGenerateInDir(t, projectDir, generator.Options{FlatcPath: flatcPath})
 
 	content, err := os.ReadFile(filepath.Join(projectDir, "generated", "server.go"))
 	if err != nil {

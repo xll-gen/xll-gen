@@ -21,6 +21,7 @@
 #include "include/xll_worker.h"
 #include "include/xll_cache.h"
 #include "include/xll_embed.h"
+#include "include/xll_events.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -121,33 +122,8 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         cfg.command = "{{.Server.Command}}";
         cfg.shmName = shmName;
 
-        // Resolve Paths
-        std::wstring xllDir = GetXllDir();
-        std::wstring extractedExe = L"";
-
-        // Check for embedded binary extraction
-        {{if eq .Build.Singlefile "xll"}}
-        std::string exeName = "{{.ProjectName}}.exe"; // Assuming default name
-        // We use ExtractEmbeddedExe which handles hash checks
-        if (!embed::ExtractEmbeddedExe(cfg.projectName, extractedExe)) {
-             LogInfo("No embedded executable found or extraction failed. Trying external...");
-        }
-        {{end}}
-
-        std::wstring launchCmd, launchCwd, launchLog;
-        ResolveServerPath(xllDir, extractedExe, cfg, launchCmd, launchCwd, launchLog);
-
-        LogInfo("Launching Server: " + WideToUtf8(launchCmd));
-
-        // Environment variables
-        std::map<std::wstring, std::wstring> env;
-        env[L"XLL_DIR"] = xllDir;
-        env[L"XLL_SHM"] = StringToWString(shmName);
-
-        g_procInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-        if (!LaunchProcess(launchCmd, launchCwd, launchLog, g_procInfo, env)) {
-             MessageBoxA(NULL, "Failed to launch server process. See xll_launch.log.", "XLL Error", MB_OK | MB_ICONERROR);
+        std::wstring launchLog;
+        if (!LaunchServer(cfg, GetXllDir(), g_procInfo, launchLog)) {
              return 0;
         }
 
@@ -221,12 +197,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         // Stop Worker
         StopWorker();
 
-        // Cleanup Shared Memory
-        // g_host destructor handles it? No, g_host is global object.
-        // shm::DirectHost destructor closes handles but mapping might persist if other processes use it.
-        // We rely on OS cleanup or explicit Close?
-        // g_host.Close() is not in API, destructor is enough.
-
         // Cleanup Process Handles
         if (g_procInfo.hProcess) {
             CloseHandle(g_procInfo.hProcess);
@@ -240,9 +210,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
             CloseHandle(g_procInfo.hShutdownEvent);
             g_procInfo.hShutdownEvent = NULL;
         }
-
-        // Unregister Functions (Excel does this automatically on unload, but good practice if Add-in removed)
-        // But xlAutoClose is called when Add-in is removed/closed.
 
         return 1;
     XLL_SAFE_BLOCK_END(1)
@@ -268,25 +235,7 @@ __declspec(dllexport) void __stdcall {{.Handler}}() {
 // User defined handler exists
 {{else}}
 __declspec(dllexport) void __stdcall CalculationEnded() {
-    XLL_SAFE_BLOCK_BEGIN
-        // Clear caches
-        {
-            std::lock_guard<std::mutex> lock(g_refCacheMutex);
-            g_sentRefCache.clear();
-        }
-        xll::CacheManager::Instance().ClearRefCache();
-
-        std::vector<uint8_t> respBuf;
-        auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
-        if (res.Value() > 0) {
-            // Process returned commands (e.g. SetCommand)
-            auto root = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data());
-            auto commands = root->commands();
-            if (commands) {
-                ExecuteCommands(commands);
-            }
-        }
-    XLL_SAFE_BLOCK_END_VOID
+    HandleCalculationEnded();
 }
 {{end}}
 
@@ -392,85 +341,6 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
 
         // Arguments
-        {{range $j, $arg := .Args}}
-        {{if eq .Type "string"}}
-        auto arg{{$j}} = builder.CreateString(ConvertExcelString({{.Name}}));
-        {{else if eq .Type "grid"}}
-        auto arg{{$j}} = GridToFlatBuffer(builder, {{.Name}});
-        {{else if eq .Type "numgrid"}}
-        auto arg{{$j}} = NumGridToFlatBuffer(builder, {{.Name}});
-        {{else if eq .Type "range"}}
-        auto arg{{$j}} = RangeToFlatBuffer(builder, {{.Name}});
-        {{else if eq .Type "any"}}
-        auto arg{{$j}} = AnyToFlatBuffer(builder, {{.Name}});
-        {{end}}
-        {{end}}
-
-        // Request Builder
-        ipc::{{.Name}}RequestBuilder reqBuilder(builder);
-        {{if .Async}}
-        reqBuilder.add_async_handle((uint64_t)asyncHandle);
-        {{end}}
-        {{range $j, $arg := .Args}}
-        {{if or (eq .Type "int") (eq .Type "float") (eq .Type "bool")}}
-        reqBuilder.add_arg{{$j}}({{if eq .Type "bool"}}*{{.Name}} != 0{{else}}*{{.Name}}{{end}});
-        {{else}}
-        reqBuilder.add_arg{{$j}}(arg{{$j}});
-        {{end}}
-        {{end}}
-        {{if .Caller}}
-        flatbuffers::Offset<protocol::Range> caller_off = 0;
-        {
-            XLOPER12 xCaller;
-            if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
-                std::string callerFormat = "";
-                XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
-                XLOPER12 xFormat;
-                if (Excel12(xlfGetCell, &xFormat, 2, &xType, &xCaller) == xlretSuccess) {
-                    if (xFormat.xltype == xltypeStr) {
-                         // xFormat.val.str is Pascal String
-                         callerFormat = ConvertExcelString(xFormat.val.str); // Convert to UTF8
-                    }
-                    Excel12(xlFree, 0, 1, &xFormat);
-                }
-
-                caller_off = ConvertRange(&xCaller, builder, callerFormat);
-                if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
-                    Excel12(xlFree, 0, 1, &xCaller);
-                }
-            }
-        }
-        {{end}}
-
-        {{if .Async}}
-        auto asyncHandle_vec = builder.CreateVector((const uint8_t*)asyncHandle, sizeof(XLOPER12));
-        {{end}}
-
-        {{/* reqBuilder already constructed, just adding fields */}}
-        {{range .Args}}
-        {{if eq .Type "string"}}
-        reqBuilder.add_{{.Name}}({{.Name}}_off); // Wait, string offset not assigned above!
-        {{end}}
-        {{end}}
-
-        {{/* Fix: String offset was created as arg$j but loop below expects specific name or arg$j? */}}
-        {{/* The broken template above used arg$j in the builder.CreateString part, but then in add_... it used .Name_off ? */}}
-        {{/* No, the broken template had "reqBuilder.add_arg{{$j}}(arg{{$j}})" for all non-scalar types. */}}
-        {{/* But wait, the section:
-           ipc::{{.Name}}RequestBuilder reqBuilder(builder);
-           reqBuilder.add_arg{{$j}}(...)
-
-           Then LATER:
-           ipc::{{.Name}}RequestBuilder reqBuilder(builder); (REDECLARED!)
-           reqBuilder.add_{{.Name}} ...
-
-           The previous broken template had TWO request builder sections!
-           I need to consolidate them.
-        */}}
-
-        {{/* CORRECT LOGIC: */}}
-        {{/* 1. Create Offsets for complex types */}}
-
         {{range $j, $arg := .Args}}
         {{if eq .Type "string"}}
         auto arg{{$j}} = builder.CreateString(ConvertExcelString({{.Name}}));

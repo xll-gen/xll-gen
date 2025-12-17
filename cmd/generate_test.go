@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/xll-gen/xll-gen/internal/generator"
 )
 
 // TestGenerate runs a full generation cycle in a temporary directory and verifies that
@@ -25,7 +27,7 @@ func TestGenerate(t *testing.T) {
 	}
 
 	// 3. Generate
-	runGenerateInDir(t, projectDir)
+	runGenerateInDir(t, projectDir, generator.Options{})
 
 	// 4. Verify files
 	expected := []string{

@@ -5,9 +5,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 	"runtime"
@@ -35,13 +32,6 @@ var (
 			return flatbuffers.NewBuilder(1024)
 		},
 	}
-
-	// Heap Builder Pool for outgoing messages (retains buffer capacity)
-	heapBuilderPool = sync.Pool{
-		New: func() interface{} {
-			return flatbuffers.NewBuilder(1024)
-		},
-	}
 )
 
 func ScheduleSet(r *protocol.Range, v *protocol.Any) {
@@ -53,36 +43,16 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 }
 
 func Serve(handler XllService) {
-	exePath, _ := os.Executable()
-	binDir := filepath.Dir(exePath)
+    if _, err := server.InitLog("{{.Logging.Dir}}", "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
+        fmt.Printf("Failed to initialize logger: %v\n", err)
+    }
 
-	logDir := "{{.Logging.Dir}}"
-	logDir = strings.ReplaceAll(logDir, "${XLL_DIR}", os.Getenv("XLL_DIR"))
-	logDir = strings.ReplaceAll(logDir, "${BIN_DIR}", binDir)
-
-	if logDir == "" {
-		logDir = "."
-	}
-	logPath := filepath.Join(logDir, "{{.ProjectName}}_go.log")
-
-	if err := log.Init(logPath, "{{.Logging.Level}}"); err != nil {
-		fmt.Printf("Failed to initialize logger: %v\n", err)
-	}
-	shm.SetLogger(log.Default())
-
-	name := "{{.ProjectName}}"
-	for _, arg := range os.Args {
-		if strings.HasPrefix(arg, "-xll-shm=") {
-			name = strings.TrimPrefix(arg, "-xll-shm=")
-		}
-	}
-
-	client, err := shm.Connect(shm.ClientConfig{ShmName: name})
-	if err != nil {
-		log.Error("Failed to connect to SHM", "error", err)
-		panic(fmt.Errorf("failed to connect to SHM: %w", err))
-	}
-	defer client.Close()
+    client, err := server.ConnectSHM("{{.ProjectName}}")
+    if err != nil {
+        log.Error("Failed to connect to SHM", "error", err)
+        panic(err)
+    }
+    defer client.Close()
 
 	var refCacheMutex sync.RWMutex
 	refCache := make(map[string][]byte)
@@ -422,8 +392,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		// Debug Log: Ack Sent (Implicitly handled by return 0,0 below which sends ACK)
 		// But we want to log it explicitly if requested.
 		// The caller of handle{{.Name}} sends the ACK immediately after this returns 0,0.
-		// So we can log "ACK Sent" here? No, the caller sends it.
-		// Let's log "Processing" here.
+		// So we can log "Processing" here.
 		log.Debug("Processing async request", "func", "{{.Name}}")
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
