@@ -109,8 +109,10 @@ flatbuffers::Offset<protocol::NumGrid> NumGridToFlatBuffer(flatbuffers::FlatBuff
     return protocol::CreateNumGrid(builder, (uint32_t)rows, (uint32_t)cols, vec);
 }
 
-flatbuffers::Offset<protocol::Range> RangeToFlatBuffer(flatbuffers::FlatBufferBuilder& builder, LPXLOPER12 op) {
+flatbuffers::Offset<protocol::Range> RangeToFlatBuffer(flatbuffers::FlatBufferBuilder& builder, LPXLOPER12 op, const std::string& format = "") {
     // Requires xltypeRef or SRRef
+    auto fmtOff = builder.CreateString(format);
+
     if (op->xltype & xltypeRef) {
          std::vector<protocol::Rect> rects;
          int count = op->val.mref.lpmref->count;
@@ -121,7 +123,7 @@ flatbuffers::Offset<protocol::Range> RangeToFlatBuffer(flatbuffers::FlatBufferBu
          auto vec = builder.CreateVectorOfStructs(rects);
 
          // Sheet ID handling is complex (GetSheetName). Skipped for brevity.
-         return protocol::CreateRange(builder, 0, vec);
+         return protocol::CreateRange(builder, 0, vec, fmtOff);
     }
     // SRRef
     if (op->xltype & xltypeSRef) {
@@ -129,10 +131,10 @@ flatbuffers::Offset<protocol::Range> RangeToFlatBuffer(flatbuffers::FlatBufferBu
          auto& r = op->val.sref.ref;
          rects.emplace_back(r.rwFirst, r.rwLast, r.colFirst, r.colLast);
          auto vec = builder.CreateVectorOfStructs(rects);
-         return protocol::CreateRange(builder, 0, vec);
+         return protocol::CreateRange(builder, 0, vec, fmtOff);
     }
 
-    return protocol::CreateRange(builder, 0, 0);
+    return protocol::CreateRange(builder, 0, 0, fmtOff);
 }
 
 // Helper for converting Multi to Any
@@ -164,8 +166,8 @@ flatbuffers::Offset<protocol::Any> ConvertMultiToAny(XLOPER12& op, flatbuffers::
 
 // Convert Range to Rect struct for RangeToFlatBuffer helper?
 // We need ConvertRange for AnyToFlatBuffer
-flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder) {
-    return RangeToFlatBuffer(builder, op);
+flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder, const std::string& format) {
+    return RangeToFlatBuffer(builder, op, format);
 }
 
 // Get Sheet Name helper (requires callback)

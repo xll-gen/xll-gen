@@ -169,7 +169,7 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
                 TempStr12(L"{{.Name}}"),
                 TempStr12(L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}"),
                 TempInt12(1), // Macro type
-                TempStr12(L"{{if .Category}}{{.Category}}{{else}}{{.ProjectName}}{{end}}"),
+                TempStr12(L"{{if .Category}}{{.Category}}{{else}}{{$.ProjectName}}{{end}}"),
                 TempStr12(L"{{.Shortcut}}"),
                 TempStr12(L"{{.HelpTopic}}"),
                 TempStr12(L"{{.Description}}"),
@@ -422,8 +422,28 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         {{end}}
         {{end}}
         {{if .Caller}}
-        // Add Caller info (simplified, requires helper)
-        // reqBuilder.add_caller(...);
+        flatbuffers::Offset<protocol::Range> caller_off = 0;
+        {
+            XLOPER12 xCaller;
+            if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
+                std::string callerFormat = "";
+                XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
+                XLOPER12 xFormat;
+                if (Excel12(xlfGetCell, &xFormat, 2, &xType, &xCaller) == xlretSuccess) {
+                    if (xFormat.xltype == xltypeStr) {
+                         // xFormat.val.str is Pascal String
+                         callerFormat = ConvertExcelString(xFormat.val.str); // Convert to UTF8
+                    }
+                    Excel12(xlFree, 0, 1, &xFormat);
+                }
+
+                caller_off = ConvertRange(&xCaller, builder, callerFormat);
+                if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
+                    Excel12(xlFree, 0, 1, &xCaller);
+                }
+            }
+        }
+        if (caller_off.o != 0) reqBuilder.add_caller(caller_off);
         {{end}}
         auto req = reqBuilder.Finish();
         builder.Finish(req);

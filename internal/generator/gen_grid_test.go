@@ -28,9 +28,12 @@ func TestGenGrid(t *testing.T) {
 		},
 		Gen: config.GenConfig{
 			Go: config.GoConfig{
-				Package: "generated",
+				Module: "testmod",
 			},
 		},
+        Server: config.ServerConfig{
+            Launch: &config.LaunchConfig{Enabled: new(bool)},
+        },
 		Functions: []config.Function{
 			{
 				Name:        "GridFunc",
@@ -50,6 +53,9 @@ func TestGenGrid(t *testing.T) {
 			},
 		},
 	}
+
+    // Set default launch enabled
+    *cfg.Server.Launch.Enabled = true
 
 	// Run Generate
 	err = Generate(cfg, "testmod", Options{})

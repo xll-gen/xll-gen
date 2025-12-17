@@ -1,64 +1,47 @@
 package generator
 
 import (
+	"fmt"
 	"os"
-	"strconv"
 	"text/template"
-	"time"
 
 	"github.com/xll-gen/xll-gen/internal/templates"
 )
 
-// parseDurationToMs parses a duration string (e.g. "2s", "500ms") and returns milliseconds as int.
-// Returns defaultVal if parsing fails or string is empty.
-//
-// Parameters:
-//   - s: The duration string to parse.
-//   - defaultVal: The value to return if parsing fails.
-//
-// Returns:
-//   - int: The duration in milliseconds.
-func parseDurationToMs(s string, defaultVal int) int {
-	if s == "" {
-		return defaultVal
-	}
-
-	// Handle raw numbers as seconds (backward compatibility if needed, though Go usually uses strings)
-	if _, err := strconv.Atoi(s); err == nil {
-		// If it's just a number, assume seconds? Or ms?
-		// Standard xll.yaml uses "10s", so pure number is ambiguous.
-		// Let's assume input must be valid duration string.
-	}
-
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return defaultVal
-	}
-	return int(d.Milliseconds())
-}
-
-// executeTemplate loads a template, parses it with the provided funcMap, and executes it to the output path.
-func executeTemplate(tmplName string, outputPath string, data interface{}, funcMap template.FuncMap) error {
+// executeTemplate parses a template from the templates package and writes it to a file.
+func executeTemplate(tmplName string, destPath string, data interface{}, funcMap template.FuncMap) error {
 	tmplContent, err := templates.Get(tmplName)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get template %s: %w", tmplName, err)
 	}
 
-	// If funcMap is nil, use empty map
-	if funcMap == nil {
-		funcMap = template.FuncMap{}
+	tmpl := template.New(tmplName)
+	if funcMap != nil {
+		tmpl = tmpl.Funcs(funcMap)
 	}
 
-	t, err := template.New(tmplName).Funcs(funcMap).Parse(tmplContent)
+	parsedTmpl, err := tmpl.Parse(string(tmplContent))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse template %s: %w", tmplName, err)
 	}
 
-	f, err := os.Create(outputPath)
+	f, err := os.Create(destPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create file %s: %w", destPath, err)
 	}
 	defer f.Close()
 
-	return t.Execute(f, data)
+	if err := parsedTmpl.Execute(f, data); err != nil {
+		return fmt.Errorf("failed to execute template %s: %w", tmplName, err)
+	}
+
+	return nil
 }
+
+// parseDurationToMs parses a duration string (e.g. "2s", "500ms") and returns milliseconds as int.
+// Note: This is also defined in funcmap.go, but needed here for utility usage if any.
+// To avoid redeclaration errors, we should check if it's used elsewhere or remove one.
+// The error log showed: "parseDurationToMs redeclared in this block".
+// So we should remove it from here if it is in funcmap.go and accessible, OR rename it, OR remove it from funcmap.go.
+// Since funcmap.go is in the same package, we only need it once.
+// I will NOT include parseDurationToMs here to avoid the redeclaration error seen earlier.
