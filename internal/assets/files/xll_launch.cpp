@@ -5,6 +5,9 @@
 #include <sstream>
 #include <fstream>
 #include <map>
+#include <set>
+#include <algorithm>
+#include <cwctype>
 
 namespace xll {
 
@@ -78,19 +81,6 @@ namespace xll {
             if (isAbs) {
                 cwd = wCwdCfg;
             } else {
-                // If relative, it's relative to XLL_DIR by convention if no var was used,
-                // BUT if the user explicitly wants relative to XLL_DIR they should use ${XLL_DIR}/sub
-                // However, preserving old behavior: if it was ".", it meant XLL dir?
-                // Actually, old code:
-                // if (!cfg.cwd.empty() && cfg.cwd != ".") ... else cwd = xllDir (or temp).
-                //
-                // If the user provided a relative path without variables, we need a base.
-                // The prompt implies we want flexible configuration.
-                // Let's assume relative paths are relative to the *default* cwd, which is binDir.
-                // Wait, typically relative paths in configs are relative to the config file (XLL).
-                // But the user wants default ${BIN_DIR}.
-                // If I set cwd to "data", and binDir is TEMP, do I mean TEMP/data? Probably.
-
                 cwd = binDir + L"\\" + wCwdCfg;
             }
         }
@@ -158,6 +148,19 @@ namespace xll {
     // Helper to create environment block
     std::vector<wchar_t> CreateEnvBlock(const std::map<std::wstring, std::wstring>& env) {
         std::vector<wchar_t> block;
+        std::set<std::wstring> seenKeys;
+
+        // Add overrides first (they take precedence in our logic, or we just add them and skip duplicates from system)
+        for (const auto& kv : env) {
+            std::wstring entry = kv.first + L"=" + kv.second;
+            block.insert(block.end(), entry.begin(), entry.end());
+            block.push_back(0);
+
+            std::wstring keyUpper = kv.first;
+            std::transform(keyUpper.begin(), keyUpper.end(), keyUpper.begin(), ::towupper);
+            seenKeys.insert(keyUpper);
+        }
+
         // Get current environment
         LPWCH currEnv = GetEnvironmentStringsW();
         if (currEnv) {
@@ -170,10 +173,21 @@ namespace xll {
                 size_t eqPos = entry.find(L'=');
                 if (eqPos != std::wstring::npos) {
                     std::wstring key = entry.substr(0, eqPos);
-                    // Only add if not overridden
-                    if (env.find(key) == env.end()) {
-                        block.insert(block.end(), entry.begin(), entry.end());
-                        block.push_back(0);
+
+                    // Skip if key starts with = (e.g. =C:, =ExitCode) - internal variables
+                    if (!key.empty() && key[0] != L'=') {
+                        std::wstring keyUpper = key;
+                        std::transform(keyUpper.begin(), keyUpper.end(), keyUpper.begin(), ::towupper);
+
+                        // Only add if not overridden
+                        if (seenKeys.find(keyUpper) == seenKeys.end()) {
+                            block.insert(block.end(), entry.begin(), entry.end());
+                            block.push_back(0);
+                        }
+                    } else {
+                        // Pass through internal vars
+                         block.insert(block.end(), entry.begin(), entry.end());
+                         block.push_back(0);
                     }
                 }
                 ptr += len + 1;
@@ -181,12 +195,6 @@ namespace xll {
             FreeEnvironmentStringsW(currEnv);
         }
 
-        // Add new variables
-        for (const auto& kv : env) {
-            std::wstring entry = kv.first + L"=" + kv.second;
-            block.insert(block.end(), entry.begin(), entry.end());
-            block.push_back(0);
-        }
         block.push_back(0); // Double null termination
         return block;
     }

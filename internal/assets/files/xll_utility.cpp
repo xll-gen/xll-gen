@@ -53,23 +53,12 @@ LPXLOPER12 TempInt12(int val) {
     return op;
 }
 
-// Optimization: Thread-local buffer for string conversion
-thread_local std::vector<char> g_strBuf;
-
-const char* ConvertExcelString(const wchar_t* wstr) {
+std::string ConvertExcelString(const wchar_t* wstr) {
     if (!wstr) return "";
     size_t len = (size_t)wstr[0]; // Pascal string length
     if (len == 0) return "";
-
-    // Ensure buffer space (UTF-8 max expansion is 4x)
-    size_t cap = len * 4 + 1;
-    if (g_strBuf.size() < cap) g_strBuf.resize(cap);
-
-    int n = WideCharToMultiByte(CP_UTF8, 0, wstr + 1, (int)len, g_strBuf.data(), (int)g_strBuf.size(), NULL, NULL);
-    if (n >= 0) g_strBuf[n] = '\0';
-    else g_strBuf[0] = '\0';
-
-    return g_strBuf.data();
+    std::wstring ws(wstr + 1, len);
+    return WideToUtf8(ws);
 }
 
 bool IsSingleCell(LPXLOPER12 pxRef) {

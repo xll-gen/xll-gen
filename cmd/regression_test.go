@@ -163,7 +163,7 @@ func TestRepro_MemoryLeak(t *testing.T) {
 	// 2. xll_converters.cpp (AnyToXLOPER12 leaks and missing features)
 	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_converters.cpp"),
 		[]string{
-			"case protocol::AnyValue_Range:",   // Missing feature fixed
+			"case protocol::AnyValue::Range:",  // Missing feature fixed
 			"new char[sizeof(XLMREF12)",        // Correct Allocation for Ref
 		},
 		[]string{
@@ -272,7 +272,7 @@ functions:
 
 	checkContent(t, filepath.Join("generated", "cpp", "include", "xll_utility.cpp"),
 		[]string{
-			"const char* ConvertExcelString(const wchar_t* wstr)",
+			"std::string ConvertExcelString(const wchar_t* wstr)",
 		}, nil)
 }
 

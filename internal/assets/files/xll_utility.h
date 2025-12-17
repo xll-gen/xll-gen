@@ -17,7 +17,7 @@ LPXLOPER12 TempInt12(int val);
 std::wstring StringToWString(const std::string& str);
 std::string WideToUtf8(const std::wstring& wstr);
 std::wstring ConvertToWString(const char* str);
-const char* ConvertExcelString(const wchar_t* wstr);
+std::string ConvertExcelString(const wchar_t* wstr);
 
 // Cell Helper
 bool IsSingleCell(LPXLOPER12 pxRef);
