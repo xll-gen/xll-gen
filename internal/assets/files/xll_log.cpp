@@ -1,4 +1,5 @@
 #include "include/xll_log.h"
+#include "include/xll_utility.h" // For StringToWString
 #include <windows.h>
 #include <fstream>
 #include <sstream>
@@ -75,23 +76,63 @@ unsigned long LogException(unsigned long exceptionCode, void* exceptionPointers)
     // In our macro, the handler block returns 0 or exits.
 }
 
+// Helper to expand environment variables
+std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
+    // ExpandEnvironmentStringsW handles %VAR% natively
+    // It doesn't handle ${VAR}, so we might need simple replacement if templates use ${}
+    // However, xll_embed's ExpandEnvVars handled ${} to %.
+    // Let's implement simple ${} -> % conversion for consistency.
+
+    std::wstring p = pattern;
+    size_t start_pos = 0;
+    while((start_pos = p.find(L"${", start_pos)) != std::wstring::npos) {
+        size_t end_pos = p.find(L"}", start_pos);
+        if (end_pos != std::wstring::npos) {
+            p.replace(end_pos, 1, L"%");
+            p.replace(start_pos, 2, L"%");
+            start_pos += 1;
+        } else {
+            break;
+        }
+    }
+
+    DWORD reqSize = ExpandEnvironmentStringsW(p.c_str(), NULL, 0);
+    if (reqSize == 0) return pattern;
+
+    std::vector<wchar_t> buffer(reqSize);
+    DWORD res = ExpandEnvironmentStringsW(p.c_str(), buffer.data(), reqSize);
+    if (res == 0 || res > reqSize) return pattern;
+
+    return std::wstring(buffer.data());
+}
+
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
     // Determine path
     std::wstring path = configuredPath;
 
-    // Resolution logic similar to xll_launch (omitted for brevity, assume simple logic)
-    // If empty, default to "xll_native.log" next to XLL
+    std::wstring wProjName = StringToWString(projName);
+    std::wstring logFileName = wProjName + L"_native.log";
+    if (logFileName == L"_native.log") {
+        logFileName = L"xll_native.log"; // Fallback if projName empty
+    }
 
     if (path.empty()) {
-        path = L"xll_native.log";
+        path = logFileName;
     }
 
     if (isSingleFile) {
         // Construct path in temp dir
         // tempDirPattern is the temp dir path
         // projName is project name
-        std::wstring tempDir(tempDirPattern.begin(), tempDirPattern.end());
-        path = tempDir + L"\\xll_native.log";
+        std::wstring wTempDirPattern = StringToWString(tempDirPattern);
+        std::wstring tempDir = ExpandEnvVarsW(wTempDirPattern);
+
+        // Remove trailing slash if any
+        if (!tempDir.empty() && (tempDir.back() == L'\\' || tempDir.back() == L'/')) {
+            tempDir.pop_back();
+        }
+
+        path = tempDir + L"\\" + logFileName;
     }
 
     // Convert wstring path to string for ofstream (simple ANSI/UTF8 assumption)
