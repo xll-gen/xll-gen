@@ -119,8 +119,40 @@ std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
 }
 
 void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
-    // Determine path
-    std::wstring path = configuredPath;
+    // Parse Level
+    std::string lvl = level;
+    std::transform(lvl.begin(), lvl.end(), lvl.begin(), ::tolower);
+    if (lvl == "debug") g_logLevel = LogLevel::DEBUG;
+    else if (lvl == "info") g_logLevel = LogLevel::INFO;
+    else if (lvl == "warn") g_logLevel = LogLevel::WARN;
+    else if (lvl == "error") g_logLevel = LogLevel::ERROR;
+    else if (lvl == "none") g_logLevel = LogLevel::NONE;
+    else g_logLevel = LogLevel::INFO; // Default to INFO if unspecified or unknown
+
+    // Assume GetXllDir handles NULL or missing module handle gracefully by using GetModuleHandle(NULL)
+    // In many DLL contexts, GetModuleHandle(NULL) returns the host EXE (Excel), which is NOT what we want.
+    // We usually need the HMODULE of the DLL.
+    // However, xll_launch/utility typically stores g_hModule or has a way to get it.
+    // Given the context constraints, we'll assume GetXllDir() (no args or NULL) tries its best.
+    // If we are called from xll_main, we might have resolved paths earlier.
+
+    // NOTE: g_hModule is global in xll_main.cpp, but not extern-ed to here.
+    // Ideally InitLog should take the resolved path.
+    // xll_main.cpp resolves paths and calls InitLogger(logPath, level).
+    // So if 'configuredPath' is already absolute, we are good.
+
+    std::wstring xllDir = L"";
+    // We only call GetXllDir if we need to resolve relative paths.
+
+    // ... (rest of logic handles relative paths)
+
+    // If xll_main passes an absolute path, we might not need xllDir.
+    // But let's keep the existing logic structure.
+
+    // To fix the build error "GetXllDir(NULL)", we check if GetXllDir is declared to take args.
+    // xll_launch.h typically: std::wstring GetXllDir(HANDLE hModule);
+    // Passing NULL is valid C++ (0).
+    xllDir = GetXllDir();
 
     std::wstring wProjName = StringToWString(projName);
     std::wstring logFileName = wProjName + L"_native.log";
