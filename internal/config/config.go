@@ -17,6 +17,8 @@ type Config struct {
 	Build     BuildConfig   `yaml:"build"`
 	// Logging contains logging configuration.
 	Logging   LoggingConfig `yaml:"logging"`
+	// Cache contains global caching configuration.
+	Cache     CacheConfig   `yaml:"cache"`
 	// Server contains configuration for the Go server process.
 	Server    ServerConfig  `yaml:"server"`
 	// Functions is a list of Excel functions to register.
@@ -25,12 +27,22 @@ type Config struct {
 	Events    []Event       `yaml:"events"`
 }
 
+// CacheConfig configures the global caching behavior.
+type CacheConfig struct {
+	// Enabled determines if caching is enabled globally.
+	Enabled bool   `yaml:"enabled"`
+	// TTL is the default Time-To-Live for cached items (e.g., "10m").
+	TTL     string `yaml:"ttl"`
+	// Jitter is the random variation applied to TTL (e.g., "1m").
+	Jitter  string `yaml:"jitter"`
+}
+
 // LoggingConfig configures logging behavior.
 type LoggingConfig struct {
 	// Level is the log level (debug, info, warn, error).
 	Level string `yaml:"level"`
 	// Dir is the log directory.
-	Dir string `yaml:"dir"`
+	Dir   string `yaml:"dir"`
 }
 
 // Event defines a subscription to a specific Excel event.
@@ -49,7 +61,7 @@ type BuildConfig struct {
 	// Options: "xll" (embed Go server in XLL), "exe" (reserved/unimplemented), or empty (no embedding).
 	Singlefile string `yaml:"singlefile"`
 	// TempDir is the directory where embedded binaries are extracted (supports env vars).
-	TempDir string `yaml:"temp_dir"`
+	TempDir    string `yaml:"temp_dir"`
 }
 
 // ServerConfig configures the runtime behavior of the Go server.
@@ -99,27 +111,37 @@ type GoConfig struct {
 // Function represents a single Excel function definition.
 type Function struct {
 	// Name is the name of the function as exposed to Excel.
-	Name        string `yaml:"name"`
+	Name        string               `yaml:"name"`
 	// Description is the help text displayed in the Excel function wizard.
-	Description string `yaml:"description"`
+	Description string               `yaml:"description"`
 	// Args is the list of arguments accepted by the function.
-	Args        []Arg  `yaml:"args"`
+	Args        []Arg                `yaml:"args"`
 	// Return is the return type of the function (e.g., "int", "string", "any").
-	Return      string `yaml:"return"`
+	Return      string               `yaml:"return"`
 	// Volatile marks the function as volatile (recalculated on every sheet change).
-	Volatile    bool   `yaml:"volatile"`
+	Volatile    bool                 `yaml:"volatile"`
 	// Async marks the function as asynchronous.
-	Async       bool   `yaml:"async"`
+	Async       bool                 `yaml:"async"`
 	// Category is the category under which the function appears in Excel.
-	Category    string `yaml:"category"`
+	Category    string               `yaml:"category"`
 	// Shortcut is the keyboard shortcut for the function (e.g., "Ctrl+Shift+A").
-	Shortcut    string `yaml:"shortcut"`
+	Shortcut    string               `yaml:"shortcut"`
 	// HelpTopic is the URL or path to the help topic.
-	HelpTopic   string `yaml:"help_topic"`
+	HelpTopic   string               `yaml:"help_topic"`
 	// Timeout is the execution timeout for this specific function.
-	Timeout     string `yaml:"timeout"`
+	Timeout     string               `yaml:"timeout"`
 	// Caller indicates if the function requires information about the calling cell.
-	Caller      bool   `yaml:"caller"`
+	Caller      bool                 `yaml:"caller"`
+	// Cache configures caching for this specific function.
+	Cache       *FunctionCacheConfig `yaml:"cache"`
+}
+
+// FunctionCacheConfig configures caching for a specific function.
+type FunctionCacheConfig struct {
+	// Enabled overrides the global enabled setting.
+	Enabled *bool  `yaml:"enabled"`
+	// TTL overrides the global TTL.
+	TTL     string `yaml:"ttl"`
 }
 
 // Arg represents a single argument of an Excel function.

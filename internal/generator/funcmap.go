@@ -120,5 +120,8 @@ func GetCommonFuncMap() template.FuncMap {
 		"parseTimeout": func(s string, defaultMs int) int {
 			return parseDurationToMs(s, defaultMs)
 		},
+		"parseDurationToMs": func(s string) int {
+			return parseDurationToMs(s, 0)
+		},
 	}
 }

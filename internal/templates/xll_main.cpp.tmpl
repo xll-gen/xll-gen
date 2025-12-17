@@ -26,6 +26,7 @@
 #include "include/PascalString.h"
 #include "include/xll_launch.h"
 #include "include/xll_worker.h"
+#include "include/xll_cache.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -143,8 +144,18 @@ __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{if hasEvent "CalculationEnded" .Events}}
     {{else}}
     bool needCalcEnded = false;
+    // Check if caching is enabled which needs RefCache cleanup
+    bool hasCache = {{.Cache.Enabled}};
+    {{range .Functions}}
+    {{if .Cache}}
+    {{if .Cache.Enabled}}
+    hasCache = true;
+    {{end}}
+    {{end}}
+    {{end}}
+
     {{range $i, $fn := .Functions}}{{range .Args}}{{if eq .Type "any"}}needCalcEnded=true;{{end}}{{end}}{{end}}
-    if (needCalcEnded) {
+    if (needCalcEnded || hasCache) {
          Excel12(xlEventRegister, 0, 2, TempStr12(L"CalculationEnded"), TempInt12(xleventCalculationEnded));
     }
     {{end}}
@@ -248,10 +259,13 @@ __declspec(dllexport) int __stdcall xlAutoClose() {
 __declspec(dllexport) void __stdcall {{.Name}}() {
     try {
         {{if eq .Type "CalculationEnded"}}
+        // Clear caches
         {
             std::lock_guard<std::mutex> lock(g_refCacheMutex);
             g_sentRefCache.clear();
         }
+        xll::CacheManager::Instance().ClearRefCache();
+
         std::vector<uint8_t> respBuf;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
         if (res.Value() > 0) {
@@ -278,10 +292,13 @@ __declspec(dllexport) void __stdcall {{.Name}}() {
 {{else}}
 __declspec(dllexport) void __stdcall CalculationEnded() {
     try {
+        // Clear caches
         {
             std::lock_guard<std::mutex> lock(g_refCacheMutex);
             g_sentRefCache.clear();
         }
+        xll::CacheManager::Instance().ClearRefCache();
+
         std::vector<uint8_t> respBuf;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
         if (res.Value() > 0) {
@@ -299,6 +316,62 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 {{range $i, $fn := .Functions}}
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupArgCppType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
     try {
+        {{/* Determine Cache Configuration */}}
+        {{ $cacheEnabled := $.Cache.Enabled }}
+        {{ $ttl := $.Cache.TTL }}
+        {{ if .Cache }}
+            {{ if .Cache.Enabled }}{{ $cacheEnabled = derefBool .Cache.Enabled }}{{ end }}
+            {{ if .Cache.TTL }}{{ $ttl = .Cache.TTL }}{{ end }}
+        {{ end }}
+        // DEBUG CACHE: Func={{.Name}} Global={{$.Cache.Enabled}} FuncOverride={{if .Cache}}YES{{else}}NO{{end}} Resolved={{$cacheEnabled}} Async={{.Async}}
+
+        {{if and $cacheEnabled (not .Async)}}
+        // Cache Lookup
+        xll::CacheConfig cacheConfig;
+        cacheConfig.enabled = true;
+        cacheConfig.ttl = std::chrono::milliseconds({{parseDurationToMs $ttl}});
+        cacheConfig.jitter = std::chrono::milliseconds({{parseDurationToMs $.Cache.Jitter}});
+
+        std::vector<LPXLOPER12> cacheArgs = { {{range .Args}}{{if eq .Type "string"}}(LPXLOPER12){{.Name}}{{else}}(LPXLOPER12){{.Name}}{{end}}, {{end}} };
+        std::string cacheKey = xll::MakeCacheKey("{{.Name}}", cacheArgs);
+
+        std::vector<uint8_t> cachedData;
+        if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
+            // Deserialize response
+            auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(cachedData.data());
+
+            {{if eq .Return "string"}}
+            std::wstring wres = StringToWString(resp->result()->str());
+            return NewExcelString(wres.c_str());
+            {{else if eq .Return "int"}}
+            static thread_local XLOPER12 xRes;
+            xRes.xltype = xltypeInt;
+            xRes.val.w = resp->result();
+            return &xRes;
+            {{else if eq .Return "float"}}
+            static thread_local XLOPER12 xRes;
+            xRes.xltype = xltypeNum;
+            xRes.val.num = resp->result();
+            return &xRes;
+            {{else if eq .Return "bool"}}
+            static thread_local XLOPER12 xRes;
+            xRes.xltype = xltypeBool;
+            xRes.val.xbool = resp->result() ? 1 : 0;
+            return &xRes;
+            {{else if eq .Return "any"}}
+            return AnyToXLOPER12(resp->result());
+            {{else if eq .Return "grid"}}
+            return GridToXLOPER12(resp->result());
+            {{else if eq .Return "numgrid"}}
+            return NumGridToFP12(resp->result());
+            {{else if eq .Return "range"}}
+            return RangeToXLOPER12(resp->result());
+            {{else}}
+            return resp->result();
+            {{end}}
+        }
+        {{end}}
+
         auto slot = g_host.GetZeroCopySlot();
         SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
         flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
@@ -420,6 +493,27 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
             LogError("Error executing {{.Name}}: " + resp->error()->str());
             return {{defaultErrorVal .Return}};
         }
+
+        {{if and $cacheEnabled (not .Async)}}
+        // Store in cache
+        {
+            const uint8_t* respData = slot.GetRespBuffer();
+            // Get size from GetRoot? No, GetRespBuffer is just a pointer.
+            // But we know it's a FlatBuffer. We need to copy the *buffer*.
+            // Since we used ZeroCopy, we need to know the size.
+            // slot.GetRespSize() isn't exposed directly?
+            // The slot abstraction in SHM might need checking.
+            // DirectHost::Send returns shm::Result<int>. The int is the size of the response?
+            // "If positive, returns bytes received".
+            // Yes, res.Value() is size.
+
+            int32_t respSize = res.Value();
+            if (respSize > 0) {
+                 std::vector<uint8_t> dataToCache(respData, respData + respSize);
+                 xll::CacheManager::Instance().Put(cacheKey, dataToCache, cacheConfig);
+            }
+        }
+        {{end}}
 
         {{if eq .Return "string"}}
         std::wstring wres = StringToWString(resp->result()->str());
