@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
 // TestGenerate runs a full generation cycle in a temporary directory and verifies that
 // all expected files are created and no legacy files exist.
 func TestGenerate(t *testing.T) {
+	t.Parallel()
 	// 1. Setup temp dir
 	tempDir, err := os.MkdirTemp("", "xll-gen-test")
 	if err != nil {
@@ -15,24 +17,15 @@ func TestGenerate(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	origWd, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(origWd)
-
 	// 2. Init
 	projectName := "my-project"
-	if err := runInit(projectName, false, false); err != nil {
+	projectDir := filepath.Join(tempDir, projectName)
+	if err := runInit(projectDir, false, false); err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	if err := os.Chdir(projectName); err != nil {
-		t.Fatalf("Chdir failed: %v", err)
-	}
-
 	// 3. Generate
-	if err := runGenerate(); err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
+	runGenerateInDir(t, projectDir)
 
 	// 4. Verify files
 	expected := []string{
@@ -51,7 +44,7 @@ func TestGenerate(t *testing.T) {
 	}
 
 	for _, f := range append(expected, fbFiles...) {
-		if _, err := os.Stat(f); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(projectDir, f)); os.IsNotExist(err) {
 			t.Errorf("File missing: %s", f)
 		}
 	}
@@ -62,7 +55,7 @@ func TestGenerate(t *testing.T) {
 		"generated/cpp/include/DirectHost.h",
 	}
 	for _, f := range unexpected {
-		if _, err := os.Stat(f); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(projectDir, f)); !os.IsNotExist(err) {
 			t.Errorf("File should NOT exist: %s", f)
 		}
 	}

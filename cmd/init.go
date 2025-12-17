@@ -40,39 +40,40 @@ func init() {
 }
 
 // runInit scaffolds a new project directory with the specified name.
-func runInit(projectName string, force, dev bool) error {
+func runInit(projectPath string, force, dev bool) error {
+	projectName := filepath.Base(projectPath)
 	printHeader(fmt.Sprintf("🚀 Initializing project %s...", projectName))
 
-	if _, err := os.Stat(projectName); !os.IsNotExist(err) {
+	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
 		if force {
-			if err := os.RemoveAll(projectName); err != nil {
-				return fmt.Errorf("failed to remove existing directory %s: %w", projectName, err)
+			if err := os.RemoveAll(projectPath); err != nil {
+				return fmt.Errorf("failed to remove existing directory %s: %w", projectPath, err)
 			}
 		} else {
-			return fmt.Errorf("directory %s already exists", projectName)
+			return fmt.Errorf("directory %s already exists", projectPath)
 		}
 	}
 
-	if err := os.Mkdir(projectName, 0755); err != nil {
+	if err := os.Mkdir(projectPath, 0755); err != nil {
 		return err
 	}
 
-	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectName, "xll.yaml"), struct{ ProjectName string }{projectName}); err != nil {
+	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectPath, "xll.yaml"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
 	printSuccess("Created", "xll.yaml")
 
-	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectName, "main.go"), struct{ ProjectName string }{projectName}); err != nil {
+	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectPath, "main.go"), struct{ ProjectName string }{projectName}); err != nil {
 		return err
 	}
 	printSuccess("Created", "main.go")
 
-	if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectName, ".gitignore"), nil); err != nil {
+	if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectPath, ".gitignore"), nil); err != nil {
 		return err
 	}
 	printSuccess("Created", ".gitignore")
 
-	vscodeDir := filepath.Join(projectName, ".vscode")
+	vscodeDir := filepath.Join(projectPath, ".vscode")
 	if err := os.MkdirAll(vscodeDir, 0755); err != nil {
 		return err
 	}
@@ -82,7 +83,7 @@ func runInit(projectName string, force, dev bool) error {
 	printSuccess("Created", ".vscode/launch.json")
 
 	cmd := exec.Command("go", "mod", "init", projectName)
-	cmd.Dir = projectName
+	cmd.Dir = projectPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Println(string(output))
@@ -90,20 +91,7 @@ func runInit(projectName string, force, dev bool) error {
 	}
 	printSuccess("Initialized", "Go module")
 
-	// We need to change directory to the project folder for generation and tidy
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	if err := os.Chdir(projectName); err != nil {
-		return err
-	}
-	defer func() {
-		// Restore original working directory
-		_ = os.Chdir(cwd)
-	}()
-
-	data, err := os.ReadFile("xll.yaml")
+	data, err := os.ReadFile(filepath.Join(projectPath, "xll.yaml"))
 	if err != nil {
 		return fmt.Errorf("failed to read xll.yaml: %w", err)
 	}
@@ -124,13 +112,13 @@ func runInit(projectName string, force, dev bool) error {
 	opts := generator.Options{
 		DevMode: dev,
 	}
-	if err := generator.Generate(&cfg, projectName, opts); err != nil {
+	if err := generator.Generate(&cfg, projectPath, projectName, opts); err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
 
 	fmt.Printf("\n%s✨ Project %s initialized successfully!%s\n", colorGreen, projectName, colorReset)
 	printHeader("Next steps:")
-	fmt.Printf("  %scd %s%s\n", colorCyan, projectName, colorReset)
+	fmt.Printf("  %scd %s%s\n", colorCyan, projectPath, colorReset)
 	fmt.Printf("  %sxll-gen build%s\n", colorCyan, colorReset)
 
 	return nil

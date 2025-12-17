@@ -9,6 +9,7 @@ import (
 )
 
 func TestGenCpp_ComplexReturnTypes(t *testing.T) {
+	t.Parallel()
 	// Setup temp dir
 	tmpDir, err := os.MkdirTemp("", "bug_repro")
 	if err != nil {
@@ -79,6 +80,7 @@ func TestGenCpp_ComplexReturnTypes(t *testing.T) {
 }
 
 func TestGenCpp_StringErrorReturn(t *testing.T) {
+	t.Parallel()
 	// Setup temp dir
 	tmpDir, err := os.MkdirTemp("", "bug_repro")
 	if err != nil {

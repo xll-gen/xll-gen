@@ -8,17 +8,13 @@ import (
 )
 
 func TestGenGrid(t *testing.T) {
+	t.Parallel()
 	// Create a temp dir
 	tmpDir, err := os.MkdirTemp("", "repro_grid")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tmpDir)
-
-	// Change to temp dir
-	oldWd, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldWd)
 
 	// Create a config with grid and numgrid
 	cfg := &config.Config{
@@ -31,13 +27,13 @@ func TestGenGrid(t *testing.T) {
 				Module: "testmod",
 			},
 		},
-        Server: config.ServerConfig{
-            Launch: &config.LaunchConfig{Enabled: new(bool)},
-        },
-        Build: config.BuildConfig{
-            Singlefile: "xll",
-            TempDir:    "temp_%PROJECT%",
-        },
+		Server: config.ServerConfig{
+			Launch: &config.LaunchConfig{Enabled: new(bool)},
+		},
+		Build: config.BuildConfig{
+			Singlefile: "xll",
+			TempDir:    "temp_%PROJECT%",
+		},
 		Functions: []config.Function{
 			{
 				Name:        "GridFunc",
@@ -58,11 +54,11 @@ func TestGenGrid(t *testing.T) {
 		},
 	}
 
-    // Set default launch enabled
-    *cfg.Server.Launch.Enabled = true
+	// Set default launch enabled
+	*cfg.Server.Launch.Enabled = true
 
 	// Run Generate
-	err = Generate(cfg, "testmod", Options{})
+	err = Generate(cfg, tmpDir, "testmod", Options{})
 
 	if err != nil {
 		t.Fatalf("Generate failed for grid/numgrid type: %v", err)

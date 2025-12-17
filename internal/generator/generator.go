@@ -21,6 +21,9 @@ type Options struct {
 
 	// DevMode, if true, configures the project to use development versions of dependencies.
 	DevMode bool
+
+	// FlatcPath overrides the flatc executable path.
+	FlatcPath string
 }
 
 // Generate orchestrates the entire code generation process.
@@ -28,15 +31,16 @@ type Options struct {
 //
 // Parameters:
 //   - cfg: The project configuration parsed from xll.yaml.
+//   - baseDir: The root directory of the project (where xll.yaml resides).
 //   - modName: The Go module name of the project.
 //   - opts: Additional generation options.
 //
 // Returns:
 //   - error: An error if any step of the generation fails.
-func Generate(cfg *config.Config, modName string, opts Options) error {
+func Generate(cfg *config.Config, baseDir string, modName string, opts Options) error {
 	ui.PrintHeader(fmt.Sprintf("Generating code for project: %s", cfg.Project.Name))
 
-	genDir := "generated"
+	genDir := filepath.Join(baseDir, "generated")
 	cppDir := filepath.Join(genDir, "cpp")
 	if err := os.MkdirAll(cppDir, 0755); err != nil {
 		return err
@@ -85,9 +89,15 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 
 	goModulePath := modName + "/generated"
 
-	flatcPath, err := EnsureFlatc()
-	if err != nil {
-		return err
+	var flatcPath string
+	if opts.FlatcPath != "" {
+		flatcPath = opts.FlatcPath
+	} else {
+		var err error
+		flatcPath, err = EnsureFlatc()
+		if err != nil {
+			return err
+		}
 	}
 
 	// Generate Go code for schema
@@ -95,6 +105,9 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "--no-includes", "-o", genDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if baseDir != "" {
+		cmd.Dir = baseDir
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flatc (go) failed: %w", err)
 	}
@@ -113,6 +126,9 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	cmd = exec.Command(flatcPath, "--cpp", "--no-includes", "-o", cppDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if baseDir != "" {
+		cmd.Dir = baseDir
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flatc (cpp) failed: %w", err)
 	}
@@ -139,7 +155,7 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	}
 	ui.PrintSuccess("Generated", "CMakeLists.txt")
 
-	if err := generateTaskfile(cfg, "."); err != nil {
+	if err := generateTaskfile(cfg, baseDir); err != nil {
 		return err
 	}
 	ui.PrintSuccess("Generated", "Taskfile.yml")
@@ -150,6 +166,9 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	cmdGet := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
 	cmdGet.Stdout = os.Stdout
 	cmdGet.Stderr = os.Stderr
+	if baseDir != "" {
+		cmdGet.Dir = baseDir
+	}
 	if err := cmdGet.Run(); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go get shm' failed: %v", err))
 	}
@@ -159,6 +178,9 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
 		cmdGetXll.Stdout = os.Stdout
 		cmdGetXll.Stderr = os.Stderr
+		if baseDir != "" {
+			cmdGetXll.Dir = baseDir
+		}
 		if err := cmdGetXll.Run(); err != nil {
 			ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
 		}
@@ -168,6 +190,9 @@ func Generate(cfg *config.Config, modName string, opts Options) error {
 	cmdTidy := exec.Command("go", "mod", "tidy")
 	cmdTidy.Stdout = os.Stdout
 	cmdTidy.Stderr = os.Stderr
+	if baseDir != "" {
+		cmdTidy.Dir = baseDir
+	}
 	if err := cmdTidy.Run(); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.", err))
 	}
