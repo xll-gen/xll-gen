@@ -588,9 +588,13 @@ graph TD
         P_FBS[internal/templates/protocol.fbs]
         P_PKG[pkg/protocol]
         P_H[internal/assets/files/protocol_generated.h]
+        P_CONV[internal/assets/files/xll_converters.cpp]
+        P_WORKER[internal/assets/files/xll_worker.cpp]
 
         P_FBS <-->|Must Sync| P_PKG
         P_FBS <-->|Must Sync| P_H
+        P_H -->|Includes| P_CONV
+        P_H -->|Includes| P_WORKER
     end
 
     subgraph SHM_Set [Shared Memory Integration]
@@ -600,21 +604,47 @@ graph TD
         GEN_MAIN[internal/generator/generator.go]
         CPP_IPC[internal/assets/files/xll_ipc.cpp]
         PKG_SRV[pkg/server]
+        CPP_WORKER[internal/assets/files/xll_worker.cpp]
+        MAIN_TMPL[internal/templates/xll_main.cpp.tmpl]
 
         SHM -->|Version| GO_MOD
         SHM -->|GIT_TAG| CMAKE
         SHM -->|Hardcoded go get| GEN_MAIN
         SHM -->|API Usage| CPP_IPC
         SHM -->|API Usage| PKG_SRV
+        SHM -->|API Usage| CPP_WORKER
+        SHM -->|Init Logic| MAIN_TMPL
     end
 
     subgraph Generator_Set [Generator & Templates]
         TMPL[internal/templates/*.tmpl]
         GEN[internal/generator/*.go]
         TYPES[internal/generator/types.go]
+        FUNCMAP[internal/generator/funcmap.go]
 
         TMPL <-->|Logic| GEN
         GEN <-->|Definitions| TYPES
+        GEN <-->|Helpers| FUNCMAP
+    end
+
+    subgraph Config_Set [Configuration]
+        YAML_SCHEMA[xll.yaml Structure]
+        CONFIG_GO[internal/config/*.go]
+        GEN_SCHEMA[internal/generator/gen_schema.go]
+        MAIN_TMPL_CFG[internal/templates/xll_main.cpp.tmpl]
+
+        YAML_SCHEMA <-->|Defines| CONFIG_GO
+        CONFIG_GO -->|Used By| GEN_SCHEMA
+        CONFIG_GO -->|Used By| MAIN_TMPL_CFG
+    end
+
+    subgraph Logging_Set [Logging]
+        LOG_GO[pkg/log]
+        LOG_CPP[internal/assets/files/xll_log.cpp]
+        LOG_CFG[xll.yaml]
+
+        LOG_CFG -->|Configures| LOG_GO
+        LOG_CFG -->|Configures| LOG_CPP
     end
 
     subgraph Assets_Set [Static Assets]
