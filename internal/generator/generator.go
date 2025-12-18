@@ -203,22 +203,21 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		ui.PrintSuccess("Updated", "Types dependency to v0.1.0")
 	}
 
-	if opts.DevMode {
-		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
-		if baseDir != "" {
-			cmdGetXll.Dir = baseDir
+	// Always update xll-gen to main to ensure compatibility with generated code
+	cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
+	if baseDir != "" {
+		cmdGetXll.Dir = baseDir
+	}
+	if err := runSpinner("Updating xll-gen dependency", func() error {
+		out, err := cmdGetXll.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, string(out))
 		}
-		if err := runSpinner("Updating xll-gen dependency", func() error {
-			out, err := cmdGetXll.CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("%w: %s", err, string(out))
-			}
-			return nil
-		}); err != nil {
-			ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
-		} else {
-			ui.PrintSuccess("Updated", "xll-gen dependency to main")
-		}
+		return nil
+	}); err != nil {
+		ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
+	} else {
+		ui.PrintSuccess("Updated", "xll-gen dependency to main")
 	}
 
 	cmdTidy := exec.Command("go", "mod", "tidy")
