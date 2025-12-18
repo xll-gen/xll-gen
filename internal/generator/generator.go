@@ -105,9 +105,8 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "--no-includes", "-o", genDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if baseDir != "" {
-		cmd.Dir = baseDir
-	}
+	// We removed cmd.Dir override here because 'genDir' and 'schemaPath' include 'baseDir',
+	// so running from current directory is correct and avoids path duplication bugs.
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flatc (go) failed: %w", err)
 	}
@@ -126,9 +125,7 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	cmd = exec.Command(flatcPath, "--cpp", "--no-includes", "-o", cppDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if baseDir != "" {
-		cmd.Dir = baseDir
-	}
+	// We removed cmd.Dir override here as well.
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("flatc (cpp) failed: %w", err)
 	}
@@ -162,39 +159,54 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 
 	ui.PrintHeader("Dependencies:")
 
-	ui.PrintSuccess("Updating", "SHM dependency to v0.5.4")
-	cmdGet := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
-	cmdGet.Stdout = os.Stdout
-	cmdGet.Stderr = os.Stderr
+	shmCmd := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
 	if baseDir != "" {
-		cmdGet.Dir = baseDir
+		shmCmd.Dir = baseDir
 	}
-	if err := cmdGet.Run(); err != nil {
+	if err := runSpinner("Updating SHM dependency", func() error {
+		out, err := shmCmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, string(out))
+		}
+		return nil
+	}); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go get shm' failed: %v", err))
+	} else {
+		ui.PrintSuccess("Updated", "SHM dependency to v0.5.4")
 	}
 
 	if opts.DevMode {
-		ui.PrintSuccess("Updating", "xll-gen dependency to main")
 		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
-		cmdGetXll.Stdout = os.Stdout
-		cmdGetXll.Stderr = os.Stderr
 		if baseDir != "" {
 			cmdGetXll.Dir = baseDir
 		}
-		if err := cmdGetXll.Run(); err != nil {
+		if err := runSpinner("Updating xll-gen dependency", func() error {
+			out, err := cmdGetXll.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("%w: %s", err, string(out))
+			}
+			return nil
+		}); err != nil {
 			ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
+		} else {
+			ui.PrintSuccess("Updated", "xll-gen dependency to main")
 		}
 	}
 
-	ui.PrintSuccess("Running", "'go mod tidy'")
 	cmdTidy := exec.Command("go", "mod", "tidy")
-	cmdTidy.Stdout = os.Stdout
-	cmdTidy.Stderr = os.Stderr
 	if baseDir != "" {
 		cmdTidy.Dir = baseDir
 	}
-	if err := cmdTidy.Run(); err != nil {
+	if err := runSpinner("Running 'go mod tidy'", func() error {
+		out, err := cmdTidy.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, string(out))
+		}
+		return nil
+	}); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.", err))
+	} else {
+		ui.PrintSuccess("Completed", "'go mod tidy'")
 	}
 
 	fmt.Println("") // Spacing
@@ -236,4 +248,11 @@ func fixGoImports(dir string, goModPath string) error {
 		}
 		return nil
 	})
+}
+
+// runSpinner shows a loading spinner while the action runs.
+func runSpinner(msg string, action func() error) error {
+	s := ui.StartSpinner(msg + "...")
+	defer s.Stop()
+	return action()
 }
