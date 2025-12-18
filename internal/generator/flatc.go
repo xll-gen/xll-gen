@@ -211,20 +211,45 @@ func downloadFlatc(destDir string, version string) error {
 				return err
 			}
 
-			destPath := filepath.Join(destDir, f.Name)
-			outFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+			// Extract to a temporary file first to prevent race conditions (ETXTBSY)
+			// when multiple processes try to download/execute flatc simultaneously.
+			tempFile, err := os.CreateTemp(destDir, f.Name+".*.part")
 			if err != nil {
 				rc.Close()
-				return err
+				return fmt.Errorf("failed to create temp file: %w", err)
 			}
+			tempName := tempFile.Name()
 
-			_, err = io.Copy(outFile, rc)
-			outFile.Close()
+			_, err = io.Copy(tempFile, rc)
+			tempFile.Close()
 			rc.Close()
 
 			if err != nil {
-				return err
+				os.Remove(tempName)
+				return fmt.Errorf("failed to write to temp file: %w", err)
 			}
+
+			if err := os.Chmod(tempName, f.Mode()); err != nil {
+				os.Remove(tempName)
+				return fmt.Errorf("failed to chmod temp file: %w", err)
+			}
+
+			destPath := filepath.Join(destDir, f.Name)
+			if err := os.Rename(tempName, destPath); err != nil {
+				// On Windows, Rename fails if destPath exists.
+				// On Linux, it replaces atomically.
+				// If rename fails, check if the destination exists and works.
+				// If it does, we assume another process beat us to it.
+				os.Remove(tempName) // Clean up our partial file
+
+				// Check if destination exists
+				if _, statErr := os.Stat(destPath); statErr != nil {
+					// Real failure
+					return fmt.Errorf("failed to rename %s to %s: %w", tempName, destPath, err)
+				}
+				// If it exists, we accept it.
+			}
+
 			s.Stop()
 			fmt.Printf("Extracted %s to %s\n", f.Name, destPath)
 		}
