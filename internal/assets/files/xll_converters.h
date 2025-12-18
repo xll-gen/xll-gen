@@ -19,5 +19,4 @@ LPXLOPER12 GridToXLOPER12(const protocol::Grid* grid);
 FP12* NumGridToFP12(const protocol::NumGrid* grid);
 
 // Helper for internal use (also exported if needed)
-std::wstring GetSheetName(LPXLOPER12 pxRef);
 flatbuffers::Offset<protocol::Any> ConvertMultiToAny(const XLOPER12& xMulti, flatbuffers::FlatBufferBuilder& builder);
