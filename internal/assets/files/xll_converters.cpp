@@ -39,8 +39,25 @@ flatbuffers::Offset<protocol::Grid> GridToFlatBuffer(flatbuffers::FlatBufferBuil
         auto vec = builder.CreateVector(elements);
         return protocol::CreateGrid(builder, (uint32_t)rows, (uint32_t)cols, vec);
     }
-    // Handle single cell as 1x1 grid? Or return empty?
-    return protocol::CreateGrid(builder, 0, 0, 0);
+
+    // Handle scalar as 1x1 Grid
+    std::vector<flatbuffers::Offset<protocol::Scalar>> elements;
+    if (op->xltype == xltypeNum) {
+        elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Num, protocol::CreateNum(builder, op->val.num).Union()));
+    } else if (op->xltype == xltypeInt) {
+        elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Int, protocol::CreateInt(builder, op->val.w).Union()));
+    } else if (op->xltype == xltypeBool) {
+        elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Bool, protocol::CreateBool(builder, op->val.xbool).Union()));
+    } else if (op->xltype == xltypeStr) {
+            elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Str, protocol::CreateStr(builder, builder.CreateString(ConvertExcelString(op->val.str))).Union()));
+    } else if (op->xltype == xltypeErr) {
+            elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Err, protocol::CreateErr(builder, (protocol::XlError)op->val.err).Union()));
+    } else {
+            elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Nil, protocol::CreateNil(builder).Union()));
+    }
+
+    auto vec = builder.CreateVector(elements);
+    return protocol::CreateGrid(builder, 1, 1, vec);
 }
 
 flatbuffers::Offset<protocol::NumGrid> NumGridToFlatBuffer(flatbuffers::FlatBufferBuilder& builder, LPXLOPER12 op) {
@@ -125,29 +142,6 @@ flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::Fl
     return RangeToFlatBuffer(builder, op, format);
 }
 
-// Get Sheet Name helper (requires callback)
-std::wstring GetSheetName(LPXLOPER12 op) {
-    XLOPER12 xSheetId;
-    // Extract Sheet ID from Ref
-    if (op->xltype & xltypeRef) {
-        xSheetId.xltype = xltypeInt;
-        xSheetId.val.w = (WORD)op->val.mref.idSheet;
-    } else {
-        // For SRef, use current sheet?
-        // Excel12(xlSheetId, &xSheetId, 0); // Not safe in all contexts?
-        // Use safe default
-        return L"";
-    }
-
-    XLOPER12 xName;
-    if (Excel12(xlSheetNm, &xName, 1, &xSheetId) == xlretSuccess) {
-         std::wstring name = PascalToWString(xName.val.str);
-         Excel12(xlFree, 0, 1, &xName);
-         return name;
-    }
-    return L"";
-}
-
 flatbuffers::Offset<protocol::Any> AnyToFlatBuffer(flatbuffers::FlatBufferBuilder& builder, LPXLOPER12 op) {
     if (op->xltype == xltypeNum) {
         return protocol::CreateAny(builder, protocol::AnyValue::Num, protocol::CreateNum(builder, op->val.num).Union());
@@ -176,7 +170,6 @@ flatbuffers::Offset<protocol::Any> AnyToFlatBuffer(flatbuffers::FlatBufferBuilde
         }
 
         if (cellCount > 100) {
-            std::wstring sheet = GetSheetName(op);
             XLOPER12 xAddr;
 
             if (Excel12(xlfReftext, &xAddr, 1, op) == xlretSuccess && (xAddr.xltype & xltypeStr)) {
