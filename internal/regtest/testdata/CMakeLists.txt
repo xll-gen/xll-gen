@@ -37,9 +37,18 @@ if(NOT TARGET shm)
   target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
 endif()
 
+# Types
+FetchContent_Declare(
+  types
+  GIT_REPOSITORY https://github.com/xll-gen/types.git
+  GIT_TAG v0.1.0
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(types)
+
 add_executable(mock_host main.cpp)
 target_include_directories(mock_host PRIVATE
     ../generated/cpp
     ../generated/cpp/include
 )
-target_link_libraries(mock_host PRIVATE shm flatbuffers)
+target_link_libraries(mock_host PRIVATE shm xll-gen-types flatbuffers)

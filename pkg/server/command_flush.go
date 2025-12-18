@@ -3,7 +3,7 @@ package server
 import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/xll-gen/pkg/algo"
-	"github.com/xll-gen/xll-gen/pkg/protocol"
+	"github.com/xll-gen/types/go/protocol"
 )
 
 func (cb *CommandBatcher) flushBuffers() {

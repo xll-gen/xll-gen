@@ -1,6 +1,6 @@
 #include "xll_ipc.h"
-#include "xll_converters.h"
-#include "xll_utility.h"
+#include "types/converters.h"
+#include "types/utility.h"
 #include "xll_worker.h"
 #include "xll_log.h"
 #include <windows.h>

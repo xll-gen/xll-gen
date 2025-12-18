@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"smoke_proj/generated"
-	types "github.com/xll-gen/xll-gen/pkg/protocol"
+	types "github.com/xll-gen/types/go/protocol"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"

@@ -2,7 +2,7 @@ package server
 
 import (
 	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/xll-gen/xll-gen/pkg/protocol"
+	"github.com/xll-gen/types/go/protocol"
 )
 
 func ToScalar(v *protocol.Any) (ScalarValue, bool) {

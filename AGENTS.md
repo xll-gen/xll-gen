@@ -81,3 +81,22 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 *   Place `.h` files in `internal/assets/files/include/`.
 *   In all C++ code (templates and assets), use **flat includes**: `#include "xll_log.h"`.
 *   Never bake the directory structure (like `include/` or `src/`) into the `#include` directive.
+
+## 17. Dependencies & External Types
+
+As of v0.1.0, core Excel types and utilities have been extracted to the upstream library [github.com/xll-gen/types](https://github.com/xll-gen/types).
+
+### 17.1 Go Dependencies
+- **Protocol**: Go code for IPC (Flatbuffers) is imported from `github.com/xll-gen/types/go/protocol`. The local `pkg/protocol` has been removed.
+
+### 17.2 C++ Dependencies
+- **Types Library**: The generated `CMakeLists.txt` uses `FetchContent` to download `github.com/xll-gen/types`.
+- **Include Paths**: Common headers are included via the `types/` prefix:
+    - `#include "types/converters.h"`
+    - `#include "types/mem.h"`
+    - `#include "types/xlcall.h"`
+    - `#include "types/utility.h"`
+    - `#include "types/ObjectPool.h"`
+    - `#include "types/PascalString.h"`
+
+This reduces code duplication in `internal/assets/files` and ensures consistency across generated projects.

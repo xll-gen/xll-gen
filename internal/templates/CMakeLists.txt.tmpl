@@ -34,6 +34,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(shm)
 
+# Types (Excel Types & Utils)
+FetchContent_Declare(
+  types
+  GIT_REPOSITORY https://github.com/xll-gen/types.git
+  GIT_TAG v0.1.0
+)
+FetchContent_MakeAvailable(types)
+
 # Parallel Hashmap
 FetchContent_Declare(
   phmap
@@ -125,6 +133,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
   shm
+  xll-gen-types
   flatbuffers
   phmap
 )
