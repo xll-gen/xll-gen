@@ -20,7 +20,7 @@ namespace xll {
 
             std::vector<uint8_t> respBuf;
             auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
-            if (res.Value() > 0) {
+            if (!res.HasError() && res.Value() > 0) {
                 // Process returned commands (e.g. SetCommand)
                 auto root = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data());
                 auto commands = root->commands();
