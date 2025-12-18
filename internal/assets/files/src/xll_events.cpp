@@ -1,10 +1,10 @@
-#include "include/xll_events.h"
-#include "include/xll_log.h"
-#include "include/xll_cache.h"
-#include "include/xll_commands.h"
-#include "include/xll_ipc.h"
+#include "xll_events.h"
+#include "xll_log.h"
+#include "xll_cache.h"
+#include "xll_commands.h"
+#include "xll_ipc.h"
 #include "shm/DirectHost.h"
-#include "include/protocol_generated.h"
+#include "protocol_generated.h"
 #include <vector>
 #include <mutex>
 

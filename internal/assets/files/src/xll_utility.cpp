@@ -1,5 +1,5 @@
-#include "include/xll_utility.h"
-#include "include/xll_mem.h"
+#include "xll_utility.h"
+#include "xll_mem.h"
 #include <vector>
 
 std::wstring StringToWString(const std::string& str) {
