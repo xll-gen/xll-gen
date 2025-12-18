@@ -10,6 +10,7 @@
 #include <vector>
 #include <sstream>
 #include <mutex>
+#include <filesystem>
 
 std::string g_logPath;
 LogLevel g_logLevel = LogLevel::INFO; // Default
@@ -28,7 +29,9 @@ static void ReplaceString(std::wstring& str, const std::wstring& from, const std
 static void WriteLog(const std::string& levelStr, const std::string& msg) {
     if (g_logPath.empty()) return;
     std::lock_guard<std::mutex> lock(g_logMutex);
-    std::ofstream logFile(g_logPath, std::ios_base::app);
+    // Use filesystem::path for proper Unicode handling on Windows
+    std::filesystem::path p = std::filesystem::u8path(g_logPath);
+    std::ofstream logFile(p, std::ios_base::app);
     if (logFile.is_open()) {
         auto now = std::chrono::system_clock::now();
         auto in_time_t = std::chrono::system_clock::to_time_t(now);
@@ -152,6 +155,14 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
         // Remove trailing slash if any
         if (!tempDir.empty() && (tempDir.back() == L'\\' || tempDir.back() == L'/')) {
             tempDir.pop_back();
+        }
+
+        // Ensure directory exists
+        try {
+            std::filesystem::path dirPath(tempDir);
+            std::filesystem::create_directories(dirPath);
+        } catch (...) {
+            // Ignore errors, best effort
         }
 
         path = tempDir + L"\\" + logFileName;
