@@ -178,7 +178,9 @@ flatbuffers::Offset<protocol::Any> AnyToFlatBuffer(flatbuffers::FlatBufferBuilde
                      }
                  }
 
+                 bool sendSuccess = true;
                  if (!alreadySent) {
+                     sendSuccess = false;
                      XLOPER12 xValue;
                      XLOPER12 xType;
                      xType.xltype = xltypeInt;
@@ -191,13 +193,22 @@ flatbuffers::Offset<protocol::Any> AnyToFlatBuffer(flatbuffers::FlatBufferBuilde
                          cacheBuilder.Finish(req);
 
                          std::vector<uint8_t> respBuf;
-                         g_host.Send(cacheBuilder.GetBufferPointer(), cacheBuilder.GetSize(), (shm::MsgType)130, respBuf, 2000);
+                         auto res = g_host.Send(cacheBuilder.GetBufferPointer(), cacheBuilder.GetSize(), (shm::MsgType)130, respBuf, 2000);
+                         if (!res.HasError()) {
+                             sendSuccess = true;
+                         } else {
+                             // Remove from sent cache if we failed to send
+                             std::lock_guard<std::mutex> lock(g_refCacheMutex);
+                             g_sentRefCache.erase(key);
+                         }
 
                          Excel12(xlFree, 0, 1, &xValue);
                      }
                  }
 
-                 return protocol::CreateAny(builder, protocol::AnyValue::RefCache, protocol::CreateRefCacheDirect(builder, key.c_str()).Union());
+                 if (sendSuccess) {
+                     return protocol::CreateAny(builder, protocol::AnyValue::RefCache, protocol::CreateRefCacheDirect(builder, key.c_str()).Union());
+                 }
             }
         }
 

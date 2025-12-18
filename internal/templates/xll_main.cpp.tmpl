@@ -409,7 +409,16 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 
         {{if .Async}}
         // Async Send
-        g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, nullptr, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, nullptr, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+        if (res.HasError()) {
+             std::string err = "Async send failed: " + g_host.GetLastErrorStr();
+             LogError(err);
+             XLOPER12 xErr;
+             xErr.xltype = xltypeErr;
+             xErr.val.err = xlerrValue;
+             Excel12(xlAsyncReturn, 0, 2, (LPXLOPER12)asyncHandle, &xErr);
+             return;
+        }
         return;
         {{else}}
         // Sync Send
