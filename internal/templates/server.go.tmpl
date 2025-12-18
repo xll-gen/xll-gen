@@ -115,7 +115,7 @@ func Serve(handler XllService) {
                 builder.Reset()
                 respBytes := commandBatcher.FlushCommands(builder)
                 if len(respBytes) > 0 {
-                    // Zero-Copy Return (Negative Size)
+                    // Zero-Copy Return
                     if cap(builder.Bytes) == cap(respBuf) && len(respBytes) <= len(respBuf) {
                         return -int32(len(respBytes)), server.MsgCalculationEnded
                     }
@@ -157,7 +157,6 @@ func Serve(handler XllService) {
                 root := protocol.AckEnd(builder)
                 builder.Finish(root)
 
-                // Debug Log: ACK Prepared
                 log.Debug("ACK sent", "func", "SetRefCache")
 
                 payload := builder.FinishedBytes()
@@ -270,7 +269,7 @@ func Serve(handler XllService) {
                 }:
                 default:
                     log.Warn("Async worker pool full, returning Busy error", "func", "{{.Name}}")
-                    // Fast-fail: Extract handle from copied request and queue error
+                    // Fast-fail
                     reqObj := ipc.GetRootAs{{.Name}}Request(reqCopy, 0)
                     h := reqObj.AsyncHandleBytes()
                     queueAsyncResult(h, nil, protocol.AnyValue(0), "Server Busy")
@@ -374,7 +373,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{if .Async}}
 	handle := request.AsyncHandleBytes()
 
-	// Debug Log: Function Start
 	log.Debug("Async function start", "func", "{{.Name}}")
 
 	if ctx.Err() != nil {
@@ -389,14 +387,9 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 				log.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
 				queueAsyncResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
 			}
-			// Debug Log: Function End
 			log.Debug("Async function end", "func", "{{.Name}}")
 		}()
 
-		// Debug Log: Ack Sent (Implicitly handled by return 0,0 below which sends ACK)
-		// But we want to log it explicitly if requested.
-		// The caller of handle{{.Name}} sends the ACK immediately after this returns 0,0.
-		// So we can log "Processing" here.
 		log.Debug("Processing async request", "func", "{{.Name}}")
 
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
@@ -502,7 +495,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	root := ipc.{{.Name}}ResponseEnd(b)
 	b.Finish(root)
 
-	// Zero-Copy Return (Negative Size)
+	// Zero-Copy Return
 	// cap(b.Bytes) == cap(respBuf) implies it is still the SHM buffer.
 	// If so, data is end-aligned and we return negative size.
 	payload := b.FinishedBytes()

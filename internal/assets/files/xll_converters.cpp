@@ -20,7 +20,6 @@ flatbuffers::Offset<protocol::Grid> GridToFlatBuffer(flatbuffers::FlatBufferBuil
 
         for (int i = 0; i < count; ++i) {
             LPXLOPER12 cell = &op->val.array.lparray[i];
-            // Recursively convert each cell (assuming scalars)
             if (cell->xltype == xltypeNum) {
                 elements.push_back(protocol::CreateScalar(builder, protocol::ScalarValue::Num, protocol::CreateNum(builder, cell->val.num).Union()));
             } else if (cell->xltype == xltypeInt) {
@@ -61,12 +60,7 @@ flatbuffers::Offset<protocol::Grid> GridToFlatBuffer(flatbuffers::FlatBufferBuil
 }
 
 flatbuffers::Offset<protocol::NumGrid> NumGridToFlatBuffer(flatbuffers::FlatBufferBuilder& builder, LPXLOPER12 op) {
-    // Only supports FP12 type really, but here we take XLOPER12.
-    // If it's a Multi, verify all are numbers.
-    // Or if the input is actually FP12* (K%).
-    // But this function signature takes XLOPER12.
-    // Usually NumGrid comes from FP12.
-    // Let's assume this is for XLOPER12->NumGrid coercion.
+    // XLOPER12 input not supported for NumGrid, only FP12.
     return protocol::CreateNumGrid(builder, 0, 0, 0);
 }
 
@@ -94,7 +88,6 @@ flatbuffers::Offset<protocol::Range> RangeToFlatBuffer(flatbuffers::FlatBufferBu
          }
          auto vec = builder.CreateVectorOfStructs(rects);
 
-         // Sheet ID handling is complex (GetSheetName). Skipped for brevity.
          return protocol::CreateRange(builder, 0, vec, fmtOff);
     }
     // SRRef
@@ -136,8 +129,6 @@ flatbuffers::Offset<protocol::Any> ConvertMultiToAny(XLOPER12& op, flatbuffers::
     }
 }
 
-// Convert Range to Rect struct for RangeToFlatBuffer helper?
-// We need ConvertRange for AnyToFlatBuffer
 flatbuffers::Offset<protocol::Range> ConvertRange(LPXLOPER12 op, flatbuffers::FlatBufferBuilder& builder, const std::string& format) {
     return RangeToFlatBuffer(builder, op, format);
 }
@@ -155,7 +146,6 @@ flatbuffers::Offset<protocol::Any> AnyToFlatBuffer(flatbuffers::FlatBufferBuilde
         return protocol::CreateAny(builder, protocol::AnyValue::Err, protocol::CreateErr(builder, (protocol::XlError)op->val.err).Union());
     } else if (op->xltype & (xltypeRef | xltypeSRef)) {
         // Optimize: If > 100 cells, send RefCache key
-        // Need to check size
         int cellCount = 1;
         if (op->xltype & xltypeRef) {
             int count = op->val.mref.lpmref->count;
