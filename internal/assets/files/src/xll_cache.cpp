@@ -54,21 +54,14 @@ void CacheManager::ClearRefCache() {
 std::string CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, std::function<std::string(const XLOPER12*)> computeFn) {
     if (!pRef || (pRef->xltype & xltypeRef) == 0) return "";
 
-    // Iterate over all references in the XLOPER (could be multi-area)
-    // But for simplicity and common case, we treat each SRef in MRef.
-    // Actually, MakeCacheKey handles iterating over args.
-    // Here we assume pRef points to a single Ref (or we handle the whole thing).
-
-    // If it is a reference, we need to extract the SheetID and Rect.
-    // If it's a Multi-Ref (xltypeRef), it has an array of XLREF12.
-    // We will hash each rectangle.
-
     std::stringstream ss;
 
     if (pRef->xltype == xltypeRef) {
         IDSHEET sheetId = pRef->val.mref.idSheet;
-        for (DWORD i = 0; i < pRef->val.mref.cReferences; ++i) {
-            const auto& rect = pRef->val.mref.lpmref[i];
+        // Correct access: lpmref points to XLMREF12 which contains 'count' and 'reftbl'
+        DWORD count = pRef->val.mref.lpmref->count;
+        for (DWORD i = 0; i < count; ++i) {
+            const XLREF12& rect = pRef->val.mref.lpmref->reftbl[i];
             RefKey key = {sheetId, rect.rwFirst, rect.rwLast, rect.colFirst, rect.colLast};
 
             // Try to find in cache
@@ -80,16 +73,29 @@ std::string CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, std::functio
             });
 
             if (!found) {
-                // Compute hash (requires reading values)
-                // We construct a temporary XLOPER just for this rect to pass to computeFn?
-                // Or computeFn assumes it reads the *value* of the ref.
-                // We need to read the value of this specific rect.
-
+                // Construct a temporary XLOPER just for this rect to pass to computeFn
                 XLOPER12 xRef;
                 xRef.xltype = xltypeRef;
-                xRef.val.mref.lpmref = const_cast<XLREF12*>(&rect); // Safe-ish, we just read
+
+                // We need to construct a valid mref for the single rect
+                // We cannot modify the existing lpmref structure in place.
+                // But we can create a temporary buffer for XLMREF12 with 1 rect.
+                // Or if computeFn only needs *value*, we can just pass the rect pointer?
+                // computeFn takes XLOPER12*.
+
+                // Allocate temp XLMREF12 on stack (safe because we control size)
+                // XLMREF12 has flexible array member.
+                // struct { WORD count; XLREF12 reftbl[1]; } tempMRef;
+                // But we must match layout.
+
+                // Easier: Use a small buffer.
+                char mrefBuf[sizeof(WORD) + sizeof(XLREF12)];
+                XLMREF12* tempMRef = (XLMREF12*)mrefBuf;
+                tempMRef->count = 1;
+                tempMRef->reftbl[0] = rect;
+
+                xRef.val.mref.lpmref = tempMRef;
                 xRef.val.mref.idSheet = sheetId;
-                xRef.val.mref.cReferences = 1;
 
                 hashVal = computeFn(&xRef);
 
@@ -99,15 +105,6 @@ std::string CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, std::functio
             ss << hashVal << ";";
         }
     } else if (pRef->xltype == xltypeSRef) {
-        // Single Ref (no sheet ID usually, usually assumes active sheet, but xltypeSRef is rare as input?
-        // Excel passes xltypeRef usually for args.
-        // But if we get SRef, we treat it.
-        // SRef doesn't have sheet ID in struct. It implies current sheet?
-        // Let's assume input is Ref.
-        // If SRef, we can't reliably cache per cycle if sheet changes?
-        // But cycle is short.
-        // Let's ignore SRef caching for now or handle simple case.
-        // SRef is usually output.
          ss << computeFn(pRef);
     } else {
         // Not a ref
@@ -142,23 +139,15 @@ std::string SerializeXLOPER(const XLOPER12* px) {
     if (!px) return "null";
     std::stringstream ss;
 
-    // We only strictly need to handle types passed as arguments (Int, Num, Bool, Str, Ref, Err)
-    // Multi and Missing are also possible.
-
     switch (px->xltype & ~(xlbitXLFree | xlbitDLLFree)) {
         case xltypeNum:
             ss << "Num:" << px->val.num;
             break;
         case xltypeStr:
-            ss << "Str:" << PascalToWString(px->val.str).length() << ":"; // Encode length for safety
-             // Append content. WString to UTF8 usually.
-             // For cache key, pure bytes is fine.
-             // Pascal string: first char is len.
-             {
+            {
                  std::wstring ws = PascalToWString(px->val.str);
-                 // Convert to simple string for key
-                 ss << ConvertExcelString(ws.c_str());
-             }
+                 ss << "Str:" << ws.length() << ":" << ConvertExcelString(ws.c_str());
+            }
             break;
         case xltypeBool:
             ss << "Bool:" << (px->val.xbool ? "1" : "0");
@@ -175,32 +164,18 @@ std::string SerializeXLOPER(const XLOPER12* px) {
             break;
         case xltypeRef:
         case xltypeSRef:
-             // References should be handled by GetOrComputeRefHash before calling this?
-             // Or we just read values here.
-             // If we are here, we are "computing the hash" of the value.
-             // So we coerce to value (Array/Multi) and hash that.
              {
                  XLOPER12 xVal;
-                 // xlCoerce to get value
-                 // We coerce to Multi (xltypeMulti) to get all values.
                  XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = xltypeMulti;
                  if (Excel12(xlCoerce, &xVal, 2, px, &xType) == xlretSuccess) {
-                     // Recursively serialize the Multi
                      if (xVal.xltype == xltypeMulti) {
                          ss << "Grid:" << xVal.val.array.rows << "x" << xVal.val.array.columns << "{";
                          DWORD count = xVal.val.array.rows * xVal.val.array.columns;
-                         // Hash the content to keep key short?
-                         // User wants "Human Readable".
-                         // If grid is huge, human readable key is too long.
-                         // But for cache key, we probably want Hash of the grid content if it's large.
-
-                         // Let's serialize strictly.
                          for (DWORD i=0; i < count; ++i) {
                              ss << SerializeXLOPER(&xVal.val.array.lparray[i]) << ",";
                          }
                          ss << "}";
                      } else {
-                         // Coerced to single value?
                          ss << SerializeXLOPER(&xVal);
                      }
                      Excel12(xlFree, 0, 1, &xVal);
@@ -238,13 +213,6 @@ std::string MakeCacheKey(const std::string& funcName, const std::vector<LPXLOPER
         if (arg->xltype & (xltypeRef | xltypeSRef)) {
             // Use RefCache
             std::string refHash = CacheManager::Instance().GetOrComputeRefHash(arg, [](const XLOPER12* pRef) {
-                 // Compute hash of the value
-                 // We use SerializeXLOPER which coerces to value and serializes.
-                 // Then we hash the string to keep it compact in the main key?
-                 // Or keep it human readable?
-                 // User said "Key should be human readable".
-                 // But Ref content can be huge. "RangeHash(HASHVAL)" is readable enough.
-
                  std::string s = SerializeXLOPER(pRef);
                  uint64_t h = Fnv1a(s);
                  std::stringstream hss;

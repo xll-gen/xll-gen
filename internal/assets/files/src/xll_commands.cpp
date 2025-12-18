@@ -1,3 +1,4 @@
+#include "xll_commands.h"
 #include "xll_ipc.h"
 #include "xll_converters.h"
 #include "xll_utility.h"
