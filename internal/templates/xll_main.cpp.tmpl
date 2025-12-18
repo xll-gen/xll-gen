@@ -22,6 +22,8 @@
 #include "include/xll_cache.h"
 #include "include/xll_embed.h"
 #include "include/xll_events.h"
+#include "include/xll_ipc.h"
+#include "include/SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -33,7 +35,9 @@
 using namespace xll;
 
 // Global Handle
-HANDLE g_hModule = NULL;
+HINSTANCE g_hModule = NULL;
+// Global Error Value
+XLOPER12 g_xlErrValue;
 
 // Process Information for Server
 ProcessInfo g_procInfo = { 0 };
@@ -51,7 +55,7 @@ void MonitorThread(std::wstring logPath) {
 BOOL APIENTRY DllMain(HANDLE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
-        g_hModule = hModule;
+        g_hModule = (HINSTANCE)hModule;
         // Initialize Global Error Value
         g_xlErrValue.xltype = xltypeErr;
         g_xlErrValue.val.err = xlerrValue;
@@ -280,7 +284,9 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
             cacheArgs.push_back(&xArg);
             {{else if eq .Type "string"}}
             // Convert string to temp XLOPER12 for cache key
-            xArg = CreateStringXLOPER(({{.Name}}) ? StringToWString({{.Name}}) : L"");
+            // Use PascalToWString for safe conversion if it is string
+            std::wstring s = (({{.Name}}->xltype & xltypeStr) ? PascalToWString({{.Name}}->val.str) : L"");
+            xArg = CreateStringXLOPER(s.c_str());
             xArg.xltype |= xlbitDLLFree;
             cacheArgs.push_back(&xArg);
             {{else}}
@@ -343,7 +349,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         // Arguments
         {{range $j, $arg := .Args}}
         {{if eq .Type "string"}}
-        auto arg{{$j}} = builder.CreateString(ConvertExcelString({{.Name}}));
+        auto arg{{$j}} = builder.CreateString(({{.Name}}->xltype == xltypeStr) ? ConvertExcelString(PascalToWString({{.Name}}->val.str).c_str()) : "");
         {{else if eq .Type "grid"}}
         auto arg{{$j}} = GridToFlatBuffer(builder, {{.Name}});
         {{else if eq .Type "numgrid"}}
@@ -384,9 +390,9 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         ipc::{{.Name}}RequestBuilder reqBuilder(builder);
         {{range $j, $arg := .Args}}
         {{if or (eq .Type "int") (eq .Type "float") (eq .Type "bool")}}
-        reqBuilder.add_arg{{$j}}({{if eq .Type "bool"}}*{{.Name}} != 0{{else}}*{{.Name}}{{end}});
+        reqBuilder.add_{{.Name}}({{if eq .Type "bool"}}({{.Name}} != 0){{else}}{{.Name}}{{end}});
         {{else}}
-        reqBuilder.add_arg{{$j}}(arg{{$j}});
+        reqBuilder.add_{{.Name}}(arg{{$j}});
         {{end}}
         {{end}}
 
