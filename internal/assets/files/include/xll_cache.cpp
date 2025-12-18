@@ -1,6 +1,7 @@
 #include "xll_cache.h"
 #include "xll_log.h"
 #include "xll_utility.h"
+#include "PascalString.h"
 #include <sstream>
 #include <random>
 #include <iomanip>

@@ -26,6 +26,7 @@
 #include "include/SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
+#include "include/xll_log.h"
 #include "schema_generated.h"
 #include "protocol_generated.h"
 
@@ -52,10 +53,10 @@ void MonitorThread(std::wstring logPath) {
 }
 
 // Entry point
-BOOL APIENTRY DllMain(HANDLE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
+BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
-        g_hModule = (HINSTANCE)hModule;
+        g_hModule = hModule;
         // Initialize Global Error Value
         g_xlErrValue.xltype = xltypeErr;
         g_xlErrValue.val.err = xlerrValue;
