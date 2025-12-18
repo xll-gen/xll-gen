@@ -1,3 +1,16 @@
+## Development Setup
+
+For optimal developer experience (DX), please ensure `go-task` and `flatc` are available before starting work.
+
+1.  **Install `go-task`**:
+    Refer to [Task Installation](https://taskfile.dev/installation/).
+
+2.  **Prepare Environment**:
+    Run the following command to verify tools and automatically download `flatc` (if missing):
+    ```bash
+    task setup
+    ```
+    This ensures `flatc` is cached locally without creating binary artifacts in the repository.
 
 ## 16. Directory Structure & Asset Generation
 

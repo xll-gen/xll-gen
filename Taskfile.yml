@@ -1,0 +1,7 @@
+version: '3'
+
+tasks:
+  setup:
+    desc: Check dependencies and download flatc
+    cmds:
+      - go run main.go doctor
