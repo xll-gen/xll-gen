@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/xll-gen/xll-gen/pkg/protocol"
+	"github.com/xll-gen/types/go/protocol"
 )
 
 func createRange(b *flatbuffers.Builder, rFirst, rLast, cFirst, cLast int32) flatbuffers.UOffsetT {

@@ -8,7 +8,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/xll-gen/pkg/log"
-	"github.com/xll-gen/xll-gen/pkg/protocol"
+	"github.com/xll-gen/types/go/protocol"
 )
 
 // Heap Builder Pool for outgoing messages (retains buffer capacity)

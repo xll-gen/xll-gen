@@ -1,5 +1,5 @@
 #include "xll_launch.h"
-#include "xll_utility.h"
+#include "types/utility.h"
 #include "xll_log.h"
 #include "xll_embed.h"
 #include <vector>

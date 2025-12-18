@@ -1,7 +1,7 @@
 #include "xll_ipc.h"
-#include "xll_converters.h"
-#include "xll_mem.h"
-#include "xll_utility.h"
+#include "types/converters.h"
+#include "types/mem.h"
+#include "types/utility.h"
 #include <vector>
 #include <mutex>
 #include "protocol_generated.h"

@@ -1,5 +1,5 @@
 #include "xll_log.h"
-#include "xll_utility.h" // For StringToWString
+#include "types/utility.h" // For StringToWString
 #include <windows.h>
 #include <fstream>
 #include <chrono>

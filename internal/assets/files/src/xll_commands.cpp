@@ -1,9 +1,9 @@
 #include "xll_commands.h"
 #include "xll_ipc.h"
-#include "xll_converters.h"
-#include "xll_utility.h"
-#include "xll_mem.h"
-#include "PascalString.h"
+#include "types/converters.h"
+#include "types/utility.h"
+#include "types/mem.h"
+#include "types/PascalString.h"
 #include <vector>
 #include <string>
 

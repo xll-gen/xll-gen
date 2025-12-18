@@ -8,4 +8,5 @@ package main
 
 import (
 	_ "github.com/xll-gen/shm/go"
+	_ "github.com/xll-gen/types/go/protocol"
 )

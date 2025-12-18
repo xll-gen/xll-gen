@@ -187,6 +187,22 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		ui.PrintSuccess("Updated", "SHM dependency to v0.5.4")
 	}
 
+	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@v0.1.0")
+	if baseDir != "" {
+		typesCmd.Dir = baseDir
+	}
+	if err := runSpinner("Updating types dependency", func() error {
+		out, err := typesCmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, string(out))
+		}
+		return nil
+	}); err != nil {
+		ui.PrintWarning("Warning", fmt.Sprintf("'go get types' failed: %v", err))
+	} else {
+		ui.PrintSuccess("Updated", "Types dependency to v0.1.0")
+	}
+
 	if opts.DevMode {
 		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
 		if baseDir != "" {
@@ -227,9 +243,9 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 }
 
 // fixGoImports traverses the generated directory and replaces local protocol imports
-// with the correct package path github.com/xll-gen/xll-gen/pkg/protocol.
+// with the correct package path github.com/xll-gen/types/go/protocol.
 func fixGoImports(dir string, goModPath string) error {
-	targetPkg := "github.com/xll-gen/xll-gen/pkg/protocol"
+	targetPkg := "github.com/xll-gen/types/go/protocol"
 	targetLine := fmt.Sprintf("\tprotocol \"%s\"", targetPkg)
 
 	// Regex to match:

@@ -6,6 +6,7 @@ require (
 	github.com/google/flatbuffers v25.9.23+incompatible
 	github.com/spf13/cobra v1.10.2
 	github.com/xll-gen/shm v0.5.4
+	github.com/xll-gen/types v0.1.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
