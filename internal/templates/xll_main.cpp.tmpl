@@ -43,10 +43,6 @@ XLOPER12 g_xlErrValue;
 // Process Information for Server
 ProcessInfo g_procInfo = { 0 };
 
-// Forward Declarations
-void RegisterFunctions();
-void UnregisterFunctions();
-
 // Thread for monitoring server process
 void MonitorThread(std::wstring logPath) {
     MonitorProcess(g_procInfo, logPath);
@@ -166,8 +162,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
         // Start Worker Thread for Async Results
         xll::StartWorker();
-
-        RegisterFunctions();
 
         // Register Events
 {{range .Events}}
