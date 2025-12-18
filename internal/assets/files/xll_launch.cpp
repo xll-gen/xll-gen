@@ -119,9 +119,9 @@ namespace xll {
 
         std::wstring cmd;
         if (!exePath.empty() && exePath[0] == L'"') {
-            cmd = exePath + L" -xll-shm=" + StringToWString(cfg.shmName);
+            cmd = exePath + L" -xll-shm=\"" + StringToWString(cfg.shmName) + L"\"";
         } else {
-            cmd = L"\"" + exePath + L"\" -xll-shm=" + StringToWString(cfg.shmName);
+            cmd = L"\"" + exePath + L"\" -xll-shm=\"" + StringToWString(cfg.shmName) + L"\"";
         }
 
         outCmd = cmd;
