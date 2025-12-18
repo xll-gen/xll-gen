@@ -597,11 +597,13 @@ graph TD
         SHM[shm Library Update]
         GO_MOD[go.mod]
         CMAKE[internal/templates/CMakeLists.txt.tmpl]
+        GEN_MAIN[internal/generator/generator.go]
         CPP_IPC[internal/assets/files/xll_ipc.cpp]
         PKG_SRV[pkg/server]
 
         SHM -->|Version| GO_MOD
         SHM -->|GIT_TAG| CMAKE
+        SHM -->|Hardcoded go get| GEN_MAIN
         SHM -->|API Usage| CPP_IPC
         SHM -->|API Usage| PKG_SRV
     end
@@ -613,6 +615,16 @@ graph TD
 
         TMPL <-->|Logic| GEN
         GEN <-->|Definitions| TYPES
+    end
+
+    subgraph Assets_Set [Static Assets]
+        RAW_FILES[internal/assets/files/*]
+        EMBED_GO[internal/assets/assets.go]
+        WRITER_LOGIC[internal/generator/generator.go]
+
+        RAW_FILES -->|go:embed| EMBED_GO
+        EMBED_GO -->|Source Map| WRITER_LOGIC
+        WRITER_LOGIC -->|Directory Logic| RAW_FILES
     end
 ```
 
