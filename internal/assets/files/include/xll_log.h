@@ -27,16 +27,26 @@ unsigned long LogException(unsigned long code, void* exceptionPointers);
 
 std::wstring GetXllDir();
 
-// Macros for SEH (Structured Exception Handling)
-// Supported by MSVC and MinGW (with -fnon-call-exceptions / -fms-extensions)
-#if defined(_MSC_VER) || defined(__MINGW32__)
+// Safe Block Macros for Crash Handling
+#if defined(_MSC_VER) && !defined(__MINGW32__)
+    // Log exception via SEH (defined in xll_log.cpp or just forward declared here if needed)
+    // We assume LogException is available where these macros are used, or we include windows.h
+    // But xll_log.cpp implements it. We need a declaration to call it.
+
+    // In xll_main.cpp and xll_worker.cpp we see:
+    // LogException(GetExceptionCode(), GetExceptionInformation())
+
+    // We can define the macro to use __try / __except
     #define XLL_SAFE_BLOCK_BEGIN __try {
-    #define XLL_SAFE_BLOCK_END(retVal) } __except(LogException(GetExceptionCode(), GetExceptionInformation())) { return retVal; }
-    #define XLL_SAFE_BLOCK_END_VOID } __except(LogException(GetExceptionCode(), GetExceptionInformation())) { return; }
+    #define XLL_SAFE_BLOCK_END(ret_val) } __except (LogException(GetExceptionCode(), GetExceptionInformation())) { return ret_val; }
+    #define XLL_SAFE_BLOCK_END_VOID } __except (LogException(GetExceptionCode(), GetExceptionInformation())) { return; }
+
 #else
-    // Fallback for non-Windows/standard GCC (unlikely for XLL, but safe)
-    // Note: Standard C++ try-catch does not catch SEH exceptions (like Access Violation).
+    // For GCC/Clang (MinGW), we use standard try-catch.
+    // To catch crashes (segfaults), one must compile with -fnon-call-exceptions
+    // and potentially ensure the signal is mapped to a C++ exception.
+    // This is a "best effort" for GCC.
     #define XLL_SAFE_BLOCK_BEGIN try {
-    #define XLL_SAFE_BLOCK_END(retVal) } catch (...) { LogError("Unknown C++ Exception"); return retVal; }
-    #define XLL_SAFE_BLOCK_END_VOID } catch (...) { LogError("Unknown C++ Exception"); return; }
+    #define XLL_SAFE_BLOCK_END(ret_val) } catch (...) { LogError("Fatal Error: Unknown exception caught in safe block"); return ret_val; }
+    #define XLL_SAFE_BLOCK_END_VOID } catch (...) { LogError("Fatal Error: Unknown exception caught in safe block"); return; }
 #endif
