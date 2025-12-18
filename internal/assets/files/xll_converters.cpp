@@ -269,7 +269,7 @@ LPXLOPER12 AnyToXLOPER12(const protocol::Any* any) {
         case protocol::AnyValue::Err: {
              LPXLOPER12 op = NewXLOPER12();
              op->xltype = xltypeErr | xlbitDLLFree;
-             op->val.err = (int)any->val_as_Err()->val() - 2000;
+             op->val.err = (int)any->val_as_Err()->val();
              return op;
         }
         case protocol::AnyValue::Grid: {
@@ -362,7 +362,7 @@ LPXLOPER12 GridToXLOPER12(const protocol::Grid* grid) {
             }
             case protocol::ScalarValue::Err:
                 cell.xltype = xltypeErr;
-                cell.val.err = (int)scalar->val_as_Err()->val() - 2000;
+                cell.val.err = (int)scalar->val_as_Err()->val();
                 break;
             default:
                 break;

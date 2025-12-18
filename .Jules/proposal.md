@@ -9,11 +9,10 @@
 -   `xll_main.cpp`: Verify Async `Send` result. If it fails, invoke `xlAsyncReturn` with an error code to prevent Excel from hanging indefinitely.
 **Status:** Fixed and Verified.
 
-## 2. Protocol Error Code Alignment
-**Issue:** `protocol.fbs` defines error codes like `Null = 2000`, matching Excel's `xltypeErr` display values or internal offset, but `XLOPER12.val.err` expects small integer constants (e.g., `xlerrNull = 0`, `xlerrValue = 15`). Casting `protocol::XlError` (2000+) directly to `int` for `val.err` results in invalid error codes (e.g., 2015 instead of 15).
-**Impact:** Excel functions returning errors display `#NUM!` or incorrect error types instead of the intended `#VALUE!`, `#DIV/0!`, etc.
-**Proposed Fix:** Modify `xll_converters.cpp` to subtract 2000 from the protocol error value before assigning it to `XLOPER12.val.err`.
-**Status:** Fixed and Verified.
+## 2. Protocol Error Code Alignment (Rejected)
+**Issue:** `protocol.fbs` defines error codes like `Null = 2000`.
+**Proposal:** Modify `xll_converters.cpp` to subtract 2000.
+**Status:** Rejected by User. Code reverted.
 
 ## 3. Code Cleanup: Nullable Scalars
 **Issue:** `internal/generator/types.go` contains entries for `int?`, `float?`, `bool?` which are explicitly unsupported by policy and validation logic.
