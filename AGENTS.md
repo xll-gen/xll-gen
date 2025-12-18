@@ -6,7 +6,7 @@ For optimal developer experience (DX), please ensure `go-task` and `flatc` are a
     Refer to [Task Installation](https://taskfile.dev/installation/).
 
 2.  **Prepare Environment**:
-    Run the following command to verify tools and automatically download `flatc` (if missing):
+    Run the following command to verify tools and automatically download `flatc` v25.9.23 (if missing):
     ```bash
     task setup
     ```
