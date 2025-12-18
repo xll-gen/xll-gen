@@ -132,7 +132,7 @@ namespace xll {
     bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo, std::wstring& outLogPath) {
         std::wstring extractedExe = L"";
         if (cfg.isSingleFile) {
-            if (!embed::ExtractEmbeddedExe(cfg.projectName, extractedExe)) {
+            if (!embed::ExtractEmbeddedExe(WideToUtf8(cfg.projectName), extractedExe)) {
                  LogInfo("No embedded executable found or extraction failed. Trying external...");
             }
         }
