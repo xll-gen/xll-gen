@@ -1,14 +1,5 @@
 #pragma once
 #include <windows.h>
-#ifndef INT32
-#include <basetsd.h>
-#endif
-
-// Fallback for MinGW if INT32 is still missing
-#ifndef INT32
-typedef int INT32;
-#endif
-
 #include <string>
 #include <vector>
 #include <chrono>
