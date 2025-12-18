@@ -1,5 +1,5 @@
-#include "xll_ipc.h"
-#include "protocol_generated.h" // Ensure we include this to use protocol:: namespace if needed in IPC
+#include "include/xll_ipc.h"
+#include "include/protocol_generated.h" // Ensure we include this to use protocol:: namespace if needed in IPC
 #include <random>
 #include <thread>
 #include <iostream>

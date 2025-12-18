@@ -22,5 +22,7 @@ extern std::mutex g_refCacheMutex;
 #define MSG_USER_START 133
 
 // Function declarations
-void StartWorker(int numGuestSlots);
-void StopWorker();
+namespace xll {
+    void StartWorker(int numGuestSlots = 2);
+    void StopWorker();
+}

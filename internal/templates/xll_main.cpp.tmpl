@@ -52,6 +52,11 @@ void MonitorThread(std::wstring logPath) {
     MonitorProcess(g_procInfo, logPath);
 }
 
+// Log Handler for SHM
+void LogHandler(const std::string& msg) {
+    LogInfo("[SHM] " + msg);
+}
+
 // Entry point
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
@@ -72,6 +77,8 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
 // XLL Interface Functions
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
+    XLOPER12 xDLL; // Defined here for xlGetName
+
     XLL_SAFE_BLOCK_BEGIN
         // Setup Native Logging
         std::string tempPattern = "";
@@ -109,9 +116,12 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         if (workers < 1) workers = 1;
         hostCfg.numHostSlots = workers * 2 + 2;
         hostCfg.numGuestSlots = 2;
+        hostCfg.shmName = shmName;
+        hostCfg.payloadSize = 1024 * 1024; // 1MB
 
-        if (!g_host.Init(shmName, 1024 * 1024, hostCfg)) {
-             std::string err = "Failed to initialize shared memory: " + g_host.GetLastErrorStr();
+        auto initRes = g_host.Init(hostCfg);
+        if (initRes.HasError()) {
+             std::string err = "Failed to initialize shared memory: " + initRes.Error();
              LogError(err);
              MessageBoxA(NULL, err.c_str(), "XLL Error", MB_OK | MB_ICONERROR);
              return 0; // Fail loading
@@ -126,6 +136,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         cfg.cwd = ""; // Default CWD (relative to bindir)
         cfg.command = "{{.Server.Command}}";
         cfg.shmName = shmName;
+        {{if eq .Build.Singlefile "xll"}}cfg.tempDir = StringToWString(tempPattern);{{end}}
 
         std::wstring launchLog;
         if (!LaunchServer(cfg, GetXllDir(), g_procInfo, launchLog)) {
@@ -139,7 +150,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         {{end}}
 
         // Start Worker Thread for Async Results
-        StartWorker();
+        xll::StartWorker();
 
         RegisterFunctions();
 
@@ -200,7 +211,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
         // Stop Worker
-        StopWorker();
+        xll::StopWorker();
 
         // Cleanup Process Handles
         if (g_procInfo.hProcess) {
@@ -343,6 +354,8 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         }
         {{end}}
 
+        // NOTE: 'slot' is declared here using GetZeroCopySlot().
+        // SHMAllocator uses it for Zero-Copy Write of the Request.
         auto slot = g_host.GetZeroCopySlot();
         SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
         flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
@@ -409,9 +422,10 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 
         {{if .Async}}
         // Async Send
-        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, nullptr, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+        std::vector<uint8_t> dummyResp;
+        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, dummyResp, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
         if (res.HasError()) {
-             std::string err = "Async send failed: " + g_host.GetLastErrorStr();
+             std::string err = "Async send failed: " + res.Error();
              LogError(err);
              XLOPER12 xErr;
              xErr.xltype = xltypeErr;
@@ -422,22 +436,21 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         return;
         {{else}}
         // Sync Send
-        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, slot.GetRespBuffer(), {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
+        std::vector<uint8_t> response;
+        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, response, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
 
         if (res.HasError()) {
              return &g_xlErrValue;
         }
 
-        auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
+        auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(response.data());
 
         {{if and $cacheEnabled (not .Async)}}
         // Store in cache
         {
-            const uint8_t* respData = slot.GetRespBuffer();
             int32_t respSize = res.Value();
             if (respSize > 0) {
-                 std::vector<uint8_t> dataToCache(respData, respData + respSize);
-                 xll::CacheManager::Instance().Put(cacheKey, dataToCache, cacheConfig);
+                 xll::CacheManager::Instance().Put(cacheKey, response, cacheConfig);
             }
         }
         {{end}}
