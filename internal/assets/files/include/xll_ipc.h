@@ -23,6 +23,6 @@ extern std::mutex g_refCacheMutex;
 
 // Function declarations
 namespace xll {
-    void StartWorker(int numGuestSlots = 2);
+    void StartWorker();
     void StopWorker();
 }
