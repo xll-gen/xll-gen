@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <vector>
-#include "include/xlcall.h"
+#include "xlcall.h"
 
 // Process a batched async response message from the server.
 // Returns 1 if handled (Excel successful), 0 otherwise.

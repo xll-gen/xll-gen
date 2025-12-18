@@ -269,7 +269,11 @@ func Serve(handler XllService) {
                     handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex)
                 }:
                 default:
-                    log.Error("Async worker pool full, dropping request", "func", "{{.Name}}")
+                    log.Warn("Async worker pool full, returning Busy error", "func", "{{.Name}}")
+                    // Fast-fail
+                    reqObj := ipc.GetRootAs{{.Name}}Request(reqCopy, 0)
+                    h := reqObj.AsyncHandleBytes()
+                    queueAsyncResult(h, nil, protocol.AnyValue(0), "Server Busy")
                 }
 
                 builder.Reset()

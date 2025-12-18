@@ -66,12 +66,16 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		if strings.HasPrefix(name, "tools/") {
 			// e.g. tools/compressor.cpp -> generated/cpp/tools/compressor.cpp
 			destPath = filepath.Join(cppDir, name)
+		} else if strings.HasPrefix(name, "src/") {
+			// e.g. src/xll_log.cpp -> generated/cpp/src/xll_log.cpp
+			destPath = filepath.Join(cppDir, name)
 		} else if strings.HasPrefix(name, "include/") {
 			// e.g. include/SHMAllocator.h -> generated/cpp/include/SHMAllocator.h
 			// We join with cppDir because 'name' already includes 'include/'
 			destPath = filepath.Join(cppDir, name)
 		} else {
-			// default: files in root map to include/
+			// Fallback (though mostly files should be in subdirectories now)
+			// default: files in root map to include/ (historical behavior, mostly for .h if any left)
 			destPath = filepath.Join(includeDir, name)
 		}
 
@@ -130,7 +134,7 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	// We use --no-includes here because protocol_generated.h is shipped as a static asset in include/.
 	// flatc will generate #include "protocol_generated.h" in schema_generated.h, which matches
 	// the file in include/ (assuming include/ is in include path).
-	cmd = exec.Command(flatcPath, "--cpp", "--no-includes", "-o", cppDir, schemaPath)
+	cmd = exec.Command(flatcPath, "--cpp", "--no-includes", "-o", includeDir, schemaPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// We removed cmd.Dir override here as well.
