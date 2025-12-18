@@ -12,16 +12,18 @@
 #include <filesystem>
 #include <sstream>
 #include <map>
-#include "include/xll_log.h"
-#include "include/xll_mem.h"
-#include "include/xll_converters.h"
-#include "include/xll_utility.h"
-#include "include/PascalString.h"
-#include "include/xll_launch.h"
-#include "include/xll_worker.h"
-#include "include/xll_cache.h"
-#include "include/xll_embed.h"
-#include "include/xll_events.h"
+#include "xll_log.h"
+#include "xll_mem.h"
+#include "xll_converters.h"
+#include "xll_utility.h"
+#include "PascalString.h"
+#include "xll_launch.h"
+#include "xll_worker.h"
+#include "xll_cache.h"
+#include "xll_embed.h"
+#include "xll_events.h"
+#include "xll_ipc.h"
+#include "SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -33,7 +35,9 @@
 using namespace xll;
 
 // Global Handle
-HANDLE g_hModule = NULL;
+HINSTANCE g_hModule = NULL;
+// Global Error Value
+XLOPER12 g_xlErrValue;
 
 // Process Information for Server
 ProcessInfo g_procInfo = { 0 };
@@ -47,8 +51,13 @@ void MonitorThread(std::wstring logPath) {
     MonitorProcess(g_procInfo, logPath);
 }
 
+// Log Handler for SHM
+void LogHandler(const std::string& msg) {
+    LogInfo("[SHM] " + msg);
+}
+
 // Entry point
-BOOL APIENTRY DllMain(HANDLE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
+BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
         g_hModule = hModule;
@@ -67,6 +76,8 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD  ul_reason_for_call, LPVOID lpReserv
 // XLL Interface Functions
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
+    XLOPER12 xDLL; // Defined here for xlGetName
+
     XLL_SAFE_BLOCK_BEGIN
         // Setup Native Logging
         std::string tempPattern = "";
@@ -88,6 +99,10 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
         Excel12(xlGetName, &xDLL, 0);
 
+        // Ensure global error value is initialized (in case DllMain didn't run as expected or for re-init safety)
+        g_xlErrValue.xltype = xltypeErr;
+        g_xlErrValue.val.err = xlerrValue;
+
         // Initialize Shared Memory
         std::string shmName = "{{.ProjectName}}";
         {{if not .ShouldAppendPid}}
@@ -104,9 +119,12 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         if (workers < 1) workers = 1;
         hostCfg.numHostSlots = workers * 2 + 2;
         hostCfg.numGuestSlots = 2;
+        hostCfg.shmName = shmName;
+        hostCfg.payloadSize = 1024 * 1024; // 1MB
 
-        if (!g_host.Init(shmName, 1024 * 1024, hostCfg)) {
-             std::string err = "Failed to initialize shared memory: " + g_host.GetLastErrorStr();
+        auto initRes = g_host.Init(hostCfg);
+        if (initRes.HasError()) {
+             std::string err = "Failed to initialize shared memory: " + initRes.Error();
              LogError(err);
              MessageBoxA(NULL, err.c_str(), "XLL Error", MB_OK | MB_ICONERROR);
              return 0; // Fail loading
@@ -121,6 +139,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         cfg.cwd = ""; // Default CWD (relative to bindir)
         cfg.command = "{{.Server.Command}}";
         cfg.shmName = shmName;
+        {{if eq .Build.Singlefile "xll"}}cfg.tempDir = StringToWString(tempPattern);{{end}}
 
         std::wstring launchLog;
         if (!LaunchServer(cfg, GetXllDir(), g_procInfo, launchLog)) {
@@ -134,7 +153,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         {{end}}
 
         // Start Worker Thread for Async Results
-        StartWorker();
+        xll::StartWorker();
 
         RegisterFunctions();
 
@@ -195,7 +214,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
         // Stop Worker
-        StopWorker();
+        xll::StopWorker();
 
         // Cleanup Process Handles
         if (g_procInfo.hProcess) {
@@ -280,7 +299,9 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
             cacheArgs.push_back(&xArg);
             {{else if eq .Type "string"}}
             // Convert string to temp XLOPER12 for cache key
-            xArg = CreateStringXLOPER(({{.Name}}) ? StringToWString({{.Name}}) : L"");
+            // Use PascalToWString for safe conversion if it is string
+            std::wstring s = (({{.Name}}->xltype & xltypeStr) ? PascalToWString({{.Name}}->val.str) : L"");
+            xArg = CreateStringXLOPER(s.c_str());
             xArg.xltype |= xlbitDLLFree;
             cacheArgs.push_back(&xArg);
             {{else}}
@@ -336,6 +357,8 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         }
         {{end}}
 
+        // NOTE: 'slot' is declared here using GetZeroCopySlot().
+        // SHMAllocator uses it for Zero-Copy Write of the Request.
         auto slot = g_host.GetZeroCopySlot();
         SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
         flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
@@ -343,7 +366,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         // Arguments
         {{range $j, $arg := .Args}}
         {{if eq .Type "string"}}
-        auto arg{{$j}} = builder.CreateString(ConvertExcelString({{.Name}}));
+        auto arg{{$j}} = builder.CreateString(({{.Name}}->xltype == xltypeStr) ? ConvertExcelString(PascalToWString({{.Name}}->val.str).c_str()) : "");
         {{else if eq .Type "grid"}}
         auto arg{{$j}} = GridToFlatBuffer(builder, {{.Name}});
         {{else if eq .Type "numgrid"}}
@@ -384,9 +407,9 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         ipc::{{.Name}}RequestBuilder reqBuilder(builder);
         {{range $j, $arg := .Args}}
         {{if or (eq .Type "int") (eq .Type "float") (eq .Type "bool")}}
-        reqBuilder.add_arg{{$j}}({{if eq .Type "bool"}}*{{.Name}} != 0{{else}}*{{.Name}}{{end}});
+        reqBuilder.add_{{.Name}}({{if eq .Type "bool"}}({{.Name}} != 0){{else}}{{.Name}}{{end}});
         {{else}}
-        reqBuilder.add_arg{{$j}}(arg{{$j}});
+        reqBuilder.add_{{.Name}}(arg{{$j}});
         {{end}}
         {{end}}
 
@@ -402,26 +425,35 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 
         {{if .Async}}
         // Async Send
-        g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, nullptr, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+        std::vector<uint8_t> dummyResp;
+        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, dummyResp, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+        if (res.HasError()) {
+             std::string err = "Async send failed: " + res.Error();
+             LogError(err);
+             XLOPER12 xErr;
+             xErr.xltype = xltypeErr;
+             xErr.val.err = xlerrValue;
+             Excel12(xlAsyncReturn, 0, 2, (LPXLOPER12)asyncHandle, &xErr);
+             return;
+        }
         return;
         {{else}}
         // Sync Send
-        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, slot.GetRespBuffer(), {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
+        std::vector<uint8_t> response;
+        auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add 133 $i}}, response, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
 
         if (res.HasError()) {
              return &g_xlErrValue;
         }
 
-        auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
+        auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(response.data());
 
         {{if and $cacheEnabled (not .Async)}}
         // Store in cache
         {
-            const uint8_t* respData = slot.GetRespBuffer();
             int32_t respSize = res.Value();
             if (respSize > 0) {
-                 std::vector<uint8_t> dataToCache(respData, respData + respSize);
-                 xll::CacheManager::Instance().Put(cacheKey, dataToCache, cacheConfig);
+                 xll::CacheManager::Instance().Put(cacheKey, response, cacheConfig);
             }
         }
         {{end}}

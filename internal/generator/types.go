@@ -85,18 +85,6 @@ var typeRegistry = map[string]TypeInfo{
 		ArgXllType:      "U",
 		DefaultErrorVal: "&g_xlErrValue",
 	},
-	"int?": {
-		SchemaType: "protocol.Int",
-		GoType:     "*int32",
-	},
-	"float?": {
-		SchemaType: "protocol.Num",
-		GoType:     "*float64",
-	},
-	"bool?": {
-		SchemaType: "protocol.Bool",
-		GoType:     "*bool",
-	},
 }
 
 // LookupSchemaType returns the FlatBuffers schema type for the given xll.yaml type.
