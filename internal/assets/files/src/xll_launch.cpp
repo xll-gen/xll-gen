@@ -1,7 +1,7 @@
-#include "include/xll_launch.h"
-#include "include/xll_utility.h"
-#include "include/xll_log.h"
-#include "include/xll_embed.h"
+#include "xll_launch.h"
+#include "xll_utility.h"
+#include "xll_log.h"
+#include "xll_embed.h"
 #include <vector>
 #include <sstream>
 #include <fstream>

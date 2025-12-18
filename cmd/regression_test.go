@@ -152,7 +152,7 @@ func TestGenerate_Fixes(t *testing.T) {
 			"xll::MemoryPool",               // Internal usage
 		})
 
-	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_worker.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_worker.cpp"),
 		[]string{
 			"if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE)", // MSG_BATCH_ASYNC_RESPONSE
 			"return 1;",                                              // ACK
@@ -166,7 +166,7 @@ func TestGenerate_Fixes(t *testing.T) {
 		}, nil)
 
 	// Check xll_log.cpp fixes
-	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_log.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_log.cpp"),
 		[]string{
 			"g_logPath = WideToUtf8(path)", // Check correct assignment
 			"g_logLevel = LogLevel::INFO;", // Check default or assignment
@@ -188,14 +188,14 @@ func TestRepro_MemoryLeak(t *testing.T) {
 	runGenerateInDir(t, projectDir, generator.Options{FlatcPath: flatcPath})
 
 	// 1. xll_mem.cpp (xlAutoFree12 leak)
-	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_mem.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_mem.cpp"),
 		[]string{
 			"xltypeRef",                          // Handled
 			"delete[] (char*)p->val.mref.lpmref", // Correct deletion
 		}, nil)
 
 	// 2. xll_converters.cpp (AnyToXLOPER12 leaks and missing features)
-	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_converters.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_converters.cpp"),
 		[]string{
 			"case protocol::AnyValue::Range:", // Missing feature fixed
 			"new char[sizeof(XLMREF12)",       // Correct Allocation for Ref
@@ -209,7 +209,7 @@ func TestRepro_MemoryLeak(t *testing.T) {
 		})
 
 	// 3. xll_async.cpp (Use safe cleanup)
-	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_async.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_async.cpp"),
 		[]string{
 			"xlAutoFree12(pxResult)", // Safe cleanup used
 		}, nil)
@@ -227,7 +227,7 @@ func TestRepro_NestedIPC_Corruption(t *testing.T) {
 	runGenerateInDir(t, projectDir, generator.Options{FlatcPath: flatcPath})
 
 	// Verify ConvertAny does not use GetZeroCopySlot
-	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "include", "xll_converters.cpp"),
+	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_converters.cpp"),
 		[]string{
 			"g_host.Send(", // Must use Send
 		},
@@ -236,7 +236,7 @@ func TestRepro_NestedIPC_Corruption(t *testing.T) {
 		})
 
 	// Specific check for ConvertAny body
-	content, _ := os.ReadFile(filepath.Join(projectDir, "generated", "cpp", "include", "xll_converters.cpp"))
+	content, _ := os.ReadFile(filepath.Join(projectDir, "generated", "cpp", "src", "xll_converters.cpp"))
 	sContent := string(content)
 	start := "flatbuffers::Offset<ipc::types::Any> ConvertAny"
 	idx := strings.Index(sContent, start)
@@ -293,7 +293,7 @@ functions:
 			"WStringToString(msg)",
 		})
 
-	checkContent(t, filepath.Join(tempDir, "generated", "cpp", "include", "xll_utility.cpp"),
+	checkContent(t, filepath.Join(tempDir, "generated", "cpp", "src", "xll_utility.cpp"),
 		[]string{
 			"std::string ConvertExcelString(const wchar_t* wstr)",
 		}, nil)
