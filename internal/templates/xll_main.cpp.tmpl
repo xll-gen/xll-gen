@@ -17,6 +17,7 @@
 #include "types/converters.h"
 #include "types/utility.h"
 #include "types/PascalString.h"
+#include "xll_util.h"
 #include "xll_launch.h"
 #include "xll_worker.h"
 #include "xll_cache.h"
@@ -44,8 +45,8 @@ XLOPER12 g_xlErrValue;
 ProcessInfo g_procInfo = { 0 };
 
 // Thread for monitoring server process
-void MonitorThread(std::wstring logPath) {
-    MonitorProcess(g_procInfo, logPath);
+void MonitorThread() {
+    MonitorProcess(g_procInfo);
 }
 
 // Log Handler for SHM
@@ -101,7 +102,12 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         tempPattern = "{{.Build.TempDir}}";
         {{end}}
 
-        InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
+        // Variable substitution for Logging Dir
+        std::wstring logDir = L"{{.Logging.Dir}}";
+        std::wstring xllDir = GetXllDir();
+        ReplaceAll(logDir, L"${XLL_DIR}", xllDir);
+
+        InitLog(logDir, "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
 
 #ifdef SHM_DEBUG
         shm::SetLogHandler(LogHandler);
@@ -149,13 +155,17 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         cfg.shmName = shmName;
         {{if eq .Build.Singlefile "xll"}}cfg.tempDir = StringToWString(tempPattern);{{end}}
 
-        std::wstring launchLog;
-        if (!LaunchServer(cfg, GetXllDir(), g_procInfo, launchLog)) {
+        if (!LaunchServer(cfg, GetXllDir(), g_procInfo)) {
              return 0;
         }
 
+        // Start Log Forwarder Thread (Detached)
+        if (g_procInfo.hStdOutRead) {
+            std::thread(xll::ForwardServerLogs, g_procInfo.hStdOutRead).detach();
+        }
+
         // Start Monitor Thread
-        std::thread(MonitorThread, launchLog).detach();
+        std::thread(MonitorThread).detach();
         {{else}}
         LogInfo("Server launch disabled by configuration.");
         {{end}}
@@ -235,6 +245,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
             CloseHandle(g_procInfo.hShutdownEvent);
             g_procInfo.hShutdownEvent = NULL;
         }
+        // hStdOutRead is closed by ForwardServerLogs when pipe breaks.
 
         return 1;
     XLL_SAFE_BLOCK_END(1)

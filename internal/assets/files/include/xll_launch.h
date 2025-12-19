@@ -8,6 +8,7 @@ namespace xll {
         HANDLE hProcess;
         HANDLE hJob;
         HANDLE hShutdownEvent;
+        HANDLE hStdOutRead; // Read end of the pipe
     };
 
     struct LaunchConfig {
@@ -25,16 +26,19 @@ namespace xll {
         const std::wstring& extractedExe,
         const LaunchConfig& cfg,
         std::wstring& outCmd,
-        std::wstring& outCwd,
-        std::wstring& outLogPath
+        std::wstring& outCwd
     );
 
     // High-level helper to launch the server
-    bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo, std::wstring& outLogPath);
+    bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo);
 
     // Low-level launch
-    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo);
-    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv);
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, ProcessInfo& outInfo);
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv);
 
-    void MonitorProcess(const ProcessInfo& info, const std::wstring& logPath);
+    // Monitor for crash
+    void MonitorProcess(const ProcessInfo& info);
+
+    // Log forwarder
+    void ForwardServerLogs(HANDLE hPipe);
 }

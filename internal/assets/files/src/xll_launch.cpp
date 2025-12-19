@@ -1,5 +1,6 @@
 #include "xll_launch.h"
 #include "types/utility.h"
+#include "xll_util.h"
 #include "xll_log.h"
 #include "xll_embed.h"
 #include <vector>
@@ -12,15 +13,6 @@
 
 namespace xll {
 
-    static void ReplaceAll(std::wstring& str, const std::wstring& from, const std::wstring& to) {
-        if(from.empty()) return;
-        size_t start_pos = 0;
-        while((start_pos = str.find(from, start_pos)) != std::wstring::npos) {
-            str.replace(start_pos, from.length(), to);
-            start_pos += to.length();
-        }
-    }
-
     static bool FileExists(const std::wstring& path) {
         DWORD dwAttrib = GetFileAttributesW(path.c_str());
         return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
@@ -31,8 +23,7 @@ namespace xll {
         const std::wstring& extractedExe,
         const LaunchConfig& cfg,
         std::wstring& outCmd,
-        std::wstring& outCwd,
-        std::wstring& outLogPath
+        std::wstring& outCwd
     ) {
         std::wstring defaultBinPath;
         if (!extractedExe.empty()) {
@@ -126,10 +117,9 @@ namespace xll {
 
         outCmd = cmd;
         outCwd = cwd;
-        outLogPath = cwd + L"\\xll_launch.log";
     }
 
-    bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo, std::wstring& outLogPath) {
+    bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo) {
         std::wstring extractedExe = L"";
         if (cfg.isSingleFile) {
             std::string tempDir = WideToUtf8(cfg.tempDir);
@@ -143,7 +133,7 @@ namespace xll {
         }
 
         std::wstring launchCmd, launchCwd;
-        ResolveServerPath(xllDir, extractedExe, cfg, launchCmd, launchCwd, outLogPath);
+        ResolveServerPath(xllDir, extractedExe, cfg, launchCmd, launchCwd);
 
         LogInfo("Launching Server: " + WideToUtf8(launchCmd));
 
@@ -153,8 +143,8 @@ namespace xll {
 
         outInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
-        if (!LaunchProcess(launchCmd, launchCwd, outLogPath, outInfo, env)) {
-             MessageBoxA(NULL, "Failed to launch server process. See xll_launch.log.", "XLL Error", MB_OK | MB_ICONERROR);
+        if (!LaunchProcess(launchCmd, launchCwd, outInfo, env)) {
+             MessageBoxA(NULL, "Failed to launch server process. See native log.", "XLL Error", MB_OK | MB_ICONERROR);
              return false;
         }
         return true;
@@ -202,7 +192,7 @@ namespace xll {
         return block;
     }
 
-    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv) {
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, ProcessInfo& outInfo, const std::map<std::wstring, std::wstring>& extraEnv) {
         outInfo.hJob = CreateJobObject(NULL, NULL);
         if (outInfo.hJob) {
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = { 0 };
@@ -210,25 +200,39 @@ namespace xll {
             SetInformationJobObject(outInfo.hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
         }
 
-        SECURITY_ATTRIBUTES sa;
-        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-        sa.bInheritHandle = TRUE;
-        sa.lpSecurityDescriptor = NULL;
+        // Create Pipe for Stdout/Stderr
+        SECURITY_ATTRIBUTES saAttr;
+        saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+        saAttr.bInheritHandle = TRUE;
+        saAttr.lpSecurityDescriptor = NULL;
 
-        HANDLE hLog = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hLog == INVALID_HANDLE_VALUE) {
-            LogError("Failed to open log file for launch: " + WideToUtf8(logPath));
+        HANDLE hChildStd_OUT_Rd = NULL;
+        HANDLE hChildStd_OUT_Wr = NULL;
+
+        if (!CreatePipe(&hChildStd_OUT_Rd, &hChildStd_OUT_Wr, &saAttr, 0)) {
+            LogError("Stdout pipe creation failed");
             if (outInfo.hJob) CloseHandle(outInfo.hJob);
             return false;
         }
+
+        // Ensure the read handle to the pipe for STDOUT is not inherited.
+        if (!SetHandleInformation(hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0)) {
+             LogError("Stdout SetHandleInformation failed");
+             CloseHandle(hChildStd_OUT_Rd);
+             CloseHandle(hChildStd_OUT_Wr);
+             if (outInfo.hJob) CloseHandle(outInfo.hJob);
+             return false;
+        }
+
+        outInfo.hStdOutRead = hChildStd_OUT_Rd;
 
         STARTUPINFOW si;
         ZeroMemory(&si, sizeof(si));
         si.cb = sizeof(si);
         si.dwFlags |= STARTF_USESTDHANDLES;
-        si.hStdOutput = hLog;
-        si.hStdError = hLog;
-        si.hStdInput = NULL;
+        si.hStdOutput = hChildStd_OUT_Wr;
+        si.hStdError = hChildStd_OUT_Wr;
+        si.hStdInput = NULL; // We don't need stdin for now
 
         PROCESS_INFORMATION pi;
         ZeroMemory(&pi, sizeof(pi));
@@ -248,66 +252,87 @@ namespace xll {
         if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, flags, envBlock, cwd.c_str(), &si, &pi)) {
             outInfo.hProcess = pi.hProcess;
             CloseHandle(pi.hThread);
+            // Close the write end of the pipe in the parent process!
+            CloseHandle(hChildStd_OUT_Wr);
+
             if (outInfo.hJob) {
                 AssignProcessToJobObject(outInfo.hJob, outInfo.hProcess);
             }
-            CloseHandle(hLog);
             return true;
         } else {
             std::wstring msg = L"Failed to launch Go server.\nCommand: " + cmd;
             LogError(WideToUtf8(msg));
             MessageBoxW(NULL, msg.c_str(), L"Launch Error", MB_OK | MB_ICONERROR);
+
+            CloseHandle(hChildStd_OUT_Wr);
+            CloseHandle(hChildStd_OUT_Rd);
             if (outInfo.hJob) CloseHandle(outInfo.hJob);
-            CloseHandle(hLog);
             return false;
         }
     }
 
-    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, const std::wstring& logPath, ProcessInfo& outInfo) {
+    bool LaunchProcess(const std::wstring& cmd, const std::wstring& cwd, ProcessInfo& outInfo) {
         std::map<std::wstring, std::wstring> emptyEnv;
-        return LaunchProcess(cmd, cwd, logPath, outInfo, emptyEnv);
+        return LaunchProcess(cmd, cwd, outInfo, emptyEnv);
     }
 
-    void MonitorProcess(const ProcessInfo& info, const std::wstring& logPath) {
+    void MonitorProcess(const ProcessInfo& info) {
         HANDLE handles[2] = { info.hProcess, info.hShutdownEvent };
         DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
 
         if (res == WAIT_OBJECT_0) {
+            // Process exited
             if (WaitForSingleObject(info.hShutdownEvent, 0) == WAIT_TIMEOUT) {
+                // Not a clean shutdown (hShutdownEvent not set)
                 DWORD exitCode = 0;
                 GetExitCodeProcess(info.hProcess, &exitCode);
 
                 std::wstringstream ss;
                 ss << L"The Go server process has terminated unexpectedly (Exit Code: " << exitCode << L").\n";
                 ss << L"The Add-in will no longer function correctly.\n\n";
-                ss << L"Last log entries:\n";
-
-                HANDLE hRead = CreateFileW(logPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-                if (hRead != INVALID_HANDLE_VALUE) {
-                    LARGE_INTEGER size;
-                    if (GetFileSizeEx(hRead, &size)) {
-                        long long length = size.QuadPart;
-                        long long start = 0;
-                        if (length > 1024) start = length - 1024;
-
-                        LARGE_INTEGER move;
-                        move.QuadPart = start;
-                        SetFilePointerEx(hRead, move, NULL, FILE_BEGIN);
-
-                        std::vector<char> buffer((size_t)(length - start));
-                        DWORD bytesRead = 0;
-                        if (ReadFile(hRead, buffer.data(), (DWORD)buffer.size(), &bytesRead, NULL)) {
-                            std::string s(buffer.data(), bytesRead);
-                            ss << StringToWString(s);
-                        }
-                    }
-                    CloseHandle(hRead);
-                } else {
-                    ss << L"(Unable to read log file)";
-                }
+                ss << L"Please check the native log file for details.";
 
                 MessageBoxW(NULL, ss.str().c_str(), L"Server Crash", MB_OK | MB_ICONERROR);
             }
         }
+    }
+
+    void ForwardServerLogs(HANDLE hPipe) {
+        const int BUFSIZE = 4096;
+        char buffer[BUFSIZE];
+        DWORD dwRead;
+        std::string pending;
+
+        while (ReadFile(hPipe, buffer, BUFSIZE - 1, &dwRead, NULL) && dwRead > 0) {
+             buffer[dwRead] = '\0';
+             std::string chunk(buffer, dwRead);
+
+             // Append to pending
+             pending += chunk;
+
+             // Split by newline
+             size_t pos = 0;
+             while ((pos = pending.find('\n')) != std::string::npos) {
+                 std::string line = pending.substr(0, pos);
+
+                 // Remove \r if present
+                 if (!line.empty() && line.back() == '\r') {
+                     line.pop_back();
+                 }
+
+                 if (!line.empty()) {
+                     LogInfo("[Server] " + line);
+                 }
+
+                 pending = pending.substr(pos + 1);
+             }
+        }
+
+        // Log remaining
+        if (!pending.empty()) {
+             LogInfo("[Server] " + pending);
+        }
+
+        CloseHandle(hPipe);
     }
 }
