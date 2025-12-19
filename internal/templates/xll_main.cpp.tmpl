@@ -103,7 +103,12 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         tempPattern = "{{.Build.TempDir}}";
         {{end}}
 
-        InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile);
+        std::string logInitError;
+        if (!InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile, logInitError)) {
+             // If logging fails to initialize, we show a message box but proceed.
+             // Logging is critical for debugging but not for core functionality.
+             MessageBoxA(NULL, ("Failed to initialize logging: " + logInitError).c_str(), "XLL Initialization Warning", MB_OK | MB_ICONWARNING);
+        }
 
 #ifdef SHM_DEBUG
         shm::SetLogHandler(LogHandler);
