@@ -121,8 +121,8 @@ func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
 			// Legacy / Complex Path
 			if c.CmdType == cmdTypeSet {
 				cmd := protocol.GetRootAsSetCommand(c.Data, 0)
-				rOff := CloneRange(b, cmd.Target(nil))
-				vOff := CloneAny(b, cmd.Value(nil))
+				rOff := cmd.Target(nil).DeepCopy(b)
+				vOff := cmd.Value(nil).DeepCopy(b)
 
 				protocol.SetCommandStart(b)
 				protocol.SetCommandAddTarget(b, rOff)
@@ -131,7 +131,7 @@ func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
 				uType = protocol.CommandSetCommand
 			} else {
 				cmd := protocol.GetRootAsFormatCommand(c.Data, 0)
-				rOff := CloneRange(b, cmd.Target(nil))
+				rOff := cmd.Target(nil).DeepCopy(b)
 				fOff := b.CreateString(string(cmd.Format()))
 
 				protocol.FormatCommandStart(b)
