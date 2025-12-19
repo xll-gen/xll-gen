@@ -2,6 +2,8 @@
 #include <string>
 #include <windows.h> // Required for SEH macros (GetExceptionCode, etc.)
 
+namespace xll {
+
 // Default Log Level
 enum class LogLevel {
     NONE = 0,
@@ -12,7 +14,8 @@ enum class LogLevel {
 };
 
 // Initialize logging with a path, level, temp pattern, project name, and singlefile flag
-void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile);
+// Returns true on success, false on failure (with error message in outError)
+bool InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile, std::string& outError);
 
 void LogError(const std::string& msg);
 void LogInfo(const std::string& msg);
@@ -27,26 +30,19 @@ unsigned long LogException(unsigned long code, void* exceptionPointers);
 
 std::wstring GetXllDir();
 
+} // namespace xll
+
 // Safe Block Macros for Crash Handling
 #ifdef _MSC_VER
     // Log exception via SEH (defined in xll_log.cpp or just forward declared here if needed)
-    // We assume LogException is available where these macros are used, or we include windows.h
-    // But xll_log.cpp implements it. We need a declaration to call it.
-
-    // In xll_main.cpp and xll_worker.cpp we see:
-    // LogException(GetExceptionCode(), GetExceptionInformation())
-
-    // We can define the macro to use __try / __except
+    // We use xll::LogException
     #define XLL_SAFE_BLOCK_BEGIN __try {
-    #define XLL_SAFE_BLOCK_END(ret_val) } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { return ret_val; }
-    #define XLL_SAFE_BLOCK_END_VOID } __except (LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { return; }
+    #define XLL_SAFE_BLOCK_END(ret_val) } __except (xll::LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { return ret_val; }
+    #define XLL_SAFE_BLOCK_END_VOID } __except (xll::LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { return; }
 
 #else
-    // For GCC/Clang (MinGW), we use standard try-catch.
-    // To catch crashes (segfaults), one must compile with -fnon-call-exceptions
-    // and potentially ensure the signal is mapped to a C++ exception.
-    // This is a "best effort" for GCC.
+    // For GCC/Clang (MinGW)
     #define XLL_SAFE_BLOCK_BEGIN try {
-    #define XLL_SAFE_BLOCK_END(ret_val) } catch (...) { LogError("Fatal Error: Unknown exception caught in safe block"); return ret_val; }
-    #define XLL_SAFE_BLOCK_END_VOID } catch (...) { LogError("Fatal Error: Unknown exception caught in safe block"); return; }
+    #define XLL_SAFE_BLOCK_END(ret_val) } catch (...) { xll::LogError("Fatal Error: Unknown exception caught in safe block"); return ret_val; }
+    #define XLL_SAFE_BLOCK_END_VOID } catch (...) { xll::LogError("Fatal Error: Unknown exception caught in safe block"); return; }
 #endif

@@ -12,9 +12,11 @@
 #include <mutex>
 #include <filesystem>
 
-std::string g_logPath;
-LogLevel g_logLevel = LogLevel::INFO; // Default
-std::mutex g_logMutex;
+namespace xll {
+
+static std::string g_logPath;
+static LogLevel g_logLevel = LogLevel::INFO; // Default
+static std::mutex g_logMutex;
 
 // Helper to replace all occurrences of a substring
 static void ReplaceString(std::wstring& str, const std::wstring& from, const std::wstring& to) {
@@ -68,7 +70,7 @@ void LogDebug(const std::string& msg) {
 }
 #endif
 
-// Log SEH Exception (Implementation of the helper used by macros)
+// Log SEH Exception
 unsigned long LogException(unsigned long exceptionCode, void* exceptionPointers) {
     std::stringstream ss;
     ss << "CRITICAL EXCEPTION DETECTED! Code: 0x" << std::hex << std::uppercase << exceptionCode;
@@ -92,12 +94,7 @@ unsigned long LogException(unsigned long exceptionCode, void* exceptionPointers)
 }
 
 // Helper to expand environment variables
-std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
-    // ExpandEnvironmentStringsW handles %VAR% natively
-    // It doesn't handle ${VAR}, so we might need simple replacement if templates use ${}
-    // However, xll_embed's ExpandEnvVars handled ${} to %.
-    // Let's implement simple ${} -> % conversion for consistency.
-
+static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
     std::wstring p = pattern;
     size_t start_pos = 0;
     while((start_pos = p.find(L"${", start_pos)) != std::wstring::npos) {
@@ -121,7 +118,8 @@ std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
     return std::wstring(buffer.data());
 }
 
-void InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile) {
+bool InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile, std::string& outError) {
+    outError = "";
     // Parse Level
     std::string l = level;
     std::transform(l.begin(), l.end(), l.begin(), ::tolower);
@@ -147,8 +145,6 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
 
     if (isSingleFile) {
         // Construct path in temp dir
-        // tempDirPattern is the temp dir path
-        // projName is project name
         std::wstring wTempDirPattern = StringToWString(tempDirPattern);
         std::wstring tempDir = ExpandEnvVarsW(wTempDirPattern);
 
@@ -161,12 +157,32 @@ void InitLog(const std::wstring& configuredPath, const std::string& level, const
         try {
             std::filesystem::path dirPath(tempDir);
             std::filesystem::create_directories(dirPath);
+        } catch (const std::exception& e) {
+            outError = "Failed to create log directory '" + WideToUtf8(tempDir) + "': " + e.what();
+            return false;
         } catch (...) {
-            // Ignore errors, best effort
+            outError = "Failed to create log directory '" + WideToUtf8(tempDir) + "': Unknown error";
+            return false;
         }
 
         path = tempDir + L"\\" + logFileName;
     }
 
+    // Try to open file to verify permissions
+    try {
+        std::filesystem::path p = std::filesystem::u8path(WideToUtf8(path));
+        std::ofstream logFile(p, std::ios_base::app);
+        if (!logFile.is_open()) {
+            outError = "Failed to open log file '" + WideToUtf8(path) + "' for writing.";
+            return false;
+        }
+    } catch (const std::exception& e) {
+        outError = "Exception opening log file: " + std::string(e.what());
+        return false;
+    }
+
     g_logPath = WideToUtf8(path);
+    return true;
 }
+
+} // namespace xll
