@@ -7,3 +7,7 @@
 ## 2024-05-23 - Spinner Output Masking
 **Learning:** CLI spinners inherently hide the stdout/stderr of the running process. If a command fails, the user loses critical context unless the output is captured and replayed.
 **Action:** When adding spinners to existing commands, always capture `CombinedOutput()` and include it in the error message or print it explicitly on failure.
+
+## 2024-10-24 - Actionable CLI Errors
+**Learning:** Users often get stuck on missing dependency errors (like `task` or `cmake`). Providing a specific, copy-pasteable installation command (e.g., `go install ...` or `winget install ...`) significantly improves the "time to fix" compared to a generic "Not Found" message or a URL.
+**Action:** When detecting missing tools, conditionally check for package managers (Go, Winget, Brew) and provide the exact command to run.

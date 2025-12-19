@@ -119,6 +119,9 @@ func runInit(projectPath string, force, dev bool) error {
 	fmt.Printf("\n%s✨ Project %s initialized successfully!%s\n", colorGreen, projectName, colorReset)
 	printHeader("Next steps:")
 	fmt.Printf("  %scd %s%s\n", colorCyan, projectPath, colorReset)
+	if _, err := exec.LookPath("code"); err == nil {
+		fmt.Printf("  %scode .%s\n", colorCyan, colorReset)
+	}
 	fmt.Printf("  %sxll-gen build%s\n", colorCyan, colorReset)
 
 	return nil
