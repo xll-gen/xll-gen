@@ -25,13 +25,6 @@ var (
 	asyncBatcher   = server.NewAsyncBatcher()
 	chunkManager   = server.NewChunkManager()
 	commandBatcher = server.NewCommandBatcher()
-
-	// Builder Pool to reduce GC pressure
-	builderPool = sync.Pool{
-		New: func() interface{} {
-			return flatbuffers.NewBuilder(1024)
-		},
-	}
 )
 
 func ScheduleSet(r *protocol.Range, v *protocol.Any) {
@@ -83,16 +76,8 @@ func Serve(handler XllService) {
 
 	var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
 	dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
-             builder := builderPool.Get().(*flatbuffers.Builder)
-             if respBuf != nil && cap(respBuf) > 0 {
-                 builder.Bytes = respBuf
-             }
-             builder.Reset()
-             // Safety: Detach SHM buffer before returning to pool to prevent corruption
-             defer func() {
-                 builder.Bytes = nil
-                 builderPool.Put(builder)
-             }()
+             builder, releaseBuilder := server.GetBuilder(respBuf)
+             defer releaseBuilder()
 
              switch uint32(mType) {
              case server.MsgCalculationEnded:
@@ -152,14 +137,10 @@ func Serve(handler XllService) {
                 refCache[key] = reqCopy
                 refCacheMutex.Unlock()
 
-                protocol.AckStart(builder)
-                protocol.AckAddOk(builder, true)
-                root := protocol.AckEnd(builder)
-                builder.Finish(root)
+                payload := server.BuildAckResponse(builder, 0, true)
 
                 log.Debug("ACK sent", "func", "SetRefCache")
 
-                payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
                     return -int32(len(payload)), server.MsgAck
                 }
@@ -182,18 +163,8 @@ func Serve(handler XllService) {
                     return 0, 0
                 }
 
-                builder.Reset()
-                dataOff := builder.CreateByteVector(chunkData)
-                protocol.ChunkStart(builder)
-                protocol.ChunkAddId(builder, id)
-                protocol.ChunkAddTotalSize(builder, uint32(totalSize))
-                protocol.ChunkAddOffset(builder, uint32(offset))
-                protocol.ChunkAddData(builder, dataOff)
-                protocol.ChunkAddMsgType(builder, msgType)
-                root := protocol.ChunkEnd(builder)
-                builder.FinishWithFileIdentifier(root, []byte("XCHN"))
+                payload := server.BuildChunkResponse(builder, chunkData, id, totalSize, offset, msgType)
 
-                payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
                     return -int32(len(payload)), server.MsgChunk
                 }
@@ -224,13 +195,8 @@ func Serve(handler XllService) {
                     return dispatch(buf.Data, respBuf, shm.MsgType(payloadMsgType))
                 }
 
-                protocol.AckStart(builder)
-                protocol.AckAddId(builder, id)
-                protocol.AckAddOk(builder, true)
-                root := protocol.AckEnd(builder)
-                builder.Finish(root)
+                payload := server.BuildAckResponse(builder, id, true)
 
-                payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
                     return -int32(len(payload)), server.MsgChunk
                 }
@@ -275,13 +241,8 @@ func Serve(handler XllService) {
                     queueAsyncResult(h, nil, protocol.AnyValue(0), "Server Busy")
                 }
 
-                builder.Reset()
-                protocol.AckStart(builder)
-                protocol.AckAddOk(builder, true)
-                root := protocol.AckEnd(builder)
-                builder.Finish(root)
+                payload := server.BuildAckResponse(builder, 0, true)
 
-                payload := builder.FinishedBytes()
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
                     return -int32(len(payload)), server.MsgAck
                 }
@@ -522,20 +483,10 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			currentSize = len(out.Data)
 		}
 
-		b.Reset()
-		dataOff := b.CreateByteVector(out.Data[0:currentSize])
-		protocol.ChunkStart(b)
-		protocol.ChunkAddId(b, transferId)
-		protocol.ChunkAddTotalSize(b, uint32(len(out.Data)))
-		protocol.ChunkAddOffset(b, 0)
-		protocol.ChunkAddData(b, dataOff)
-		protocol.ChunkAddMsgType(b, uint32(msgType))
-		root := protocol.ChunkEnd(b)
-		b.FinishWithFileIdentifier(root, []byte("XCHN"))
+		payload = server.BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
 
 		out.Offset = currentSize
 
-		payload = b.FinishedBytes()
 		if len(payload) > len(respBuf) {
 			return 0, 0 // Fatal: Chunk header overhead made it > 1MB?
 		}
