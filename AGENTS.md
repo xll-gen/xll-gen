@@ -121,7 +121,7 @@ The versions of core dependencies must be synchronized across the build system a
 When adding a new Excel event (e.g., `SheetActivate`):
 1.  **Config**: Update `internal/config/config.go` (`Event` struct validation).
 2.  **Mapping**: Update `internal/generator/funcmap.go` (`lookupEventCode`, `lookupEventId`).
-3.  **C++ Constant**: Ensure `internal/assets/files/include/xlcall.h` contains the `xlEvent` constant.
+3.  **Upstream**: Ensure `github.com/xll-gen/types` contains the `xlEvent` constant.
 4.  **Schema**: Update `internal/templates/protocol.fbs` if the event requires a specific payload structure.
 
 ### 18.4 Type System Extensions
@@ -129,4 +129,4 @@ When adding or modifying a data type (e.g., adding `date` support):
 1.  **Configuration**: Update `internal/config/config.go` (`validArgTypes`, `validReturnTypes`).
 2.  **Metadata**: Update `internal/generator/types.go` (`typeRegistry`).
 3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member).
-4.  **Runtime (C++)**: Update `internal/assets/files/src/xll_converters.cpp` (`AnyToXLOPER12`) to handle the new type.
+4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type.

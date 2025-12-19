@@ -187,7 +187,7 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		ui.PrintSuccess("Updated", "SHM dependency to v0.5.4")
 	}
 
-	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@v0.1.0")
+	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@v0.1.1")
 	if baseDir != "" {
 		typesCmd.Dir = baseDir
 	}
@@ -200,7 +200,7 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	}); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go get types' failed: %v", err))
 	} else {
-		ui.PrintSuccess("Updated", "Types dependency to v0.1.0")
+		ui.PrintSuccess("Updated", "Types dependency to v0.1.1")
 	}
 
 	if opts.DevMode {

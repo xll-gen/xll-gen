@@ -117,8 +117,8 @@ func (cb *CommandBatcher) ScheduleSet(r *protocol.Range, v *protocol.Any) {
 	cb.flushBuffers()
 
 	b := flatbuffers.NewBuilder(0)
-	rOff := CloneRange(b, r)
-	vOff := CloneAny(b, v)
+	rOff := r.DeepCopy(b)
+	vOff := v.DeepCopy(b)
 
 	protocol.SetCommandStart(b)
 	protocol.SetCommandAddTarget(b, rOff)
