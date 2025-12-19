@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <sstream>
 #include <map>
+#include <fstream>
 #include "xll_log.h"
 #include "types/mem.h"
 #include "types/converters.h"
@@ -51,9 +52,11 @@ void MonitorThread(std::wstring logPath) {
 }
 
 // Log Handler for SHM
+#ifdef SHM_DEBUG
 void LogHandler(shm::LogLevel level, const std::string& msg) {
     LogInfo("[SHM] " + msg);
 }
+#endif
 
 // Helper for logging SHM errors
 std::string SHMErrorToString(shm::Error err) {
@@ -103,11 +106,20 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         tempPattern = "{{.Build.TempDir}}";
         {{end}}
 
+        std::wstring logPath = L"{{.Logging.Dir}}";
+        if (logPath == L"XLL_DIR") {
+            logPath = GetXllDir() + L"\\{{.ProjectName}}_native.log";
+        } else if (logPath == L"TEMP_DIR") {
+            logPath = ExpandEnvVarsW(L"${TEMP}") + L"\\{{.ProjectName}}_native.log";
+        }
+
         std::string logInitError;
-        if (!InitLog(L"{{.Logging.Dir}}", "{{.Logging.Level}}", tempPattern, projName, isSingleFile, logInitError)) {
+        if (!InitLog(logPath, "{{.Logging.Level}}", tempPattern, projName, isSingleFile, logInitError)) {
              // If logging fails to initialize, we show a message box but proceed.
              // Logging is critical for debugging but not for core functionality.
              MessageBoxA(NULL, ("Failed to initialize logging: " + logInitError).c_str(), "XLL Initialization Warning", MB_OK | MB_ICONWARNING);
+        } else {
+             LogInfo("Logging Initialized Successfully. LogPath: " + WideToUtf8(logPath));
         }
 
 #ifdef SHM_DEBUG
@@ -129,7 +141,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         LogInfo("Initializing Shared Memory: " + shmName);
 
         // HostConfig: hostSlots, guestSlots.
-        shm::HostConfig hostCfg;
+        shm::HostConfig hostCfg{};
         int workers = {{if .Server.Workers}}{{.Server.Workers}}{{else}}std::thread::hardware_concurrency(){{end}};
         if (workers < 1) workers = 1;
         hostCfg.numHostSlots = workers * 2 + 2;

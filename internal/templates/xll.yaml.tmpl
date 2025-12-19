@@ -6,22 +6,27 @@ project:
 gen:
   go:
     package: "generated"
-  # disable_pid_suffix: false # Optional: If true, prevents appending the PID to the shared memory name. Default is false.
+  disable_pid_suffix: true # Optional: If true, prevents appending the PID to the shared memory name. Default is false.
 
 # Build configuration
-build:
-  singlefile: "xll" # Optional: "xll" to embed Go server in XLL. "exe" is reserved.
-  # temp_dir: "${TEMP}" # Optional: Directory for extracting embedded binaries. Supports environment variables. Default is "${TEMP}".
-
-# Logging configuration
 logging:
-  level: "info" # debug, info, warn, error
-  dir: "" # Log file directory.
+  # Log level (DEBUG, INFO, WARN, ERROR)
+  level: "{{if .DevMode}}DEBUG{{else}}INFO{{end}}"
+  # Directory for log files (XLL_DIR, TEMP_DIR, or absolute path)
+  dir: "{{if .DevMode}}XLL_DIR{{else}}TEMP_DIR{{end}}"
+
+build:
+  # Build strategy:
+  # - standalone: XLL and Go executable are separate files.
+  # - xll: Go executable is embedded into the XLL (single-file distribution).
+  singlefile: "{{if .DevMode}}{{else}}xll{{end}}"
+  # Directory pattern for temporary extraction (only for singlefile: xll)
+  temp_dir: "{{.ProjectName}}_ext"
 
 # Go server process configuration
 server:
   timeout: "10s" # Default timeout for synchronous function calls.
-  # async_ack_timeout: "1s" # Optional: Timeout for acknowledging asynchronous requests.
+  async_ack_timeout: "2s" # Optional: Timeout for acknowledging asynchronous requests.
   workers: 0 # Size of the worker pool for processing requests. 0 means use runtime.NumCPU().
   launch:
     enabled: true # If true, the XLL automatically launches the Go server.

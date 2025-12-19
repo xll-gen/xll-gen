@@ -41,7 +41,11 @@ FetchContent_Declare(
   GIT_TAG v0.1.1
 )
 set(TYPES_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(types)
+FetchContent_GetProperties(types)
+if(NOT types_POPULATED)
+  FetchContent_Populate(types)
+  add_subdirectory(${types_SOURCE_DIR} ${types_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
 
 # Parallel Hashmap
 FetchContent_Declare(
@@ -156,6 +160,7 @@ endif()
 
 if(MSVC)
   target_compile_options(${PROJECT_NAME} PRIVATE
+    /utf-8
     $<$<CONFIG:Release>:/arch:AVX2>
   )
 else()

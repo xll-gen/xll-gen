@@ -29,7 +29,7 @@ xll-gen
 temp_project/
 build_cmake/
 temp_*/
-build/
+# build/
 
 # IDEs and editors
 .vscode/

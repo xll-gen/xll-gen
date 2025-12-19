@@ -3,6 +3,7 @@ package {{.Package}}
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -36,11 +37,16 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 }
 
 func Serve(handler XllService) {
+	// Parse command line flags to get SHM name
+	shmName := flag.String("xll-shm", "{{.ProjectName}}", "Shared Memory Name")
+	flag.Parse()
+
     if _, err := server.InitLog("{{.Logging.Dir}}", "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
         fmt.Printf("Failed to initialize logger: %v\n", err)
     }
 
-    client, err := server.ConnectSHM("{{.ProjectName}}")
+    log.Info("Connecting to SHM", "name", *shmName)
+    client, err := server.ConnectSHM(*shmName)
     if err != nil {
         log.Error("Failed to connect to SHM", "error", err)
         panic(err)

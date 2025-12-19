@@ -58,7 +58,10 @@ func runInit(projectPath string, force, dev bool) error {
 		return err
 	}
 
-	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectPath, "xll.yaml"), struct{ ProjectName string }{projectName}); err != nil {
+	if err := generateFileFromTemplate("xll.yaml.tmpl", filepath.Join(projectPath, "xll.yaml"), struct {
+		ProjectName string
+		DevMode     bool
+	}{projectName, dev}); err != nil {
 		return err
 	}
 	printSuccess("Created", "xll.yaml")
@@ -68,10 +71,12 @@ func runInit(projectPath string, force, dev bool) error {
 	}
 	printSuccess("Created", "main.go")
 
-	if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectPath, ".gitignore"), nil); err != nil {
-		return err
+	if !dev {
+		if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectPath, ".gitignore"), nil); err != nil {
+			return err
+		}
+		printSuccess("Created", ".gitignore")
 	}
-	printSuccess("Created", ".gitignore")
 
 	vscodeDir := filepath.Join(projectPath, ".vscode")
 	if err := os.MkdirAll(vscodeDir, 0755); err != nil {
@@ -119,9 +124,6 @@ func runInit(projectPath string, force, dev bool) error {
 	fmt.Printf("\n%s✨ Project %s initialized successfully!%s\n", colorGreen, projectName, colorReset)
 	printHeader("Next steps:")
 	fmt.Printf("  %scd %s%s\n", colorCyan, projectPath, colorReset)
-	if _, err := exec.LookPath("code"); err == nil {
-		fmt.Printf("  %scode .%s\n", colorCyan, colorReset)
-	}
 	fmt.Printf("  %sxll-gen build%s\n", colorCyan, colorReset)
 
 	return nil

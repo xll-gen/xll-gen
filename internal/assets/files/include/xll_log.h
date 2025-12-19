@@ -17,6 +17,8 @@ enum class LogLevel {
 // Returns true on success, false on failure (with error message in outError)
 bool InitLog(const std::wstring& configuredPath, const std::string& level, const std::string& tempDirPattern, const std::string& projName, bool isSingleFile, std::string& outError);
 
+std::wstring ExpandEnvVarsW(const std::wstring& pattern);
+
 void LogError(const std::string& msg);
 void LogInfo(const std::string& msg);
 #ifdef XLL_DEBUG_LOGGING

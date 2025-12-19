@@ -33,7 +33,8 @@ static void WriteLog(const std::string& levelStr, const std::string& msg) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     // Use filesystem::path for proper Unicode handling on Windows
     std::filesystem::path p = std::filesystem::u8path(g_logPath);
-    std::ofstream logFile(p, std::ios_base::app);
+    std::ofstream logFile(p, std::ios_base::app | std::ios_base::out);
+    logFile << std::unitbuf; // Force flush after every insertion
     if (logFile.is_open()) {
         auto now = std::chrono::system_clock::now();
         auto in_time_t = std::chrono::system_clock::to_time_t(now);
@@ -51,20 +52,20 @@ static void WriteLog(const std::string& levelStr, const std::string& msg) {
 }
 
 void LogError(const std::string& msg) {
-    if (g_logLevel <= LogLevel::ERROR) {
+    if (g_logLevel >= LogLevel::ERROR) {
         WriteLog("ERROR", msg);
     }
 }
 
 void LogInfo(const std::string& msg) {
-    if (g_logLevel <= LogLevel::INFO) {
+    if (g_logLevel >= LogLevel::INFO) {
         WriteLog("INFO", msg);
     }
 }
 
 #ifdef XLL_DEBUG_LOGGING
 void LogDebug(const std::string& msg) {
-    if (g_logLevel <= LogLevel::DEBUG) {
+    if (g_logLevel >= LogLevel::DEBUG) {
         WriteLog("DEBUG", msg);
     }
 }
@@ -94,7 +95,7 @@ unsigned long LogException(unsigned long exceptionCode, void* exceptionPointers)
 }
 
 // Helper to expand environment variables
-static std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
+std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
     std::wstring p = pattern;
     size_t start_pos = 0;
     while((start_pos = p.find(L"${", start_pos)) != std::wstring::npos) {
