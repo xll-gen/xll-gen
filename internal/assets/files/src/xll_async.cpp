@@ -34,7 +34,9 @@ void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch) {
             // Cleanup: AnyToXLOPER12 and NewExcelString use NewXLOPER12/ObjectPool
             // and set xlbitDLLFree. We should return it to the pool or free it.
             // Since we allocated it locally for this call, we should free it.
-            xlAutoFree12(pxResult);
+            if (pxResult->xltype & xlbitDLLFree) {
+                xlAutoFree12(pxResult);
+            }
         }
     }
 }

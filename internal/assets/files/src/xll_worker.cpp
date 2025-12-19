@@ -9,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include <chrono>
+#include <thread>
 
 // External declaration
 void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch);
@@ -17,6 +18,7 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
 namespace xll {
 
 std::atomic<bool> g_workerRunning = false;
+std::thread g_workerThread;
 
 // Chunk Reassembly Logic
 struct PartialMessage {
@@ -139,12 +141,23 @@ void WorkerLoop() {
 }
 
 void StartWorker() {
-    std::thread t(WorkerLoop);
-    t.detach();
+    if (g_workerRunning) return;
+    if (g_workerThread.joinable()) {
+        // Should not happen if StopWorker was called correctly, but for safety
+        g_workerRunning = false;
+        g_workerThread.join();
+    }
+    g_workerThread = std::thread(WorkerLoop);
 }
 
 void StopWorker() {
     g_workerRunning = false;
+}
+
+void JoinWorker() {
+    if (g_workerThread.joinable()) {
+        g_workerThread.join();
+    }
 }
 
 } // namespace xll

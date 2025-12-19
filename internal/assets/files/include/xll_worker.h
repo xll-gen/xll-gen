@@ -3,4 +3,5 @@
 namespace xll {
     void StartWorker();
     void StopWorker();
+    void JoinWorker();
 }
