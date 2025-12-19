@@ -19,3 +19,9 @@
 **Impact:** Dead code that might confuse future maintenance.
 **Proposed Fix:** Remove these entries from `types.go`.
 **Status:** Fixed and Verified.
+
+## 4. Refactor Async Chunk Logic
+**Issue:** `pkg/server/async_batcher.go` duplicates the logic for constructing Chunk messages, which is already available in `pkg/server/protocol_helpers.go`.
+**Impact:** Increased maintenance burden and risk of inconsistency if protocol changes.
+**Proposed Fix:** Update `pkg/server/async_batcher.go` to use `server.BuildChunkResponse`.
+**Status:** Fixed and Verified.

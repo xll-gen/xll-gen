@@ -128,19 +128,8 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 		chunkData := data[offset:end]
 
 		b := heapBuilderPool.Get().(*flatbuffers.Builder)
-		b.Reset()
 
-		dataOff := b.CreateByteVector(chunkData)
-		protocol.ChunkStart(b)
-		protocol.ChunkAddId(b, transferId)
-		protocol.ChunkAddTotalSize(b, uint32(total))
-		protocol.ChunkAddOffset(b, uint32(offset))
-		protocol.ChunkAddData(b, dataOff)
-		protocol.ChunkAddMsgType(b, MsgBatchAsyncResponse)
-		root := protocol.ChunkEnd(b)
-		b.FinishWithFileIdentifier(root, []byte("XCHN"))
-
-		payload := b.FinishedBytes()
+		payload := BuildChunkResponse(b, chunkData, transferId, total, offset, MsgBatchAsyncResponse)
 
 		// Send Chunk with Retry
 		var err error
