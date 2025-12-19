@@ -100,3 +100,33 @@ As of v0.1.0, core Excel types and utilities have been extracted to the upstream
     - `#include "types/PascalString.h"`
 
 This reduces code duplication in `internal/assets/files` and ensures consistency across generated projects.
+
+## 18. Co-Change Clusters
+
+Certain parts of the codebase are tightly coupled and must be updated together to preserve consistency.
+
+### 18.1 Protocol & Types
+The `protocol.fbs` definition is critical.
+1.  **Schema Source**: `internal/templates/protocol.fbs` is the source for user C++ generation.
+2.  **Go Types**: `github.com/xll-gen/types` (External Repo) is the source for the Go server package.
+**Constraint**: These must be byte-compatible. Any change to `internal/templates/protocol.fbs` requires a simultaneous update to `xll-gen/types`, a new release of `types`, and a `go get` update in `generator.go`.
+
+### 18.2 Shared Dependencies
+The versions of core dependencies must be synchronized across the build system and the generator:
+1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (`GIT_TAG` for `shm`, `types`, `flatbuffers`).
+2.  **Go Setup**: `internal/generator/generator.go` (hardcoded `go get` commands in `Generate`).
+3.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
+
+### 18.3 Event Handling
+When adding a new Excel event (e.g., `SheetActivate`):
+1.  **Config**: Update `internal/config/config.go` (`Event` struct validation).
+2.  **Mapping**: Update `internal/generator/funcmap.go` (`lookupEventCode`, `lookupEventId`).
+3.  **C++ Constant**: Ensure `internal/assets/files/include/xlcall.h` contains the `xlEvent` constant.
+4.  **Schema**: Update `internal/templates/protocol.fbs` if the event requires a specific payload structure.
+
+### 18.4 Type System Extensions
+When adding or modifying a data type (e.g., adding `date` support):
+1.  **Configuration**: Update `internal/config/config.go` (`validArgTypes`, `validReturnTypes`).
+2.  **Metadata**: Update `internal/generator/types.go` (`typeRegistry`).
+3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member).
+4.  **Runtime (C++)**: Update `internal/assets/files/src/xll_converters.cpp` (`AnyToXLOPER12`) to handle the new type.
