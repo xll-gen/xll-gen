@@ -94,7 +94,7 @@ func checkFlatc() {
 }
 
 func checkGo() {
-	checkTool("Go", "go", []string{"version"}, "https://go.dev/dl/", func(out string) string {
+	checkTool("Go", "go", []string{"version"}, "Install Go: https://go.dev/dl/", func(out string) string {
 		parts := strings.Fields(out)
 		if len(parts) >= 3 && parts[0] == "go" && parts[1] == "version" {
 			return parts[2]
@@ -104,7 +104,11 @@ func checkGo() {
 }
 
 func checkCMake() {
-	checkTool("CMake", "cmake", []string{"--version"}, "https://cmake.org/download/", func(out string) string {
+	fix := "Install CMake: https://cmake.org/download/"
+	if runtime.GOOS == "windows" {
+		fix = "Run: winget install Kitware.CMake"
+	}
+	checkTool("CMake", "cmake", []string{"--version"}, fix, func(out string) string {
 		lines := strings.Split(out, "\n")
 		if len(lines) > 0 {
 			parts := strings.Fields(lines[0])
@@ -123,7 +127,13 @@ func checkTask() {
 			exe = "go-task"
 		}
 	}
-	checkTool("Task", exe, []string{"--version"}, "https://taskfile.dev/installation/", func(out string) string {
+
+	fix := "Install Task: https://taskfile.dev/installation/"
+	if _, err := exec.LookPath("go"); err == nil {
+		fix = "Run: go install github.com/go-task/task/v3/cmd/task@latest"
+	}
+
+	checkTool("Task", exe, []string{"--version"}, fix, func(out string) string {
 		parts := strings.Fields(out)
 		for i, p := range parts {
 			if p == "version:" && i+1 < len(parts) {
@@ -134,12 +144,12 @@ func checkTask() {
 	})
 }
 
-func checkTool(label, exe string, args []string, installUrl string, parser func(string) string) {
+func checkTool(label, exe string, args []string, fixMessage string, parser func(string) string) {
 	path, err := exec.LookPath(exe)
 	if err != nil {
 		printError(label, "NOT FOUND")
-		if installUrl != "" {
-			printWarning("Action Required", "Install "+label+": "+installUrl)
+		if fixMessage != "" {
+			printWarning("Action Required", fixMessage)
 		}
 		return
 	}

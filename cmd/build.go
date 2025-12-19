@@ -44,7 +44,12 @@ func runBuildCommand(debug bool) {
 		if _, err := exec.LookPath("go-task"); err == nil {
 			taskExe = "go-task"
 		} else {
-			printError("Error", "'task' command not found. Please install Taskfile runner (https://taskfile.dev).")
+			printError("Error", "'task' command not found.")
+			if _, err := exec.LookPath("go"); err == nil {
+				printWarning("Action Required", "Run: go install github.com/go-task/task/v3/cmd/task@latest")
+			} else {
+				printWarning("Action Required", "Install from https://taskfile.dev")
+			}
 			os.Exit(1)
 		}
 	}
