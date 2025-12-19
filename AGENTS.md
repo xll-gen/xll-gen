@@ -100,6 +100,7 @@ As of v0.1.0, core Excel types and utilities have been extracted to the upstream
     - `#include "types/PascalString.h"`
 
 This reduces code duplication in `internal/assets/files` and ensures consistency across generated projects.
+<<<<<<< HEAD
 
 ## 18. Co-Change Clusters
 
@@ -130,3 +131,5 @@ When adding or modifying a data type (e.g., adding `date` support):
 2.  **Metadata**: Update `internal/generator/types.go` (`typeRegistry`).
 3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member).
 4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type.
+=======
+>>>>>>> origin/fix/logging-path-and-header-shadowing-4763239286566029706

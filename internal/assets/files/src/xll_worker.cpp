@@ -9,7 +9,10 @@
 #include <map>
 #include <mutex>
 #include <chrono>
+<<<<<<< HEAD
 #include <thread>
+=======
+>>>>>>> origin/fix/logging-path-and-header-shadowing-4763239286566029706
 
 // External declaration
 void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch);
@@ -18,7 +21,10 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
 namespace xll {
 
 std::atomic<bool> g_workerRunning = false;
+<<<<<<< HEAD
 std::thread g_workerThread;
+=======
+>>>>>>> origin/fix/logging-path-and-header-shadowing-4763239286566029706
 
 // Chunk Reassembly Logic
 struct PartialMessage {
@@ -141,6 +147,7 @@ void WorkerLoop() {
 }
 
 void StartWorker() {
+<<<<<<< HEAD
     if (g_workerRunning) return;
     if (g_workerThread.joinable()) {
         // Should not happen if StopWorker was called correctly, but for safety
@@ -148,16 +155,23 @@ void StartWorker() {
         g_workerThread.join();
     }
     g_workerThread = std::thread(WorkerLoop);
+=======
+    std::thread t(WorkerLoop);
+    t.detach();
+>>>>>>> origin/fix/logging-path-and-header-shadowing-4763239286566029706
 }
 
 void StopWorker() {
     g_workerRunning = false;
 }
 
+<<<<<<< HEAD
 void JoinWorker() {
     if (g_workerThread.joinable()) {
         g_workerThread.join();
     }
 }
 
+=======
+>>>>>>> origin/fix/logging-path-and-header-shadowing-4763239286566029706
 } // namespace xll
