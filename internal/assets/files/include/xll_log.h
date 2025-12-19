@@ -28,8 +28,6 @@ inline void LogDebug(const std::string& msg) {}
 // SEH Exception Logger
 unsigned long LogException(unsigned long code, void* exceptionPointers);
 
-std::wstring GetXllDir();
-
 } // namespace xll
 
 // Safe Block Macros for Crash Handling
