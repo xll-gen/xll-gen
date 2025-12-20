@@ -4,7 +4,9 @@ param(
 )
 
 $scriptPath = $PSScriptRoot
-$fullProjectPath = Join-Path -Path $scriptPath -ChildPath $ProjectPath
+# Script is in scripts/ directory, so repo root is one level up
+$repoRoot = Split-Path -Parent $scriptPath
+$fullProjectPath = Join-Path -Path $repoRoot -ChildPath $ProjectPath
 $projectName = Split-Path $fullProjectPath -Leaf
 $xllName = "$projectName.xll"
 
