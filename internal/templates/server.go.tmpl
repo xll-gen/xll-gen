@@ -75,7 +75,14 @@ func Serve(handler XllService) {
 	for i := 0; i < workerCount; i++ {
 		go func() {
 			for job := range jobQueue {
-				job()
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Error("Worker panic recovered", "error", r, "stack", string(debug.Stack()))
+						}
+					}()
+					job()
+				}()
 			}
 		}()
 	}
@@ -94,12 +101,17 @@ func Serve(handler XllService) {
                 {{if hasEvent "CalculationEnded" .Events}}
                 var wg sync.WaitGroup
                 wg.Add(1)
-                jobQueue <- func() {
+                go func() {
                     defer wg.Done()
+                    defer func() {
+                        if r := recover(); r != nil {
+                            log.Error("Panic in OnCalculationEnded", "error", r, "stack", string(debug.Stack()))
+                        }
+                    }()
                     if err := handler.OnCalculationEnded(context.Background()); err != nil {
                         log.Error("Event handler OnCalculationEnded failed", "error", err)
                     }
-                }
+                }()
                 wg.Wait()
                 {{end}}
 
@@ -125,11 +137,16 @@ func Serve(handler XllService) {
 
                 {{if hasEvent "CalculationCanceled" .Events}}
                 ctx := context.Background()
-                jobQueue <- func() {
+                go func() {
+                    defer func() {
+                        if r := recover(); r != nil {
+                            log.Error("Panic in OnCalculationCanceled", "error", r, "stack", string(debug.Stack()))
+                        }
+                    }()
                     if err := handler.OnCalculationCanceled(ctx); err != nil {
                         log.Error("Event handler OnCalculationCanceled failed", "error", err)
                     }
-                }
+                }()
                 {{end}}
                 return 0, 0
 
@@ -214,10 +231,14 @@ func Serve(handler XllService) {
              {{if and (ne .Type "CalculationEnded") (ne .Type "CalculationCanceled")}}
              case {{lookupEventId .Type}}:
                 ctx := context.Background()
-                jobQueue <- func() {
+                select {
+                case jobQueue <- func() {
                     if err := handler.{{.Name}}(ctx); err != nil {
                         log.Error("Event handler {{.Name}} failed", "error", err)
                     }
+                }:
+                default:
+                    log.Warn("Event dropped due to server load", "event", "{{.Name}}")
                 }
                 return 0, 0
              {{end}}
