@@ -19,6 +19,7 @@ var doctorCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		printHeader("🩺 Running System Diagnosis...")
 
+		checkSystem()
 		checkCompiler()
 		checkFlatc()
 		checkGo()
@@ -31,6 +32,10 @@ var doctorCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(doctorCmd)
+}
+
+func checkSystem() {
+	printSuccess("System", fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH))
 }
 
 // checkCompiler verifies if a suitable C++ compiler (MSVC or MinGW) is available in the system PATH.
@@ -60,7 +65,11 @@ func checkCompiler() {
 		if _, err := exec.LookPath("winget"); err == nil {
 			fmt.Printf("\n%s?%s Do you want to install MinGW using winget? [Y/n] ", colorCyan, colorReset)
 			reader := bufio.NewReader(os.Stdin)
-			response, _ := reader.ReadString('\n')
+			response, err := reader.ReadString('\n')
+			if err != nil {
+				// Assume 'no' on error (e.g. non-interactive shell)
+				response = "n"
+			}
 			response = strings.TrimSpace(response)
 
 			if response == "" || strings.EqualFold(response, "y") || strings.EqualFold(response, "yes") {
@@ -162,7 +171,7 @@ func checkTool(label, exe string, args []string, fixMessage string, parser func(
 	}
 
 	if version != "" {
-		printSuccess(label, fmt.Sprintf("Found (%s)", version))
+		printSuccess(label, fmt.Sprintf("Found %s(%s)", colorCyan, version))
 	} else {
 		printSuccess(label, "Found")
 	}

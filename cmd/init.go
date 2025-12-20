@@ -11,7 +11,6 @@ import (
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/generator"
 	"github.com/xll-gen/xll-gen/internal/templates"
-	"github.com/xll-gen/xll-gen/internal/ui"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,15 +23,9 @@ var (
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
 	Short: "Initialize a new xll-gen project",
-	Args:  cobra.MaximumNArgs(1),
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		projectName := ""
-		if len(args) > 0 {
-			projectName = args[0]
-		} else {
-			projectName = ui.Prompt("Project name:")
-		}
-
+		projectName := args[0]
 		if err := runInit(projectName, force, dev); err != nil {
 			fmt.Printf("Error initializing project: %v\n", err)
 			os.Exit(1)

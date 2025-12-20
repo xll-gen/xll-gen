@@ -12,6 +12,6 @@
 **Learning:** Users often get stuck on missing dependency errors (like `task` or `cmake`). Providing a specific, copy-pasteable installation command (e.g., `go install ...` or `winget install ...`) significantly improves the "time to fix" compared to a generic "Not Found" message or a URL.
 **Action:** When detecting missing tools, conditionally check for package managers (Go, Winget, Brew) and provide the exact command to run.
 
-## 2024-10-25 - Interactive Defaults
-**Learning:** CLI tools often fail unnecessarily when required arguments are missing. Implementing interactive prompts as a fallback (e.g., asking for "project name" if omitted) transforms a "User Error" into a "Guided Experience", significantly lowering the friction for first-time users.
-**Action:** When defining mandatory CLI arguments, consider if they can be prompted for instead of erroring out. Use `cobra.MaximumNArgs` instead of `ExactArgs` and implement a fallback prompt using `ui.Prompt`.
+## 2024-10-25 - Safe Interactivity
+**Learning:** Interactive prompts (like "Do you want to install X?") must be robust against non-interactive environments (CI/CD).
+**Action:** Always handle `io.EOF` or read errors when using `bufio.ReadString`. In such cases, default to a safe, non-destructive action (e.g., "No") to prevent infinite loops or unwanted modifications.
