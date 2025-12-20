@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/flatc"
 )
 
 // doctorCmd represents the doctor command.
@@ -84,7 +84,7 @@ func checkCompiler() {
 
 // checkFlatc verifies if the FlatBuffers compiler (flatc) is available and downloads it if missing.
 func checkFlatc() {
-	path, err := generator.EnsureFlatc()
+	path, err := flatc.EnsureFlatc()
 	if err != nil {
 		printError("Flatbuffers", "NOT FOUND")
 		fmt.Printf("      %v\n", err)

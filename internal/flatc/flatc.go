@@ -1,4 +1,4 @@
-package generator
+package flatc
 
 import (
 	"archive/zip"
