@@ -1,27 +1,15 @@
-# Proposals for xll-gen
+# Proposal for Codebase Improvements
 
-## 1. IPC Safety Improvements (Critical)
-**Issue:** C++ IPC calls to `g_host.Send` often ignore the return value or check it incorrectly (checking `Value() > 0` without verifying `HasError()`).
-**Impact:** If shared memory is full or connection is lost, the XLL might crash (accessing invalid result) or silently fail (SetRefCache not updating server), leading to data corruption or "phantom" bugs.
-**Proposed Fixes:**
--   `xll_events.cpp`: Verify `!res.HasError()` before checking `res.Value()`.
--   `xll_converters.cpp`: Verify `SetRefCache` IPC result. If it fails, remove the key from local cache and fallback to sending the full data object instead of the cache key.
--   `xll_main.cpp`: Verify Async `Send` result. If it fails, invoke `xlAsyncReturn` with an error code to prevent Excel from hanging indefinitely.
-**Status:** Fixed and Verified.
+## 1. Clean up Development Scripts (Actioned)
+**Status:** Fixed
+**Description:** Moved `count_lines.py` and `test_xll.ps1` from the root directory to `scripts/` to maintain a cleaner repository structure.
 
-## 2. Protocol Error Code Alignment (Rejected)
-**Issue:** `protocol.fbs` defines error codes like `Null = 2000`.
-**Proposal:** Modify `xll_converters.cpp` to subtract 2000.
-**Status:** Rejected by User. Code reverted.
+## 2. Refactor String Utilities
+**Status:** Proposed
+**Description:**
+There is code duplication in environment variable expansion logic between `xll_embed.cpp` (using `std::string` and `ExpandEnvironmentStringsA`) and `xll_log.cpp` (using `std::wstring` and `ExpandEnvironmentStringsW`).
+**Recommendation:** Unify these utilities into a common header (e.g., `xll_util.h`) or leverage `types/utility.h` converters to implement a single `ExpandEnvVars` function that handles Unicode correctly, avoiding potential inconsistencies.
 
-## 3. Code Cleanup: Nullable Scalars
-**Issue:** `internal/generator/types.go` contains entries for `int?`, `float?`, `bool?` which are explicitly unsupported by policy and validation logic.
-**Impact:** Dead code that might confuse future maintenance.
-**Proposed Fix:** Remove these entries from `types.go`.
-**Status:** Fixed and Verified.
-
-## 4. Refactor Async Chunk Logic
-**Issue:** `pkg/server/async_batcher.go` duplicates the logic for constructing Chunk messages, which is already available in `pkg/server/protocol_helpers.go`.
-**Impact:** Increased maintenance burden and risk of inconsistency if protocol changes.
-**Proposed Fix:** Update `pkg/server/async_batcher.go` to use `server.BuildChunkResponse`.
-**Status:** Fixed and Verified.
+## 3. Verify C++ Standard
+**Status:** Verified
+**Description:** `xll_log.cpp` and other files use `std::filesystem`, requiring C++17. Checked `internal/templates/CMakeLists.txt.tmpl` and confirmed `set(CMAKE_CXX_STANDARD 17)` is present.

@@ -42,6 +42,10 @@ def main():
 
     print("Counting lines of code (excluding Flatbuffers generated files)...")
 
+    # Change to repo root
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(repo_root)
+
     for root, dirs, files in os.walk("."):
         # Skip hidden directories
         if ".git" in dirs:
