@@ -11,3 +11,7 @@
 ## 2024-10-24 - Actionable CLI Errors
 **Learning:** Users often get stuck on missing dependency errors (like `task` or `cmake`). Providing a specific, copy-pasteable installation command (e.g., `go install ...` or `winget install ...`) significantly improves the "time to fix" compared to a generic "Not Found" message or a URL.
 **Action:** When detecting missing tools, conditionally check for package managers (Go, Winget, Brew) and provide the exact command to run.
+
+## 2024-10-25 - Safe Interactivity
+**Learning:** Interactive prompts (like "Do you want to install X?") must be robust against non-interactive environments (CI/CD).
+**Action:** Always handle `io.EOF` or read errors when using `bufio.ReadString`. In such cases, default to a safe, non-destructive action (e.g., "No") to prevent infinite loops or unwanted modifications.
