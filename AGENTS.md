@@ -109,12 +109,12 @@ Certain parts of the codebase are tightly coupled and must be updated together t
 The `protocol.fbs` definition is critical.
 1.  **Schema Source**: `internal/templates/protocol.fbs` is the source for user C++ generation.
 2.  **Go Types**: `github.com/xll-gen/types` (External Repo) is the source for the Go server package.
-**Constraint**: These must be byte-compatible. Any change to `internal/templates/protocol.fbs` requires a simultaneous update to `xll-gen/types`, a new release of `types`, and a `go get` update in `generator.go`.
+**Constraint**: These must be byte-compatible. Any change to `internal/templates/protocol.fbs` requires a simultaneous update to `xll-gen/types`, a new release of `types`, and a `go get` update in `dependencies.go`.
 
 ### 18.2 Shared Dependencies
 The versions of core dependencies must be synchronized across the build system and the generator:
 1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (`GIT_TAG` for `shm`, `types`, `flatbuffers`).
-2.  **Go Setup**: `internal/generator/generator.go` (hardcoded `go get` commands in `Generate`).
+2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands in `updateDependencies`).
 3.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
 
 ### 18.3 Event Handling
@@ -130,3 +130,18 @@ When adding or modifying a data type (e.g., adding `date` support):
 2.  **Metadata**: Update `internal/generator/types.go` (`typeRegistry`).
 3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member).
 4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type.
+
+### 18.5 Regression Test Assets
+The integration tests in `internal/regtest` rely on a fixed set of files that must stay in sync.
+1.  **Test Project**: `internal/regtest/testdata/xll.yaml` defines the function signatures and order.
+2.  **Mock Host**: `internal/regtest/testdata/mock_host.cpp` hardcodes message IDs (e.g., `133`) and payload structures based on `xll.yaml`.
+3.  **Go Server**: `internal/regtest/testdata/server.go` implements handlers matching `xll.yaml`.
+**Constraint**: Any change to `testdata/xll.yaml` (e.g., adding a function) requires updating `mock_host.cpp` (new ID/case) and `server.go`.
+
+### 18.6 Message ID Allocation
+Message IDs are distributed across multiple definitions and must match exactly.
+1.  **Definitions**: `internal/assets/files/include/xll_ipc.h` and `pkg/server/types.go` define constants (e.g., `MSG_USER_START = 133`, `MSG_CALCULATION_ENDED = 131`).
+2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` manually calculates user IDs (`133 + $i`).
+3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`133 + $i`).
+4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
+**Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
