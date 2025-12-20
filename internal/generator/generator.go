@@ -9,6 +9,7 @@ import (
 
 	"github.com/xll-gen/xll-gen/internal/assets"
 	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/flatc"
 	"github.com/xll-gen/xll-gen/internal/ui"
 )
 
@@ -105,7 +106,7 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		flatcPath = opts.FlatcPath
 	} else {
 		var err error
-		flatcPath, err = EnsureFlatc()
+		flatcPath, err = flatc.EnsureFlatc()
 		if err != nil {
 			return err
 		}
