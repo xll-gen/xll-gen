@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +33,23 @@ func PrintError(label, detail string) {
 
 func PrintWarning(label, detail string) {
 	fmt.Printf("  %s!%s %-15s %s%s\n", ColorYellow, ColorReset, label, ColorYellow, detail+ColorReset)
+}
+
+// Prompt asks the user for input.
+func Prompt(label string) string {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Printf("%s?%s %s ", ColorCyan, ColorReset, label)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("\nError reading input: %v\n", err)
+			os.Exit(1)
+		}
+		input = strings.TrimSpace(input)
+		if input != "" {
+			return input
+		}
+	}
 }
 
 // Spinner represents a loading indicator
