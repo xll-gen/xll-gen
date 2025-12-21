@@ -13,3 +13,7 @@ There is code duplication in environment variable expansion logic between `xll_e
 ## 3. Verify C++ Standard
 **Status:** Verified
 **Description:** `xll_log.cpp` and other files use `std::filesystem`, requiring C++17. Checked `internal/templates/CMakeLists.txt.tmpl` and confirmed `set(CMAKE_CXX_STANDARD 17)` is present.
+
+## 4. Centralize `MsgUserStart` definition for Generator Templates (Actioned)
+**Status:** Fixed
+**Description:** The Message ID for user functions (`MSG_USER_START`) was hardcoded as `133` in `internal/templates/server.go.tmpl` and `internal/templates/xll_main.cpp.tmpl`. To improve maintainability and avoid magic numbers, I added a `MsgUserStart` helper to `internal/generator/funcmap.go` and updated both templates to use it. This aligns with the "Co-Change Clusters" directive by reducing the risk of divergence if the ID changes in the future.

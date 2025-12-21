@@ -145,5 +145,8 @@ func GetCommonFuncMap() template.FuncMap {
 		"parseDurationToMs": func(s string) int {
 			return parseDurationToMs(s, 0)
 		},
+		"MsgUserStart": func() int {
+			return 133
+		},
 	}
 }

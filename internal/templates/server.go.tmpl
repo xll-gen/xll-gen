@@ -244,7 +244,7 @@ func Serve(handler XllService) {
              {{end}}
 {{end}}
 
-{{range $i, $fn := .Functions}}             case {{add 133 $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
                 {{if .Timeout}}
                 ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
                 {{else}}
