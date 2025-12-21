@@ -19,7 +19,7 @@ func updateDependencies(baseDir string, opts Options) error {
 	if baseDir != "" {
 		shmCmd.Dir = baseDir
 	}
-	if err := runSpinner("Updating SHM dependency", func() error {
+	if err := ui.RunSpinner("Updating SHM dependency...", func() error {
 		out, err := shmCmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%w: %s", err, string(out))
@@ -35,7 +35,7 @@ func updateDependencies(baseDir string, opts Options) error {
 	if baseDir != "" {
 		typesCmd.Dir = baseDir
 	}
-	if err := runSpinner("Updating types dependency", func() error {
+	if err := ui.RunSpinner("Updating types dependency...", func() error {
 		out, err := typesCmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%w: %s", err, string(out))
@@ -52,7 +52,7 @@ func updateDependencies(baseDir string, opts Options) error {
 		if baseDir != "" {
 			cmdGetXll.Dir = baseDir
 		}
-		if err := runSpinner("Updating xll-gen dependency", func() error {
+		if err := ui.RunSpinner("Updating xll-gen dependency...", func() error {
 			out, err := cmdGetXll.CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("%w: %s", err, string(out))
@@ -69,7 +69,7 @@ func updateDependencies(baseDir string, opts Options) error {
 	if baseDir != "" {
 		cmdTidy.Dir = baseDir
 	}
-	if err := runSpinner("Running 'go mod tidy'", func() error {
+	if err := ui.RunSpinner("Running 'go mod tidy'...", func() error {
 		out, err := cmdTidy.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%w: %s", err, string(out))
@@ -86,12 +86,6 @@ func updateDependencies(baseDir string, opts Options) error {
 	return nil
 }
 
-// runSpinner shows a loading spinner while the action runs.
-func runSpinner(msg string, action func() error) error {
-	s := ui.StartSpinner(msg + "...")
-	defer s.Stop()
-	return action()
-}
 
 // fixGoImports traverses the generated directory and replaces local protocol imports
 // with the correct package path github.com/xll-gen/types/go/protocol.

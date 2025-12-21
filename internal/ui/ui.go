@@ -77,3 +77,10 @@ func (s *Spinner) Stop() {
 	// Clear line
 	fmt.Printf("\r%s\r", strings.Repeat(" ", len(s.msg)+10))
 }
+
+// RunSpinner executes the given action while showing a spinner.
+func RunSpinner(msg string, action func() error) error {
+	s := StartSpinner(msg)
+	defer s.Stop()
+	return action()
+}
