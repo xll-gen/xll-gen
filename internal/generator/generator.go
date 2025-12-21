@@ -113,33 +113,37 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	}
 
 	// Generate Go code for schema
-	// We use --no-includes to avoid regenerating Go code for protocol.fbs (which is in pkg/protocol).
-	cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "--no-includes", "-o", genDir, schemaPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	// We removed cmd.Dir override here because 'genDir' and 'schemaPath' include 'baseDir',
-	// so running from current directory is correct and avoids path duplication bugs.
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("flatc (go) failed: %w", err)
-	}
+	if err := ui.RunSpinner("Generating Flatbuffers Go code...", func() error {
+		// We use --no-includes to avoid regenerating Go code for protocol.fbs (which is in pkg/protocol).
+		cmd := exec.Command(flatcPath, "--go", "--go-namespace", "ipc", "--go-module-name", goModulePath, "--no-includes", "-o", genDir, schemaPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("flatc (go) failed: %w\n%s", err, string(out))
+		}
 
-	// Post-process generated Go code to fix imports
-	if err := fixGoImports(genDir, goModulePath); err != nil {
-		return fmt.Errorf("failed to fix imports: %w", err)
+		// Post-process generated Go code to fix imports
+		if err := fixGoImports(genDir, goModulePath); err != nil {
+			return fmt.Errorf("failed to fix imports: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
-
 	ui.PrintSuccess("Generated", "Flatbuffers Go code")
 
 	// Generate C++ code
-	// We use --no-includes here because protocol_generated.h is shipped as a static asset in include/.
-	// flatc will generate #include "protocol_generated.h" in schema_generated.h, which matches
-	// the file in include/ (assuming include/ is in include path).
-	cmd = exec.Command(flatcPath, "--cpp", "--no-includes", "-o", includeDir, schemaPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	// We removed cmd.Dir override here as well.
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("flatc (cpp) failed: %w", err)
+	if err := ui.RunSpinner("Generating Flatbuffers C++ code...", func() error {
+		// We use --no-includes here because protocol_generated.h is shipped as a static asset in include/.
+		// flatc will generate #include "protocol_generated.h" in schema_generated.h, which matches
+		// the file in include/ (assuming include/ is in include path).
+		cmd := exec.Command(flatcPath, "--cpp", "--no-includes", "-o", includeDir, schemaPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("flatc (cpp) failed: %w\n%s", err, string(out))
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	ui.PrintSuccess("Generated", "Flatbuffers C++ code")
 
