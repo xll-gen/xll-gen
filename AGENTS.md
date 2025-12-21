@@ -112,10 +112,11 @@ The `protocol.fbs` definition is critical.
 **Constraint**: These must be byte-compatible. Any change to `internal/templates/protocol.fbs` requires a simultaneous update to `xll-gen/types`, a new release of `types`, and a `go get` update in `dependencies.go`.
 
 ### 18.2 Shared Dependencies
-The versions of core dependencies must be synchronized across the build system and the generator:
+The versions of core dependencies must be synchronized across the build system, the generator, and the toolchain:
 1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (`GIT_TAG` for `shm`, `types`, `flatbuffers`).
 2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands in `updateDependencies`).
-3.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
+3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must match `flatbuffers` in CMake).
+4.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
 
 ### 18.3 Event Handling
 When adding a new Excel event (e.g., `SheetActivate`):
