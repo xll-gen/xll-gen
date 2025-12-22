@@ -23,9 +23,15 @@ var (
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
 	Short: "Initialize a new xll-gen project",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		projectName := args[0]
+		var projectName string
+		if len(args) > 0 {
+			projectName = args[0]
+		} else {
+			projectName = prompt("Project name", "my-xll-project")
+		}
+
 		if err := runInit(projectName, force, dev); err != nil {
 			fmt.Printf("Error initializing project: %v\n", err)
 			os.Exit(1)

@@ -10,9 +10,9 @@ import (
 // TestFlatbuffersVersionConsistency ensures that the flatc version pinned in the Go code
 // matches the version defined in the CMake template.
 func TestFlatbuffersVersionConsistency(t *testing.T) {
-	// 1. Extract version from internal/generator/flatc.go
+	// 1. Extract version from internal/flatc/flatc.go
 	// Since we are running from cmd/, we need to go up one level
-	flatcPath := filepath.Join("..", "internal", "generator", "flatc.go")
+	flatcPath := filepath.Join("..", "internal", "flatc", "flatc.go")
 	flatcBytes, err := os.ReadFile(flatcPath)
 	if err != nil {
 		t.Fatal(err)
