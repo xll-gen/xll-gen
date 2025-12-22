@@ -116,7 +116,8 @@ The versions of core dependencies must be synchronized across the build system, 
 1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (`GIT_TAG` for `shm`, `types`, `flatbuffers`).
 2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands in `updateDependencies`).
 3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must match `flatbuffers` in CMake).
-4.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
+4.  **Verification**: `cmd/doctor_version_test.go` (`TestFlatbuffersVersionConsistency`) enforces that the `flatc` version in Go matches the CMake tag.
+5.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
 
 ### 18.3 Event Handling
 When adding a new Excel event (e.g., `SheetActivate`):
