@@ -64,7 +64,8 @@ type BuildConfig struct {
 // ServerConfig configures the runtime behavior of the Go server.
 type ServerConfig struct {
 	// Command is the command to launch the server (e.g., "path/to/server").
-	// Supports "${BIN}" placeholder for the directory of the XLL/executable.
+	// Supports "${BIN}" placeholder for the full path of the server executable.
+	// If you need to pass arguments, you must wrap "${BIN}" or the path in quotes (e.g., "\"${BIN}\" --arg").
 	Command string `yaml:"command"`
 	// Workers determines the size of the worker pool for handling requests.
 	// If 0, defaults to runtime.NumCPU().
@@ -186,6 +187,10 @@ var validReturnTypes = map[string]bool{
 // Returns:
 //   - error: An error if the configuration is invalid, or nil otherwise.
 func Validate(config *Config) error {
+	if err := validateProjectName(config.Project.Name); err != nil {
+		return err
+	}
+
 	if config.Build.Singlefile != "" {
 		switch config.Build.Singlefile {
 		case "xll":
@@ -229,6 +234,18 @@ func Validate(config *Config) error {
 		}
 	}
 
+	return nil
+}
+
+func validateProjectName(name string) error {
+	if name == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return fmt.Errorf("project name must only contain alphanumeric characters, underscores, and hyphens")
+		}
+	}
 	return nil
 }
 

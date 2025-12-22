@@ -61,6 +61,9 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Config{
+				Project: ProjectConfig{
+					Name: "TestProject",
+				},
 				Functions: []Function{
 					{
 						Name:   "TestFunc",
@@ -68,6 +71,69 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 						Return: tt.fnReturn,
 					},
 				},
+			}
+
+			err := Validate(cfg)
+			if tt.wantError != "" {
+				if err == nil {
+					t.Errorf("Validate() expected error containing %q, got nil", tt.wantError)
+				} else if !strings.Contains(err.Error(), tt.wantError) {
+					t.Errorf("Validate() error = %v, want substring %q", err, tt.wantError)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Validate() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidate_ProjectName(t *testing.T) {
+	tests := []struct {
+		name      string
+		projName  string
+		wantError string
+	}{
+		{
+			name:      "valid name",
+			projName:  "MyProject_v1",
+			wantError: "",
+		},
+		{
+			name:      "valid name with hyphens",
+			projName:  "my-awesome-project",
+			wantError: "",
+		},
+		{
+			name:      "invalid space",
+			projName:  "My Project",
+			wantError: "project name must only contain alphanumeric characters, underscores, and hyphens",
+		},
+		{
+			name:      "invalid slash",
+			projName:  "My/Project",
+			wantError: "project name must only contain alphanumeric characters, underscores, and hyphens",
+		},
+		{
+			name:      "invalid dot",
+			projName:  "My.Project",
+			wantError: "project name must only contain alphanumeric characters, underscores, and hyphens",
+		},
+		{
+			name:      "empty name",
+			projName:  "",
+			wantError: "project name cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Project: ProjectConfig{
+					Name: tt.projName,
+				},
+				Functions: []Function{}, // Empty to avoid function validation errors
 			}
 
 			err := Validate(cfg)
