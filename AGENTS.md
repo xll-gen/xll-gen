@@ -146,3 +146,16 @@ Message IDs are distributed across multiple definitions and must match exactly.
 3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`133 + $i`).
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
 **Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
+
+## 19. Performance Guidelines
+
+### 19.1 Panic Recovery in Hot Paths
+While Go's `defer` performance has improved, using `defer + recover` extensively in hot paths can still incur overhead, especially when combined with closures or complex control flows.
+
+**Guideline:**
+*   Avoid placing `defer func() { recover() }` inside tight loops or low-level internal functions that are called frequently.
+*   **Preferred Pattern**: Place recovery guards at architectural boundaries, such as:
+    *   Goroutine entry points (e.g., the top of a worker loop).
+    *   Top-level Request Handlers (e.g., `handleMyFunction`).
+    *   Event Handler entry points.
+*   This "Fail Fast" approach for internal logic issues (which crash the worker) combined with robust error reporting at the user-function boundary balances stability with performance.
