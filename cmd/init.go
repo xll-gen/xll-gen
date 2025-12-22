@@ -23,17 +23,22 @@ var (
 var initCmd = &cobra.Command{
 	Use:   "init [project-name]",
 	Short: "Initialize a new xll-gen project",
-	Args:  cobra.MaximumNArgs(1),
+	Args:  cobra.ArbitraryArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		var projectName string
-		if len(args) > 0 {
-			projectName = args[0]
-		} else {
-			projectName = prompt("Project name", "my-xll-project")
+		if len(args) == 0 {
+			printError("Missing Arg", "Project name is required")
+			fmt.Println("\nUsage:\n  xll-gen init [project-name]")
+			os.Exit(1)
+		}
+		if len(args) > 1 {
+			printError("Too Many Args", "Accepts exactly 1 argument (project name)")
+			fmt.Println("\nUsage:\n  xll-gen init [project-name]")
+			os.Exit(1)
 		}
 
+		projectName := args[0]
 		if err := runInit(projectName, force, dev); err != nil {
-			fmt.Printf("Error initializing project: %v\n", err)
+			printError("Initialization", fmt.Sprintf("%v", err))
 			os.Exit(1)
 		}
 	},
