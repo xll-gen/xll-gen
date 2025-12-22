@@ -1,19 +1,13 @@
-# Proposal for Codebase Improvements
+# Proposals for xll-gen
 
-## 1. Clean up Development Scripts (Actioned)
-**Status:** Fixed
-**Description:** Moved `count_lines.py` and `test_xll.ps1` from the root directory to `scripts/` to maintain a cleaner repository structure.
+## 1. Validate `Project.Name`
+**Problem:** The `Project.Name` is used to generate filenames (e.g., log files, executable names) and is not currently validated. Characters like spaces, slashes, or special symbols can cause runtime errors in file creation or path resolution (e.g., in `xll_log.cpp` or `xll_launch.cpp`).
+**Status:** **Implemented** in `internal/config/config.go`. The validation now restricts names to alphanumeric characters, underscores (`_`), and hyphens (`-`).
 
-## 2. Refactor String Utilities
-**Status:** Proposed
-**Description:**
-There is code duplication in environment variable expansion logic between `xll_embed.cpp` (using `std::string` and `ExpandEnvironmentStringsA`) and `xll_log.cpp` (using `std::wstring` and `ExpandEnvironmentStringsW`).
-**Recommendation:** Unify these utilities into a common header (e.g., `xll_util.h`) or leverage `types/utility.h` converters to implement a single `ExpandEnvVars` function that handles Unicode correctly, avoiding potential inconsistencies.
+## 2. Clarify `ServerConfig.Command` Documentation
+**Problem:** The `xll_launch.cpp` logic for resolving `server.launch.command` automatically quotes the command path if it doesn't detect quotes. This breaks if the user provides arguments (e.g., `${BIN} --flag`) without explicit quoting, as the entire string gets quoted.
+**Status:** **Implemented**. The documentation in `internal/config/config.go` has been updated to explicitly state that users must quote the executable path (e.g., `"${BIN}"`) if they intend to provide arguments.
 
-## 3. Verify C++ Standard
-**Status:** Verified
-**Description:** `xll_log.cpp` and other files use `std::filesystem`, requiring C++17. Checked `internal/templates/CMakeLists.txt.tmpl` and confirmed `set(CMAKE_CXX_STANDARD 17)` is present.
-
-## 4. Centralize `MsgUserStart` definition for Generator Templates (Actioned)
-**Status:** Fixed
-**Description:** The Message ID for user functions (`MSG_USER_START`) was hardcoded as `133` in `internal/templates/server.go.tmpl` and `internal/templates/xll_main.cpp.tmpl`. To improve maintainability and avoid magic numbers, I added a `MsgUserStart` helper to `internal/generator/funcmap.go` and updated both templates to use it. This aligns with the "Co-Change Clusters" directive by reducing the risk of divergence if the ID changes in the future.
+## 3. Verify `std::filesystem` Compatibility
+**Observation:** `xll_log.cpp` uses `std::filesystem::u8path` which is deprecated in C++20.
+**Status:** The project currently enforces C++17 in `CMakeLists.txt.tmpl`, so this is fine for now. No immediate action needed.
