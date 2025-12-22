@@ -31,11 +31,14 @@ void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch) {
 
         if (pxResult) {
             Excel12(xlAsyncReturn, 0, 2, &xAsyncHandle, pxResult);
-            // Cleanup: AnyToXLOPER12 and NewExcelString use NewXLOPER12/ObjectPool
-            // and set xlbitDLLFree. We should return it to the pool or free it.
-            // Since we allocated it locally for this call, we should free it.
+            // Cleanup: AnyToXLOPER12 and NewExcelString use NewXLOPER12/ObjectPool.
+            // We must ensure the node is returned to the pool.
+            // If xlbitDLLFree is set, xlAutoFree12 frees content AND node.
+            // If not set (scalar), we must manually return the node.
             if (pxResult->xltype & xlbitDLLFree) {
                 xlAutoFree12(pxResult);
+            } else {
+                ReleaseXLOPER12(pxResult);
             }
         }
     }

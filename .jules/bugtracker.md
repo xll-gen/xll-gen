@@ -1,14 +1,9 @@
 # Bug Tracker
 
-## Analysis Report (2025-01-27)
+## Issues
 
-| ID | Category | Description | Severity | User Opinion | Status |
-|----|----------|-------------|----------|--------------|--------|
-| BUG-001 | Stability | **C++ Worker Thread Race Condition**: `StartWorker` in `xll_worker.cpp` creates a detached thread. `xlAutoClose` in `xll_main.cpp` signals it to stop but does not wait (`join`) for it to finish. If the XLL is unloaded while the thread is running (e.g., waiting on `ProcessGuestCalls`), the thread will attempt to execute code that has been unloaded, leading to a process crash. | **Critical** | Resolved | **Fixed** |
-| BUG-002 | Stability | **C++ Monitor Thread Race Condition**: `MonitorThread` in `xll_main.cpp` is detached. `xlAutoClose` closes the process handles (`g_procInfo.hProcess`) that `MonitorThread` is waiting on. This causes undefined behavior or a crash if the thread accesses the closed handle or executes code after DLL unload. | **Critical** | Resolved | **Fixed** |
-| BUG-003 | Memory | **Potential XLOPER12 Corruption in Async**: `ProcessAsyncBatchResponse` in `xll_async.cpp` calls `xlAutoFree12` on the result of `AnyToXLOPER12`. If `AnyToXLOPER12` (from the external `types` library) ever returns a pointer to a static/thread-local `XLOPER12` instead of a pool-allocated one, this will cause memory corruption. | Medium | Resolved | **Fixed** |
-| BUG-004 | Performance| **Go Async Batcher Blocking**: `FlushAsyncBatch` in `pkg/server/async_batcher.go` uses a retry loop with sleep (up to 2.5s) if the shared memory buffer is full. This can block the async processing goroutine, potentially stalling all async results. | Low | Accepted | Reported |
-| BUG-005 | Stability | **Go Worker Panic Death**: In `server.go`, event handlers (e.g., `OnCalculationEnded`) and async handlers run in the worker pool without a top-level `recover()` in the worker loop. While some handlers have local recovery, others (like event callbacks) do not. A panic in a user handler kills the worker goroutine permanently. | **Critical** | Fixed | **Fixed** |
-| BUG-006 | Stability | **Event Dispatch Blocking**: The main `dispatch` loop sends events to `jobQueue` using a blocking send. If all workers are busy (full queue), the main IPC loop blocks. This causes the shared memory buffer to fill up, potentially freezing the C++ host and Excel UI. | **High** | Fixed | **Fixed** |
-| BUG-007 | Logic | **CommandBatcher Clear Race**: `CommandBatcher.Clear()` releases `cmdQueueLock` before acquiring `bufferLock`. If a `flushBuffers` operation intervenes, it can move items from the buffer to the queue *after* the queue was cleared but *before* the buffer is cleared, causing "canceled" commands to survive. | Medium | Record only | **Recorded** |
-| BUG-008 | Resource | **Handle Leak on Launch Failure**: In `xll_launch.cpp`, `LaunchServer` creates `hShutdownEvent`. If `LaunchProcess` subsequently fails, this handle is never closed (leaked). While the OS cleans up on process exit, XLL loading failure doesn't always terminate the Excel process, leading to a handle leak per retry. | Low | Record only | **Recorded** |
+| ID | Description | Severity | Status | User Judgment |
+|----|-------------|----------|--------|---------------|
+| BUG-001 | **DoS Vulnerability in `xll_worker.cpp`**: `HandleChunk` performs unbounded memory allocation (`pm.buffer.resize`) based on `total_size` from the incoming message header. A large value allows a guest to crash the host process. | Critical | Fixed | Approved |
+| BUG-002 | **Memory Leak/Corruption Risk in `xll_async.cpp`**: `ProcessAsyncBatchResponse` allocates `XLOPER12` strings using `NewExcelString` and then calls `xlAutoFree12`. Fixed by distinguishing between `xlbitDLLFree` (using `xlAutoFree12`) and locally allocated nodes (using `ReleaseXLOPER12`). | High | Fixed | Approved |
+| BUG-003 | **Lock Contention in `pkg/server/command_flush.go`**: `flushBuffers` holds `bufferLock` while running `algo.GreedyMesh`. Fixed by moving map processing outside the lock critical section. | Medium | Fixed | Approved |

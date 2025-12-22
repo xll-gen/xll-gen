@@ -42,6 +42,12 @@ void HandleChunk(const protocol::Chunk* chunk) {
 
     if (it == g_partialMessages.end()) {
         // New partial message
+        // Vulnerability Fix: Limit total size to 128MB to prevent DoS
+        if (chunk->total_size() > 128 * 1024 * 1024) {
+             LogWarn("Chunk total size too large: %llu bytes. Dropping.", (unsigned long long)chunk->total_size());
+             return;
+        }
+
         PartialMessage pm;
         pm.totalSize = chunk->total_size();
         pm.receivedSize = 0;
