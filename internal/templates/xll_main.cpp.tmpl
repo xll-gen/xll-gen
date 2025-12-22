@@ -14,6 +14,7 @@
 #include <map>
 #include <fstream>
 #include "xll_log.h"
+#include "xll_path.h"
 #include "types/mem.h"
 #include "types/converters.h"
 #include "types/utility.h"
@@ -28,7 +29,6 @@
 #include "SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
-#include "xll_log.h"
 #include "schema_generated.h"
 #include "protocol_generated.h"
 
@@ -53,11 +53,27 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         tempPattern = "{{.Build.TempDir}}";
         {{end}}
 
+        std::wstring binDir = GetXllDir();
+        {{if eq .Build.Singlefile "xll"}}
+        binDir = ExpandEnvVarsW(L"{{.Build.TempDir}}");
+        {{end}}
+
         std::wstring logPath = L"{{.Logging.Dir}}";
         if (logPath == L"XLL_DIR") {
             logPath = GetXllDir() + L"\\{{.ProjectName}}_native.log";
         } else if (logPath == L"TEMP_DIR") {
             logPath = ExpandEnvVarsW(L"${TEMP}") + L"\\{{.ProjectName}}_native.log";
+        } else {
+            // Support placeholders like ${XLL_DIR}, ${BIN_DIR} and ${TEMP}
+            ReplaceAll(logPath, L"${XLL_DIR}", GetXllDir());
+            ReplaceAll(logPath, L"${BIN_DIR}", binDir);
+            logPath = ExpandEnvVarsW(logPath);
+
+            // If it's a directory (or ends with slash), append default log name
+            if (!logPath.empty() && (std::filesystem::is_directory(logPath) || logPath.back() == L'\\' || logPath.back() == L'/')) {
+                if (logPath.back() != L'\\' && logPath.back() != L'/') logPath += L"\\";
+                logPath += L"{{.ProjectName}}_native.log";
+            }
         }
 
         std::string logInitError;

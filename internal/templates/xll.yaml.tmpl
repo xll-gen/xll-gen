@@ -12,8 +12,8 @@ gen:
 logging:
   # Log level (DEBUG, INFO, WARN, ERROR)
   level: "{{if .DevMode}}DEBUG{{else}}INFO{{end}}"
-  # Directory for log files (XLL_DIR, TEMP_DIR, or absolute path)
-  dir: "{{if .DevMode}}XLL_DIR{{else}}TEMP_DIR{{end}}"
+  # Directory for log files (${XLL_DIR}, ${BIN_DIR}, ${TEMP}, or absolute path)
+  dir: "{{if .DevMode}}${XLL_DIR}{{else}}${BIN_DIR}{{end}}"
 
 build:
   # Build strategy:
@@ -21,7 +21,7 @@ build:
   # - xll: Go executable is embedded into the XLL (single-file distribution).
   singlefile: "{{if .DevMode}}{{else}}xll{{end}}"
   # Directory pattern for temporary extraction (only for singlefile: xll)
-  temp_dir: "{{.ProjectName}}_ext"
+  temp_dir: ""
 
 # Go server process configuration
 server:

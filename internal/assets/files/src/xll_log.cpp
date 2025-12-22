@@ -144,7 +144,7 @@ bool InitLog(const std::wstring& configuredPath, const std::string& level, const
         path = logFileName;
     }
 
-    if (isSingleFile) {
+    if (isSingleFile && (configuredPath.empty() || configuredPath == L"BIN_DIR" || configuredPath == L"TEMP_DIR")) {
         // Construct path in temp dir
         std::wstring wTempDirPattern = StringToWString(tempDirPattern);
         std::wstring tempDir = ExpandEnvVarsW(wTempDirPattern);
