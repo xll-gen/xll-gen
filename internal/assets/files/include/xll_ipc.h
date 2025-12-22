@@ -21,6 +21,9 @@ extern std::mutex g_refCacheMutex;
 #define MSG_CALCULATION_CANCELED 132
 #define MSG_USER_START 133
 
+// Helper for logging SHM errors
+std::string SHMErrorToString(shm::Error err);
+
 // Function declarations
 namespace xll {
     void StartWorker();
