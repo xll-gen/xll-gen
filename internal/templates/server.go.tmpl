@@ -74,15 +74,13 @@ func Serve(handler XllService) {
 	jobQueue := make(chan func(), workerCount)
 	for i := 0; i < workerCount; i++ {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("Worker died unexpectedly", "error", r, "stack", string(debug.Stack()))
+				}
+			}()
 			for job := range jobQueue {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Error("Worker panic recovered", "error", r, "stack", string(debug.Stack()))
-						}
-					}()
-					job()
-				}()
+				job()
 			}
 		}()
 	}
@@ -233,6 +231,11 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 select {
                 case jobQueue <- func() {
+                    defer func() {
+                        if r := recover(); r != nil {
+                            log.Error("Panic in Event Handler {{.Name}}", "error", r, "stack", string(debug.Stack()))
+                        }
+                    }()
                     if err := handler.{{.Name}}(ctx); err != nil {
                         log.Error("Event handler {{.Name}} failed", "error", err)
                     }
@@ -257,7 +260,12 @@ func Serve(handler XllService) {
                 copy(reqCopy, data)
                 select {
                 case jobQueue <- func() {
-                    defer cancel()
+                    defer func() {
+                        if r := recover(); r != nil {
+                            log.Error("Panic in Async Job {{.Name}}", "error", r, "stack", string(debug.Stack()))
+                        }
+                        cancel()
+                    }()
                     handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex)
                 }:
                 default:
@@ -299,61 +307,6 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 	_ = request
 
-	{{range .Args}}
-	{{if eq .Type "string"}}
-	arg_{{.Name}} := string(request.{{.Name|capitalize}}())
-	{{else if eq .Type "int?"}}
-	var arg_{{.Name}} *int32
-	if v := request.{{.Name|capitalize}}(nil); v != nil {
-		val := v.Val()
-		arg_{{.Name}} = &val
-	}
-	{{else if eq .Type "float?"}}
-	var arg_{{.Name}} *float64
-	if v := request.{{.Name|capitalize}}(nil); v != nil {
-		val := v.Val()
-		arg_{{.Name}} = &val
-	}
-	{{else if eq .Type "bool?"}}
-	var arg_{{.Name}} *bool
-	if v := request.{{.Name|capitalize}}(nil); v != nil {
-		val := v.Val()
-		arg_{{.Name}} = &val
-	}
-	{{else if eq .Type "range"}}
-	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
-	{{else if eq .Type "grid"}}
-	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
-	{{else if eq .Type "numgrid"}}
-	arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
-	{{else if eq .Type "any"}}
-	var arg_{{.Name}} *protocol.Any
-	arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
-	if arg_{{.Name}}_raw != nil {
-		if arg_{{.Name}}_raw.ValType() == protocol.AnyValueRefCache {
-			var rc protocol.RefCache
-			init := new(flatbuffers.Table)
-			if arg_{{.Name}}_raw.Val(init) {
-				rc.Init(init.Bytes, init.Pos)
-				key := string(rc.Key())
-				refCacheMutex.RLock()
-				if data, ok := refCache[key]; ok {
-					cacheReq := protocol.GetRootAsSetRefCacheRequest(data, 0)
-					arg_{{.Name}} = cacheReq.Val(nil)
-				} else {
-					arg_{{.Name}} = arg_{{.Name}}_raw
-				}
-				refCacheMutex.RUnlock()
-			}
-		} else {
-			arg_{{.Name}} = arg_{{.Name}}_raw
-		}
-	}
-	{{else}}
-	arg_{{.Name}} := request.{{.Name|capitalize}}()
-	{{end}}
-	{{end}}
-
 	{{if .Caller}}
 	caller := request.Caller(nil)
 	{{end}}
@@ -377,6 +330,61 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			}
 			log.Debug("Async function end", "func", "{{.Name}}")
 		}()
+
+		{{range .Args}}
+		{{if eq .Type "string"}}
+		arg_{{.Name}} := string(request.{{.Name|capitalize}}())
+		{{else if eq .Type "int?"}}
+		var arg_{{.Name}} *int32
+		if v := request.{{.Name|capitalize}}(nil); v != nil {
+			val := v.Val()
+			arg_{{.Name}} = &val
+		}
+		{{else if eq .Type "float?"}}
+		var arg_{{.Name}} *float64
+		if v := request.{{.Name|capitalize}}(nil); v != nil {
+			val := v.Val()
+			arg_{{.Name}} = &val
+		}
+		{{else if eq .Type "bool?"}}
+		var arg_{{.Name}} *bool
+		if v := request.{{.Name|capitalize}}(nil); v != nil {
+			val := v.Val()
+			arg_{{.Name}} = &val
+		}
+		{{else if eq .Type "range"}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+		{{else if eq .Type "grid"}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+		{{else if eq .Type "numgrid"}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+		{{else if eq .Type "any"}}
+		var arg_{{.Name}} *protocol.Any
+		arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
+		if arg_{{.Name}}_raw != nil {
+			if arg_{{.Name}}_raw.ValType() == protocol.AnyValueRefCache {
+				var rc protocol.RefCache
+				init := new(flatbuffers.Table)
+				if arg_{{.Name}}_raw.Val(init) {
+					rc.Init(init.Bytes, init.Pos)
+					key := string(rc.Key())
+					refCacheMutex.RLock()
+					if data, ok := refCache[key]; ok {
+						cacheReq := protocol.GetRootAsSetRefCacheRequest(data, 0)
+						arg_{{.Name}} = cacheReq.Val(nil)
+					} else {
+						arg_{{.Name}} = arg_{{.Name}}_raw
+					}
+					refCacheMutex.RUnlock()
+				}
+			} else {
+				arg_{{.Name}} = arg_{{.Name}}_raw
+			}
+		}
+		{{else}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}()
+		{{end}}
+		{{end}}
 
 		log.Debug("Processing async request", "func", "{{.Name}}")
 
@@ -431,6 +439,62 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			}
 			log.Debug("Sync function end", "func", "{{.Name}}")
 		}()
+
+		{{range .Args}}
+		{{if eq .Type "string"}}
+		arg_{{.Name}} := string(request.{{.Name|capitalize}}())
+		{{else if eq .Type "int?"}}
+		var arg_{{.Name}} *int32
+		if v := request.{{.Name|capitalize}}(nil); v != nil {
+			val := v.Val()
+			arg_{{.Name}} = &val
+		}
+		{{else if eq .Type "float?"}}
+		var arg_{{.Name}} *float64
+		if v := request.{{.Name|capitalize}}(nil); v != nil {
+			val := v.Val()
+			arg_{{.Name}} = &val
+		}
+		{{else if eq .Type "bool?"}}
+		var arg_{{.Name}} *bool
+		if v := request.{{.Name|capitalize}}(nil); v != nil {
+			val := v.Val()
+			arg_{{.Name}} = &val
+		}
+		{{else if eq .Type "range"}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+		{{else if eq .Type "grid"}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+		{{else if eq .Type "numgrid"}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}(nil)
+		{{else if eq .Type "any"}}
+		var arg_{{.Name}} *protocol.Any
+		arg_{{.Name}}_raw := request.{{.Name|capitalize}}(nil)
+		if arg_{{.Name}}_raw != nil {
+			if arg_{{.Name}}_raw.ValType() == protocol.AnyValueRefCache {
+				var rc protocol.RefCache
+				init := new(flatbuffers.Table)
+				if arg_{{.Name}}_raw.Val(init) {
+					rc.Init(init.Bytes, init.Pos)
+					key := string(rc.Key())
+					refCacheMutex.RLock()
+					if data, ok := refCache[key]; ok {
+						cacheReq := protocol.GetRootAsSetRefCacheRequest(data, 0)
+						arg_{{.Name}} = cacheReq.Val(nil)
+					} else {
+						arg_{{.Name}} = arg_{{.Name}}_raw
+					}
+					refCacheMutex.RUnlock()
+				}
+			} else {
+				arg_{{.Name}} = arg_{{.Name}}_raw
+			}
+		}
+		{{else}}
+		arg_{{.Name}} := request.{{.Name|capitalize}}()
+		{{end}}
+		{{end}}
+
 		res, err = handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 	}()
 
