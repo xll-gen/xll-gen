@@ -77,29 +77,6 @@ void LogDebug(const std::string& msg) {
 }
 #endif
 
-// Log SEH Exception
-unsigned long LogException(unsigned long exceptionCode, void* exceptionPointers) {
-    std::stringstream ss;
-    ss << "CRITICAL EXCEPTION DETECTED! Code: 0x" << std::hex << std::uppercase << exceptionCode;
-
-    // Try to identify common codes
-    if (exceptionCode == EXCEPTION_ACCESS_VIOLATION) ss << " (ACCESS_VIOLATION)";
-    else if (exceptionCode == EXCEPTION_STACK_OVERFLOW) ss << " (STACK_OVERFLOW)";
-    else if (exceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) ss << " (ILLEGAL_INSTRUCTION)";
-    else if (exceptionCode == EXCEPTION_INT_DIVIDE_BY_ZERO) ss << " (INT_DIVIDE_BY_ZERO)";
-
-    std::string msg = ss.str();
-
-    // Force write to log
-    WriteLog("CRASH", msg);
-
-    // Show MessageBox
-    std::wstring wMsg = StringToWString(msg);
-    MessageBoxW(NULL, wMsg.c_str(), L"XLL Crash Detected", MB_ICONERROR | MB_OK | MB_TOPMOST);
-
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
 // Helper to expand environment variables
 std::wstring ExpandEnvVarsW(const std::wstring& pattern) {
     std::wstring p = pattern;

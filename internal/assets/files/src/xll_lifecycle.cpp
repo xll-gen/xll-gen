@@ -54,35 +54,33 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
-    XLL_SAFE_BLOCK_BEGIN
-        LogInfo("Unloading XLL...");
+    LogInfo("Unloading XLL...");
 
-        // Signal shutdown to monitor thread
-        if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
+    // Signal shutdown to monitor thread
+    if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
-        // Stop Worker
-        xll::StopWorker();
+    // Stop Worker
+    xll::StopWorker();
 
-        // Join threads before closing handles
-        xll::JoinWorker();
-        if (g_monitorThread.joinable()) g_monitorThread.join();
+    // Join threads before closing handles
+    xll::JoinWorker();
+    if (g_monitorThread.joinable()) g_monitorThread.join();
 
-        // Cleanup Process Handles
-        if (g_procInfo.hProcess) {
-            CloseHandle(g_procInfo.hProcess);
-            g_procInfo.hProcess = NULL;
-        }
-        if (g_procInfo.hJob) {
-            CloseHandle(g_procInfo.hJob);
-            g_procInfo.hJob = NULL;
-        }
-        if (g_procInfo.hShutdownEvent) {
-            CloseHandle(g_procInfo.hShutdownEvent);
-            g_procInfo.hShutdownEvent = NULL;
-        }
+    // Cleanup Process Handles
+    if (g_procInfo.hProcess) {
+        CloseHandle(g_procInfo.hProcess);
+        g_procInfo.hProcess = NULL;
+    }
+    if (g_procInfo.hJob) {
+        CloseHandle(g_procInfo.hJob);
+        g_procInfo.hJob = NULL;
+    }
+    if (g_procInfo.hShutdownEvent) {
+        CloseHandle(g_procInfo.hShutdownEvent);
+        g_procInfo.hShutdownEvent = NULL;
+    }
 
-        return 1;
-    XLL_SAFE_BLOCK_END(1)
+    return 1;
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoAdd(void) {
