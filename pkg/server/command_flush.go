@@ -8,10 +8,22 @@ import (
 
 func (cb *CommandBatcher) flushBuffers() {
 	cb.bufferLock.Lock()
-	defer cb.bufferLock.Unlock()
+	if len(cb.bufferedSets) == 0 && len(cb.bufferedFormats) == 0 {
+		cb.bufferLock.Unlock()
+		return
+	}
+
+	// Move maps to local variables to minimize lock holding time during GreedyMesh
+	sets := cb.bufferedSets
+	formats := cb.bufferedFormats
+
+	// Reset buffers
+	cb.bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
+	cb.bufferedFormats = make(map[string]map[algo.Cell]string)
+	cb.bufferLock.Unlock()
 
 	// Process Sets
-	for sheet, cells := range cb.bufferedSets {
+	for sheet, cells := range sets {
 		byVal := make(map[ScalarValue][]algo.Cell)
 		for cell, val := range cells {
 			byVal[val] = append(byVal[val], cell)
@@ -38,11 +50,10 @@ func (cb *CommandBatcher) flushBuffers() {
 				cb.cmdQueueLock.Unlock()
 			}
 		}
-		delete(cb.bufferedSets, sheet)
 	}
 
 	// Process Formats
-	for sheet, cells := range cb.bufferedFormats {
+	for sheet, cells := range formats {
 		byFmt := make(map[string][]algo.Cell)
 		for cell, fmt := range cells {
 			byFmt[fmt] = append(byFmt[fmt], cell)
@@ -68,7 +79,6 @@ func (cb *CommandBatcher) flushBuffers() {
 				cb.cmdQueueLock.Unlock()
 			}
 		}
-		delete(cb.bufferedFormats, sheet)
 	}
 }
 
