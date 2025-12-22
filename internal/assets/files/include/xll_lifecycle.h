@@ -12,7 +12,7 @@ extern HINSTANCE g_hModule;
 extern XLOPER12 g_xlErrValue;
 
 // Process Information for Server
-extern ProcessInfo g_procInfo;
+extern xll::ProcessInfo g_procInfo;
 
 extern std::thread g_monitorThread;
 

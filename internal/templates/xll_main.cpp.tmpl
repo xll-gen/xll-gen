@@ -171,10 +171,10 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 {{range $i, $fn := .Functions}}
         {
             // Register {{.Name}}
-            Excel12(xlfRegister, 0, 10 + {{len .Args}},
+            int regRes = Excel12(xlfRegister, 0, 10 + {{len .Args}},
                 (LPXLOPER12)&xDLL,
                 TempStr12(L"{{.Name}}"),
-                TempStr12(L"{{if .Async}}>{{end}}{{lookupXllType .Return}}{{range .Args}}{{lookupXllType .Type}}{{end}}{{if .Async}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}{{if not .Async}}${{end}}"),
+                TempStr12(L"{{if .Async}}>{{end}}{{if not .Async}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$"),
                 TempStr12(L"{{.Name}}"),
                 TempStr12(L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}"),
                 TempInt12(1), // Macro type
@@ -184,12 +184,19 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
                 TempStr12(L"{{.Description}}"),
                 {{range .Args}}TempStr12(L"{{.Description}}"),{{end}}
                 0);
+            
+            if (regRes != xlretSuccess) {
+                LogError("Failed to register function '{{.Name}}'. Code: " + std::to_string(regRes));
+            } else {
+                LogInfo("Registered function '{{.Name}}' successfully.");
+            }
         }
 {{end}}
 
         // Free xDLL
         Excel12(xlFree, 0, 1, (LPXLOPER12)&xDLL);
 
+        LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
     XLL_SAFE_BLOCK_END(0)
 }

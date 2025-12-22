@@ -20,6 +20,7 @@ bool InitLog(const std::wstring& configuredPath, const std::string& level, const
 std::wstring ExpandEnvVarsW(const std::wstring& pattern);
 
 void LogError(const std::string& msg);
+void LogWarn(const std::string& msg);
 void LogInfo(const std::string& msg);
 #ifdef XLL_DEBUG_LOGGING
 void LogDebug(const std::string& msg);

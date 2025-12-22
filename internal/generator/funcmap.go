@@ -92,6 +92,9 @@ func GetCommonFuncMap() template.FuncMap {
 		"lookupXllType": func(t string) string {
 			return LookupXllType(t)
 		},
+		"lookupArgXllType": func(t string) string {
+			return LookupArgXllType(t)
+		},
 		"lookupCppArgType": func(t string) string {
 			return LookupArgCppType(t)
 		},

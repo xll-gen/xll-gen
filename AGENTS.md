@@ -147,3 +147,26 @@ Message IDs are distributed across multiple definitions and must match exactly.
 3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`133 + $i`).
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
 **Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
+
+## 19. Excel XLL Registration Rules
+
+When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow these strict rules to avoid Excel registration failures or immediate unloads.
+
+### 19.1 Type String Format
+1.  **Thread Safety**: Always append `$` to the end of the type string to mark the function as thread-safe.
+2.  **Synchronous Functions**:
+    *   Format: `[ReturnTypeChar][ArgTypeChars]$`
+    *   Example: `QJJ$` (Returns `LPXLOPER12`, takes two `long` integers).
+3.  **Asynchronous Functions**:
+    *   Format: `>[ArgTypeChars]X$`
+    *   **CRITICAL**: Omit the return type character (e.g., `Q`). The `X` character (Async Handle) acts as the return parameter placeholder in the type string.
+    *   Example: `>QX$` (Takes a string `Q`, uses async handle `X`).
+
+### 19.2 Argument Mapping
+*   **Return Types**: Use `lookupXllType` (usually returns `Q` for `LPXLOPER12`).
+*   **Argument Types**: Use `lookupArgXllType`.
+    *   `int` -> `J` (long)
+    *   `float` -> `B` (double)
+    *   `bool` -> `A` (bool)
+    *   `string`/`any`/`range` -> `Q`/`U` (LPXLOPER12)
+*   **Mismatches**: Ensure the C++ function signature matches these types (e.g., `int32_t` for `J`, `double` for `B`). A mismatch will cause stack corruption or Excel crashes.

@@ -57,6 +57,12 @@ void LogError(const std::string& msg) {
     }
 }
 
+void LogWarn(const std::string& msg) {
+    if (g_logLevel >= LogLevel::WARN) {
+        WriteLog("WARN", msg);
+    }
+}
+
 void LogInfo(const std::string& msg) {
     if (g_logLevel >= LogLevel::INFO) {
         WriteLog("INFO", msg);

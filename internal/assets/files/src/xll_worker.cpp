@@ -44,7 +44,7 @@ void HandleChunk(const protocol::Chunk* chunk) {
         // New partial message
         // Vulnerability Fix: Limit total size to 128MB to prevent DoS
         if (chunk->total_size() > 128 * 1024 * 1024) {
-             LogWarn("Chunk total size too large: %llu bytes. Dropping.", (unsigned long long)chunk->total_size());
+             LogWarn("Chunk total size too large: " + std::to_string(chunk->total_size()) + " bytes. Dropping.");
              return;
         }
 
@@ -163,6 +163,13 @@ void StopWorker() {
 void JoinWorker() {
     if (g_workerThread.joinable()) {
         g_workerThread.join();
+    }
+}
+
+void ForceTerminateWorker() {
+    g_workerRunning = false;
+    if (g_workerThread.joinable()) {
+        g_workerThread.detach();
     }
 }
 

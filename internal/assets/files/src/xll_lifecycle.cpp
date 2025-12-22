@@ -4,6 +4,8 @@
 #include "xll_worker.h"
 #include "types/mem.h"
 
+using namespace xll;
+
 // Global Handle
 HINSTANCE g_hModule = NULL;
 // Global Error Value
@@ -37,7 +39,15 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
+        break;
     case DLL_PROCESS_DETACH:
+        // Safe logging might not be possible here if static objects are destroyed, 
+        // but we try to prevent std::terminate from thread destructor.
+        if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
+        if (g_monitorThread.joinable()) {
+            g_monitorThread.detach();
+        }
+        xll::ForceTerminateWorker();
         break;
     }
     return TRUE;
