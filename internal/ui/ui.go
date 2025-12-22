@@ -1,9 +1,7 @@
 package ui
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -85,23 +83,4 @@ func RunSpinner(msg string, action func() error) error {
 	s := StartSpinner(msg)
 	defer s.Stop()
 	return action()
-}
-
-// Prompt asks the user for input with a label.
-func Prompt(label string, defaultValue string) string {
-	fmt.Printf("%s? ", label)
-	if defaultValue != "" {
-		fmt.Printf("[%s] ", defaultValue)
-	}
-	fmt.Print(ColorCyan) // User input color
-
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	fmt.Print(ColorReset) // Reset color
-
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return defaultValue
-	}
-	return input
 }

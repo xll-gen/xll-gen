@@ -29,7 +29,3 @@ func printError(label, detail string) {
 func printWarning(label, detail string) {
 	ui.PrintWarning(label, detail)
 }
-
-func prompt(label, defaultValue string) string {
-	return ui.Prompt(label, defaultValue)
-}
