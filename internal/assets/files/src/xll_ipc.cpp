@@ -5,7 +5,7 @@
 #include <iostream>
 
 // Global definitions
-shm::DirectHost g_host;
+shm::DirectHost* g_phost = nullptr;
 std::map<std::string, bool> g_sentRefCache;
 std::mutex g_refCacheMutex;
 
@@ -18,7 +18,6 @@ std::string SHMErrorToString(shm::Error err) {
         case shm::Error::InvalidArgs: return "InvalidArgs";
         case shm::Error::NotConnected: return "NotConnected";
         case shm::Error::ResourceExhausted: return "ResourceExhausted";
-        case shm::Error::InternalError: return "InternalError";
         case shm::Error::ProtocolViolation: return "ProtocolViolation";
         default: return "Unknown (" + std::to_string((int)err) + ")";
     }

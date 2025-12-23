@@ -6,6 +6,9 @@
 #include "xll_launch.h"
 #include "shm/Logger.h"
 
+// Macros for SEH
+#define XLL_SAFE_BLOCK(block) __try { block } __except (EXCEPTION_EXECUTE_HANDLER) { }
+
 // Global Handle
 extern HINSTANCE g_hModule;
 // Global Error Value

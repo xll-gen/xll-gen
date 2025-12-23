@@ -170,3 +170,14 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
     *   `bool` -> `A` (bool)
     *   `string`/`any`/`range` -> `Q`/`U` (LPXLOPER12)
 *   **Mismatches**: Ensure the C++ function signature matches these types (e.g., `int32_t` for `J`, `double` for `B`). A mismatch will cause stack corruption or Excel crashes.
+
+## 20. Excel Load/Unload Patterns & SHM Lifecycle
+
+Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry points, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for actual use.
+This causes issues with Shared Memory (SHM) if the destructor of the global host object closes the handles, as the Go server might interpret this as a shutdown signal.
+
+**Strategy:**
+1.  **Heap Allocation**: `g_host` is a pointer (`shm::DirectHost* g_phost`) allocated on the heap in `xlAutoOpen`.
+2.  **Ignore Detach**: We explicitly ignore `DLL_PROCESS_DETACH` in `DllMain`. No cleanup is performed there.
+3.  **Explicit Cleanup**: We only delete `g_phost` and stop threads in `xlAutoClose`, which is the definitive signal that the user is deactivating the Add-in.
+4.  **SEH**: `DllMain` is wrapped in SEH (`__try`/`__except`) to prevent crashes during these rapid load/unload cycles.
