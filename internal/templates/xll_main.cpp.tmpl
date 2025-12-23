@@ -111,6 +111,11 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     hostCfg.shmName = shmName;
     hostCfg.payloadSize = 1024 * 1024; // 1MB
 
+    // Initialize Host (Allocated if null to persist across Probe Unloads)
+    if (!g_phost) {
+        g_phost = new shm::DirectHost();
+    }
+
     auto initRes = g_host.Init(hostCfg);
     if (initRes.HasError()) {
             std::string err = "Failed to initialize shared memory: " + SHMErrorToString(initRes.GetError());
