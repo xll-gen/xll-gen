@@ -36,6 +36,9 @@ namespace xll {
     #define XLL_SAFE_BLOCK_END_VOID } catch (...) { xll::LogError("Fatal Error: Unknown exception caught in safe block"); return; }
 #endif
 
+// Macros for SEH
+#define XLL_SAFE_BLOCK(block) __try { block } __except (EXCEPTION_EXECUTE_HANDLER) { }
+
 // Global Handle
 extern HINSTANCE g_hModule;
 // Global Error Value
