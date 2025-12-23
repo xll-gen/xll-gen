@@ -267,7 +267,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
         Excel12(xlAsyncReturn, 0, 2, (LPXLOPER12)asyncHandle, &xErr);
         return;
         {{else}}
-        return &g_xlErrValue;
+        return {{defaultErrorVal .Return}};
         {{end}}
     }
 
@@ -452,7 +452,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, response, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
 
     if (res.HasError()) {
-            return &g_xlErrValue;
+            return {{defaultErrorVal .Return}};
     }
 
     auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(response.data());
