@@ -6,7 +6,9 @@
 #include <string>
 
 // Global IPC objects
-extern shm::DirectHost g_host;
+extern shm::DirectHost* g_phost;
+#define g_host (*g_phost)
+
 extern std::map<std::string, bool> g_sentRefCache;
 extern std::mutex g_refCacheMutex;
 

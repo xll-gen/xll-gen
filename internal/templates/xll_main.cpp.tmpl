@@ -40,10 +40,11 @@ using namespace xll;
 // XLL Interface Functions
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
-    XLOPER12 xDLL; // Defined here for xlGetName
+    XLL_SAFE_BLOCK(
+        XLOPER12 xDLL; // Defined here for xlGetName
 
-    // Setup Native Logging
-    std::string tempPattern = "";
+        // Setup Native Logging
+        std::string tempPattern = "";
     std::string projName = "{{.ProjectName}}";
     bool isSingleFile = false;
 
@@ -110,6 +111,11 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     hostCfg.numGuestSlots = 2;
     hostCfg.shmName = shmName;
     hostCfg.payloadSize = 1024 * 1024; // 1MB
+
+    // Initialize Host (Allocated if null to persist across Probe Unloads)
+    if (!g_phost) {
+        g_phost = new shm::DirectHost();
+    }
 
     auto initRes = g_host.Init(hostCfg);
     if (initRes.HasError()) {
@@ -192,11 +198,13 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     }
 {{end}}
 
-    // Free xDLL
-    Excel12(xlFree, 0, 1, (LPXLOPER12)&xDLL);
+        // Free xDLL
+        Excel12(xlFree, 0, 1, (LPXLOPER12)&xDLL);
 
-    LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
-    return 1;
+        LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
+        return 1;
+    )
+    return 0;
 }
 
 // Event Handlers

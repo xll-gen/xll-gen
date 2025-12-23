@@ -6,6 +6,15 @@
 #include "xll_launch.h"
 #include "shm/Logger.h"
 
+// Macros for SEH
+#ifdef _MSC_VER
+    #define XLL_SAFE_BLOCK(block) __try { block } __except (EXCEPTION_EXECUTE_HANDLER) { }
+#else
+    // GCC/MinGW does not support MSVC-style __try/__except natively without extensions.
+    // For compatibility, we execute the block without SEH protection.
+    #define XLL_SAFE_BLOCK(block) { block }
+#endif
+
 // Global Handle
 extern HINSTANCE g_hModule;
 // Global Error Value
