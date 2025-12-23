@@ -165,6 +165,8 @@ if(MSVC)
   )
 else()
   target_compile_options(${PROJECT_NAME} PRIVATE
+    -fexceptions
+    -fnon-call-exceptions
     -Wno-stringop-overread
     -Wno-pragma-once-outside-header
     $<$<CONFIG:Release>:-O3>

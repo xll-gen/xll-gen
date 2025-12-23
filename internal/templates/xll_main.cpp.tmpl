@@ -40,7 +40,7 @@ using namespace xll;
 // XLL Interface Functions
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
-    XLL_SAFE_BLOCK(
+    XLL_SAFE_BLOCK_BEGIN
         XLOPER12 xDLL; // Defined here for xlGetName
 
         // Setup Native Logging
@@ -203,8 +203,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
         LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
-    )
-    return 0;
+    XLL_SAFE_BLOCK_END(0)
 }
 
 // Event Handlers

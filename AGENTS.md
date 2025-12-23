@@ -113,8 +113,8 @@ The `protocol.fbs` definition is critical.
 
 ### 18.2 Shared Dependencies
 The versions of core dependencies must be synchronized across the build system, the generator, and the toolchain:
-1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (`GIT_TAG` for `shm`, `types`, `flatbuffers`).
-2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands in `updateDependencies`).
+1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (defines `GIT_TAG` for `shm`, `types`, `flatbuffers`, and `zstd`).
+2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands for `shm` and `types`).
 3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must match `flatbuffers` in CMake).
 4.  **Verification**: `cmd/doctor_version_test.go` (`TestFlatbuffersVersionConsistency`) enforces that the `flatc` version in Go matches the CMake tag.
 5.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
@@ -147,6 +147,12 @@ Message IDs are distributed across multiple definitions and must match exactly.
 3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`133 + $i`).
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
 **Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
+
+### 18.7 Configuration System
+The configuration structure is coupled with the generator templates.
+1.  **Definition**: `internal/config/config.go` defines the `Config` struct and validation logic.
+2.  **Templates**: `internal/templates/xll_main.cpp.tmpl` and `server.go.tmpl` rely on the specific field names and structure of the `Config` object.
+**Constraint**: Adding or renaming fields in `xll.yaml` (and thus `Config`) requires verifying and updating both the validation logic and the usage in templates.
 
 ## 19. Excel XLL Registration Rules
 

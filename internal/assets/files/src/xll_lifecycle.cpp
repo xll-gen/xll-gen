@@ -31,7 +31,7 @@ void LogHandler(shm::LogLevel level, const std::string& msg) {
 
 // Entry point
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
-    XLL_SAFE_BLOCK(
+    XLL_SAFE_BLOCK_BEGIN
         switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
             g_hModule = hModule;
@@ -49,12 +49,12 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
             // Cleanup is handled exclusively in xlAutoClose.
             break;
         }
-    )
+    XLL_SAFE_BLOCK_END(FALSE)
     return TRUE;
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
-    XLL_SAFE_BLOCK(
+    XLL_SAFE_BLOCK_BEGIN
         LogInfo("xlAutoClose called. Unloading XLL...");
 
         // Signal shutdown to monitor thread
@@ -88,13 +88,11 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         }
 
         return 1;
-    )
-    return 0;
+    XLL_SAFE_BLOCK_END(0)
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoAdd(void) {
-    XLL_SAFE_BLOCK(
+    XLL_SAFE_BLOCK_BEGIN
         return 1;
-    )
-    return 0;
+    XLL_SAFE_BLOCK_END(0)
 }
