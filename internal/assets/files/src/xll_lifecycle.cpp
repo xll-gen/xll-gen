@@ -31,7 +31,7 @@ void LogHandler(shm::LogLevel level, const std::string& msg) {
 
 // Entry point
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
-    __try {
+    XLL_SAFE_BLOCK(
         switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
             g_hModule = hModule;
@@ -49,10 +49,7 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
             // Cleanup is handled exclusively in xlAutoClose.
             break;
         }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Prevent crashes during attach/detach
-    }
+    )
     return TRUE;
 }
 
