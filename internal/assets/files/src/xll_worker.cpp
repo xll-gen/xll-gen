@@ -3,6 +3,7 @@
 #include "types/utility.h"
 #include "xll_worker.h"
 #include "xll_log.h"
+#include "xll_lifecycle.h"
 #include <windows.h>
 #include <vector>
 #include <string>
@@ -112,8 +113,14 @@ void WorkerLoop() {
     auto lastCleanup = std::chrono::steady_clock::now();
 
     while (g_workerRunning) {
+        // Check for unloading state to exit early
+        if (g_isUnloading) break;
+
         // Updated Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType)
         bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType) -> int32_t {
+            // Check for unloading inside the callback as well
+            if (g_isUnloading) return 0;
+
             if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE) {
                 auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(reqBuf);
                 ProcessAsyncBatchResponse(batch);

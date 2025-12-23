@@ -5,6 +5,7 @@
 #include <thread>
 #include <sstream>
 #include <iomanip>
+#include <atomic>
 #include "xll_launch.h"
 #include "shm/Logger.h"
 #include "xll_log.h"
@@ -43,6 +44,9 @@ namespace xll {
 extern HINSTANCE g_hModule;
 // Global Error Value
 extern XLOPER12 g_xlErrValue;
+
+// Unloading Flag
+extern std::atomic<bool> g_isUnloading;
 
 // Process Information for Server
 extern xll::ProcessInfo g_procInfo;
