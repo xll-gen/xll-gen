@@ -173,7 +173,11 @@ else()
     $<$<CONFIG:Release>:-mavx2>
     $<$<CONFIG:Release>:-flto>
   )
-  target_link_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:-flto>)
+  target_link_options(${PROJECT_NAME} PRIVATE
+    -static-libgcc
+    -static-libstdc++
+    $<$<CONFIG:Release>:-flto>
+  )
 endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".xll")
