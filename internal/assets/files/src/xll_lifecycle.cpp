@@ -54,41 +54,47 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
-    LogInfo("xlAutoClose called. Unloading XLL...");
+    XLL_SAFE_BLOCK(
+        LogInfo("xlAutoClose called. Unloading XLL...");
 
-    // Signal shutdown to monitor thread
-    if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
+        // Signal shutdown to monitor thread
+        if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
 
-    // Stop Worker
-    xll::StopWorker();
+        // Stop Worker
+        xll::StopWorker();
 
-    // Join threads before closing handles
-    xll::JoinWorker();
-    if (g_monitorThread.joinable()) g_monitorThread.join();
+        // Join threads before closing handles
+        xll::JoinWorker();
+        if (g_monitorThread.joinable()) g_monitorThread.join();
 
-    // Cleanup SHM Host (Explicitly)
-    if (g_phost) {
-        delete g_phost;
-        g_phost = nullptr;
-    }
+        // Cleanup SHM Host (Explicitly)
+        if (g_phost) {
+            delete g_phost;
+            g_phost = nullptr;
+        }
 
-    // Cleanup Process Handles
-    if (g_procInfo.hProcess) {
-        CloseHandle(g_procInfo.hProcess);
-        g_procInfo.hProcess = NULL;
-    }
-    if (g_procInfo.hJob) {
-        CloseHandle(g_procInfo.hJob);
-        g_procInfo.hJob = NULL;
-    }
-    if (g_procInfo.hShutdownEvent) {
-        CloseHandle(g_procInfo.hShutdownEvent);
-        g_procInfo.hShutdownEvent = NULL;
-    }
+        // Cleanup Process Handles
+        if (g_procInfo.hProcess) {
+            CloseHandle(g_procInfo.hProcess);
+            g_procInfo.hProcess = NULL;
+        }
+        if (g_procInfo.hJob) {
+            CloseHandle(g_procInfo.hJob);
+            g_procInfo.hJob = NULL;
+        }
+        if (g_procInfo.hShutdownEvent) {
+            CloseHandle(g_procInfo.hShutdownEvent);
+            g_procInfo.hShutdownEvent = NULL;
+        }
 
-    return 1;
+        return 1;
+    )
+    return 0;
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoAdd(void) {
-    return 1;
+    XLL_SAFE_BLOCK(
+        return 1;
+    )
+    return 0;
 }
