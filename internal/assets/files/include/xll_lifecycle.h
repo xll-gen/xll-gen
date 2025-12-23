@@ -3,12 +3,25 @@
 #include "types/xlcall.h"
 #include <string>
 #include <thread>
+#include <sstream>
+#include <iomanip>
 #include "xll_launch.h"
 #include "shm/Logger.h"
+#include "xll_log.h"
+
+namespace xll {
+    inline DWORD LogException(DWORD code, PEXCEPTION_POINTERS pep) {
+        (void)pep;
+        std::stringstream ss;
+        ss << "Caught SEH Exception: 0x" << std::hex << std::uppercase << code;
+        LogError(ss.str());
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+}
 
 // Macros for SEH
 #ifdef _MSC_VER
-    #define XLL_SAFE_BLOCK(block) __try { block } __except (EXCEPTION_EXECUTE_HANDLER) { }
+    #define XLL_SAFE_BLOCK(block) __try { block } __except (xll::LogException(GetExceptionCode(), GetExceptionInformation())) { }
 #else
     // GCC/MinGW does not support MSVC-style __try/__except natively without extensions.
     // For compatibility, we execute the block without SEH protection.
