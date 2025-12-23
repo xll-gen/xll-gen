@@ -37,13 +37,99 @@
 
 using namespace xll;
 
+// Lazy Initialization Globals
+std::once_flag g_initFlag;
+bool g_isInitialized = false;
+
+// Helper to initialize the runtime (SHM, Server, Threads) safely
+void EnsureInitialized() {
+    std::call_once(g_initFlag, []() {
+        LogInfo("Lazy Initialization started...");
+
+        // Config Data needed for Init
+        std::string projName = "{{.ProjectName}}";
+        bool isSingleFile = false;
+        std::string tempPattern = "";
+        {{if eq .Build.Singlefile "xll"}}
+        isSingleFile = true;
+        tempPattern = "{{.Build.TempDir}}";
+        {{end}}
+
+        // Initialize Shared Memory
+        std::string shmName = "{{.ProjectName}}";
+        {{if not .ShouldAppendPid}}
+        // Static name for testing/dev
+        {{else}}
+        shmName += "_" + std::to_string(GetCurrentProcessId());
+        {{end}}
+
+        LogInfo("Initializing Shared Memory: " + shmName);
+
+        // HostConfig: hostSlots, guestSlots.
+        shm::HostConfig hostCfg{};
+        int workers = {{if .Server.Workers}}{{.Server.Workers}}{{else}}std::thread::hardware_concurrency(){{end}};
+        if (workers < 1) workers = 1;
+        hostCfg.numHostSlots = workers * 2 + 2;
+        hostCfg.numGuestSlots = 2;
+        hostCfg.shmName = shmName;
+        hostCfg.payloadSize = 1024 * 1024; // 1MB
+
+        // Initialize Host (Allocated if null)
+        if (!g_phost) {
+            g_phost = new shm::DirectHost();
+        }
+
+        auto initRes = g_host.Init(hostCfg);
+        if (initRes.HasError()) {
+            std::string err = "Failed to initialize shared memory: " + SHMErrorToString(initRes.GetError());
+            LogError(err);
+            MessageBoxA(NULL, err.c_str(), "XLL Runtime Error", MB_OK | MB_ICONERROR);
+            // We do not set g_isInitialized to true, so subsequent calls might retry (or fail again)
+            // But call_once only runs once. If it fails, the add-in is broken for this session.
+            return;
+        }
+
+        // Launch Server Process
+        {{if derefBool .Server.Launch.Enabled}}
+        // Prepare Launch Config
+        LaunchConfig cfg;
+        cfg.projectName = L"{{.ProjectName}}";
+        cfg.isSingleFile = isSingleFile;
+        cfg.cwd = ""; // Default CWD (relative to bindir)
+        cfg.command = "{{.Server.Command}}";
+        cfg.shmName = shmName;
+        {{if eq .Build.Singlefile "xll"}}cfg.tempDir = StringToWString(tempPattern);{{end}}
+
+        std::wstring launchLog;
+        if (!LaunchServer(cfg, GetXllDir(), g_procInfo, launchLog)) {
+             LogError("Failed to launch server.");
+             // Cleanup SHM to be safe? Or keep it open?
+             // If server fails, we are broken.
+             return;
+        }
+
+        // Start Monitor Thread
+        if (g_monitorThread.joinable()) g_monitorThread.join();
+        g_monitorThread = std::thread(MonitorThread, launchLog);
+        {{else}}
+        LogInfo("Server launch disabled by configuration.");
+        {{end}}
+
+        // Start Worker Thread for Async Results
+        xll::StartWorker();
+
+        g_isInitialized = true;
+        LogInfo("Lazy Initialization complete.");
+    });
+}
+
 // XLL Interface Functions
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     XLL_SAFE_BLOCK_BEGIN
         XLOPER12 xDLL; // Defined here for xlGetName
 
-        // Setup Native Logging
+        // Setup Native Logging (Keep this in xlAutoOpen for debugging init itself)
         std::string tempPattern = "";
     std::string projName = "{{.ProjectName}}";
     bool isSingleFile = false;
@@ -79,7 +165,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     std::string logInitError;
     if (!InitLog(logPath, "{{.Logging.Level}}", tempPattern, projName, isSingleFile, logInitError)) {
             // If logging fails to initialize, we show a message box but proceed.
-            // Logging is critical for debugging but not for core functionality.
             MessageBoxA(NULL, ("Failed to initialize logging: " + logInitError).c_str(), "XLL Initialization Warning", MB_OK | MB_ICONWARNING);
     } else {
             LogInfo("Logging Initialized Successfully. LogPath: " + WideToUtf8(logPath));
@@ -92,63 +177,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     LogInfo("xlAutoOpen: Loading XLL...");
 
     Excel12(xlGetName, &xDLL, 0);
-
-    // Initialize Shared Memory
-    std::string shmName = "{{.ProjectName}}";
-    {{if not .ShouldAppendPid}}
-    // Static name for testing/dev
-    {{else}}
-    shmName += "_" + std::to_string(GetCurrentProcessId());
-    {{end}}
-
-    LogInfo("Initializing Shared Memory: " + shmName);
-
-    // HostConfig: hostSlots, guestSlots.
-    shm::HostConfig hostCfg{};
-    int workers = {{if .Server.Workers}}{{.Server.Workers}}{{else}}std::thread::hardware_concurrency(){{end}};
-    if (workers < 1) workers = 1;
-    hostCfg.numHostSlots = workers * 2 + 2;
-    hostCfg.numGuestSlots = 2;
-    hostCfg.shmName = shmName;
-    hostCfg.payloadSize = 1024 * 1024; // 1MB
-
-    // Initialize Host (Allocated if null to persist across Probe Unloads)
-    if (!g_phost) {
-        g_phost = new shm::DirectHost();
-    }
-
-    auto initRes = g_host.Init(hostCfg);
-    if (initRes.HasError()) {
-            std::string err = "Failed to initialize shared memory: " + SHMErrorToString(initRes.GetError());
-            LogError(err);
-            MessageBoxA(NULL, err.c_str(), "XLL Error", MB_OK | MB_ICONERROR);
-            return 0; // Fail loading
-    }
-
-    // Launch Server Process
-    {{if derefBool .Server.Launch.Enabled}}
-    // Prepare Launch Config
-    LaunchConfig cfg;
-    cfg.projectName = L"{{.ProjectName}}";
-    cfg.isSingleFile = isSingleFile;
-    cfg.cwd = ""; // Default CWD (relative to bindir)
-    cfg.command = "{{.Server.Command}}";
-    cfg.shmName = shmName;
-    {{if eq .Build.Singlefile "xll"}}cfg.tempDir = StringToWString(tempPattern);{{end}}
-
-    std::wstring launchLog;
-    if (!LaunchServer(cfg, GetXllDir(), g_procInfo, launchLog)) {
-            return 0;
-    }
-
-    // Start Monitor Thread
-    g_monitorThread = std::thread(MonitorThread, launchLog);
-    {{else}}
-    LogInfo("Server launch disabled by configuration.");
-    {{end}}
-
-    // Start Worker Thread for Async Results
-    xll::StartWorker();
 
     // Register Events
 {{range .Events}}
@@ -201,7 +229,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         // Free xDLL
         Excel12(xlFree, 0, 1, (LPXLOPER12)&xDLL);
 
-        LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
+        LogInfo("xlAutoOpen: Registration complete. Runtime will be initialized on first use.");
         return 1;
     XLL_SAFE_BLOCK_END(0)
 }
@@ -209,6 +237,9 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 // Event Handlers
 {{range .Events}}
 __declspec(dllexport) void __stdcall {{.Handler}}() {
+    EnsureInitialized();
+    if (!g_isInitialized) return;
+
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
@@ -220,6 +251,8 @@ __declspec(dllexport) void __stdcall {{.Handler}}() {
 // User defined handler exists
 {{else}}
 __declspec(dllexport) void __stdcall CalculationEnded() {
+    EnsureInitialized();
+    if (!g_isInitialized) return;
     HandleCalculationEnded();
 }
 {{end}}
@@ -227,6 +260,17 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 // User Functions
 {{range $i, $fn := .Functions}}
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+    EnsureInitialized();
+    if (!g_isInitialized) {
+        {{if .Async}}
+        XLOPER12 xErr; xErr.xltype = xltypeErr; xErr.val.err = xlerrValue;
+        Excel12(xlAsyncReturn, 0, 2, (LPXLOPER12)asyncHandle, &xErr);
+        return;
+        {{else}}
+        return &g_xlErrValue;
+        {{end}}
+    }
+
     {{/* Determine Cache Configuration */}}
     {{ $cacheEnabled := $.Cache.Enabled }}
     {{ $ttl := $.Cache.TTL }}
