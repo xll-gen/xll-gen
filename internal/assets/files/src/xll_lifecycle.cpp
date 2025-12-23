@@ -12,6 +12,9 @@ HINSTANCE g_hModule = NULL;
 // Global Error Value
 XLOPER12 g_xlErrValue;
 
+// Unloading Flag
+std::atomic<bool> g_isUnloading(false);
+
 // Process Information for Server
 ProcessInfo g_procInfo = { 0 };
 
@@ -38,15 +41,37 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
             // Initialize Global Error Value
             g_xlErrValue.xltype = xltypeErr;
             g_xlErrValue.val.err = xlerrValue;
+            g_isUnloading = false;
             break;
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
             break;
         case DLL_PROCESS_DETACH:
-            // We intentionally do NOT perform cleanup here.
             // Excel may load and unload the DLL ("probe") without calling xlAutoOpen/xlAutoClose.
-            // If xlAutoOpen was called, xlAutoClose will be called before unload.
-            // Cleanup is handled exclusively in xlAutoClose.
+            // Normally, cleanup is handled exclusively in xlAutoClose.
+            // However, if xlAutoClose was skipped (e.g. forced unload), we must attempt to stop threads
+            // to prevent 0xC0000005 crashes when code is unloaded while threads are running.
+            if (!g_isUnloading) {
+                 // Emergency Cleanup
+                 // We cannot safely Join threads here due to Loader Lock, but we can signal them to stop.
+                 // We assume that if g_isUnloading is false, xlAutoClose was NOT called.
+
+                 // 1. Signal Unload
+                 g_isUnloading = true;
+
+                 // 2. Stop Worker (sets g_workerRunning = false)
+                 xll::StopWorker();
+
+                 // 3. Signal Shutdown Event (wakes up MonitorThread)
+                 if (g_procInfo.hShutdownEvent) {
+                     SetEvent(g_procInfo.hShutdownEvent);
+                 }
+
+                 // 4. Sleep briefly to allow threads to exit their loops?
+                 // This is controversial in DllMain, but necessary if threads are active.
+                 // WorkerLoop has a 50ms timeout. We sleep 100ms.
+                 Sleep(100);
+            }
             break;
         }
     XLL_SAFE_BLOCK_END(FALSE)
@@ -55,6 +80,9 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     XLL_SAFE_BLOCK_BEGIN
+        if (g_isUnloading) return 1; // Already called
+        g_isUnloading = true;
+
         LogInfo("xlAutoClose called. Unloading XLL...");
 
         // Signal shutdown to monitor thread
