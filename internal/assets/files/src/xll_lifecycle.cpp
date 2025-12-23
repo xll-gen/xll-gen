@@ -41,6 +41,7 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
     case DLL_THREAD_DETACH:
         break;
     case DLL_PROCESS_DETACH:
+        LogInfo("DllMain: DLL_PROCESS_DETACH called");
         // Safe logging might not be possible here if static objects are destroyed, 
         // but we try to prevent std::terminate from thread destructor.
         if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
@@ -54,7 +55,7 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
 }
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
-    LogInfo("Unloading XLL...");
+    LogInfo("xlAutoClose called. Unloading XLL...");
 
     // Signal shutdown to monitor thread
     if (g_procInfo.hShutdownEvent) SetEvent(g_procInfo.hShutdownEvent);
