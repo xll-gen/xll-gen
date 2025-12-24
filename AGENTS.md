@@ -113,7 +113,7 @@ The `protocol.fbs` definition is critical.
 
 ### 18.2 Shared Dependencies
 The versions of core dependencies must be synchronized across the build system, the generator, and the toolchain:
-1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (defines `GIT_TAG` for `shm`, `types`, `flatbuffers`, and `zstd`).
+1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (defines `GIT_TAG` for `shm`, `types`, `flatbuffers`, `zstd`, and `phmap`).
 2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands for `shm` and `types`).
 3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must match `flatbuffers` in CMake).
 4.  **Verification**: `cmd/doctor_version_test.go` (`TestFlatbuffersVersionConsistency`) enforces that the `flatc` version in Go matches the CMake tag.
@@ -153,6 +153,18 @@ The configuration structure is coupled with the generator templates.
 1.  **Definition**: `internal/config/config.go` defines the `Config` struct and validation logic.
 2.  **Templates**: `internal/templates/xll_main.cpp.tmpl` and `server.go.tmpl` rely on the specific field names and structure of the `Config` object.
 **Constraint**: Adding or renaming fields in `xll.yaml` (and thus `Config`) requires verifying and updating both the validation logic and the usage in templates.
+
+### 18.8 Import Path Rewriting
+The generator dynamically rewrites generated Go imports to match the external `types` repository structure.
+1.  **Rewriter**: `internal/generator/dependencies.go` (`fixGoImports`) contains regex logic to replace local `protocol` imports with `github.com/xll-gen/types/go/protocol`.
+2.  **Target**: The external repository `github.com/xll-gen/types` must maintain this exact package path.
+**Constraint**: If the `types` repository structure changes (e.g., moving `go/protocol` to `protocol`), the regex in `dependencies.go` must be updated immediately.
+
+### 18.9 Template & Runtime Coupling
+The logic in generated templates often relies on specific APIs exposed by the static runtime packages.
+1.  **Go Server**: `internal/templates/server.go.tmpl` calls functions in `pkg/server` (e.g., `NewAsyncBatcher`, `ChunkManager`). Signatures must match exactly.
+2.  **C++ Host**: `internal/templates/xll_main.cpp.tmpl` calls functions in `internal/assets/files/include/xll_ipc.h` (e.g., `StartWorker`).
+**Constraint**: Refactoring `pkg/server` or C++ assets is a breaking change for the generator templates. Always verify templates compile after modifying static runtime code.
 
 ## 19. Excel XLL Registration Rules
 
