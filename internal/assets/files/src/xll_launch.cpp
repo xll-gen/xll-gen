@@ -206,7 +206,7 @@ namespace xll {
         sa.bInheritHandle = TRUE;
         sa.lpSecurityDescriptor = NULL;
 
-        HANDLE hLog = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hLog = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hLog == INVALID_HANDLE_VALUE) {
             LogError("Failed to open log file for launch: " + WideToUtf8(logPath));
             if (outInfo.hJob) CloseHandle(outInfo.hJob);
