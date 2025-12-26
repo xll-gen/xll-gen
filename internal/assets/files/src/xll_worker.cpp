@@ -80,12 +80,14 @@ void HandleChunk(const protocol::Chunk* chunk) {
         const uint8_t* data = pm.buffer.data();
 
         // Dispatch based on type
-        if (type == (int32_t)MSG_BATCH_ASYNC_RESPONSE) {
-             auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
-             ProcessAsyncBatchResponse(batch);
-        } else if (type == (int32_t)MSG_CALCULATION_ENDED) {
-             auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
-             ExecuteCommands(resp->commands());
+        if (!g_isUnloading) {
+            if (type == (int32_t)MSG_BATCH_ASYNC_RESPONSE) {
+                 auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
+                 ProcessAsyncBatchResponse(batch);
+            } else if (type == (int32_t)MSG_CALCULATION_ENDED) {
+                 auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
+                 ExecuteCommands(resp->commands());
+            }
         }
 
         // Remove from map
@@ -115,6 +117,9 @@ void WorkerLoop() {
     while (g_workerRunning) {
         // Check for unloading state to exit early
         if (g_isUnloading) break;
+
+        // Double-check host validity
+        if (!g_phost) break;
 
         // Updated Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType)
         bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType msgType) -> int32_t {

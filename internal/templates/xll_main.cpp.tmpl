@@ -209,6 +209,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 // Event Handlers
 {{range .Events}}
 __declspec(dllexport) void __stdcall {{.Handler}}() {
+    if (g_isUnloading) return;
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
@@ -220,6 +221,7 @@ __declspec(dllexport) void __stdcall {{.Handler}}() {
 // User defined handler exists
 {{else}}
 __declspec(dllexport) void __stdcall CalculationEnded() {
+    if (g_isUnloading) return;
     HandleCalculationEnded();
 }
 {{end}}
@@ -227,6 +229,10 @@ __declspec(dllexport) void __stdcall CalculationEnded() {
 // User Functions
 {{range $i, $fn := .Functions}}
 __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+    if (g_isUnloading) {
+        {{if .Async}}return;{{else}}return &g_xlErrValue;{{end}}
+    }
+
     {{/* Determine Cache Configuration */}}
     {{ $cacheEnabled := $.Cache.Enabled }}
     {{ $ttl := $.Cache.TTL }}
