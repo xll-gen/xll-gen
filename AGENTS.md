@@ -113,7 +113,7 @@ The `protocol.fbs` definition is critical.
 
 ### 18.2 Shared Dependencies
 The versions of core dependencies must be synchronized across the build system, the generator, and the toolchain:
-1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (defines `GIT_TAG` for `shm`, `types`, `flatbuffers`, and `zstd`).
+1.  **C++ Build**: `internal/templates/CMakeLists.txt.tmpl` (defines `GIT_TAG` for `shm`, `types`, `flatbuffers`, `zstd`, and `phmap`).
 2.  **Go Setup**: `internal/generator/dependencies.go` (hardcoded `go get` commands for `shm` and `types`).
 3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must match `flatbuffers` in CMake).
 4.  **Verification**: `cmd/doctor_version_test.go` (`TestFlatbuffersVersionConsistency`) enforces that the `flatc` version in Go matches the CMake tag.
@@ -153,6 +153,17 @@ The configuration structure is coupled with the generator templates.
 1.  **Definition**: `internal/config/config.go` defines the `Config` struct and validation logic.
 2.  **Templates**: `internal/templates/xll_main.cpp.tmpl` and `server.go.tmpl` rely on the specific field names and structure of the `Config` object.
 **Constraint**: Adding or renaming fields in `xll.yaml` (and thus `Config`) requires verifying and updating both the validation logic and the usage in templates.
+
+### 18.8 Import Path Rewriting
+The generator performs post-processing on generated Go files to fix imports.
+1.  **Logic**: `internal/generator/dependencies.go` (`fixGoImports`) rewrites `import "protocol"` to `import protocol "github.com/xll-gen/types/go/protocol"`.
+2.  **Constraint**: This relies on `internal/templates/protocol.fbs` using `namespace protocol;` and the upstream `xll-gen/types` repository maintaining the `go/protocol` package path.
+
+### 18.9 Server Runtime Library
+The Go server template delegates complex logic to the static `pkg/server` package.
+1.  **Library**: `pkg/server` contains logic for batching, chunking, and SHM communication.
+2.  **Template**: `internal/templates/server.go.tmpl` imports `pkg/server` and calls functions like `NewCommandBatcher`, `FlushAsyncBatch`, and `ConnectSHM`.
+**Constraint**: Any API change in `pkg/server` (e.g., `CommandBatcher` methods) requires an immediate update to `server.go.tmpl`.
 
 ## 19. Excel XLL Registration Rules
 
