@@ -59,18 +59,20 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
                  // 1. Signal Unload
                  g_isUnloading = true;
 
-                 // 2. Stop Worker (sets g_workerRunning = false)
-                 xll::StopWorker();
+                 // 2. Detach Worker Thread
+                 // Use ForceTerminateWorker to detach the thread so the C++ runtime
+                 // doesn't call std::terminate() when the global std::thread is destructed.
+                 xll::ForceTerminateWorker();
 
-                 // 3. Signal Shutdown Event (wakes up MonitorThread)
+                 // 3. Detach Monitor Thread
+                 if (g_monitorThread.joinable()) {
+                     g_monitorThread.detach();
+                 }
+
+                 // 4. Signal Shutdown Event (wakes up MonitorThread if it's still running detached)
                  if (g_procInfo.hShutdownEvent) {
                      SetEvent(g_procInfo.hShutdownEvent);
                  }
-
-                 // 4. Sleep briefly to allow threads to exit their loops?
-                 // This is controversial in DllMain, but necessary if threads are active.
-                 // WorkerLoop has a 50ms timeout. We sleep 100ms.
-                 Sleep(100);
             }
             break;
         }
