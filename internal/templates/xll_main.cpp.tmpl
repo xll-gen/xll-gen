@@ -128,6 +128,26 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     // Launch Server Process
     {{if derefBool .Server.Launch.Enabled}}
+    // Check if already running
+    if (g_procInfo.hProcess != NULL) {
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(g_procInfo.hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+            LogInfo("Server process is already running. Skipping launch.");
+        } else {
+             // Process is dead, clean up handles
+             if (g_procInfo.hProcess) CloseHandle(g_procInfo.hProcess);
+             if (g_procInfo.hJob) CloseHandle(g_procInfo.hJob);
+             if (g_procInfo.hShutdownEvent) CloseHandle(g_procInfo.hShutdownEvent);
+             g_procInfo = { 0 };
+             goto launch_server;
+        }
+    } else {
+        goto launch_server;
+    }
+    // Skip launch if running
+    goto start_worker;
+
+launch_server:
     // Prepare Launch Config
     LaunchConfig cfg;
     cfg.projectName = L"{{.ProjectName}}";
@@ -144,6 +164,8 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     // Start Monitor Thread
     g_monitorThread = std::thread(MonitorThread, launchLog);
+
+start_worker:
     {{else}}
     LogInfo("Server launch disabled by configuration.");
     {{end}}
