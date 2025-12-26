@@ -191,11 +191,19 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
 
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
 
-Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry points, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for actual use.
-This causes issues with Shared Memory (SHM) if the destructor of the global host object closes the handles, as the Go server might interpret this as a shutdown signal.
+Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry points, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for actual use. This also applies when an Add-in is disabled or forcefully unloaded while background threads are running.
 
-**Strategy:**
-1.  **Heap Allocation**: `g_host` is a pointer (`shm::DirectHost* g_phost`) allocated on the heap in `xlAutoOpen`.
-2.  **Ignore Detach**: We explicitly ignore `DLL_PROCESS_DETACH` in `DllMain`. No cleanup is performed there.
-3.  **Explicit Cleanup**: We only delete `g_phost` and stop threads in `xlAutoClose`, which is the definitive signal that the user is deactivating the Add-in.
-4.  **SEH**: `DllMain` is wrapped in SEH (`__try`/`__except`) to prevent crashes during these rapid load/unload cycles.
+### 20.1 Crash on Unload Issue
+If global `std::thread` objects (like `g_monitorThread` or `g_workerThread`) are destroyed while they are still **joinable** during `DLL_PROCESS_DETACH`, the C++ runtime will call `std::terminate()`. This causes the Excel process to crash or the Add-in to "disappear" (detach) immediately.
+
+### 20.2 The Detach Solution
+To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
+
+1.  **Check Unload State**: If `DLL_PROCESS_DETACH` is called and our explicit cleanup function (`xlAutoClose`) has **not** run (indicated by `!g_isUnloading`), it means we are in a forced unload scenario.
+2.  **Leak, Don't Crash**: In this specific case, we explicitly call `.detach()` on global thread objects.
+    *   This prevents the destructor from calling `std::terminate()`.
+    *   The threads continue running (leaked) until the OS cleans up the process resources.
+    *   This is safer than crashing the host process.
+3.  **Precedent**: This strategy is also observed in other advanced Excel frameworks like [xlOil](https://github.com/cunnane/xloil), which implements a `detachPlugins` mechanism to handle similar lifecycle challenges.
+
+**Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp` (`DllMain`).
