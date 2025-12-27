@@ -20,6 +20,9 @@ namespace xll {
         return EXCEPTION_EXECUTE_HANDLER;
     }
 #endif
+
+    // Helper to create a deep copy string XLOPER12 (Safe for vectors/registration)
+    XLOPER12 CreateDeepString(const std::wstring& s);
 }
 
 // Safe Block Macros for Crash Handling

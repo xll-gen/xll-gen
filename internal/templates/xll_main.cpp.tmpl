@@ -182,26 +182,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         args.reserve(20);
 
         auto addStr = [&](const std::wstring& s) {
-            XLOPER12 x;
-            x.xltype = xltypeStr;
-            size_t len = s.length();
-            if (len > 32767) len = 32767; // Truncate if too long (XLOPER12 limit)
-
-            // Allocate buffer: 1 for length + len + 1 for null terminator (safety)
-            x.val.str = new wchar_t[len + 2];
-
-            // Set length at index 0
-            x.val.str[0] = (wchar_t)len;
-
-            // Copy string content
-            if (len > 0) {
-                wmemcpy(x.val.str + 1, s.c_str(), len);
-            }
-
-            // Null terminate (optional but good for safety if treated as wstring)
-            x.val.str[len + 1] = L'\0';
-
-            args.push_back(x);
+            args.push_back(xll::CreateDeepString(s));
         };
 
         auto addInt = [&](int val) {
