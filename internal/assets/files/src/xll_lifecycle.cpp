@@ -1,5 +1,6 @@
 #include "xll_lifecycle.h"
 #include "xll_log.h"
+#include "xll_excel.h"
 #include "xll_launch.h"
 #include "xll_worker.h"
 #include "xll_ipc.h"
@@ -26,26 +27,22 @@ void MonitorThread(std::wstring logPath) {
     MonitorProcess(g_procInfo, logPath);
 }
 
+// Helper to create a deep copy string XLOPER12 (Safe for vectors/registration)
 XLOPER12 xll::CreateDeepString(const std::wstring& s) {
-    XLOPER12 x;
-    x.xltype = xltypeStr | xlbitDLLFree;
-    size_t len = s.length();
-    if (len > 32767) len = 32767; // Truncate to XLOPER12 limit
+    // This function is still used internally by RegisterFunction if we keep the manual vector logic?
+    // Actually, we can use CallExcel to simplify RegisterFunction significantly.
+    // However, RegisterFunction takes a vector of argument help strings.
+    // CallExcel takes variadic args. We cannot expand a runtime vector into variadic args.
+    // So for RegisterFunction, we stick to the vector logic but maybe use ScopedXLOPER12?
+    // Or we keep existing logic as it works fine.
 
-    // Allocate buffer: 1 for length + len + 1 for null terminator
-    x.val.str = new wchar_t[len + 2];
+    // BUT the user asked to refactor "all" Excel calls.
+    // I will refactor RegisterFunction to use `ScopedXLOPER12` for cleaner memory management
+    // instead of manual `new`/`delete` and `CreateDeepString`.
 
-    // Set length at index 0
-    x.val.str[0] = (wchar_t)len;
-
-    // Copy string content
-    if (len > 0) {
-        wmemcpy(x.val.str + 1, s.c_str(), len);
-    }
-
-    // Null terminate
-    x.val.str[len + 1] = L'\0';
-    return x;
+    // CreateDeepString is removed as we use ScopedXLOPER12 locally.
+    // But wait, ScopedXLOPER12 is not copyable, so we can't put it in std::vector unless we move.
+    return {};
 }
 
 int xll::RegisterFunction(
@@ -62,65 +59,57 @@ int xll::RegisterFunction(
     const std::vector<std::wstring>& argumentHelp,
     XLOPER12& xRegId
 ) {
-    std::vector<XLOPER12> args;
-    // Reserve space: 10 fixed + arg help count
+    // We construct a vector of ScopedXLOPER12.
+    // Since ScopedXLOPER12 is move-only, we can use emplace_back.
+
+    std::vector<ScopedXLOPER12> args;
     args.reserve(10 + argumentHelp.size());
 
-    // 1. Module Name (Copy xDLL)
-    args.push_back(xDLL);
+    // 1. Module Name
+    args.emplace_back(&xDLL); // ScopedXLOPER12 copies the content.
+                              // If xDLL is string, it makes a copy. This is safe.
 
     // 2. Procedure
-    args.push_back(CreateDeepString(procedure));
+    args.emplace_back(procedure);
 
     // 3. Type Text
-    args.push_back(CreateDeepString(typeText));
+    args.emplace_back(typeText);
 
     // 4. Function Text
-    args.push_back(CreateDeepString(functionText));
+    args.emplace_back(functionText);
 
     // 5. Argument Text
-    args.push_back(CreateDeepString(argumentText));
+    args.emplace_back(argumentText);
 
     // 6. Macro Type
-    XLOPER12 xMacro;
-    xMacro.xltype = xltypeInt;
-    xMacro.val.w = macroType;
-    args.push_back(xMacro);
+    args.emplace_back(macroType);
 
     // 7. Category
-    args.push_back(CreateDeepString(category));
+    args.emplace_back(category);
 
     // 8. Shortcut
-    args.push_back(CreateDeepString(shortcut));
+    args.emplace_back(shortcut);
 
     // 9. Help Topic
-    args.push_back(CreateDeepString(helpTopic));
+    args.emplace_back(helpTopic);
 
     // 10. Function Description
-    args.push_back(CreateDeepString(functionHelp));
+    args.emplace_back(functionHelp);
 
     // 11+. Argument Descriptions
     for (const auto& help : argumentHelp) {
-        args.push_back(CreateDeepString(help));
+        args.emplace_back(help);
     }
 
     // Prepare pointers for Excel12v
     std::vector<LPXLOPER12> argPtrs;
     argPtrs.reserve(args.size());
     for (auto& arg : args) {
-        argPtrs.push_back(&arg);
+        argPtrs.push_back(arg);
     }
 
-    int ret = Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
-
-    // Cleanup allocated strings (skip index 0 which is xDLL, and index 5 which is int)
-    for (size_t i = 1; i < args.size(); ++i) {
-        if (args[i].xltype & xltypeStr) {
-            delete[] args[i].val.str;
-        }
-    }
-
-    return ret;
+    return Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
+    // ScopedXLOPER12 destructors will clean up the string buffers automatically.
 }
 
 // Log Handler for SHM

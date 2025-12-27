@@ -26,6 +26,7 @@
 #include "xll_events.h"
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
+#include "xll_excel.h"
 #include "SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
@@ -91,7 +92,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     LogInfo("xlAutoOpen: Loading XLL...");
 
-    Excel12(xlGetName, &xDLL, 0);
+    xll::CallExcel(xlGetName, &xDLL);
 
     // Initialize Shared Memory
     std::string shmName = "{{.ProjectName}}";
@@ -152,7 +153,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     // Register Events
 {{range .Events}}
-    Excel12(xlEventRegister, 0, 2, TempStr12(L"{{.Handler}}"), TempInt12({{lookupEventCode .Type}}));
+    xll::CallExcel(xlEventRegister, nullptr, L"{{.Handler}}", {{lookupEventCode .Type}});
 {{end}}
     {{if hasEvent "CalculationEnded" .Events}}
     {{else}}
@@ -168,7 +169,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     {{range $i, $fn := .Functions}}{{range .Args}}{{if eq .Type "any"}}needCalcEnded=true;{{end}}{{end}}{{end}}
     if (needCalcEnded || hasCache) {
-            Excel12(xlEventRegister, 0, 2, TempStr12(L"CalculationEnded"), TempInt12(xleventCalculationEnded));
+            xll::CallExcel(xlEventRegister, nullptr, L"CalculationEnded", xleventCalculationEnded);
     }
     {{end}}
 
@@ -203,14 +204,14 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
             // Cleanup returned ID if needed
             if (xRegId.xltype & (xlbitXLFree | xlbitDLLFree)) {
-                Excel12(xlFree, 0, 1, &xRegId);
+                xll::CallExcel(xlFree, nullptr, &xRegId);
             }
         }
     }
 {{end}}
 
         // Free xDLL
-        Excel12(xlFree, 0, 1, (LPXLOPER12)&xDLL);
+        xll::CallExcel(xlFree, nullptr, (LPXLOPER12)&xDLL);
 
         LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
@@ -358,19 +359,19 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     flatbuffers::Offset<protocol::Range> caller_off = 0;
     {
         XLOPER12 xCaller;
-        if (Excel12(xlfCaller, &xCaller, 0) == xlretSuccess) {
+        if (xll::CallExcel(xlfCaller, &xCaller) == xlretSuccess) {
             std::string callerFormat = "";
             XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
             XLOPER12 xFormat;
-            if (Excel12(xlfGetCell, &xFormat, 2, &xType, &xCaller) == xlretSuccess) {
+            if (xll::CallExcel(xlfGetCell, &xFormat, &xType, &xCaller) == xlretSuccess) {
                 if (xFormat.xltype == xltypeStr) {
                         callerFormat = ConvertExcelString(xFormat.val.str);
                 }
-                Excel12(xlFree, 0, 1, &xFormat);
+                xll::CallExcel(xlFree, nullptr, &xFormat);
             }
             caller_off = ConvertRange(&xCaller, builder, callerFormat);
             if (xCaller.xltype & (xlbitXLFree | xlbitDLLFree)) {
-                Excel12(xlFree, 0, 1, &xCaller);
+                xll::CallExcel(xlFree, nullptr, &xCaller);
             }
         }
     }
@@ -409,7 +410,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
             XLOPER12 xErr;
             xErr.xltype = xltypeErr;
             xErr.val.err = xlerrValue;
-            Excel12(xlAsyncReturn, 0, 2, (LPXLOPER12)asyncHandle, &xErr);
+            xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErr);
             return;
     }
     return;

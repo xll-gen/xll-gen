@@ -1,5 +1,6 @@
 #include "xll_cache.h"
 #include "xll_log.h"
+#include "xll_excel.h"
 #include "types/utility.h"
 #include "types/PascalString.h"
 #include <sstream>
@@ -167,7 +168,7 @@ std::string SerializeXLOPER(const XLOPER12* px) {
              {
                  XLOPER12 xVal;
                  XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = xltypeMulti;
-                 if (Excel12(xlCoerce, &xVal, 2, px, &xType) == xlretSuccess) {
+                 if (xll::CallExcel(xlCoerce, &xVal, px, &xType) == xlretSuccess) {
                      if (xVal.xltype == xltypeMulti) {
                          ss << "Grid:" << xVal.val.array.rows << "x" << xVal.val.array.columns << "{";
                          DWORD count = xVal.val.array.rows * xVal.val.array.columns;
@@ -178,7 +179,7 @@ std::string SerializeXLOPER(const XLOPER12* px) {
                      } else {
                          ss << SerializeXLOPER(&xVal);
                      }
-                     Excel12(xlFree, 0, 1, &xVal);
+                     xll::CallExcel(xlFree, nullptr, &xVal);
                  } else {
                      ss << "RefError";
                  }

@@ -1,5 +1,6 @@
 #include "xll_commands.h"
 #include "xll_ipc.h"
+#include "xll_excel.h"
 #include "types/converters.h"
 #include "types/utility.h"
 #include "types/mem.h"
@@ -25,7 +26,7 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
 
                 if (pxRef && pxValue) {
                      // xlSet
-                     Excel12(xlSet, 0, 2, pxRef, pxValue);
+                     xll::CallExcel(xlSet, nullptr, pxRef, pxValue);
                 }
 
                 if (pxRef) xlAutoFree12(pxRef);
@@ -45,7 +46,7 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                          XLOPER12 xTypeId, xFmt;
                          xTypeId.xltype = xltypeInt;
                          xTypeId.val.w = 7; // xlfGetCell type 7: format
-                         if (Excel12(xlfGetCell, &xFmt, 2, &xTypeId, pxRef) == xlretSuccess) {
+                         if (xll::CallExcel(xlfGetCell, &xFmt, &xTypeId, pxRef) == xlretSuccess) {
                              if (xFmt.xltype == xltypeStr) {
                                  std::wstring currentFmt = PascalToWString(xFmt.val.str);
                                  std::wstring newFmt = ConvertToWString(cmd->format()->c_str());
@@ -53,20 +54,22 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                                      skip = true;
                                  }
                              }
-                             Excel12(xlFree, 0, 1, &xFmt);
+                             xll::CallExcel(xlFree, nullptr, &xFmt);
                          }
                     }
 
                     if (!skip) {
                         // Select range
-                        Excel12(xlcSelect, 0, 1, pxRef);
+                        xll::CallExcel(xlcSelect, nullptr, pxRef);
 
                         // Apply format
                         std::wstring ws = ConvertToWString(cmd->format()->c_str());
-                        LPXLOPER12 pxFmt = NewExcelString(ws); // Pass wstring directly
 
-                        Excel12(xlcFormatNumber, 0, 1, pxFmt);
-                        xlAutoFree12(pxFmt);
+                        // Use generic CallExcel which handles strings via ScopedXLOPER12
+                        // Note: NewExcelString allocates XLOPER12 with xlbitDLLFree,
+                        // while CallExcel's ScopedXLOPER12 handles temporary strings for inputs.
+                        // Here we use CallExcel(..., ws) which is cleaner.
+                        xll::CallExcel(xlcFormatNumber, nullptr, ws);
                     }
 
                     xlAutoFree12(pxRef);

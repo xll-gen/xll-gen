@@ -1,4 +1,5 @@
 #include "xll_ipc.h"
+#include "xll_excel.h"
 #include "types/converters.h"
 #include "types/mem.h"
 #include "types/utility.h"
@@ -30,7 +31,7 @@ void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch) {
         }
 
         if (pxResult) {
-            Excel12(xlAsyncReturn, 0, 2, &xAsyncHandle, pxResult);
+            xll::CallExcel(xlAsyncReturn, nullptr, &xAsyncHandle, pxResult);
             // Cleanup: AnyToXLOPER12 and NewExcelString use NewXLOPER12/ObjectPool.
             // We must ensure the node is returned to the pool.
             // If xlbitDLLFree is set, xlAutoFree12 frees content AND node.
