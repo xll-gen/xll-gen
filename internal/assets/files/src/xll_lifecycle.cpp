@@ -4,6 +4,7 @@
 #include "xll_worker.h"
 #include "xll_ipc.h"
 #include "types/mem.h"
+#include <cwchar>
 
 using namespace xll;
 
@@ -23,6 +24,28 @@ std::thread g_monitorThread;
 // Thread for monitoring server process
 void MonitorThread(std::wstring logPath) {
     MonitorProcess(g_procInfo, logPath);
+}
+
+XLOPER12 xll::CreateDeepString(const std::wstring& s) {
+    XLOPER12 x;
+    x.xltype = xltypeStr | xlbitDLLFree;
+    size_t len = s.length();
+    if (len > 32767) len = 32767; // Truncate to XLOPER12 limit
+
+    // Allocate buffer: 1 for length + len + 1 for null terminator
+    x.val.str = new wchar_t[len + 2];
+
+    // Set length at index 0
+    x.val.str[0] = (wchar_t)len;
+
+    // Copy string content
+    if (len > 0) {
+        wmemcpy(x.val.str + 1, s.c_str(), len);
+    }
+
+    // Null terminate
+    x.val.str[len + 1] = L'\0';
+    return x;
 }
 
 // Log Handler for SHM
