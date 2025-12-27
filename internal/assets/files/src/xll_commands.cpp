@@ -43,18 +43,18 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                     bool skip = false;
                     // Optimization: Skip if already formatted and is single cell
                     if (IsSingleCell(pxRef)) {
-                         XLOPER12 xTypeId, xFmt;
+                         XLOPER12 xTypeId;
+                         ScopedXLOPER12 xFmt;
                          xTypeId.xltype = xltypeInt;
                          xTypeId.val.w = 7; // xlfGetCell type 7: format
                          if (xll::CallExcel(xlfGetCell, &xFmt, &xTypeId, pxRef) == xlretSuccess) {
-                             if (xFmt.xltype == xltypeStr) {
-                                 std::wstring currentFmt = PascalToWString(xFmt.val.str);
+                             if (xFmt->xltype == xltypeStr) {
+                                 std::wstring currentFmt = PascalToWString(xFmt->val.str);
                                  std::wstring newFmt = ConvertToWString(cmd->format()->c_str());
                                  if (currentFmt == newFmt) {
                                      skip = true;
                                  }
                              }
-                             xll::CallExcel(xlFree, nullptr, &xFmt);
                          }
                     }
 
