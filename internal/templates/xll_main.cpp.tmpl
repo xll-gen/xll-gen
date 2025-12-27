@@ -176,64 +176,23 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 {{range $i, $fn := .Functions}}
     {
         // Register {{.Name}}
-        // We use Excel12v with explicitly allocated arguments to avoid TempStr12 ring buffer overflows
-        // when registering functions with many arguments.
-        std::vector<XLOPER12> args;
-        args.reserve(20);
-
-        auto addStr = [&](const std::wstring& s) {
-            args.push_back(xll::CreateDeepString(s));
-        };
-
-        auto addInt = [&](int val) {
-            XLOPER12 x;
-            x.xltype = xltypeInt;
-            x.val.w = val;
-            args.push_back(x);
-        };
-
-        // 1. Module Name (Copy xDLL)
-        args.push_back(xDLL);
-
-        // 2. Procedure
-        addStr(L"{{.Name}}");
-
-        // 3. Type Text
-        addStr(L"{{if .Async}}>{{end}}{{if not .Async}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$");
-
-        // 4. Function Text (Wizard Name)
-        addStr(L"{{.Name}}");
-
-        // 5. Argument Text
-        addStr(L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}");
-
-        // 6. Macro Type (1 = Worksheet Function)
-        addInt(1);
-
-        // 7. Category
-        addStr(L"{{if .Category}}{{.Category}}{{else}}{{$.ProjectName}}{{end}}");
-
-        // 8. Shortcut
-        addStr(L"{{.Shortcut}}");
-
-        // 9. Help Topic
-        addStr(L"{{.HelpTopic}}");
-
-        // 10. Function Description
-        addStr(L"{{.Description}}");
-
-        // 11+. Argument Descriptions
-        {{range .Args}}
-        addStr(L"{{.Description}}");
-        {{end}}
-
-        // Prepare pointers
-        std::vector<LPXLOPER12> argPtrs;
-        argPtrs.reserve(args.size());
-        for(auto& arg : args) argPtrs.push_back(&arg);
-
         XLOPER12 xRegId;
-        int regRes = Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
+        int regRes = xll::RegisterFunction(
+            xDLL,
+            L"{{.Name}}", // Procedure
+            L"{{if .Async}}>{{end}}{{if not .Async}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$", // TypeText
+            L"{{.Name}}", // FunctionText
+            L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}", // ArgumentText
+            1, // MacroType
+            L"{{if .Category}}{{.Category}}{{else}}{{$.ProjectName}}{{end}}", // Category
+            L"{{.Shortcut}}", // Shortcut
+            L"{{.HelpTopic}}", // HelpTopic
+            L"{{.Description}}", // FunctionHelp
+            { // ArgumentHelp
+                {{range .Args}}L"{{.Description}}",{{end}}
+            },
+            xRegId // Output ID
+        );
 
         if (regRes != xlretSuccess) {
             LogError("Failed to register function '{{.Name}}'. Code: " + std::to_string(regRes));
@@ -245,13 +204,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
             // Cleanup returned ID if needed
             if (xRegId.xltype & (xlbitXLFree | xlbitDLLFree)) {
                 Excel12(xlFree, 0, 1, &xRegId);
-            }
-        }
-
-        // Cleanup allocated strings (skip index 0 which is xDLL)
-        for (size_t k = 1; k < args.size(); ++k) {
-            if (args[k].xltype & xltypeStr) {
-                delete[] args[k].val.str;
             }
         }
     }

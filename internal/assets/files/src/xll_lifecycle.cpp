@@ -48,6 +48,81 @@ XLOPER12 xll::CreateDeepString(const std::wstring& s) {
     return x;
 }
 
+int xll::RegisterFunction(
+    const XLOPER12& xDLL,
+    const std::wstring& procedure,
+    const std::wstring& typeText,
+    const std::wstring& functionText,
+    const std::wstring& argumentText,
+    int macroType,
+    const std::wstring& category,
+    const std::wstring& shortcut,
+    const std::wstring& helpTopic,
+    const std::wstring& functionHelp,
+    const std::vector<std::wstring>& argumentHelp,
+    XLOPER12& xRegId
+) {
+    std::vector<XLOPER12> args;
+    // Reserve space: 10 fixed + arg help count
+    args.reserve(10 + argumentHelp.size());
+
+    // 1. Module Name (Copy xDLL)
+    args.push_back(xDLL);
+
+    // 2. Procedure
+    args.push_back(CreateDeepString(procedure));
+
+    // 3. Type Text
+    args.push_back(CreateDeepString(typeText));
+
+    // 4. Function Text
+    args.push_back(CreateDeepString(functionText));
+
+    // 5. Argument Text
+    args.push_back(CreateDeepString(argumentText));
+
+    // 6. Macro Type
+    XLOPER12 xMacro;
+    xMacro.xltype = xltypeInt;
+    xMacro.val.w = macroType;
+    args.push_back(xMacro);
+
+    // 7. Category
+    args.push_back(CreateDeepString(category));
+
+    // 8. Shortcut
+    args.push_back(CreateDeepString(shortcut));
+
+    // 9. Help Topic
+    args.push_back(CreateDeepString(helpTopic));
+
+    // 10. Function Description
+    args.push_back(CreateDeepString(functionHelp));
+
+    // 11+. Argument Descriptions
+    for (const auto& help : argumentHelp) {
+        args.push_back(CreateDeepString(help));
+    }
+
+    // Prepare pointers for Excel12v
+    std::vector<LPXLOPER12> argPtrs;
+    argPtrs.reserve(args.size());
+    for (auto& arg : args) {
+        argPtrs.push_back(&arg);
+    }
+
+    int ret = Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
+
+    // Cleanup allocated strings (skip index 0 which is xDLL, and index 5 which is int)
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i].xltype & xltypeStr) {
+            delete[] args[i].val.str;
+        }
+    }
+
+    return ret;
+}
+
 // Log Handler for SHM
 #ifdef SHM_DEBUG
 void LogHandler(shm::LogLevel level, const std::string& msg) {

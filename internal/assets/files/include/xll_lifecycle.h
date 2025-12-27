@@ -2,6 +2,7 @@
 #include <windows.h>
 #include "types/xlcall.h"
 #include <string>
+#include <vector>
 #include <thread>
 #include <sstream>
 #include <iomanip>
@@ -23,6 +24,22 @@ namespace xll {
 
     // Helper to create a deep copy string XLOPER12 (Safe for vectors/registration)
     XLOPER12 CreateDeepString(const std::wstring& s);
+
+    // Helper to register a function safely (handles memory management internally)
+    int RegisterFunction(
+        const XLOPER12& xDLL,
+        const std::wstring& procedure,
+        const std::wstring& typeText,
+        const std::wstring& functionText,
+        const std::wstring& argumentText,
+        int macroType,
+        const std::wstring& category,
+        const std::wstring& shortcut,
+        const std::wstring& helpTopic,
+        const std::wstring& functionHelp,
+        const std::vector<std::wstring>& argumentHelp,
+        XLOPER12& xRegId
+    );
 }
 
 // Safe Block Macros for Crash Handling
