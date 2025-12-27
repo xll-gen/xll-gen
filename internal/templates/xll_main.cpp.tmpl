@@ -176,24 +176,102 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 {{range $i, $fn := .Functions}}
     {
         // Register {{.Name}}
-        int regRes = Excel12(xlfRegister, 0, 10 + {{len .Args}},
-            (LPXLOPER12)&xDLL,
-            TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{if .Async}}>{{end}}{{if not .Async}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$"),
-            TempStr12(L"{{.Name}}"),
-            TempStr12(L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}"),
-            TempInt12(1), // Macro type
-            TempStr12(L"{{if .Category}}{{.Category}}{{else}}{{$.ProjectName}}{{end}}"),
-            TempStr12(L"{{.Shortcut}}"),
-            TempStr12(L"{{.HelpTopic}}"),
-            TempStr12(L"{{.Description}}"),
-            {{range .Args}}TempStr12(L"{{.Description}}"),{{end}}
-            0);
+        // We use Excel12v with explicitly allocated arguments to avoid TempStr12 ring buffer overflows
+        // when registering functions with many arguments.
+        std::vector<XLOPER12> args;
+        args.reserve(20);
+
+        auto addStr = [&](const std::wstring& s) {
+            XLOPER12 x;
+            x.xltype = xltypeStr;
+            size_t len = s.length();
+            if (len > 32767) len = 32767; // Truncate if too long (XLOPER12 limit)
+
+            // Allocate buffer: 1 for length + len + 1 for null terminator (safety)
+            x.val.str = new wchar_t[len + 2];
+
+            // Set length at index 0
+            x.val.str[0] = (wchar_t)len;
+
+            // Copy string content
+            if (len > 0) {
+                wmemcpy(x.val.str + 1, s.c_str(), len);
+            }
+
+            // Null terminate (optional but good for safety if treated as wstring)
+            x.val.str[len + 1] = L'\0';
+
+            args.push_back(x);
+        };
+
+        auto addInt = [&](int val) {
+            XLOPER12 x;
+            x.xltype = xltypeInt;
+            x.val.w = val;
+            args.push_back(x);
+        };
+
+        // 1. Module Name (Copy xDLL)
+        args.push_back(xDLL);
+
+        // 2. Procedure
+        addStr(L"{{.Name}}");
+
+        // 3. Type Text
+        addStr(L"{{if .Async}}>{{end}}{{if not .Async}}{{lookupXllType .Return}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if .Async}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$");
+
+        // 4. Function Text (Wizard Name)
+        addStr(L"{{.Name}}");
+
+        // 5. Argument Text
+        addStr(L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}");
+
+        // 6. Macro Type (1 = Worksheet Function)
+        addInt(1);
+
+        // 7. Category
+        addStr(L"{{if .Category}}{{.Category}}{{else}}{{$.ProjectName}}{{end}}");
+
+        // 8. Shortcut
+        addStr(L"{{.Shortcut}}");
+
+        // 9. Help Topic
+        addStr(L"{{.HelpTopic}}");
+
+        // 10. Function Description
+        addStr(L"{{.Description}}");
+
+        // 11+. Argument Descriptions
+        {{range .Args}}
+        addStr(L"{{.Description}}");
+        {{end}}
+
+        // Prepare pointers
+        std::vector<LPXLOPER12> argPtrs;
+        argPtrs.reserve(args.size());
+        for(auto& arg : args) argPtrs.push_back(&arg);
+
+        XLOPER12 xRegId;
+        int regRes = Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
 
         if (regRes != xlretSuccess) {
             LogError("Failed to register function '{{.Name}}'. Code: " + std::to_string(regRes));
         } else {
-            LogInfo("Registered function '{{.Name}}' successfully.");
+            std::string idStr = "Unknown";
+            if (xRegId.xltype == xltypeNum) idStr = std::to_string((int)xRegId.val.num);
+            LogInfo("Registered function '{{.Name}}' successfully. ID: " + idStr);
+
+            // Cleanup returned ID if needed
+            if (xRegId.xltype & (xlbitXLFree | xlbitDLLFree)) {
+                Excel12(xlFree, 0, 1, &xRegId);
+            }
+        }
+
+        // Cleanup allocated strings (skip index 0 which is xDLL)
+        for (size_t k = 1; k < args.size(); ++k) {
+            if (args[k].xltype & xltypeStr) {
+                delete[] args[k].val.str;
+            }
         }
     }
 {{end}}
