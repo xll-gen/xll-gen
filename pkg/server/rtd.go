@@ -108,24 +108,6 @@ func (m *RtdManager) SendUpdate(topicID int32, value interface{}) error {
 	return m.sendUpdateLocked(topicID, value)
 }
 
-// Manually defining helpers for RtdUpdate since they are missing from types repo.
-// The github.com/xll-gen/types v0.1.1 package does not contain RtdUpdate tables yet,
-// but the user's generated code (from internal/templates/protocol.fbs) does.
-// Since pkg/server is a library that depends on the upstream types repo, we must
-// manually implement these helpers until the types repo is updated.
-func rtdUpdateStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
-}
-func rtdUpdateAddTopicId(builder *flatbuffers.Builder, topicId int32) {
-	builder.PrependInt32Slot(0, topicId, 0)
-}
-func rtdUpdateAddVal(builder *flatbuffers.Builder, val flatbuffers.UOffsetT) {
-	builder.PrependUOffsetTSlot(1, val, 0)
-}
-func rtdUpdateEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
-	return builder.EndObject()
-}
-
 func (m *RtdManager) sendUpdateLocked(topicID int32, value interface{}) error {
 	if m.client == nil {
 		return fmt.Errorf("server not connected")
@@ -226,16 +208,14 @@ func (m *RtdManager) sendUpdateLocked(topicID int32, value interface{}) error {
 	}
 	_ = anyType
 
-	rtdUpdateStart(b)
-	rtdUpdateAddTopicId(b, topicID)
-	rtdUpdateAddVal(b, anyOff)
-	root := rtdUpdateEnd(b)
+	protocol.RtdUpdateStart(b)
+	protocol.RtdUpdateAddTopicId(b, topicID)
+	protocol.RtdUpdateAddVal(b, anyOff)
+	root := protocol.RtdUpdateEnd(b)
 	b.Finish(root)
 
 	data := b.FinishedBytes()
 
-	// MSG_RTD_UPDATE = 12
-	// Use SendGuestCallWithTimeout (1000ms)
-	_, err := m.client.SendGuestCallWithTimeout(data, 12, 1000*time.Millisecond)
+	_, err := m.client.SendGuestCallWithTimeout(data, MsgRtdUpdate, 1000*time.Millisecond)
 	return err
 }

@@ -26,7 +26,14 @@ const (
 	MsgSetRefCache         = 130
 	MsgCalculationEnded    = 131
 	MsgCalculationCanceled = 132
-	MsgUserStart           = 133
+	// RTD Messages (133-139)
+	MsgRtdConnect    = 133
+	MsgRtdDisconnect = 134
+	MsgRtdUpdate     = 135
+	MsgRtdHeartbeat  = 136
+
+	// User Messages Start
+	MsgUserStart = 140
 )
 
 type ChunkBuffer struct {

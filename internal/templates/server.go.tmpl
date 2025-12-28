@@ -161,7 +161,7 @@ func Serve(handler XllService) {
                 return 0, 0
 
             {{if .Rtd.Enabled}}
-            case 10: // MSG_RTD_CONNECT
+            case server.MsgRtdConnect:
                 reqObj := protocol.GetRootAsRtdConnectRequest(data, 0)
                 topicID := reqObj.TopicId()
                 newVal := reqObj.NewValues()
@@ -194,12 +194,12 @@ func Serve(handler XllService) {
                 payload := builder.FinishedBytes()
 
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), 10
+                    return -int32(len(payload)), server.MsgRtdConnect
                 }
                 copy(respBuf, payload)
-                return int32(len(payload)), 10
+                return int32(len(payload)), server.MsgRtdConnect
 
-            case 11: // MSG_RTD_DISCONNECT
+            case server.MsgRtdDisconnect:
                 reqObj := protocol.GetRootAsRtdDisconnectRequest(data, 0)
                 topicID := reqObj.TopicId()
 
