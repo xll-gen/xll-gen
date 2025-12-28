@@ -408,7 +408,7 @@ func Serve(handler XllService) {
              {{end}}
 {{end}}
 
-{{range $i, $fn := .Functions}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}{{if ne .Mode "rtd"}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
                 {{if .Timeout}}
                 ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
                 {{else}}
@@ -446,7 +446,7 @@ func Serve(handler XllService) {
                 len, respId := handle{{.Name}}(ctx, data, respBuf, handler, builder, client, mType, refCache, &refCacheMutex)
                 return len, respId
                 {{end}}
-{{end}}
+{{end}}{{end}}
              default:
                 return 0, 0
              }
@@ -460,6 +460,7 @@ func Serve(handler XllService) {
 
 // ... handle functions ...
 {{range $i, $fn := .Functions}}
+{{if ne .Mode "rtd"}}
 func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgType shm.MsgType, refCache map[string][]byte, refCacheMutex *sync.RWMutex) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 	_ = request
@@ -689,7 +690,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	return int32(len(payload)), msgType
 	{{end}}
 }
-
+{{end}}
 {{end}}
 
 {{if hasAsync .Functions}}

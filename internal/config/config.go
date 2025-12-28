@@ -148,6 +148,9 @@ type Function struct {
 	Timeout     string `yaml:"timeout"`
 	// Caller indicates if the function requires information about the calling cell.
 	Caller      bool                 `yaml:"caller"`
+	// Mode determines the execution mode of the function (sync, async, rtd).
+	// Supersedes the Async boolean.
+	Mode        string               `yaml:"mode"`
 	// Cache configures caching for this specific function.
 	Cache       *FunctionCacheConfig `yaml:"cache"`
 }
@@ -250,6 +253,17 @@ func Validate(config *Config) error {
 		}
 	}
 
+	for _, fn := range config.Functions {
+		if fn.Mode != "" {
+			switch strings.ToLower(fn.Mode) {
+			case "sync", "async", "rtd":
+				// ok
+			default:
+				return fmt.Errorf("function '%s': invalid mode '%s' (allowed: sync, async, rtd)", fn.Name, fn.Mode)
+			}
+		}
+	}
+
 	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
 		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
 	}
@@ -283,6 +297,25 @@ func allowedTypesList(m map[string]bool) string {
 // Parameters:
 //   - config: The Config object to modify.
 func ApplyDefaults(config *Config) {
+	// Normalize Function Modes
+	for i := range config.Functions {
+		fn := &config.Functions[i]
+		if fn.Mode == "" {
+			if fn.Async {
+				fn.Mode = "async"
+			} else {
+				fn.Mode = "sync"
+			}
+		} else {
+			// Sync legacy Async flag with Mode
+			if fn.Mode == "async" {
+				fn.Async = true
+			} else {
+				fn.Async = false
+			}
+		}
+	}
+
 	if config.Build.TempDir == "" {
 		config.Build.TempDir = "${TEMP}"
 	}
