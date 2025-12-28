@@ -27,24 +27,6 @@ void MonitorThread(std::wstring logPath) {
     MonitorProcess(g_procInfo, logPath);
 }
 
-// Helper to create a deep copy string XLOPER12 (Safe for vectors/registration)
-XLOPER12 xll::CreateDeepString(const std::wstring& s) {
-    // This function is still used internally by RegisterFunction if we keep the manual vector logic?
-    // Actually, we can use CallExcel to simplify RegisterFunction significantly.
-    // However, RegisterFunction takes a vector of argument help strings.
-    // CallExcel takes variadic args. We cannot expand a runtime vector into variadic args.
-    // So for RegisterFunction, we stick to the vector logic but maybe use ScopedXLOPER12?
-    // Or we keep existing logic as it works fine.
-
-    // BUT the user asked to refactor "all" Excel calls.
-    // I will refactor RegisterFunction to use `ScopedXLOPER12` for cleaner memory management
-    // instead of manual `new`/`delete` and `CreateDeepString`.
-
-    // CreateDeepString is removed as we use ScopedXLOPER12 locally.
-    // But wait, ScopedXLOPER12 is not copyable, so we can't put it in std::vector unless we move.
-    return {};
-}
-
 int xll::RegisterFunction(
     const XLOPER12& xDLL,
     const std::wstring& procedure,
@@ -66,8 +48,7 @@ int xll::RegisterFunction(
     args.reserve(10 + argumentHelp.size());
 
     // 1. Module Name
-    args.emplace_back(&xDLL); // ScopedXLOPER12 copies the content.
-                              // If xDLL is string, it makes a copy. This is safe.
+    args.emplace_back(&xDLL);
 
     // 2. Procedure
     args.emplace_back(procedure);
@@ -109,7 +90,6 @@ int xll::RegisterFunction(
     }
 
     return Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
-    // ScopedXLOPER12 destructors will clean up the string buffers automatically.
 }
 
 // Log Handler for SHM
