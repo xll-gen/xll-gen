@@ -208,3 +208,24 @@ To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
 3.  **Precedent**: This strategy is also observed in other advanced Excel frameworks like [xlOil](https://github.com/cunnane/xloil), which implements a `detachPlugins` mechanism to handle similar lifecycle challenges.
 
 **Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp` (`DllMain`).
+
+## 21. C++ Name Mangling & Export Rules
+
+All functions intended to be called by Excel (entry points like `xlAutoOpen` and all user-defined XLL functions) must be exported with **C linkage** to prevent C++ name mangling.
+
+### 21.1 The Requirement
+If a function is defined as `__declspec(dllexport) void __stdcall MyFunc()`, the C++ compiler will mangle its name (e.g., `_Z7MyFuncv`). Excel's `xlfRegister` function expects the exact name provided in the registration string. If the name is mangled, registration will fail silently or return error code 1 (`xlretFailed`).
+
+### 21.2 Correct Export Pattern
+Always use `extern "C"` in combination with `__declspec(dllexport)` and `__stdcall`:
+
+```cpp
+extern "C" __declspec(dllexport) LPXLOPER12 __stdcall MyFunction(int32_t a) {
+    // ...
+}
+```
+
+### 21.3 Template Implementation
+In `internal/templates/xll_main.cpp.tmpl`, all user-defined functions and built-in event handlers (like `CalculationEnded`) must be wrapped in `extern "C"`.
+
+**Verification**: Use `dumpbin /exports <filename>.xll` (Windows SDK) or `nm -D <filename>.xll` (MinGW) to verify that the exported names are "clean" and not mangled.

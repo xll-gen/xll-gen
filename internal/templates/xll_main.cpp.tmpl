@@ -233,7 +233,7 @@ start_worker:
 
 // Event Handlers
 {{range .Events}}
-__declspec(dllexport) void __stdcall {{.Handler}}() {
+extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
@@ -244,14 +244,14 @@ __declspec(dllexport) void __stdcall {{.Handler}}() {
 {{if hasEvent "CalculationEnded" .Events}}
 // User defined handler exists
 {{else}}
-__declspec(dllexport) void __stdcall CalculationEnded() {
+extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
     HandleCalculationEnded();
 }
 {{end}}
 
 // User Functions
 {{range $i, $fn := .Functions}}
-__declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+extern "C" __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
     {{/* Determine Cache Configuration */}}
     {{ $cacheEnabled := $.Cache.Enabled }}
     {{ $ttl := $.Cache.TTL }}
@@ -411,8 +411,7 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
 
     {{if .Async}}
     // Async Send
-    std::vector<uint8_t> dummyResp;
-    auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, dummyResp, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+    auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
     if (res.HasError()) {
             std::string err = "Async send failed: " + SHMErrorToString(res.GetError());
             LogError(err);
@@ -425,20 +424,20 @@ __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} 
     return;
     {{else}}
     // Sync Send
-    std::vector<uint8_t> response;
-    auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, response, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
+    auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
 
     if (res.HasError()) {
             return &g_xlErrValue;
     }
 
-    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(response.data());
+    auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
 
     {{if and $cacheEnabled (not .Async)}}
     // Store in cache
     {
-        int32_t respSize = res.Value();
+        int32_t respSize = slot.GetRespSize();
         if (respSize > 0) {
+                std::vector<uint8_t> response(slot.GetRespBuffer(), slot.GetRespBuffer() + respSize);
                 xll::CacheManager::Instance().Put(cacheKey, response, cacheConfig);
         }
     }
