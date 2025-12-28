@@ -26,6 +26,11 @@ var (
 	asyncBatcher   = server.NewAsyncBatcher()
 	chunkManager   = server.NewChunkManager()
 	commandBatcher = server.NewCommandBatcher()
+    {{if .Rtd.Enabled}}
+    // Global client pointer for RTD updates
+    globalClient *shm.Client
+    globalClientMutex sync.RWMutex
+    {{end}}
 )
 
 func ScheduleSet(r *protocol.Range, v *protocol.Any) {
@@ -35,6 +40,102 @@ func ScheduleSet(r *protocol.Range, v *protocol.Any) {
 func ScheduleFormat(r *protocol.Range, fmtStr string) {
 	commandBatcher.ScheduleFormat(r, fmtStr)
 }
+
+{{if .Rtd.Enabled}}
+func PushRtdUpdate(topicID int32, value interface{}) error {
+    globalClientMutex.RLock()
+    client := globalClient
+    globalClientMutex.RUnlock()
+
+    if client == nil {
+        return fmt.Errorf("server not connected")
+    }
+
+    // Construct RtdUpdate message
+    builder := flatbuffers.NewBuilder(128)
+
+    var anyOff flatbuffers.UOffsetT
+    var anyType protocol.AnyValue
+
+    switch v := value.(type) {
+    case string:
+        sOff := builder.CreateString(v)
+        protocol.StrStart(builder)
+        protocol.StrAddVal(builder, sOff)
+        valOff := protocol.StrEnd(builder)
+        protocol.AnyStart(builder)
+        protocol.AnyAddValType(builder, protocol.AnyValueStr)
+        protocol.AnyAddVal(builder, valOff)
+        anyOff = protocol.AnyEnd(builder)
+        anyType = protocol.AnyValueStr
+    case int, int32, int64:
+        // Handle generic int, assume int32 for compatibility or cast
+        // protocol.Int takes int32
+        var iVal int32
+        switch iv := v.(type) {
+            case int: iVal = int32(iv)
+            case int32: iVal = iv
+            case int64: iVal = int32(iv)
+        }
+        protocol.IntStart(builder)
+        protocol.IntAddVal(builder, iVal)
+        valOff := protocol.IntEnd(builder)
+        protocol.AnyStart(builder)
+        protocol.AnyAddValType(builder, protocol.AnyValueInt)
+        protocol.AnyAddVal(builder, valOff)
+        anyOff = protocol.AnyEnd(builder)
+        anyType = protocol.AnyValueInt
+    case float64, float32:
+        var fVal float64
+        switch fv := v.(type) {
+            case float64: fVal = fv
+            case float32: fVal = float64(fv)
+        }
+        protocol.NumStart(builder)
+        protocol.NumAddVal(builder, fVal)
+        valOff := protocol.NumEnd(builder)
+        protocol.AnyStart(builder)
+        protocol.AnyAddValType(builder, protocol.AnyValueNum)
+        protocol.AnyAddVal(builder, valOff)
+        anyOff = protocol.AnyEnd(builder)
+        anyType = protocol.AnyValueNum
+    case bool:
+        protocol.BoolStart(builder)
+        protocol.BoolAddVal(builder, v)
+        valOff := protocol.BoolEnd(builder)
+        protocol.AnyStart(builder)
+        protocol.AnyAddValType(builder, protocol.AnyValueBool)
+        protocol.AnyAddVal(builder, valOff)
+        anyOff = protocol.AnyEnd(builder)
+        anyType = protocol.AnyValueBool
+    default:
+        return fmt.Errorf("unsupported type for RTD value")
+    }
+    _ = anyType // Avoid unused
+
+    protocol.RtdUpdateStart(builder)
+    protocol.RtdUpdateAddTopicId(builder, topicID)
+    protocol.RtdUpdateAddVal(builder, anyOff)
+    root := protocol.RtdUpdateEnd(builder)
+    builder.Finish(root)
+
+    data := builder.FinishedBytes()
+
+    // We send using shm.Client.Send (if available) or queue it?
+    // shm.Client in v0.5.4 might only support Send if it initiates?
+    // Wait, Client is Guest. Host is Server.
+    // Client.Send sends to Host.
+    // We need to send MSG_RTD_UPDATE (ID 12).
+
+    // Check if we can send unsolicited messages.
+    // Yes, Send() is available.
+
+    // We need to handle timeouts or fire-and-forget.
+    // Send returns response.
+    _, err := client.Send(data, 12, 1000)
+    return err
+}
+{{end}}
 
 func Serve(handler XllService) {
 	// Parse command line flags to get SHM name
@@ -52,6 +153,12 @@ func Serve(handler XllService) {
         panic(err)
     }
     defer client.Close()
+
+    {{if .Rtd.Enabled}}
+    globalClientMutex.Lock()
+    globalClient = client
+    globalClientMutex.Unlock()
+    {{end}}
 
 	var refCacheMutex sync.RWMutex
 	refCache := make(map[string][]byte)
@@ -149,6 +256,63 @@ func Serve(handler XllService) {
                 }()
                 {{end}}
                 return 0, 0
+
+            {{if .Rtd.Enabled}}
+            case 10: // MSG_RTD_CONNECT
+                reqObj := protocol.GetRootAsRtdConnectRequest(data, 0)
+                topicID := reqObj.TopicId()
+                newVal := reqObj.NewValues()
+
+                var strings []string
+                if reqObj.StringsLength() > 0 {
+                    for i := 0; i < reqObj.StringsLength(); i++ {
+                        strings = append(strings, string(reqObj.Strings(i)))
+                    }
+                }
+
+                ctx := context.Background()
+                go func() {
+                    defer func() {
+                        if r := recover(); r != nil {
+                            log.Error("Panic in OnRtdConnect", "error", r)
+                        }
+                    }()
+                    if err := handler.OnRtdConnect(ctx, topicID, strings, newVal); err != nil {
+                        log.Error("OnRtdConnect failed", "error", err)
+                    }
+                }()
+
+                // Immediate ACK/Response?
+                // For now, return empty RtdConnectResponse (no initial value)
+                builder.Reset()
+                protocol.RtdConnectResponseStart(builder)
+                root := protocol.RtdConnectResponseEnd(builder)
+                builder.Finish(root)
+                payload := builder.FinishedBytes()
+
+                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
+                    return -int32(len(payload)), 10
+                }
+                copy(respBuf, payload)
+                return int32(len(payload)), 10
+
+            case 11: // MSG_RTD_DISCONNECT
+                reqObj := protocol.GetRootAsRtdDisconnectRequest(data, 0)
+                topicID := reqObj.TopicId()
+
+                ctx := context.Background()
+                go func() {
+                    defer func() {
+                        if r := recover(); r != nil {
+                            log.Error("Panic in OnRtdDisconnect", "error", r)
+                        }
+                    }()
+                    if err := handler.OnRtdDisconnect(ctx, topicID); err != nil {
+                        log.Error("OnRtdDisconnect failed", "error", err)
+                    }
+                }()
+                return 0, 0
+            {{end}}
 
              case server.MsgSetRefCache:
                 reqObj := protocol.GetRootAsSetRefCacheRequest(data, 0)

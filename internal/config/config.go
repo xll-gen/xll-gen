@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Config represents the top-level structure of the xll.yaml file.
@@ -24,6 +26,20 @@ type Config struct {
 	Gen       GenConfig     `yaml:"gen"`
 	// Events defines subscriptions to Excel events.
 	Events    []Event       `yaml:"events"`
+	// Rtd contains configuration for the Real-Time Data server.
+	Rtd       RtdConfig     `yaml:"rtd"`
+}
+
+// RtdConfig configures the Real-Time Data server.
+type RtdConfig struct {
+	// Enabled determines if the RTD server is enabled.
+	Enabled     bool   `yaml:"enabled"`
+	// ProgID is the Program ID for the RTD server (e.g., "MyProject.RTD").
+	ProgID      string `yaml:"prog_id"`
+	// Clsid is the Class ID for the RTD server (optional, generated if empty).
+	Clsid       string `yaml:"clsid"`
+	// Description is the description of the RTD server.
+	Description string `yaml:"description"`
 }
 
 // CacheConfig configures the global caching behavior.
@@ -234,6 +250,10 @@ func Validate(config *Config) error {
 		}
 	}
 
+	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
+		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
+	}
+
 	return nil
 }
 
@@ -278,5 +298,15 @@ func ApplyDefaults(config *Config) {
 
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
+	}
+
+	if config.Rtd.Enabled {
+		if config.Rtd.Description == "" {
+			config.Rtd.Description = config.Rtd.ProgID
+		}
+		if config.Rtd.Clsid == "" && config.Rtd.ProgID != "" {
+			u := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(config.Rtd.ProgID))
+			config.Rtd.Clsid = "{" + u.String() + "}"
+		}
 	}
 }

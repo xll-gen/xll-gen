@@ -12,6 +12,12 @@
 #include <chrono>
 #include <thread>
 
+#ifdef XLL_RTD_ENABLED
+#include "rtd/rtd.h" // Needed for IRTDUpdateEvent
+// External declaration
+void ProcessRtdUpdate(const protocol::RtdUpdate* update);
+#endif
+
 // External declaration
 void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch);
 void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::CommandWrapper>>* commands);
@@ -86,6 +92,11 @@ void HandleChunk(const protocol::Chunk* chunk) {
         } else if (type == (int32_t)MSG_CALCULATION_ENDED) {
              auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
              ExecuteCommands(resp->commands());
+#ifdef XLL_RTD_ENABLED
+        } else if (type == (int32_t)MSG_RTD_UPDATE) {
+             auto update = flatbuffers::GetRoot<protocol::RtdUpdate>(data);
+             ProcessRtdUpdate(update);
+#endif
         }
 
         // Remove from map
@@ -133,6 +144,12 @@ void WorkerLoop() {
                 auto chunk = flatbuffers::GetRoot<protocol::Chunk>(reqBuf);
                 HandleChunk(chunk);
                 return 1;
+#ifdef XLL_RTD_ENABLED
+            } else if (msgType == (shm::MsgType)MSG_RTD_UPDATE) {
+                auto update = flatbuffers::GetRoot<protocol::RtdUpdate>(reqBuf);
+                ProcessRtdUpdate(update);
+                return 1;
+#endif
             }
 
             return 0; // Unknown

@@ -20,6 +20,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Version         string
 		Logging         config.LoggingConfig
 		Cache           config.CacheConfig
+		Rtd             config.RtdConfig
 	}{
 		ProjectName:     cfg.Project.Name,
 		Functions:       cfg.Functions,
@@ -30,6 +31,7 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 		Version:         version.Version,
 		Logging:         cfg.Logging,
 		Cache:           cfg.Cache,
+		Rtd:             cfg.Rtd,
 	}
 
 	return executeTemplate("xll_main.cpp.tmpl", filepath.Join(dir, "xll_main.cpp"), data, GetCommonFuncMap())
@@ -41,6 +43,7 @@ func generateCMake(cfg *config.Config, dir string) error {
 		ProjectName string
 		Build       config.BuildConfig
 		Version     string
+		Rtd         config.RtdConfig
 		Deps        struct {
 			FlatBuffers string
 			SHM         string
@@ -52,6 +55,7 @@ func generateCMake(cfg *config.Config, dir string) error {
 		ProjectName: cfg.Project.Name,
 		Build:       cfg.Build,
 		Version:     version.Version,
+		Rtd:         cfg.Rtd,
 		Deps: struct {
 			FlatBuffers string
 			SHM         string

@@ -40,6 +40,13 @@ server:
     command: "${BIN}" # Optional: Command to launch the server. ${BIN} resolves to the executable path.
     cwd: "${BIN_DIR}" # Optional: Working directory for the server process. Defaults to the directory containing the executable.
 
+# Real-Time Data (RTD) Server Configuration
+rtd:
+  enabled: false
+  # prog_id: "{{.ProjectName}}.RTD" # The ProgID for the RTD server (e.g., MyProject.RTD).
+  # clsid: "" # Optional: Specific CLSID. If empty, one will be generated.
+  # description: "My RTD Server" # Optional: Description of the RTD server.
+
 # Function Definitions
 # Supported argument/return types: int, float, string, bool, range, grid, numgrid, any
 functions:

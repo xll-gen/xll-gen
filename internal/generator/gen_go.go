@@ -27,12 +27,14 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 		Functions []config.Function
 		Events    []config.Event
 		Version   string
+		Rtd       config.RtdConfig
 	}{
 		Package:   pkg,
 		ModName:   modName,
 		Functions: cfg.Functions,
 		Events:    cfg.Events,
 		Version:   version.Version,
+		Rtd:       cfg.Rtd,
 	}
 
 	return executeTemplate("interface.go.tmpl", filepath.Join(dir, "interface.go"), data, GetCommonFuncMap())
@@ -62,6 +64,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		ServerWorkers int
 		Version       string
 		Logging       config.LoggingConfig
+		Rtd           config.RtdConfig
 	}{
 		Package:       pkg,
 		ModName:       modName,
@@ -72,6 +75,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		ServerWorkers: cfg.Server.Workers,
 		Version:       version.Version,
 		Logging:       cfg.Logging,
+		Rtd:           cfg.Rtd,
 	}
 
 	return executeTemplate("server.go.tmpl", filepath.Join(dir, "server.go"), data, GetCommonFuncMap())

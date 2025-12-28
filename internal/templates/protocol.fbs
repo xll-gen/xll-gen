@@ -112,3 +112,28 @@ table AsyncResult {
 table BatchAsyncResponse {
   results: [AsyncResult];
 }
+
+// RTD Messages
+
+table RtdConnectRequest {
+  topic_id: int;
+  strings: [string];
+  new_values: bool;
+}
+
+table RtdConnectResponse {
+  val: Any;
+}
+
+table RtdDisconnectRequest {
+  topic_id: int;
+}
+
+table RtdUpdate {
+  topic_id: int;
+  val: Any;
+}
+
+table BatchRtdUpdate {
+  updates: [RtdUpdate];
+}

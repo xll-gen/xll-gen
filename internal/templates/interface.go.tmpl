@@ -13,4 +13,9 @@ type XllService interface {
 {{range .Functions}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *protocol.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}
 {{range .Events}}	{{.Handler}}(ctx context.Context) error
-{{end}}}
+{{end}}
+{{if .Rtd.Enabled}}
+	OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error
+	OnRtdDisconnect(ctx context.Context, topicID int32) error
+{{end}}
+}

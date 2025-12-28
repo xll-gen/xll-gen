@@ -15,6 +15,12 @@ extern std::mutex g_refCacheMutex;
 // Message IDs
 // System (0-127)
 #define MSG_ACK 2
+
+// RTD System Messages (10-20 Reserved)
+#define MSG_RTD_CONNECT 10
+#define MSG_RTD_DISCONNECT 11
+#define MSG_RTD_UPDATE 12
+
 // User/App (128+)
 #define MSG_BATCH_ASYNC_RESPONSE 128
 #define MSG_CHUNK 129
