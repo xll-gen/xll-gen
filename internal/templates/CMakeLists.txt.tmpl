@@ -45,6 +45,11 @@ FetchContent_GetProperties(types)
 if(NOT types_POPULATED)
   FetchContent_Populate(types)
   add_subdirectory(${types_SOURCE_DIR} ${types_BINARY_DIR} EXCLUDE_FROM_ALL)
+
+  # Suppress cast-function-type warning in xll-gen-types (xlcall.cpp uses GetProcAddress with cast)
+  if(NOT MSVC AND TARGET xll-gen-types)
+      target_compile_options(xll-gen-types PRIVATE -Wno-cast-function-type)
+  endif()
 endif()
 
 # Parallel Hashmap

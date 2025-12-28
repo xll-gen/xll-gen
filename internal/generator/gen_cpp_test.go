@@ -123,12 +123,12 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify TestStr error return (MsgID 133)
-    // Expect: auto res = g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType)133, slot.GetRespBuffer(), 2000);
-    // Note: The template now uses g_host.Send with specific arguments.
+    // Expect: auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)133, ...);
+    // Note: The template now uses slot.Send with specific arguments.
     // The exact string might vary slightly due to template logic (e.g. casting).
     // Let's check for the key elements.
-    if !strings.Contains(content, "g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType)133") {
-         t.Fatal("Could not find expected g_host.Send call for TestStr (MsgId 133)")
+    if !strings.Contains(content, "slot.Send(-((int)builder.GetSize()), (shm::MsgType)133") {
+         t.Fatal("Could not find expected slot.Send call for TestStr (MsgId 133)")
     }
 
     // Expect: if (res.HasError())
@@ -137,8 +137,8 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
     }
 
     // Verify TestInt error return (MsgID 134)
-    if !strings.Contains(content, "g_host.Send(nullptr, -((int)builder.GetSize()), (shm::MsgType)134") {
-         t.Fatal("Could not find expected g_host.Send call for TestInt (MsgId 134)")
+    if !strings.Contains(content, "slot.Send(-((int)builder.GetSize()), (shm::MsgType)134") {
+         t.Fatal("Could not find expected slot.Send call for TestInt (MsgId 134)")
     }
 
     // Check that HasError is used at least twice (once for each function)
