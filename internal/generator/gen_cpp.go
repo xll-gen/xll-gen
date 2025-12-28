@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 
 	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/versions"
 	"github.com/xll-gen/xll-gen/version"
 )
 
@@ -38,12 +39,32 @@ func generateCppMain(cfg *config.Config, dir string, shouldAppendPid bool) error
 func generateCMake(cfg *config.Config, dir string) error {
 	data := struct {
 		ProjectName string
-		Build       config.BuildConfig // Renamed from Embed to Build to match template usage
+		Build       config.BuildConfig
 		Version     string
+		Deps        struct {
+			FlatBuffers string
+			SHM         string
+			Types       string
+			PHMAP       string
+			Zstd        string
+		}
 	}{
 		ProjectName: cfg.Project.Name,
 		Build:       cfg.Build,
 		Version:     version.Version,
+		Deps: struct {
+			FlatBuffers string
+			SHM         string
+			Types       string
+			PHMAP       string
+			Zstd        string
+		}{
+			FlatBuffers: versions.FlatBuffers,
+			SHM:         versions.SHM,
+			Types:       versions.Types,
+			PHMAP:       versions.PHMAP,
+			Zstd:        versions.Zstd,
+		},
 	}
 
 	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)
