@@ -42,7 +42,7 @@ using namespace xll;
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     XLL_SAFE_BLOCK_BEGIN
-        XLOPER12 xDLL; // Defined here for xlGetName
+        ScopedXLOPER12 xDLL; // Defined here for xlGetName
 
         // Setup Native Logging
         std::string tempPattern = "";
@@ -93,8 +93,9 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     LogInfo("xlAutoOpen: Loading XLL...");
 
     // Initialize xDLL to avoid undefined behavior if xlGetName fails
-    xDLL.xltype = xltypeNil;
-    if (xll::CallExcel(xlGetName, &xDLL) != xlretSuccess) {
+    // ScopedXLOPER12 initializes to xltypeNil automatically.
+    // Use xDLL directly as it converts to LPXLOPER12.
+    if (xll::CallExcel(xlGetName, xDLL) != xlretSuccess) {
         LogError("Failed to get XLL name (xlGetName failed).");
     }
 
@@ -181,9 +182,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 {{range $i, $fn := .Functions}}
     {
         // Register {{.Name}}
-        XLOPER12 xRegId;
-        xRegId.xltype = xltypeNil; // Initialize to nil
-
+        ScopedXLOPER12 xRegId; // Scoped wrapper, initializes to nil
         int regRes = xll::RegisterFunction(
             xDLL,
             L"{{.Name}}", // Procedure
@@ -204,24 +203,26 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         if (regRes != xlretSuccess) {
             LogError("Failed to register function '{{.Name}}'. Code: " + std::to_string(regRes));
         } else {
-            if (xRegId.xltype == xltypeNum) {
-                LogInfo("Registered function '{{.Name}}' successfully. ID: " + std::to_string((int)xRegId.val.num));
+            LPXLOPER12 pRegId = (LPXLOPER12)xRegId;
+            if (pRegId->xltype == xltypeNum) {
+                LogInfo("Registered function '{{.Name}}' successfully. ID: " + std::to_string((int)pRegId->val.num));
             } else {
                  // Log warning if ID is not a number, which is unexpected for xlfRegister
-                 std::string typeStr = std::to_string(xRegId.xltype);
+                 std::string typeStr = std::to_string(pRegId->xltype);
                  LogWarn("Registered function '{{.Name}}' but returned ID is not a number. xltype: " + typeStr);
             }
 
-            // Cleanup returned ID if needed
-            if (xRegId.xltype & (xlbitXLFree | xlbitDLLFree)) {
-                xll::CallExcel(xlFree, nullptr, &xRegId);
+            // Cleanup returned ID if needed (xlfRegister shouldn't return allocs, but safety first)
+            if (pRegId->xltype & (xlbitXLFree | xlbitDLLFree)) {
+                xll::CallExcel(xlFree, nullptr, pRegId);
             }
         }
     }
 {{end}}
 
         // Free xDLL
-        xll::CallExcel(xlFree, nullptr, (LPXLOPER12)&xDLL);
+        // Use implicit conversion to LPXLOPER12
+        xll::CallExcel(xlFree, nullptr, xDLL);
 
         LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
