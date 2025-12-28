@@ -252,6 +252,7 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
 // User Functions
 {{range $i, $fn := .Functions}}
 extern "C" __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Return}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if .Async}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+    LogDebug("Func Entry: {{.Name}}");
     {{/* Determine Cache Configuration */}}
     {{ $cacheEnabled := $.Cache.Enabled }}
     {{ $ttl := $.Cache.TTL }}
@@ -411,7 +412,10 @@ extern "C" __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Retur
 
     {{if .Async}}
     // Async Send
+    LogDebug("Async Send Start: {{.Name}}");
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
+    LogDebug("Async Send End: {{.Name}}");
+
     if (res.HasError()) {
             std::string err = "Async send failed: " + SHMErrorToString(res.GetError());
             LogError(err);
@@ -421,6 +425,7 @@ extern "C" __declspec(dllexport) {{if .Async}}void{{else}}{{lookupCppType .Retur
             xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErr);
             return;
     }
+    LogDebug("Func Exit: {{.Name}}");
     return;
     {{else}}
     // Sync Send

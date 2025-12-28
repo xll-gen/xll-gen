@@ -269,6 +269,7 @@ func Serve(handler XllService) {
                 }
 
                 payload := server.BuildAckResponse(builder, 0, true)
+                log.Debug("Sending ACK", "func", "{{.Name}}")
 
                 if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
                     return -int32(len(payload)), server.MsgAck
