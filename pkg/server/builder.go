@@ -14,15 +14,18 @@ var builderPool = sync.Pool{
 
 // GetBuilder retrieves a FlatBuffers builder from the pool.
 // If buf is provided and has capacity, it uses it as the underlying buffer.
-// Returns the builder and a cleanup function that MUST be called.
-func GetBuilder(buf []byte) (*flatbuffers.Builder, func()) {
+// The caller MUST call PutBuilder when finished.
+func GetBuilder(buf []byte) *flatbuffers.Builder {
 	b := builderPool.Get().(*flatbuffers.Builder)
 	if buf != nil && cap(buf) > 0 {
 		b.Bytes = buf
 	}
 	b.Reset()
-	return b, func() {
-		b.Bytes = nil // Safety: Detach SHM buffer before returning to pool
-		builderPool.Put(b)
-	}
+	return b
+}
+
+// PutBuilder resets the builder's buffer reference and returns it to the pool.
+func PutBuilder(b *flatbuffers.Builder) {
+	b.Bytes = nil // Safety: Detach SHM buffer before returning to pool
+	builderPool.Put(b)
 }
