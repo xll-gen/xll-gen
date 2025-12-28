@@ -88,6 +88,7 @@ As of v0.1.0, core Excel types and utilities have been extracted to the upstream
 
 ### 17.1 Go Dependencies
 - **Protocol**: Go code for IPC (Flatbuffers) is imported from `github.com/xll-gen/types/go/protocol`. The local `pkg/protocol` has been removed.
+- **Server**: Static server logic resides in `pkg/server`. This package is imported by the generated `server.go`.
 
 ### 17.2 C++ Dependencies
 - **Types Library**: The generated `CMakeLists.txt` uses `FetchContent` to download `github.com/xll-gen/types`.
