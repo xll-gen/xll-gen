@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	"github.com/xll-gen/xll-gen/internal/ui"
+	"github.com/xll-gen/xll-gen/internal/versions"
 )
 
 // updateDependencies runs go get for required dependencies and go mod tidy.
 func updateDependencies(baseDir string, opts Options) error {
 	ui.PrintHeader("Dependencies:")
 
-	shmCmd := exec.Command("go", "get", "github.com/xll-gen/shm@v0.5.4")
+	shmCmd := exec.Command("go", "get", "github.com/xll-gen/shm@"+versions.SHM)
 	if baseDir != "" {
 		shmCmd.Dir = baseDir
 	}
@@ -28,10 +29,10 @@ func updateDependencies(baseDir string, opts Options) error {
 	}); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go get shm' failed: %v", err))
 	} else {
-		ui.PrintSuccess("Updated", "SHM dependency to v0.5.4")
+		ui.PrintSuccess("Updated", "SHM dependency to "+versions.SHM)
 	}
 
-	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@v0.2.2")
+	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@"+versions.Types)
 	if baseDir != "" {
 		typesCmd.Dir = baseDir
 	}
@@ -44,11 +45,11 @@ func updateDependencies(baseDir string, opts Options) error {
 	}); err != nil {
 		ui.PrintWarning("Warning", fmt.Sprintf("'go get types' failed: %v", err))
 	} else {
-		ui.PrintSuccess("Updated", "Types dependency to v0.2.1")
+		ui.PrintSuccess("Updated", "Types dependency to "+versions.Types)
 	}
 
 	if opts.DevMode {
-		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@main")
+		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@"+versions.XllGenDev)
 		if baseDir != "" {
 			cmdGetXll.Dir = baseDir
 		}
@@ -61,7 +62,7 @@ func updateDependencies(baseDir string, opts Options) error {
 		}); err != nil {
 			ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
 		} else {
-			ui.PrintSuccess("Updated", "xll-gen dependency to main")
+			ui.PrintSuccess("Updated", "xll-gen dependency to "+versions.XllGenDev)
 		}
 	}
 

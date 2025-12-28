@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/xll-gen/xll-gen/internal/ui"
+	"github.com/xll-gen/xll-gen/internal/versions"
 )
 
 var flatcMu sync.Mutex
@@ -30,7 +31,7 @@ func EnsureFlatc() (string, error) {
 	defer flatcMu.Unlock()
 
 	// Pin to specific version to match CMake configuration
-	const flatcVersion = "v25.9.23"
+	flatcVersion := versions.FlatBuffers
 	requiredVersion := strings.TrimPrefix(flatcVersion, "v")
 
 	if path, err := exec.LookPath("flatc"); err == nil {
