@@ -41,52 +41,52 @@ int xll::RegisterFunction(
     const std::vector<std::wstring>& argumentHelp,
     XLOPER12& xRegId
 ) {
-    // We construct a vector of ScopedXLOPER12.
-    // Since ScopedXLOPER12 is move-only, we can use emplace_back.
+    // Prepare pointers for Excel12v
+    std::vector<LPXLOPER12> argPtrs;
+    argPtrs.reserve(11 + argumentHelp.size());
 
+    // 1. Module Name - Pass DIRECTLY to avoid Double-Free issues with ScopedXLOPER12 copy
+    argPtrs.push_back((LPXLOPER12)&xDLL);
+
+    // Helper vector to manage lifecycle of other arguments
     std::vector<ScopedXLOPER12> args;
     args.reserve(10 + argumentHelp.size());
 
-    // 1. Module Name
-    args.emplace_back(&xDLL);
+    auto addArg = [&](const auto& val) {
+        args.emplace_back(val);
+        argPtrs.push_back(args.back());
+    };
 
     // 2. Procedure
-    args.emplace_back(procedure);
+    addArg(procedure);
 
     // 3. Type Text
-    args.emplace_back(typeText);
+    addArg(typeText);
 
     // 4. Function Text
-    args.emplace_back(functionText);
+    addArg(functionText);
 
     // 5. Argument Text
-    args.emplace_back(argumentText);
+    addArg(argumentText);
 
     // 6. Macro Type
-    args.emplace_back(macroType);
+    addArg(macroType);
 
     // 7. Category
-    args.emplace_back(category);
+    addArg(category);
 
     // 8. Shortcut
-    args.emplace_back(shortcut);
+    addArg(shortcut);
 
     // 9. Help Topic
-    args.emplace_back(helpTopic);
+    addArg(helpTopic);
 
     // 10. Function Description
-    args.emplace_back(functionHelp);
+    addArg(functionHelp);
 
     // 11+. Argument Descriptions
     for (const auto& help : argumentHelp) {
-        args.emplace_back(help);
-    }
-
-    // Prepare pointers for Excel12v
-    std::vector<LPXLOPER12> argPtrs;
-    argPtrs.reserve(args.size());
-    for (auto& arg : args) {
-        argPtrs.push_back(arg);
+        addArg(help);
     }
 
     return Excel12v(xlfRegister, &xRegId, (int)argPtrs.size(), argPtrs.data());
