@@ -22,9 +22,6 @@ namespace xll {
     }
 #endif
 
-    // Helper to create a deep copy string XLOPER12 (Safe for vectors/registration)
-    XLOPER12 CreateDeepString(const std::wstring& s);
-
     // Helper to register a function safely (handles memory management internally)
     int RegisterFunction(
         const XLOPER12& xDLL,
