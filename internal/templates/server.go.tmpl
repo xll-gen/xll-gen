@@ -26,11 +26,6 @@ var (
 	asyncBatcher   = server.NewAsyncBatcher()
 	chunkManager   = server.NewChunkManager()
 	commandBatcher = server.NewCommandBatcher()
-    {{if .Rtd.Enabled}}
-    // Global client pointer for RTD updates
-    globalClient *shm.Client
-    globalClientMutex sync.RWMutex
-    {{end}}
 )
 
 func ScheduleSet(r *protocol.Range, v *protocol.Any) {
@@ -43,97 +38,7 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 
 {{if .Rtd.Enabled}}
 func PushRtdUpdate(topicID int32, value interface{}) error {
-    globalClientMutex.RLock()
-    client := globalClient
-    globalClientMutex.RUnlock()
-
-    if client == nil {
-        return fmt.Errorf("server not connected")
-    }
-
-    // Construct RtdUpdate message
-    builder := flatbuffers.NewBuilder(128)
-
-    var anyOff flatbuffers.UOffsetT
-    var anyType protocol.AnyValue
-
-    switch v := value.(type) {
-    case string:
-        sOff := builder.CreateString(v)
-        protocol.StrStart(builder)
-        protocol.StrAddVal(builder, sOff)
-        valOff := protocol.StrEnd(builder)
-        protocol.AnyStart(builder)
-        protocol.AnyAddValType(builder, protocol.AnyValueStr)
-        protocol.AnyAddVal(builder, valOff)
-        anyOff = protocol.AnyEnd(builder)
-        anyType = protocol.AnyValueStr
-    case int, int32, int64:
-        // Handle generic int, assume int32 for compatibility or cast
-        // protocol.Int takes int32
-        var iVal int32
-        switch iv := v.(type) {
-            case int: iVal = int32(iv)
-            case int32: iVal = iv
-            case int64: iVal = int32(iv)
-        }
-        protocol.IntStart(builder)
-        protocol.IntAddVal(builder, iVal)
-        valOff := protocol.IntEnd(builder)
-        protocol.AnyStart(builder)
-        protocol.AnyAddValType(builder, protocol.AnyValueInt)
-        protocol.AnyAddVal(builder, valOff)
-        anyOff = protocol.AnyEnd(builder)
-        anyType = protocol.AnyValueInt
-    case float64, float32:
-        var fVal float64
-        switch fv := v.(type) {
-            case float64: fVal = fv
-            case float32: fVal = float64(fv)
-        }
-        protocol.NumStart(builder)
-        protocol.NumAddVal(builder, fVal)
-        valOff := protocol.NumEnd(builder)
-        protocol.AnyStart(builder)
-        protocol.AnyAddValType(builder, protocol.AnyValueNum)
-        protocol.AnyAddVal(builder, valOff)
-        anyOff = protocol.AnyEnd(builder)
-        anyType = protocol.AnyValueNum
-    case bool:
-        protocol.BoolStart(builder)
-        protocol.BoolAddVal(builder, v)
-        valOff := protocol.BoolEnd(builder)
-        protocol.AnyStart(builder)
-        protocol.AnyAddValType(builder, protocol.AnyValueBool)
-        protocol.AnyAddVal(builder, valOff)
-        anyOff = protocol.AnyEnd(builder)
-        anyType = protocol.AnyValueBool
-    default:
-        return fmt.Errorf("unsupported type for RTD value")
-    }
-    _ = anyType // Avoid unused
-
-    protocol.RtdUpdateStart(builder)
-    protocol.RtdUpdateAddTopicId(builder, topicID)
-    protocol.RtdUpdateAddVal(builder, anyOff)
-    root := protocol.RtdUpdateEnd(builder)
-    builder.Finish(root)
-
-    data := builder.FinishedBytes()
-
-    // We send using shm.Client.Send (if available) or queue it?
-    // shm.Client in v0.5.4 might only support Send if it initiates?
-    // Wait, Client is Guest. Host is Server.
-    // Client.Send sends to Host.
-    // We need to send MSG_RTD_UPDATE (ID 12).
-
-    // Check if we can send unsolicited messages.
-    // Yes, Send() is available.
-
-    // We need to handle timeouts or fire-and-forget.
-    // Send returns response.
-    _, err := client.Send(data, 12, 1000)
-    return err
+    return server.GlobalRtd.SendUpdate(topicID, value)
 }
 {{end}}
 
@@ -155,9 +60,7 @@ func Serve(handler XllService) {
     defer client.Close()
 
     {{if .Rtd.Enabled}}
-    globalClientMutex.Lock()
-    globalClient = client
-    globalClientMutex.Unlock()
+    server.GlobalRtd.SetClient(client)
     {{end}}
 
 	var refCacheMutex sync.RWMutex
@@ -299,6 +202,9 @@ func Serve(handler XllService) {
             case 11: // MSG_RTD_DISCONNECT
                 reqObj := protocol.GetRootAsRtdDisconnectRequest(data, 0)
                 topicID := reqObj.TopicId()
+
+                // Auto-unsubscribe from GlobalRtd
+                server.GlobalRtd.Unsubscribe(topicID)
 
                 ctx := context.Background()
                 go func() {
