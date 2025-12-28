@@ -177,6 +177,7 @@ else()
     -static-libgcc
     -static-libstdc++
     $<$<CONFIG:Release>:-flto>
+    $<$<CONFIG:Release>:-s>
   )
 endif()
 
