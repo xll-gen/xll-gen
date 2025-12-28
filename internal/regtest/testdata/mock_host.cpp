@@ -44,7 +44,7 @@ int main(int argc, char* argv[]) {
 
     flatbuffers::FlatBufferBuilder builder(1024);
 
-    // 1. EchoInt (ID 133)
+    // 1. EchoInt (ID 140)
     vector<int32_t> intCases = {0, 1, -1, 2147483647, (int32_t)-2147483648LL};
     for (size_t i = 0; i < intCases.size(); ++i) {
         auto val = intCases[i];
@@ -61,7 +61,7 @@ int main(int argc, char* argv[]) {
              auto startWait = chrono::steady_clock::now();
              int spin = 0;
              while(chrono::steady_clock::now() - startWait < chrono::seconds(30)) {
-                sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)133, respBuf).ValueOr(-1);
+                sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)140, respBuf).ValueOr(-1);
                 if (sz >= 0) break;
                 if (spin < 1000) {
                     this_thread::yield();
@@ -72,7 +72,7 @@ int main(int argc, char* argv[]) {
                 }
              }
         } else {
-             sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)133, respBuf).ValueOr(-1);
+             sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)140, respBuf).ValueOr(-1);
         }
 
         if (sz < 0) { cerr << "Send failed for EchoInt " << val << endl; return 1; }
@@ -82,7 +82,7 @@ int main(int argc, char* argv[]) {
         ASSERT_EQ(val, resp->result(), "EchoInt");
     }
 
-    // 2. EchoFloat (ID 134)
+    // 2. EchoFloat (ID 141)
     vector<double> floatCases = {0.0, 1.5, -999.99};
     for (auto val : floatCases) {
         builder.Reset();
@@ -91,13 +91,13 @@ int main(int argc, char* argv[]) {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)134, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)141, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoFloatResponse>(respBuf.data());
         if (std::abs(val - resp->result()) > 0.0001) { cerr << "Float mismatch" << endl; return 1; }
     }
 
-    // 3. EchoString (ID 135)
+    // 3. EchoString (ID 142)
     vector<string> strCases = {"test", "", "Hello World"};
     for (auto val : strCases) {
         builder.Reset();
@@ -107,13 +107,13 @@ int main(int argc, char* argv[]) {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)135, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)142, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoStringResponse>(respBuf.data());
         ASSERT_STREQ(val, resp->result()->str(), "EchoString");
     }
 
-    // 4. EchoBool (ID 136)
+    // 4. EchoBool (ID 143)
     vector<bool> boolCases = {true, false};
     for (auto val : boolCases) {
         builder.Reset();
@@ -122,13 +122,13 @@ int main(int argc, char* argv[]) {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)136, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)143, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::EchoBoolResponse>(respBuf.data());
         ASSERT_EQ(val, resp->result(), "EchoBool");
     }
 
-    // 5. CheckAny (ID 137)
+    // 5. CheckAny (ID 144)
     // Int
     {
         builder.Reset();
@@ -138,7 +138,7 @@ int main(int argc, char* argv[]) {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Int:10", resp->result()->str(), "CheckAny Int");
@@ -153,7 +153,7 @@ int main(int argc, char* argv[]) {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Str:hello", resp->result()->str(), "CheckAny Str");
@@ -167,7 +167,7 @@ int main(int argc, char* argv[]) {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Num:1.5", resp->result()->str(), "CheckAny Num");
@@ -184,7 +184,7 @@ int main(int argc, char* argv[]) {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("NumGrid:1x2", resp->result()->str(), "CheckAny NumGrid");
@@ -207,13 +207,13 @@ int main(int argc, char* argv[]) {
         req.add_val(any);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Grid:1x2", resp->result()->str(), "CheckAny Grid");
     }
 
-    // 6. CheckRange (ID 138)
+    // 6. CheckRange (ID 145)
     {
         builder.Reset();
         auto sOff = builder.CreateString("Sheet1");
@@ -224,12 +224,12 @@ int main(int argc, char* argv[]) {
         req.add_val(rangeVal);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)138, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)145, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::CheckRangeResponse>(respBuf.data());
         ASSERT_STREQ("Range:Sheet1!1:1:1:1", resp->result()->str(), "CheckRange");
     }
 
-    // 7. TimeoutFunc (ID 139)
+    // 7. TimeoutFunc (ID 146)
     {
         builder.Reset();
         ipc::TimeoutFuncRequestBuilder req(builder);
@@ -237,14 +237,14 @@ int main(int argc, char* argv[]) {
         builder.Finish(req.Finish());
 
         vector<uint8_t> respBuf;
-        host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)139, respBuf);
+        host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)146, respBuf);
         auto resp = flatbuffers::GetRoot<ipc::TimeoutFuncResponse>(respBuf.data());
 
         // Timeout now returns -1 instead of error
         ASSERT_EQ(-1, resp->result(), "TimeoutFunc");
     }
 
-    // 8. AsyncEchoInt (ID 140)
+    // 8. AsyncEchoInt (ID 147)
     // Async requests have a different flow:
     // 1. Send Request -> Receive ACK (immediately)
     // 2. Poll for BatchAsyncResponse (MSG_ID 128)
@@ -265,7 +265,7 @@ int main(int argc, char* argv[]) {
         vector<uint8_t> respBuf;
 
         // 1. Send Request -> Expect ACK
-        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)140, respBuf).ValueOr(-1);
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)147, respBuf).ValueOr(-1);
         if (sz < 0) return 1;
         auto ack = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
         if (!ack->ok()) { cerr << "AsyncEchoInt Ack failed" << endl; return 1; }
@@ -322,14 +322,14 @@ int main(int argc, char* argv[]) {
         if (!received) { cerr << "AsyncEchoInt timed out" << endl; return 1; }
     }
 
-    // 9. CalculationEnded Commands - Set (ID 141)
+    // 9. CalculationEnded Commands - Set (ID 148)
     {
-        // 1. Call ScheduleCmd (ID 141)
+        // 1. Call ScheduleCmd (ID 148)
         builder.Reset();
         ipc::ScheduleCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)141, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)148, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleCmdResponse>(respBuf.data());
         if (resp->error() && resp->error()->size() > 0) { cerr << "ScheduleCmd Error: " << resp->error()->str() << endl; }
         cerr << "ScheduleCmd Result: " << resp->result() << endl;
@@ -359,14 +359,14 @@ int main(int argc, char* argv[]) {
         ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
     }
 
-    // 10. CalculationEnded Commands - Format (ID 142)
+    // 10. CalculationEnded Commands - Format (ID 149)
     {
-        // 1. Call ScheduleFormatCmd (ID 142)
+        // 1. Call ScheduleFormatCmd (ID 149)
         builder.Reset();
         ipc::ScheduleFormatCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)142, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)149, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleFormatCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleFormatCmd");
 
@@ -388,14 +388,14 @@ int main(int argc, char* argv[]) {
         ASSERT_STREQ("General", fmtCmd->format()->str(), "FormatCommand Format");
     }
 
-    // 11. CalculationEnded Commands - Multi (ID 143)
+    // 11. CalculationEnded Commands - Multi (ID 150)
     {
-        // 1. Call ScheduleMultiCmd (ID 143)
+        // 1. Call ScheduleMultiCmd (ID 150)
         builder.Reset();
         ipc::ScheduleMultiCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)143, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)150, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMultiCmdResponse>(respBuf.data());
         ASSERT_EQ(2, resp->result(), "ScheduleMultiCmd");
 
@@ -424,14 +424,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // 11. ScheduleMassive (ID 144)
+    // 11. ScheduleMassive (ID 151)
     {
         // 1. Call ScheduleMassive
         builder.Reset();
         ipc::ScheduleMassiveRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)151, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleMassiveResponse>(respBuf.data());
         ASSERT_EQ(100, resp->result(), "ScheduleMassive");
 
@@ -465,14 +465,14 @@ int main(int argc, char* argv[]) {
         ASSERT_EQ(2, count200, "Count 200 commands");
     }
 
-    // 12. ScheduleGridCmd (ID 145)
+    // 12. ScheduleGridCmd (ID 152)
     {
         // 1. Call ScheduleGridCmd
         builder.Reset();
         ipc::ScheduleGridCmdRequestBuilder req(builder);
         builder.Finish(req.Finish());
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)145, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)152, respBuf).ValueOr(-1) < 0) return 1;
         auto resp = flatbuffers::GetRoot<ipc::ScheduleGridCmdResponse>(respBuf.data());
         ASSERT_EQ(1, resp->result(), "ScheduleGridCmd");
 
@@ -513,7 +513,7 @@ int main(int argc, char* argv[]) {
         ASSERT_EQ(4, s3->val_as_Int()->val(), "S3 val");
     }
 
-    // 13. RefCache Cleanup on Canceled (ID 130, 132, 137)
+    // 13. RefCache Cleanup on Canceled (ID 130, 132, 144)
     {
         // 1. Send SetRefCache "K1" = Int(123)
         builder.Reset();
@@ -536,7 +536,7 @@ int main(int argc, char* argv[]) {
         ipc::CheckAnyRequestBuilder caReq(builder);
         caReq.add_val(anyOff);
         builder.Finish(caReq.Finish());
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
         auto caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Int:123", caResp->result()->str(), "CheckAny RefCache Resolved");
 
@@ -553,7 +553,7 @@ int main(int argc, char* argv[]) {
         ipc::CheckAnyRequestBuilder caReq2(builder);
         caReq2.add_val(anyOff);
         builder.Finish(caReq2.Finish());
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
         caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("Int:123", caResp->result()->str(), "CheckAny RefCache Persists");
 
@@ -569,7 +569,7 @@ int main(int argc, char* argv[]) {
         ipc::CheckAnyRequestBuilder caReq3(builder);
         caReq3.add_val(anyOff);
         builder.Finish(caReq3.Finish());
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) return 1;
+        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
         caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
         ASSERT_STREQ("RefCache:K1", caResp->result()->str(), "CheckAny RefCache Cleared");
     }

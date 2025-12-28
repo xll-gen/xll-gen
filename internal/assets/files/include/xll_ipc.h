@@ -16,18 +16,21 @@ extern std::mutex g_refCacheMutex;
 // System (0-127)
 #define MSG_ACK 2
 
-// RTD System Messages (10-20 Reserved)
-#define MSG_RTD_CONNECT 10
-#define MSG_RTD_DISCONNECT 11
-#define MSG_RTD_UPDATE 12
-
 // User/App (128+)
 #define MSG_BATCH_ASYNC_RESPONSE 128
 #define MSG_CHUNK 129
 #define MSG_SETREFCACHE 130
 #define MSG_CALCULATION_ENDED 131
 #define MSG_CALCULATION_CANCELED 132
-#define MSG_USER_START 133
+
+// RTD System Messages (133-139)
+#define MSG_RTD_CONNECT 133
+#define MSG_RTD_DISCONNECT 134
+#define MSG_RTD_UPDATE 135
+#define MSG_RTD_HEARTBEAT 136
+
+// User Functions Start
+#define MSG_USER_START 140
 
 // Helper for logging SHM errors
 std::string SHMErrorToString(shm::Error err);
