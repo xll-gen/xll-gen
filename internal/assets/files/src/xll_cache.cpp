@@ -2,7 +2,6 @@
 #include "xll_log.h"
 #include "xll_excel.h"
 #include "types/utility.h"
-#include "types/PascalString.h"
 #include <sstream>
 #include <random>
 #include <iomanip>

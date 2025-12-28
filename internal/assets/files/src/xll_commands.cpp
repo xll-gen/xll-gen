@@ -4,7 +4,6 @@
 #include "types/converters.h"
 #include "types/utility.h"
 #include "types/mem.h"
-#include "types/PascalString.h"
 #include <vector>
 #include <string>
 
@@ -44,10 +43,10 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                     // Optimization: Skip if already formatted and is single cell
                     if (IsSingleCell(pxRef)) {
                          XLOPER12 xTypeId;
-                         ScopedXLOPER12 xFmt;
+                         ScopedXLOPER12Result xFmt;
                          xTypeId.xltype = xltypeInt;
                          xTypeId.val.w = 7; // xlfGetCell type 7: format
-                         if (xll::CallExcel(xlfGetCell, &xFmt, &xTypeId, pxRef) == xlretSuccess) {
+                         if (xll::CallExcel(xlfGetCell, xFmt, &xTypeId, pxRef) == xlretSuccess) {
                              if (xFmt->xltype == xltypeStr) {
                                  std::wstring currentFmt = PascalToWString(xFmt->val.str);
                                  std::wstring newFmt = ConvertToWString(cmd->format()->c_str());

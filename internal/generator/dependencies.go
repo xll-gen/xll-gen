@@ -31,7 +31,7 @@ func updateDependencies(baseDir string, opts Options) error {
 		ui.PrintSuccess("Updated", "SHM dependency to v0.5.4")
 	}
 
-	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@v0.2.1")
+	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@v0.2.2")
 	if baseDir != "" {
 		typesCmd.Dir = baseDir
 	}
