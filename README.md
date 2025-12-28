@@ -173,6 +173,8 @@ functions:
         type: "string"
     return: "float"
     async: true      # Asynchronous function
+    help_topic: "https://example.com/help/GetPrice" # Optional: Help topic URL
+    caller: true     # Optional: Passes the calling cell range as an argument
 ```
 
 ### Launch Configuration Variables
@@ -195,6 +197,9 @@ The `server.launch` section supports the following variables in `command` and `c
 | `range` | Reference to a range | `*types.Range` | `Reference` |
 | `grid` | Generic 2D Array | `*types.Grid` | `Array` |
 | `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
+
+**Optional Function Flags**:
+*   `caller: true`: Passes an additional `caller *types.Range` argument to the handler, representing the cell(s) calling the function.
 
 > **Note**: Nullable scalar types (`int?`, `float?`, `bool?`, `string?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
