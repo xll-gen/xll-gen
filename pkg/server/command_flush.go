@@ -84,16 +84,21 @@ func (cb *CommandBatcher) flushBuffers() {
 
 func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
 	cb.flushBuffers()
-	cb.cmdQueueLock.Lock()
-	defer cb.cmdQueueLock.Unlock()
 
+	cb.cmdQueueLock.Lock()
 	if len(cb.cmdQueue) == 0 {
+		cb.cmdQueueLock.Unlock()
 		return nil
 	}
 
-	wrappers := make([]flatbuffers.UOffsetT, len(cb.cmdQueue))
+	// Swap queue to local variable to release lock early
+	queue := cb.cmdQueue
+	cb.cmdQueue = nil
+	cb.cmdQueueLock.Unlock()
 
-	for i, c := range cb.cmdQueue {
+	wrappers := make([]flatbuffers.UOffsetT, len(queue))
+
+	for i, c := range queue {
 		var uOff flatbuffers.UOffsetT
 		var uType protocol.Command
 
@@ -169,6 +174,5 @@ func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
 	root := protocol.CalculationEndedResponseEnd(b)
 	b.Finish(root)
 
-	cb.cmdQueue = nil
 	return b.FinishedBytes()
 }

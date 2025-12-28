@@ -89,8 +89,8 @@ func Serve(handler XllService) {
 
 	var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
 	dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
-             builder, releaseBuilder := server.GetBuilder(respBuf)
-             defer releaseBuilder()
+             builder := server.GetBuilder(respBuf)
+             defer server.PutBuilder(builder)
 
              switch uint32(mType) {
              case server.MsgCalculationEnded:

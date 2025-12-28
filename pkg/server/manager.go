@@ -45,8 +45,6 @@ func (cm *ChunkManager) cleanupLoop() {
 
 func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) *ChunkBuffer {
 	cm.chunkMutex.Lock()
-	defer cm.chunkMutex.Unlock()
-
 	buf, exists := cm.chunkCache[id]
 	if !exists {
 		buf = &ChunkBuffer{
@@ -57,6 +55,7 @@ func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) *ChunkBuffer {
 		cm.chunkCache[id] = buf
 	}
 	buf.LastAccess = time.Now()
+	cm.chunkMutex.Unlock()
 	return buf
 }
 
