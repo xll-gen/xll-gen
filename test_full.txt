@@ -1,439 +1,0 @@
-=== RUN   TestFlatbuffersVersionConsistency
-    doctor_version_test.go:29: Found Go flatc version: v25.9.23
-    doctor_version_test.go:43: Could not find GIT_TAG in ../internal/templates/CMakeLists.txt.tmpl
---- FAIL: TestFlatbuffersVersionConsistency (0.00s)
-=== RUN   TestGenerate
-=== PAUSE TestGenerate
-=== RUN   TestRunInit
-
-[1m🚀 Initializing project my-test-project...[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-  [32m✔[0m Initialized     [32mGo module[0m
-
-
-[1mGenerating code for project: my-test-project[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project my-test-project initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd my-test-project[0m
-  [36mxll-gen build[0m
---- PASS: TestRunInit (0.65s)
-=== RUN   TestGenerate_Fixes
-=== PAUSE TestGenerate_Fixes
-=== RUN   TestRepro_MemoryLeak
-=== PAUSE TestRepro_MemoryLeak
-=== RUN   TestRepro_NestedIPC_Corruption
-=== PAUSE TestRepro_NestedIPC_Corruption
-=== RUN   TestGenerateStringArgRepro
-=== PAUSE TestGenerateStringArgRepro
-=== RUN   TestRegression
-=== PAUSE TestRegression
-=== RUN   TestRepro_MultipleAsync
-=== PAUSE TestRepro_MultipleAsync
-=== RUN   TestRepro_ZstdConfig
-=== PAUSE TestRepro_ZstdConfig
-=== CONT  TestGenerate
-=== CONT  TestGenerateStringArgRepro
-=== CONT  TestRepro_MemoryLeak
-=== CONT  TestRepro_MultipleAsync
-
-[1m🚀 Initializing project my-project...[0m
-
-[1m🚀 Initializing project repro_async...[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-
-[1m🚀 Initializing project mem_check...[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-
-[1mGenerating code for project: repro-string-arg[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-  [32m✔[0m Initialized     [32mGo module[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Initialized     [32mGo module[0m
-
-  [32m✔[0m Initialized     [32mGo module[0m
-
-[1mGenerating code for project: mem_check[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-
-
-[1mGenerating code for project: repro_async[0m
-
-
-[1mGenerating code for project: my-project[0m
-[36m⠋[0m Generating Flatbuffers Go code...  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...[36m⠋[0m Updating SHM dependency...  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...[36m⠙[0m Updating SHM dependency...[36m⠙[0m Updating SHM dependency...[36m⠙[0m Updating SHM dependency...[36m⠙[0m Updating SHM dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
---- PASS: TestGenerateStringArgRepro (0.84s)
-=== CONT  TestGenerate_Fixes
-
-[1m🚀 Initializing project repro_project...[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-  [32m✔[0m Initialized     [32mGo module[0m
-
-
-[1mGenerating code for project: repro_project[0m
-[36m⠸[0m Running 'go mod tidy'...[36m⠸[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project repro_async initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd /tmp/xll-test-repro_async355341810/repro_async[0m
-  [36mxll-gen build[0m
-
-[1mGenerating code for project: repro-async[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project mem_check initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd /tmp/xll-test-mem_check3785864887/mem_check[0m
-  [36mxll-gen build[0m
-                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project my-project initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd /tmp/xll-gen-test1826970616/my-project[0m
-  [36mxll-gen build[0m
-
-[1mGenerating code for project: my-project[0m
-
-[1mGenerating code for project: mem_check[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...[36m⠋[0m Generating Flatbuffers C++ code...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...[36m⠋[0m Updating types dependency...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠋[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
---- PASS: TestRepro_MultipleAsync (1.62s)
-=== CONT  TestRegression
-
-[1m🚀 Initializing project smoke_proj...[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project repro_project initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd /tmp/xll-test-repro_project1014468442/repro_project[0m
-  [36mxll-gen build[0m
-
-[1mGenerating code for project: repro_project[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Initialized     [32mGo module[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...
-
-[1mGenerating code for project: smoke_proj[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
---- PASS: TestRepro_MemoryLeak (1.71s)
-=== CONT  TestRepro_NestedIPC_Corruption
---- PASS: TestGenerate (1.71s)
-=== CONT  TestRepro_ZstdConfig
-
-[1m🚀 Initializing project repro_project...[0m
-  [32m✔[0m Created         [32mxll.yaml[0m
-  [32m✔[0m Created         [32mmain.go[0m
-  [32m✔[0m Created         [32m.gitignore[0m
-  [32m✔[0m Created         [32m.vscode/launch.json[0m
-=== RUN   TestRepro_ZstdConfig/XllSinglefile
-
-[1mGenerating code for project: TestProjZstd[0m
-  [32m✔[0m Initialized     [32mGo module[0m
-
-
-[1mGenerating code for project: repro_project[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
---- PASS: TestGenerate_Fixes (1.41s)
-[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...[36m⠹[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project smoke_proj initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd /tmp/xll-regression-test2145810893/smoke_proj[0m
-  [36mxll-gen build[0m
-
-[1mGenerating code for project: smoke_proj[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-=== RUN   TestRepro_ZstdConfig/EmptySinglefile
-
-[1mGenerating code for project: TestProjNoZstd[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-
-[32m✨ Project repro_project initialized successfully![0m
-
-[1mNext steps:[0m
-  [36mcd /tmp/xll-test-repro_project4274159538/repro_project[0m
-  [36mxll-gen build[0m
-
-[1mGenerating code for project: repro_project[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
-=== RUN   TestRepro_ZstdConfig/XllSinglefile#01
-
-[1mGenerating code for project: TestProjZstd[0m
-  [32m✔[0m Generated       [32mprotocol.fbs[0m
-  [32m✔[0m Generated       [32mschema.fbs[0m
-[36m⠋[0m Generating Flatbuffers Go code...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
---- PASS: TestRepro_NestedIPC_Corruption (1.35s)
-                                             [32m✔[0m Generated       [32mFlatbuffers Go code[0m
-[36m⠋[0m Generating Flatbuffers C++ code...                                              [32m✔[0m Generated       [32mFlatbuffers C++ code[0m
-  [32m✔[0m Generated       [32minterface.go[0m
-  [32m✔[0m Generated       [32mserver.go[0m
-  [32m✔[0m Generated       [32mxll_main.cpp[0m
-  [32m✔[0m Generated       [32mCMakeLists.txt[0m
-  [32m✔[0m Generated       [32mTaskfile.yml[0m
-
-[1mDependencies:[0m
-[36m⠋[0m Updating SHM dependency...                                      [32m✔[0m Updated         [32mSHM dependency to v0.5.4[0m
-[36m⠋[0m Updating types dependency...                                        [32m✔[0m Updated         [32mTypes dependency to v0.2.2[0m
-[36m⠋[0m Running 'go mod tidy'...[36m⠙[0m Running 'go mod tidy'...                                    [32m✔[0m Completed       [32m'go mod tidy'[0m
-
---- PASS: TestRepro_ZstdConfig (1.96s)
-    --- PASS: TestRepro_ZstdConfig/XllSinglefile (0.72s)
-    --- PASS: TestRepro_ZstdConfig/EmptySinglefile (0.61s)
-    --- PASS: TestRepro_ZstdConfig/XllSinglefile#01 (0.62s)
-[MOCK] READY
-SERVER: AsyncEchoInt val=999
-SERVER: ScheduleCmd executing
-ScheduleCmd Result: 1
-[MOCK] PASSED
---- PASS: TestRegression (15.50s)
-FAIL
-FAIL	github.com/xll-gen/xll-gen/cmd	17.818s
-FAIL
