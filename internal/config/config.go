@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Config represents the top-level structure of the xll.yaml file.
@@ -24,6 +26,20 @@ type Config struct {
 	Gen       GenConfig     `yaml:"gen"`
 	// Events defines subscriptions to Excel events.
 	Events    []Event       `yaml:"events"`
+	// Rtd contains configuration for the Real-Time Data server.
+	Rtd       RtdConfig     `yaml:"rtd"`
+}
+
+// RtdConfig configures the Real-Time Data server.
+type RtdConfig struct {
+	// Enabled determines if the RTD server is enabled.
+	Enabled     bool   `yaml:"enabled"`
+	// ProgID is the Program ID for the RTD server (e.g., "MyProject.RTD").
+	ProgID      string `yaml:"prog_id"`
+	// Clsid is the Class ID for the RTD server (optional, generated if empty).
+	Clsid       string `yaml:"clsid"`
+	// Description is the description of the RTD server.
+	Description string `yaml:"description"`
 }
 
 // CacheConfig configures the global caching behavior.
@@ -132,6 +148,9 @@ type Function struct {
 	Timeout     string `yaml:"timeout"`
 	// Caller indicates if the function requires information about the calling cell.
 	Caller      bool                 `yaml:"caller"`
+	// Mode determines the execution mode of the function (sync, async, rtd).
+	// Supersedes the Async boolean.
+	Mode        string               `yaml:"mode"`
 	// Cache configures caching for this specific function.
 	Cache       *FunctionCacheConfig `yaml:"cache"`
 }
@@ -234,6 +253,21 @@ func Validate(config *Config) error {
 		}
 	}
 
+	for _, fn := range config.Functions {
+		if fn.Mode != "" {
+			switch strings.ToLower(fn.Mode) {
+			case "sync", "async", "rtd":
+				// ok
+			default:
+				return fmt.Errorf("function '%s': invalid mode '%s' (allowed: sync, async, rtd)", fn.Name, fn.Mode)
+			}
+		}
+	}
+
+	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
+		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
+	}
+
 	return nil
 }
 
@@ -263,6 +297,25 @@ func allowedTypesList(m map[string]bool) string {
 // Parameters:
 //   - config: The Config object to modify.
 func ApplyDefaults(config *Config) {
+	// Normalize Function Modes
+	for i := range config.Functions {
+		fn := &config.Functions[i]
+		if fn.Mode == "" {
+			if fn.Async {
+				fn.Mode = "async"
+			} else {
+				fn.Mode = "sync"
+			}
+		} else {
+			// Sync legacy Async flag with Mode
+			if fn.Mode == "async" {
+				fn.Async = true
+			} else {
+				fn.Async = false
+			}
+		}
+	}
+
 	if config.Build.TempDir == "" {
 		config.Build.TempDir = "${TEMP}"
 	}
@@ -278,5 +331,15 @@ func ApplyDefaults(config *Config) {
 
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
+	}
+
+	if config.Rtd.Enabled {
+		if config.Rtd.Description == "" {
+			config.Rtd.Description = config.Rtd.ProgID
+		}
+		if config.Rtd.Clsid == "" && config.Rtd.ProgID != "" {
+			u := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(config.Rtd.ProgID))
+			config.Rtd.Clsid = "{" + u.String() + "}"
+		}
 	}
 }

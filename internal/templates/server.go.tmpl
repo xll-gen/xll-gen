@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
-	"sync"
 	"time"
 	"runtime"
 	"runtime/debug"
@@ -21,11 +20,14 @@ import (
 // Force usage of time and protocol to avoid unused import error
 var _ = time.Now
 var _ = protocol.Bool{}
+var _ = rand.Int63
 
 var (
 	asyncBatcher   = server.NewAsyncBatcher()
 	chunkManager   = server.NewChunkManager()
 	commandBatcher = server.NewCommandBatcher()
+	refCache       = server.NewRefCache()
+	sysHandler     = server.NewSystemHandler(chunkManager, asyncBatcher, commandBatcher, refCache, server.GlobalRtd)
 )
 
 func ScheduleSet(r *protocol.Range, v *protocol.Any) {
@@ -35,6 +37,12 @@ func ScheduleSet(r *protocol.Range, v *protocol.Any) {
 func ScheduleFormat(r *protocol.Range, fmtStr string) {
 	commandBatcher.ScheduleFormat(r, fmtStr)
 }
+
+{{if .Rtd.Enabled}}
+func PushRtdUpdate(topicID int32, value interface{}) error {
+    return server.GlobalRtd.SendUpdate(topicID, value)
+}
+{{end}}
 
 func Serve(handler XllService) {
 	// Parse command line flags to get SHM name
@@ -53,8 +61,9 @@ func Serve(handler XllService) {
     }
     defer client.Close()
 
-	var refCacheMutex sync.RWMutex
-	refCache := make(map[string][]byte)
+    {{if .Rtd.Enabled}}
+    server.GlobalRtd.SetClient(client)
+    {{end}}
 
 	asyncBatcher.StartWorker(func(batch []server.PendingAsyncResult) {
 		server.FlushAsyncBatch(batch, client)
@@ -94,138 +103,27 @@ func Serve(handler XllService) {
 
              switch uint32(mType) {
              case server.MsgCalculationEnded:
-                refCacheMutex.Lock()
-                refCache = make(map[string][]byte)
-                refCacheMutex.Unlock()
-
-                {{if hasEvent "CalculationEnded" .Events}}
-                var wg sync.WaitGroup
-                wg.Add(1)
-                go func() {
-                    defer wg.Done()
-                    defer func() {
-                        if r := recover(); r != nil {
-                            log.Error("Panic in OnCalculationEnded", "error", r, "stack", string(debug.Stack()))
-                        }
-                    }()
-                    if err := handler.OnCalculationEnded(context.Background()); err != nil {
-                        log.Error("Event handler OnCalculationEnded failed", "error", err)
-                    }
-                }()
-                wg.Wait()
-                {{end}}
-
-                builder.Reset()
-                respBytes := commandBatcher.FlushCommands(builder)
-                if len(respBytes) > 0 {
-                    // Zero-Copy Return
-                    if cap(builder.Bytes) == cap(respBuf) && len(respBytes) <= len(respBuf) {
-                        return -int32(len(respBytes)), server.MsgCalculationEnded
-                    }
-
-                    if len(respBytes) > len(respBuf) {
-                        log.Warn("CalculationEnded response too large", "size", len(respBytes))
-                        return 0, 0
-                    }
-                    copy(respBuf, respBytes)
-                    return int32(len(respBytes)), server.MsgCalculationEnded
-                }
-                return 0, 0
+                return sysHandler.HandleCalculationEnded(respBuf, builder, handler.OnCalculationEnded)
 
              case server.MsgCalculationCanceled:
-                commandBatcher.Clear()
+                return sysHandler.HandleCalculationCanceled(handler.OnCalculationCanceled)
 
-                {{if hasEvent "CalculationCanceled" .Events}}
-                ctx := context.Background()
-                go func() {
-                    defer func() {
-                        if r := recover(); r != nil {
-                            log.Error("Panic in OnCalculationCanceled", "error", r, "stack", string(debug.Stack()))
-                        }
-                    }()
-                    if err := handler.OnCalculationCanceled(ctx); err != nil {
-                        log.Error("Event handler OnCalculationCanceled failed", "error", err)
-                    }
-                }()
-                {{end}}
-                return 0, 0
+            {{if .Rtd.Enabled}}
+            case server.MsgRtdConnect:
+                return sysHandler.HandleRtdConnect(data, respBuf, builder, handler.OnRtdConnect)
+
+            case server.MsgRtdDisconnect:
+                return sysHandler.HandleRtdDisconnect(data, respBuf, builder, handler.OnRtdDisconnect)
+            {{end}}
 
              case server.MsgSetRefCache:
-                reqObj := protocol.GetRootAsSetRefCacheRequest(data, 0)
-                key := string(reqObj.Key())
-                reqCopy := make([]byte, len(data))
-                copy(reqCopy, data)
-
-                refCacheMutex.Lock()
-                refCache[key] = reqCopy
-                refCacheMutex.Unlock()
-
-                payload := server.BuildAckResponse(builder, 0, true)
-
-                log.Debug("ACK sent", "func", "SetRefCache")
-
-                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), server.MsgAck
-                }
-                if len(payload) > len(respBuf) { return 0, 0 }
-                copy(respBuf, payload)
-                return int32(len(payload)), server.MsgAck
+                return sysHandler.HandleSetRefCache(data, respBuf, builder)
 
              case server.MsgAck:
-                reqObj := protocol.GetRootAsAck(data, 0)
-                id := reqObj.Id()
-
-                const chunkSize = 950 * 1024
-                chunkData, msgType, totalSize, offset, found := chunkManager.GetNextChunk(id, chunkSize)
-
-                if !found {
-                    return 0, 0
-                }
-
-                if len(chunkData) == 0 {
-                    return 0, 0
-                }
-
-                payload := server.BuildChunkResponse(builder, chunkData, id, totalSize, offset, msgType)
-
-                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), server.MsgChunk
-                }
-                if len(payload) > len(respBuf) { return 0, 0 }
-                copy(respBuf, payload)
-                return int32(len(payload)), server.MsgChunk
+                return sysHandler.HandleAck(data, respBuf, builder)
 
              case server.MsgChunk:
-                reqObj := protocol.GetRootAsChunk(data, 0)
-                id := reqObj.Id()
-                total := int(reqObj.TotalSize())
-                offset := int(reqObj.Offset())
-                dataLen := reqObj.DataLength()
-
-                buf := chunkManager.GetChunkBuffer(id, total)
-
-                buf.Mutex.Lock()
-                if offset + dataLen <= len(buf.Data) {
-                    copy(buf.Data[offset:], reqObj.DataBytes())
-                    buf.Received += dataLen
-                }
-                isComplete := buf.Received >= buf.TotalSize
-                buf.Mutex.Unlock()
-
-                if isComplete {
-                    chunkManager.RemoveChunkBuffer(id)
-                    payloadMsgType := reqObj.MsgType()
-                    return dispatch(buf.Data, respBuf, shm.MsgType(payloadMsgType))
-                }
-
-                payload := server.BuildAckResponse(builder, id, true)
-
-                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), server.MsgChunk
-                }
-                if len(payload) > len(respBuf) { return 0, 0 }
-                copy(respBuf, payload)
-                return int32(len(payload)), server.MsgChunk
+                return sysHandler.HandleChunk(data, respBuf, builder, dispatch)
 
 {{range .Events}}
              {{if and (ne .Type "CalculationEnded") (ne .Type "CalculationCanceled")}}
@@ -244,7 +142,7 @@ func Serve(handler XllService) {
              {{end}}
 {{end}}
 
-{{range $i, $fn := .Functions}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}{{if ne .Mode "rtd"}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
                 {{if .Timeout}}
                 ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
                 {{else}}
@@ -258,31 +156,26 @@ func Serve(handler XllService) {
                 select {
                 case jobQueue <- func() {
                     defer cancel()
-                    handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache, &refCacheMutex)
+                    handle{{.Name}}(ctx, reqCopy, nil, handler, nil, client, mType, refCache)
                 }:
                 default:
                     log.Warn("Async worker pool full, returning Busy error", "func", "{{.Name}}")
                     // Fast-fail
                     reqObj := ipc.GetRootAs{{.Name}}Request(reqCopy, 0)
                     h := reqObj.AsyncHandleBytes()
-                    queueAsyncResult(h, nil, protocol.AnyValue(0), "Server Busy")
+                    asyncBatcher.QueueResult(h, nil, protocol.AnyValue(0), "Server Busy")
                 }
 
                 payload := server.BuildAckResponse(builder, 0, true)
                 log.Debug("Sending ACK", "func", "{{.Name}}")
 
-                if cap(builder.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-                    return -int32(len(payload)), server.MsgAck
-                }
-                if len(payload) > len(respBuf) { return 0, 0 }
-                copy(respBuf, payload)
-                return int32(len(payload)), server.MsgAck
+                return server.SendAckOrChunk(payload, respBuf, server.MsgAck, chunkManager, builder)
                 {{else}}
                 defer cancel()
-                len, respId := handle{{.Name}}(ctx, data, respBuf, handler, builder, client, mType, refCache, &refCacheMutex)
+                len, respId := handle{{.Name}}(ctx, data, respBuf, handler, builder, client, mType, refCache)
                 return len, respId
                 {{end}}
-{{end}}
+{{end}}{{end}}
              default:
                 return 0, 0
              }
@@ -296,7 +189,8 @@ func Serve(handler XllService) {
 
 // ... handle functions ...
 {{range $i, $fn := .Functions}}
-func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgType shm.MsgType, refCache map[string][]byte, refCacheMutex *sync.RWMutex) (int32, shm.MsgType) {
+{{if ne .Mode "rtd"}}
+func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgType shm.MsgType, refCache *server.RefCache) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 	_ = request
 
@@ -337,14 +231,12 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			if arg_{{.Name}}_raw.Val(init) {
 				rc.Init(init.Bytes, init.Pos)
 				key := string(rc.Key())
-				refCacheMutex.RLock()
-				if data, ok := refCache[key]; ok {
+				if data, ok := refCache.Get(key); ok {
 					cacheReq := protocol.GetRootAsSetRefCacheRequest(data, 0)
 					arg_{{.Name}} = cacheReq.Val(nil)
 				} else {
 					arg_{{.Name}} = arg_{{.Name}}_raw
 				}
-				refCacheMutex.RUnlock()
 			}
 		} else {
 			arg_{{.Name}} = arg_{{.Name}}_raw
@@ -365,7 +257,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	log.Debug("Async function start", "func", "{{.Name}}")
 
 	if ctx.Err() != nil {
-		queueAsyncResult(handle, nil, protocol.AnyValue(0), ctx.Err().Error())
+		asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), ctx.Err().Error())
 		return 0, 0
 	}
 
@@ -374,7 +266,7 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			if r := recover(); r != nil {
 				stack := debug.Stack()
 				log.Error("Panic in async handler {{.Name}}", "error", r, "stack", string(stack))
-				queueAsyncResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), fmt.Sprintf("panic: %v", r))
 			}
 			log.Debug("Async function end", "func", "{{.Name}}")
 		}()
@@ -384,33 +276,33 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		res, err := handler.{{.Name}}(ctx{{range .Args}}, arg_{{.Name}}{{end}}{{if .Caller}}, caller{{end}})
 
 		if err != nil {
-			queueAsyncResult(handle, nil, protocol.AnyValue(0), err.Error())
+			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), err.Error())
 		} else {
 			{{if eq .Return "string"}}
-			queueAsyncResult(handle, res, protocol.AnyValueStr, "")
+			asyncBatcher.QueueResult(handle, res, protocol.AnyValueStr, "")
 			{{else if eq .Return "int"}}
-			queueAsyncResult(handle, res, protocol.AnyValueInt, "")
+			asyncBatcher.QueueResult(handle, res, protocol.AnyValueInt, "")
 			{{else if eq .Return "int?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, protocol.AnyValueInt, "")
+				asyncBatcher.QueueResult(handle, *res, protocol.AnyValueInt, "")
 			} else {
-				queueAsyncResult(handle, nil, protocol.AnyValueNil, "")
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValueNil, "")
 			}
 			{{else if eq .Return "float"}}
-			queueAsyncResult(handle, res, protocol.AnyValueNum, "")
+			asyncBatcher.QueueResult(handle, res, protocol.AnyValueNum, "")
 			{{else if eq .Return "float?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, protocol.AnyValueNum, "")
+				asyncBatcher.QueueResult(handle, *res, protocol.AnyValueNum, "")
 			} else {
-				queueAsyncResult(handle, nil, protocol.AnyValueNil, "")
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValueNil, "")
 			}
 			{{else if eq .Return "bool"}}
-			queueAsyncResult(handle, res, protocol.AnyValueBool, "")
+			asyncBatcher.QueueResult(handle, res, protocol.AnyValueBool, "")
 			{{else if eq .Return "bool?"}}
 			if res != nil {
-				queueAsyncResult(handle, *res, protocol.AnyValueBool, "")
+				asyncBatcher.QueueResult(handle, *res, protocol.AnyValueBool, "")
 			} else {
-				queueAsyncResult(handle, nil, protocol.AnyValueNil, "")
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValueNil, "")
 			}
 			{{end}}
 		}
@@ -485,51 +377,9 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	b.Finish(root)
 
 	// Zero-Copy Return
-	// cap(b.Bytes) == cap(respBuf) implies it is still the SHM buffer.
-	// If so, data is end-aligned and we return negative size.
 	payload := b.FinishedBytes()
-	if cap(b.Bytes) == cap(respBuf) && len(payload) <= len(respBuf) {
-		return -int32(len(payload)), msgType
-	}
-
-	if len(payload) > len(respBuf) {
-		// Chunking needed
-		transferId := uint64(rand.Int63())
-
-        out := &server.OutgoingChunk{
-            Data:       make([]byte, len(payload)),
-            Id:         transferId,
-            MsgType:    uint32(msgType),
-            LastAccess: time.Now(),
-        }
-		copy(out.Data, payload)
-        chunkManager.AddOutgoingChunk(transferId, out)
-
-		const chunkSize = 950 * 1024
-		currentSize := chunkSize
-		if len(out.Data) < chunkSize {
-			currentSize = len(out.Data)
-		}
-
-		payload = server.BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
-
-		out.Offset = currentSize
-
-		if len(payload) > len(respBuf) {
-			return 0, 0 // Fatal: Chunk header overhead made it > 1MB?
-		}
-		copy(respBuf, payload)
-		return int32(len(payload)), server.MsgChunk
-	}
-	copy(respBuf, payload)
-	return int32(len(payload)), msgType
+	return server.SendAckOrChunk(payload, respBuf, msgType, chunkManager, b)
 	{{end}}
 }
-
 {{end}}
-
-{{if hasAsync .Functions}}
-func queueAsyncResult(handle []byte, val interface{}, valType protocol.AnyValue, errStr string) {
-	asyncBatcher.QueueResult(handle, val, valType, errStr)
-}
 {{end}}
