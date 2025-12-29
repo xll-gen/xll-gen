@@ -4,31 +4,31 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
-// TestFlatbuffersVersionConsistency ensures that the flatc version pinned in the Go code
-// matches the version defined in the CMake template.
+// TestFlatbuffersVersionConsistency ensures that the flatc version
+// matches the version variable used in the CMake template.
 func TestFlatbuffersVersionConsistency(t *testing.T) {
-	// 1. Extract version from internal/flatc/flatc.go
-	// Since we are running from cmd/, we need to go up one level
-	flatcPath := filepath.Join("..", "internal", "flatc", "flatc.go")
-	flatcBytes, err := os.ReadFile(flatcPath)
+	// 1. Extract version from internal/versions/versions.go
+	versionsPath := filepath.Join("..", "internal", "versions", "versions.go")
+	versionsBytes, err := os.ReadFile(versionsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	flatcContent := string(flatcBytes)
+	versionsContent := string(versionsBytes)
 
-	// Look for const flatcVersion = "v..."
-	reFlatc := regexp.MustCompile(`const flatcVersion = "(v[0-9]+\.[0-9]+\.[0-9]+)"`)
-	matches := reFlatc.FindStringSubmatch(flatcContent)
+	// Look for FlatBuffers = "v..."
+	reFlatc := regexp.MustCompile(`FlatBuffers\s+=\s+"(v[0-9]+\.[0-9]+\.[0-9]+)"`)
+	matches := reFlatc.FindStringSubmatch(versionsContent)
 	if len(matches) < 2 {
-		t.Fatalf("Could not find const flatcVersion in %s", flatcPath)
+		t.Fatalf("Could not find FlatBuffers constant in %s", versionsPath)
 	}
 	goVersion := matches[1]
 	t.Logf("Found Go flatc version: %s", goVersion)
 
-	// 2. Extract version from internal/templates/CMakeLists.txt.tmpl
+	// 2. Check internal/templates/CMakeLists.txt.tmpl uses the variable
 	cmakePath := filepath.Join("..", "internal", "templates", "CMakeLists.txt.tmpl")
 	cmakeBytes, err := os.ReadFile(cmakePath)
 	if err != nil {
@@ -36,17 +36,10 @@ func TestFlatbuffersVersionConsistency(t *testing.T) {
 	}
 	cmakeContent := string(cmakeBytes)
 
-	// Look for GIT_TAG v...
-	reCmake := regexp.MustCompile(`GIT_TAG\s+(v[0-9]+\.[0-9]+\.[0-9]+)`)
-	matchesCmake := reCmake.FindStringSubmatch(cmakeContent)
-	if len(matchesCmake) < 2 {
-		t.Fatalf("Could not find GIT_TAG in %s", cmakePath)
-	}
-	cmakeVersion := matchesCmake[1]
-	t.Logf("Found CMake GIT_TAG version: %s", cmakeVersion)
-
-	// 3. Compare
-	if goVersion != cmakeVersion {
-		t.Errorf("Version mismatch! Go: %s, CMake: %s", goVersion, cmakeVersion)
+	// Look for "GIT_TAG {{ .Deps.FlatBuffers }}" inside the flatbuffers block
+	// We can just search for the string directly as it should be exact.
+	expectedTag := "GIT_TAG {{ .Deps.FlatBuffers }}"
+	if !strings.Contains(cmakeContent, expectedTag) {
+		t.Errorf("CMakeLists.txt.tmpl does not use dynamic versioning. Expected to find: %q", expectedTag)
 	}
 }
