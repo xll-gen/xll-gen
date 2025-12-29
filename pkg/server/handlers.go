@@ -116,8 +116,10 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 				log.Error("Panic in OnRtdConnect", "error", r)
 			}
 		}()
-		if err := onConnect(ctx, topicID, strings, newVal); err != nil {
-			log.Error("OnRtdConnect failed", "error", err)
+		if onConnect != nil {
+			if err := onConnect(ctx, topicID, strings, newVal); err != nil {
+				log.Error("OnRtdConnect failed", "error", err)
+			}
 		}
 	}()
 
@@ -144,8 +146,10 @@ func (h *SystemHandler) HandleRtdDisconnect(data []byte, respBuf []byte, b *flat
 				log.Error("Panic in OnRtdDisconnect", "error", r)
 			}
 		}()
-		if err := onDisconnect(ctx, topicID); err != nil {
-			log.Error("OnRtdDisconnect failed", "error", err)
+		if onDisconnect != nil {
+			if err := onDisconnect(ctx, topicID); err != nil {
+				log.Error("OnRtdDisconnect failed", "error", err)
+			}
 		}
 	}()
 	return 0, 0
@@ -157,16 +161,18 @@ func (h *SystemHandler) HandleCalculationEnded(respBuf []byte, b *flatbuffers.Bu
 
 	// We use a simple function call with recover block instead of goroutine+waitgroup,
 	// because we want to block until handler finishes to include any scheduled commands in the response.
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("Panic in OnCalculationEnded", "error", r)
+	if onEnded != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("Panic in OnCalculationEnded", "error", r)
+				}
+			}()
+			if err := onEnded(context.Background()); err != nil {
+				log.Error("Event handler OnCalculationEnded failed", "error", err)
 			}
 		}()
-		if err := onEnded(context.Background()); err != nil {
-			log.Error("Event handler OnCalculationEnded failed", "error", err)
-		}
-	}()
+	}
 
 	b.Reset()
 	respBytes := h.CommandBatcher.FlushCommands(b)
@@ -180,17 +186,19 @@ func (h *SystemHandler) HandleCalculationEnded(respBuf []byte, b *flatbuffers.Bu
 func (h *SystemHandler) HandleCalculationCanceled(onCanceled func(context.Context) error) (int32, shm.MsgType) {
 	h.CommandBatcher.Clear()
 
-	ctx := context.Background()
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("Panic in OnCalculationCanceled", "error", r)
+	if onCanceled != nil {
+		ctx := context.Background()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("Panic in OnCalculationCanceled", "error", r)
+				}
+			}()
+			if err := onCanceled(ctx); err != nil {
+				log.Error("Event handler OnCalculationCanceled failed", "error", err)
 			}
 		}()
-		if err := onCanceled(ctx); err != nil {
-			log.Error("Event handler OnCalculationCanceled failed", "error", err)
-		}
-	}()
+	}
 	return 0, 0
 }
 
