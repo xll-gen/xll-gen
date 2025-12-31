@@ -69,7 +69,12 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/xll-gen/rtd.git
   GIT_TAG HEAD
 )
-FetchContent_MakeAvailable(rtd)
+FetchContent_GetProperties(rtd)
+if(NOT rtd_POPULATED)
+  FetchContent_Populate(rtd)
+  # We DO NOT call add_subdirectory(rtd) to avoid building examples like MyHybridServer.xll
+  # Instead, we just use the headers.
+endif()
 {{ end }}
 
 if(NOT TARGET shm)
