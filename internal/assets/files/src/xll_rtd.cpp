@@ -63,6 +63,7 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
 // RtdServer Implementation
 
 HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) {
+    xll::LogDebug("RTD ConnectData called for TopicID: " + std::to_string(TopicID));
     // Send Connect Request to Go
     auto slot = g_host.GetZeroCopySlot();
     SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());

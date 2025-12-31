@@ -61,9 +61,11 @@ const wchar_t* g_szFriendlyName = L"{{.Rtd.Description}}";
 
 extern "C" {
     __declspec(dllexport) HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
+        xll::LogDebug("DllGetClassObject called");
         if (!ppv) return E_POINTER;
         *ppv = nullptr;
         if (IsEqualGUID(rclsid, GetRtdClsid())) {
+            xll::LogDebug("DllGetClassObject: CLSID matches RTD server");
             rtd::ClassFactory<RtdServer>* pFactory = new rtd::ClassFactory<RtdServer>();
             HRESULT hr = pFactory->QueryInterface(riid, ppv);
             pFactory->Release();

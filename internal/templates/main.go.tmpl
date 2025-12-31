@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"{{.ProjectName}}/generated"
 	"time"
 )
@@ -44,6 +45,35 @@ func (s *MyService) OnCalculationEnded(ctx context.Context) error {
 
 func (s *MyService) OnCalculationCanceled(ctx context.Context) error {
 	return nil
+}
+
+func (s *MyService) OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error {
+	if len(strings) > 0 {
+		ticker := strings[0]
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(1 * time.Second):
+					// Example: push a random price update
+					price := 100.0 + (50.0 * (rand.Float64() - 0.5))
+					generated.PushRtdUpdate(topicID, fmt.Sprintf("%s: %.2f", ticker, price))
+				}
+			}
+		}()
+	}
+	return nil
+}
+
+func (s *MyService) OnRtdDisconnect(ctx context.Context, topicID int32) error {
+	return nil
+}
+
+func (s *MyService) StockQuote(ctx context.Context, symbol string) (any, error) {
+	// RTD mode functions are called via Excel's RTD mechanism.
+	// The return value here is typically ignored as updates are pushed via PushRtdUpdate.
+	return nil, nil
 }
 
 func main() {
