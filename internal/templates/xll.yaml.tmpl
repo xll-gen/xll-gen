@@ -67,7 +67,7 @@ functions:
     description: "Adds two integers"
     category: "Math"
     # volatile: false # Optional: If true, recalculates on any sheet change. Default is false.
-    # async: false # Optional: Marks the function as asynchronous. Default is false.
+    # mode: "sync" # Optional: Execution mode ("sync", "async", "rtd"). Default is "sync". ('async' is deprecated)
     # shortcut: "" # Optional: Keyboard shortcut, e.g., "Ctrl+Shift+A".
     # help_topic: "" # Optional: URL or path to a help topic file.
     # timeout: "" # Optional: Overrides the global server timeout for this specific function.
@@ -90,7 +90,7 @@ functions:
         type: "string"
         description: "Ticker symbol (e.g., AAPL, GOOG)"
     return: "float"
-    async: true
+    mode: "async"
 
   # String manipulation
   - name: "Greet"

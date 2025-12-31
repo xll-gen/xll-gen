@@ -93,6 +93,7 @@ As of v0.1.0, core Excel types and utilities have been extracted to the upstream
 ### 17.2 C++ Dependencies
 - **Types Library**: The generated `CMakeLists.txt` uses `FetchContent` to download `github.com/xll-gen/types`.
 - **Include Paths**: Common headers are included via the `types/` prefix:
+    - `#include "types/protocol_generated.h"` (Replaced static asset)
     - `#include "types/converters.h"`
     - `#include "types/mem.h"`
     - `#include "types/xlcall.h"`
@@ -143,9 +144,9 @@ The integration tests in `internal/regtest` rely on a fixed set of files that mu
 
 ### 18.6 Message ID Allocation
 Message IDs are distributed across multiple definitions and must match exactly.
-1.  **Definitions**: `internal/assets/files/include/xll_ipc.h` and `pkg/server/types.go` define constants (e.g., `MSG_USER_START = 133`, `MSG_CALCULATION_ENDED = 131`).
-2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` manually calculates user IDs (`133 + $i`).
-3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`133 + $i`).
+1.  **Definitions**: `internal/assets/files/include/xll_ipc.h` and `pkg/server/types.go` define constants (e.g., `MSG_USER_START = 140`, `MSG_CALCULATION_ENDED = 131`, `MSG_RTD_CONNECT = 133`).
+2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` manually calculates user IDs (`140 + $i`).
+3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`140 + $i`).
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
 **Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
 
@@ -173,13 +174,15 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
 
 ### 19.1 Type String Format
 1.  **Thread Safety**: Always append `$` to the end of the type string to mark the function as thread-safe.
-2.  **Synchronous Functions**:
+2.  **Synchronous Functions** (`mode: "sync"`):
     *   Format: `[ReturnTypeChar][ArgTypeChars]$`
     *   Example: `QJJ$` (Returns `LPXLOPER12`, takes two `long` integers).
-3.  **Asynchronous Functions**:
+3.  **Asynchronous Functions** (`mode: "async"`):
     *   Format: `>[ArgTypeChars]X$`
     *   **CRITICAL**: Omit the return type character (e.g., `Q`). The `X` character (Async Handle) acts as the return parameter placeholder in the type string.
     *   Example: `>QX$` (Takes a string `Q`, uses async handle `X`).
+4.  **RTD Functions** (`mode: "rtd"`):
+    *   Format: `Q$` (Always returns `LPXLOPER12` via `xlfRtd`).
 
 ### 19.2 Argument Mapping
 *   **Return Types**: Use `lookupXllType` (usually returns `Q` for `LPXLOPER12`).

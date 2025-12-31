@@ -52,7 +52,7 @@ The system operates in a `singlefile` mode by default, providing a seamless user
 *   **Functions**: Support for both **Synchronous** and **Asynchronous** User Defined Functions (UDFs). Asynchronous functions prevent Excel UI freezing during long computations.
 *   **Events**: Ability to handle Excel events, such as `CalculationEnded`, to trigger post-calculation logic.
 *   **Commands**: Mechanism to schedule write operations (`xlSet`) and formatting changes (`xlcFormatNumber`) that are executed safely after the calculation cycle.
-*   **Real-Time Data (RTD)**: *In Progress*. Support for real-time data streaming is currently under development.
+*   **Real-Time Data (RTD)**: Support for real-time data streaming using the standard Excel RTD interface.
 
 ## Prerequisites
 
@@ -152,7 +152,20 @@ server:
     # command: "${BIN}" # Optional: Defaults to the server executable
     # cwd: "${BIN_DIR}" # Optional: Defaults to the directory containing the executable
 
+# Real-Time Data (RTD) Server Configuration
+rtd:
+  enabled: true
+  prog_id: "MyProject.RTD"
+
 functions:
+  - name: "StockQuote"
+    description: "Streams live stock quotes"
+    args:
+      - name: "symbol"
+        type: "string"
+    return: "any"
+    mode: "rtd"      # Real-time data mode
+
   - name: "Add"
     description: "Adds two integers"
     args:
@@ -172,7 +185,7 @@ functions:
       - name: "ticker"
         type: "string"
     return: "float"
-    async: true      # Asynchronous function
+    mode: "async"    # Asynchronous mode ('async: true' is deprecated)
     help_topic: "https://example.com/help/GetPrice" # Optional: Help topic URL
     caller: true     # Optional: Passes the calling cell range as an argument
 ```
