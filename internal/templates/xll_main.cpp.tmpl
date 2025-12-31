@@ -61,12 +61,19 @@ const wchar_t* g_szFriendlyName = L"{{.Rtd.Description}}";
 
 extern "C" {
     __declspec(dllexport) HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
-        xll::LogDebug("DllGetClassObject called");
         if (!ppv) return E_POINTER;
         *ppv = nullptr;
+
+        LPOLESTR pszCLSID, pszIID;
+        StringFromCLSID(rclsid, &pszCLSID);
+        StringFromIID(riid, &pszIID);
+        xll::LogDebug("DllGetClassObject: " + WideToUtf8(pszCLSID) + " | IID: " + WideToUtf8(pszIID));
+        CoTaskMemFree(pszCLSID);
+        CoTaskMemFree(pszIID);
+
         if (IsEqualGUID(rclsid, GetRtdClsid())) {
-            xll::LogDebug("DllGetClassObject: CLSID matches RTD server");
             rtd::ClassFactory<RtdServer>* pFactory = new rtd::ClassFactory<RtdServer>();
+            if (!pFactory) return E_OUTOFMEMORY;
             HRESULT hr = pFactory->QueryInterface(riid, ppv);
             pFactory->Release();
             return hr;
@@ -147,12 +154,19 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     xll::CallExcel(xlGetName, xDLL);
 
     {{if .Rtd.Enabled}}
-    // Register RTD Server
-    HRESULT hr = DllRegisterServer();
-    if (FAILED(hr)) {
-        LogError("Failed to register RTD server: " + std::to_string(hr));
+    // Register RTD Server in Registry
+    DllRegisterServer();
+
+    // Also register in memory for immediate access in this process
+    static DWORD dwCookie = 0;
+    rtd::ClassFactory<RtdServer>* pFactory = new rtd::ClassFactory<RtdServer>();
+    HRESULT hr_reg = CoRegisterClassObject(GetRtdClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &dwCookie);
+    pFactory->Release();
+
+    if (FAILED(hr_reg)) {
+        LogError("CoRegisterClassObject failed: " + std::to_string(hr_reg));
     } else {
-        LogInfo("RTD Server registered successfully.");
+        LogInfo("RTD Server registered in memory successfully.");
     }
     {{end}}
 
@@ -260,10 +274,12 @@ start_worker:
     {
         // Register {{.Name}}
         ScopedXLOPER12Result xRegId;
+        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$";
+
         int regRes = xll::RegisterFunction(
             *xDLL,
             L"{{.Name}}", // Procedure
-            L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$", // TypeText
+            typeStr.c_str(), // TypeText
             L"{{.Name}}", // FunctionText
             L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}", // ArgumentText
             1, // MacroType
@@ -351,6 +367,8 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         t0.c_str() 
         {{range $j, $arg := .Args}}, t{{add $j 1}}.c_str(){{end}}
     );
+
+    xll::LogDebug("xlfRtd called. Return code: " + std::to_string(xlRet) + ", Result type: " + std::to_string(xRes.xltype));
 
     if (xlRet != xlretSuccess) {
         xRes.xltype = xltypeErr;

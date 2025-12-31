@@ -3,10 +3,11 @@
 #include "xll_rtd.h"
 #include "xll_log.h"
 #include "xll_ipc.h"
-#include "types/utility.h" // For WideToUtf8, StringToWString
+#include "types/utility.h" 
 #include "SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
+#include <thread>
 
 // Defined in xll_ipc.cpp
 extern shm::DirectHost g_host;
@@ -29,7 +30,6 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     if (!update) return;
     long topicID = update->topic_id();
 
-    // Extract value from Any
     std::wstring valStr;
     auto anyVal = update->val();
     if (anyVal) {
@@ -51,10 +51,6 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         g_rtdValues[topicID] = {topicID, valStr, true};
 
         if (g_rtdCallback) {
-            // We should use AddRef if we stored it, but here we just use the raw pointer carefully.
-            // Ideally, we should have AddRef'd it in ConnectData.
-            // For now, assume simple notify.
-            // Note: UpdateNotify is thread-safe.
             g_rtdCallback->UpdateNotify();
         }
     }
@@ -62,59 +58,59 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
 
 // RtdServer Implementation
 
-HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) {
-    xll::LogDebug("RTD ConnectData called for TopicID: " + std::to_string(TopicID));
-    // Send Connect Request to Go
-    auto slot = g_host.GetZeroCopySlot();
-    SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
-    flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
+HRESULT __stdcall RtdServer::ServerStart(rtd::IRTDUpdateEvent* Callback, long* pfRes) {
+    xll::LogDebug("RTD ServerStart called");
+    HRESULT hr = rtd::RtdServerBase::ServerStart(Callback, pfRes);
+    if (SUCCEEDED(hr)) {
+        xll::LogDebug("RTD ServerStart succeeded, pfRes=" + std::to_string(*pfRes));
+    }
+    return hr;
+}
 
-    std::vector<flatbuffers::Offset<flatbuffers::String>> strOffsets;
+HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) {
+    xll::LogDebug("RTD ConnectData: TopicID=" + std::to_string(TopicID));
+    
+    std::vector<std::string> strings;
     if (Strings && *Strings) {
         SAFEARRAY* psa = *Strings;
         long lb, ub;
         SafeArrayGetLBound(psa, 1, &lb);
         SafeArrayGetUBound(psa, 1, &ub);
         for (long i = lb; i <= ub; ++i) {
-            VARIANT v;
-            VariantInit(&v);
-            SafeArrayGetElement(psa, &i, &v);
-            if (v.vt == VT_BSTR) {
-                std::wstring wstr(v.bstrVal, SysStringLen(v.bstrVal));
-                strOffsets.push_back(builder.CreateString(WideToUtf8(wstr)));
+            VARIANT v; VariantInit(&v);
+            if (SUCCEEDED(SafeArrayGetElement(psa, &i, &v))) {
+                VARIANT vStr; VariantInit(&vStr);
+                if (SUCCEEDED(VariantChangeType(&vStr, &v, 0, VT_BSTR))) {
+                    strings.push_back(WideToUtf8(std::wstring(vStr.bstrVal, SysStringLen(vStr.bstrVal))));
+                    VariantClear(&vStr);
+                }
             }
             VariantClear(&v);
         }
     }
+    bool newVal = (GetNewValues && *GetNewValues);
 
-    auto stringsVec = builder.CreateVector(strOffsets);
-    auto req = protocol::CreateRtdConnectRequest(builder, TopicID, stringsVec, (GetNewValues && *GetNewValues));
-    builder.Finish(req);
+    std::thread([TopicID, strings, newVal]() {
+        auto slot = g_host.GetZeroCopySlot();
+        SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
+        flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
 
-    auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_CONNECT, 2000);
-    if (res.HasError()) {
-        xll::LogError("RTD Connect failed: " + SHMErrorToString(res.GetError()));
-        // Return Error
+        std::vector<flatbuffers::Offset<flatbuffers::String>> strOffsets;
+        for (const auto& s : strings) strOffsets.push_back(builder.CreateString(s));
+
+        auto stringsVec = builder.CreateVector(strOffsets);
+        auto req = protocol::CreateRtdConnectRequest(builder, TopicID, stringsVec, newVal);
+        builder.Finish(req);
+
+        slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_CONNECT, 5000);
+    }).detach();
+
+    if (pvarOut) {
         VariantInit(pvarOut);
-        pvarOut->vt = VT_ERROR;
-        pvarOut->scode = 2046; // xlErrConnect
-        return S_OK;
+        pvarOut->vt = VT_BSTR;
+        pvarOut->bstrVal = SysAllocString(L"Connecting...");
     }
-
-    {
-            std::lock_guard<std::mutex> lock(g_rtdMutex);
-            // Store reference to callback
-            if (m_callback) {
-                if (g_rtdCallback) g_rtdCallback->Release();
-                g_rtdCallback = m_callback;
-                g_rtdCallback->AddRef();
-            }
-    }
-
-    // Return #GettingData to indicate async update
-    VariantInit(pvarOut);
-    pvarOut->vt = VT_ERROR;
-    pvarOut->scode = 2043; // xlErrGettingData
+    
     return S_OK;
 }
 
@@ -122,24 +118,19 @@ HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
     auto slot = g_host.GetZeroCopySlot();
     SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
     flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
-
     auto req = protocol::CreateRtdDisconnectRequest(builder, TopicID);
     builder.Finish(req);
-
     slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_DISCONNECT, 500);
 
-    // Cleanup
     {
             std::lock_guard<std::mutex> lock(g_rtdMutex);
             g_rtdValues.erase(TopicID);
     }
-
     return S_OK;
 }
 
 HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut) {
     std::lock_guard<std::mutex> lock(g_rtdMutex);
-
     std::vector<RtdValue> updates;
     for (auto& [id, val] : g_rtdValues) {
         if (val.dirty) {
@@ -149,27 +140,34 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
     }
 
     *TopicCount = (long)updates.size();
+    if (*TopicCount == 0) {
+        *parrayOut = nullptr;
+        return S_OK;
+    }
+
     HRESULT hr = CreateRefreshDataArray(*TopicCount, parrayOut);
     if (FAILED(hr)) return hr;
 
-    if (*TopicCount == 0) return S_OK;
-
     long indices[2];
     for (long i = 0; i < *TopicCount; ++i) {
-            long topicID = updates[i].topicId;
-            indices[0] = 0; indices[1] = i;
-            VARIANT vID; VariantInit(&vID);
-            vID.vt = VT_I4; vID.lVal = topicID;
+            // Row 0: TopicID
+            indices[0] = 0; // First dimension (Row)
+            indices[1] = i; // Second dimension (Column)
+            VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
             SafeArrayPutElement(*parrayOut, indices, &vID);
 
-            indices[0] = 1; indices[1] = i;
-            VARIANT vVal; VariantInit(&vVal);
-            vVal.vt = VT_BSTR;
-            vVal.bstrVal = SysAllocString(updates[i].value.c_str());
+            // Row 1: Value
+            indices[0] = 1; // First dimension (Row)
+            // indices[1] remains i
+            VARIANT vVal; VariantInit(&vVal); vVal.vt = VT_BSTR; vVal.bstrVal = SysAllocString(updates[i].value.c_str());
             SafeArrayPutElement(*parrayOut, indices, &vVal);
             SysFreeString(vVal.bstrVal);
     }
+    return S_OK;
+}
 
+HRESULT __stdcall RtdServer::Heartbeat(long* pfRes) {
+    if (pfRes) *pfRes = 1;
     return S_OK;
 }
 

@@ -109,6 +109,8 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 		}
 	}
 
+    log.Info("RTD Connect request received", "topicID", topicID, "strings", strings)
+
 	ctx := context.Background()
 	go func() {
 		defer func() {
