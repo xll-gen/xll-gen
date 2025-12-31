@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"time"
 	"runtime"
 	"runtime/debug"
@@ -49,8 +50,14 @@ func Serve(handler XllService) {
 	shmName := flag.String("xll-shm", "{{.ProjectName}}", "Shared Memory Name")
 	flag.Parse()
 
-    if _, err := server.InitLog("{{.Logging.Dir}}", "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
-        fmt.Printf("Failed to initialize logger: %v\n", err)
+    if os.Getenv("XLL_LOG_TO_STDOUT") == "1" {
+        if err := log.Init("", "{{.Logging.Level}}"); err != nil {
+            fmt.Printf("Failed to initialize stdout logger: %v\n", err)
+        }
+    } else {
+        if _, err := server.InitLog("{{.Logging.Dir}}", "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
+            fmt.Printf("Failed to initialize logger: %v\n", err)
+        }
     }
 
     log.Info("Connecting to SHM", "name", *shmName)

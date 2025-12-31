@@ -141,6 +141,7 @@ namespace xll {
         std::map<std::wstring, std::wstring> env;
         env[L"XLL_DIR"] = xllDir;
         env[L"XLL_SHM"] = StringToWString(cfg.shmName);
+        env[L"XLL_LOG_TO_STDOUT"] = L"1";
 
         outInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 

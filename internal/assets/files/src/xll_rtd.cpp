@@ -29,6 +29,7 @@ GUID StringToGuid(const std::wstring& str) {
 void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     if (!update) return;
     long topicID = update->topic_id();
+    xll::LogDebug("RTD: Received update for TopicID " + std::to_string(topicID));
 
     std::wstring valStr;
     auto anyVal = update->val();
@@ -51,7 +52,10 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         g_rtdValues[topicID] = {topicID, valStr, true};
 
         if (g_rtdCallback) {
+            xll::LogDebug("RTD: Notifying Excel via Callback->UpdateNotify()");
             g_rtdCallback->UpdateNotify();
+        } else {
+            xll::LogDebug("RTD: Update dropped, g_rtdCallback is NULL");
         }
     }
 }
@@ -62,7 +66,9 @@ HRESULT __stdcall RtdServer::ServerStart(rtd::IRTDUpdateEvent* Callback, long* p
     xll::LogDebug("RTD ServerStart called");
     HRESULT hr = rtd::RtdServerBase::ServerStart(Callback, pfRes);
     if (SUCCEEDED(hr)) {
-        xll::LogDebug("RTD ServerStart succeeded, pfRes=" + std::to_string(*pfRes));
+        std::lock_guard<std::mutex> lock(g_rtdMutex);
+        g_rtdCallback = Callback; // Store for background updates
+        xll::LogDebug("RTD ServerStart succeeded, Callback stored.");
     }
     return hr;
 }
@@ -140,16 +146,25 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
     }
 
     *TopicCount = (long)updates.size();
+    xll::LogDebug("RTD RefreshData: " + std::to_string(*TopicCount) + " updates");
+
     if (*TopicCount == 0) {
         *parrayOut = nullptr;
         return S_OK;
     }
 
-    HRESULT hr = CreateRefreshDataArray(*TopicCount, parrayOut);
-    if (FAILED(hr)) return hr;
+    // [2][TopicCount] array
+    SAFEARRAYBOUND bounds[2];
+    bounds[0].cElements = *TopicCount; // Columns
+    bounds[0].lLbound = 0;
+    bounds[1].cElements = 2;           // Rows
+    bounds[1].lLbound = 0;
 
-    long indices[2];
+    *parrayOut = SafeArrayCreate(VT_VARIANT, 2, bounds);
+    if (!*parrayOut) return E_OUTOFMEMORY;
+
     for (long i = 0; i < *TopicCount; ++i) {
+            long indices[2];
             // Row 0: TopicID
             indices[0] = 0; // First dimension (Row)
             indices[1] = i; // Second dimension (Column)
@@ -161,7 +176,7 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
             // indices[1] remains i
             VARIANT vVal; VariantInit(&vVal); vVal.vt = VT_BSTR; vVal.bstrVal = SysAllocString(updates[i].value.c_str());
             SafeArrayPutElement(*parrayOut, indices, &vVal);
-            SysFreeString(vVal.bstrVal);
+            VariantClear(&vVal);
     }
     return S_OK;
 }
@@ -174,10 +189,7 @@ HRESULT __stdcall RtdServer::Heartbeat(long* pfRes) {
 HRESULT __stdcall RtdServer::ServerTerminate() {
     {
             std::lock_guard<std::mutex> lock(g_rtdMutex);
-            if (g_rtdCallback) {
-                g_rtdCallback->Release();
-                g_rtdCallback = nullptr;
-            }
+            g_rtdCallback = nullptr;
     }
     return RtdServerBase::ServerTerminate();
 }
