@@ -89,9 +89,8 @@ void HandleChunk(const protocol::Chunk* chunk) {
         if (type == (int32_t)MSG_BATCH_ASYNC_RESPONSE) {
              auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(data);
              ProcessAsyncBatchResponse(batch);
-        } else if (type == (int32_t)MSG_CALCULATION_ENDED) {
-             auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(data);
-             ExecuteCommands(resp->commands());
+        // Note: MSG_CALCULATION_ENDED is intentionally NOT handled here because it executes
+        // xlSet/xlcFormatNumber which requires the MAIN thread. It is handled in xll_events.cpp.
 #ifdef XLL_RTD_ENABLED
         } else if (type == (int32_t)MSG_RTD_UPDATE) {
              auto update = flatbuffers::GetRoot<protocol::RtdUpdate>(data);
@@ -136,10 +135,8 @@ void WorkerLoop() {
                 auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(reqBuf);
                 ProcessAsyncBatchResponse(batch);
                 return 1;
-            } else if (msgType == (shm::MsgType)MSG_CALCULATION_ENDED) {
-                auto resp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(reqBuf);
-                ExecuteCommands(resp->commands());
-                return 1;
+            // Note: MSG_CALCULATION_ENDED is handled by the main thread (xll_events.cpp).
+            // Do NOT handle it here in the background worker.
             } else if (msgType == (shm::MsgType)MSG_CHUNK) {
                 auto chunk = flatbuffers::GetRoot<protocol::Chunk>(reqBuf);
                 HandleChunk(chunk);

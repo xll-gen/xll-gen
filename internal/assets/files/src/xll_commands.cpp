@@ -28,8 +28,14 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                      xll::CallExcel(xlSet, nullptr, pxRef, pxValue);
                 }
 
-                if (pxRef) xlAutoFree12(pxRef);
-                if (pxValue) xlAutoFree12(pxValue);
+                if (pxRef) {
+                    if (pxRef->xltype & xlbitDLLFree) xlAutoFree12(pxRef);
+                    else ReleaseXLOPER12(pxRef);
+                }
+                if (pxValue) {
+                    if (pxValue->xltype & xlbitDLLFree) xlAutoFree12(pxValue);
+                    else ReleaseXLOPER12(pxValue);
+                }
                 break;
             }
             case protocol::Command::FormatCommand: {
@@ -71,7 +77,8 @@ void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::Com
                         xll::CallExcel(xlcFormatNumber, nullptr, ws);
                     }
 
-                    xlAutoFree12(pxRef);
+                    if (pxRef->xltype & xlbitDLLFree) xlAutoFree12(pxRef);
+                    else ReleaseXLOPER12(pxRef);
                 }
                 break;
             }
