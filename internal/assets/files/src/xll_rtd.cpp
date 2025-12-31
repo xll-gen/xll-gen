@@ -92,7 +92,7 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
 
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_CONNECT, 2000);
     if (res.HasError()) {
-        LogError("RTD Connect failed: " + SHMErrorToString(res.GetError()));
+        xll::LogError("RTD Connect failed: " + SHMErrorToString(res.GetError()));
         // Return Error
         VariantInit(pvarOut);
         pvarOut->vt = VT_ERROR;

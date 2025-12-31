@@ -1,5 +1,7 @@
 #include "xll_ipc.h"
-#include "protocol_generated.h"
+#include "types/protocol_generated.h"
+#include "xll_log.h"
+
 #include <random>
 #include <thread>
 #include <iostream>

@@ -92,13 +92,13 @@ func updateDependencies(baseDir string, opts Options) error {
 // with the correct package path github.com/xll-gen/types/go/protocol.
 func fixGoImports(dir string, goModPath string) error {
 	targetPkg := "github.com/xll-gen/types/go/protocol"
-	targetLine := fmt.Sprintf("\tprotocol \"%s\"", targetPkg)
 
 	// Regex to match:
-	// \t"protocol"  OR  \tprotocol "protocol"
-	// And also for fully qualified path.
-	reShort := regexp.MustCompile(`(?m)^\s*(protocol\s+)?\"protocol\"$`)
-	reLong := regexp.MustCompile(`(?m)^\s*(protocol\s+)?\"` + regexp.QuoteMeta(goModPath+"/protocol") + `\"$`)
+	// "protocol"  OR  protocol "protocol"
+	// "temp_prj/generated/protocol" OR protocol "temp_prj/generated/protocol"
+	// We look for patterns like: [optional alias] "path/to/protocol"
+	// The pattern handles both short "protocol" and long "some/path/protocol"
+	re := regexp.MustCompile(`(protocol\s+)?\"([^"]*/)?protocol\"`)
 
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -111,8 +111,7 @@ func fixGoImports(dir string, goModPath string) error {
 			}
 
 			s := string(content)
-			s = reShort.ReplaceAllString(s, targetLine)
-			s = reLong.ReplaceAllString(s, targetLine)
+			s = re.ReplaceAllString(s, fmt.Sprintf("protocol \"%s\"", targetPkg))
 
 			if s != string(content) {
 				if err := os.WriteFile(path, []byte(s), 0644); err != nil {

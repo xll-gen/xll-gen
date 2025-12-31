@@ -5,7 +5,10 @@
 #include "types/utility.h"
 #include <vector>
 #include <mutex>
-#include "protocol_generated.h"
+#include "xll_async.h"
+#include "xll_ipc.h"
+#include "types/protocol_generated.h"
+
 
 // Process async batch response (MSG_BATCH_ASYNC_RESPONSE = 128)
 

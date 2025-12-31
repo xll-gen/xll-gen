@@ -3,12 +3,12 @@
 #ifdef XLL_RTD_ENABLED
 
 #include <windows.h>
-#include <mutex>
-#include <map>
 #include <string>
 #include <vector>
-#include "rtd/rtd.h"
-#include "protocol_generated.h"
+#include <map>
+#include <mutex>
+#include "types/protocol_generated.h"
+#include "rtd/server.h"
 
 // Helper function to create CLSID from string
 GUID StringToGuid(const std::wstring& str);

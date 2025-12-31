@@ -30,9 +30,12 @@
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
-#include "protocol_generated.h"
+#include "types/protocol_generated.h"
 {{if .Rtd.Enabled}}
 #include "xll_rtd.h"
+#include "rtd/factory.h"
+#include "rtd/module.h"
+#include "rtd/registry.h"
 {{end}}
 
 // Disable "unreferenced formal parameter" warning
@@ -315,67 +318,44 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     static thread_local XLOPER12 xRes;
 
     // Convert arguments to strings for RTD Topics
-    std::vector<std::wstring> topics;
-    topics.push_back(L"{{.Name}}"); // Topic 0: Function Name
+    // Topic 0: Function Name
+    std::wstring t0 = L"{{.Name}}";
 
     {{range $j, $arg := .Args}}
+    std::wstring t{{add $j 1}};
     {
         {{if eq .Type "int"}}
-        topics.push_back(std::to_wstring({{.Name}}));
+        t{{add $j 1}} = std::to_wstring({{.Name}});
         {{else if eq .Type "float"}}
-        topics.push_back(std::to_wstring({{.Name}}));
+        t{{add $j 1}} = std::to_wstring({{.Name}});
         {{else if eq .Type "bool"}}
-        topics.push_back({{.Name}} ? L"TRUE" : L"FALSE");
+        t{{add $j 1}} = {{.Name}} ? L"TRUE" : L"FALSE";
         {{else if eq .Type "string"}}
         if ({{.Name}}->xltype == xltypeStr) {
-            topics.push_back(PascalToWString({{.Name}}->val.str));
-        } else {
-            topics.push_back(L"");
+            t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
         }
         {{else}}
-        // Complex types not fully supported as RTD topics in this basic wrapper
-        // Use a placeholder or simple representation
-        topics.push_back(L"[Complex]");
+        t{{add $j 1}} = L"[Complex]";
         {{end}}
     }
     {{end}}
 
-    // Prepare Arguments for xlfRtd
-    // RTD(ProgID, Server, Topic1, Topic2...)
-    // Count = 2 + topics.size()
-    std::vector<LPXLOPER12> rtdArgs;
-
-    // 1. ProgID
-    static XLOPER12 xProgID;
-    xProgID.xltype = xltypeStr;
+    // Call Excel RTD(ProgID, Server, Topic1, Topic2...)
     static std::wstring wProgID = L"{{$.Rtd.ProgID}}";
-    xProgID.val.str = GetTempPascalString(wProgID.c_str());
-    rtdArgs.push_back(&xProgID);
+    
+    int xlRet = xll::CallExcel(xlfRtd, &xRes, 
+        wProgID.c_str(), 
+        L"", 
+        t0.c_str() 
+        {{range $j, $arg := .Args}}, t{{add $j 1}}.c_str(){{end}}
+    );
 
-    // 2. Server (Empty)
-    static XLOPER12 xServer;
-    xServer.xltype = xltypeStr;
-    xServer.val.str = GetTempPascalString(L"");
-    rtdArgs.push_back(&xServer);
-
-    // 3. Topics
-    std::vector<std::unique_ptr<XLOPER12[]>> topicKeepAlive; // Keep string buffers alive
-
-    // We need to use valid XLOPER12s for topics.
-    // Since we are inside a function, we can allocate them on stack or use temp.
-    // However, xlfRtd takes pointers.
-
-    // We'll use a vector of XLOPER12 objects to hold the data
-    std::vector<XLOPER12> topicOpers(topics.size());
-
-    for(size_t i=0; i<topics.size(); ++i) {
-        topicOpers[i].xltype = xltypeStr;
-        topicOpers[i].val.str = GetTempPascalString(topics[i].c_str());
-        rtdArgs.push_back(&topicOpers[i]);
+    if (xlRet != xlretSuccess) {
+        xRes.xltype = xltypeErr;
+        xRes.val.err = xlerrValue;
     }
 
-    // Call Excel
-    int xlRet = xll::CallExcelImpl(xlfRtd, &xRes, (int)rtdArgs.size(), rtdArgs.data());
+    return &xRes;
 
     if (xlRet != xlretSuccess) {
         xRes.xltype = xltypeErr;

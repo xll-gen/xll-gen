@@ -42,14 +42,26 @@ server:
 
 # Real-Time Data (RTD) Server Configuration
 rtd:
-  enabled: false
-  # prog_id: "{{.ProjectName}}.RTD" # The ProgID for the RTD server (e.g., MyProject.RTD).
+  enabled: true
+  prog_id: "{{.ProjectName}}.RTD" # The ProgID for the RTD server (e.g. MyProject.RTD).
   # clsid: "" # Optional: Specific CLSID. If empty, one will be generated.
-  # description: "My RTD Server" # Optional: Description of the RTD server.
+  description: "Real-Time Data Server for {{.ProjectName}}" # Optional: Description of the RTD server.
 
 # Function Definitions
 # Supported argument/return types: int, float, string, bool, range, grid, numgrid, any
 functions:
+  # RTD function example
+  # RTD functions stream live updates to Excel.
+  - name: "StockQuote"
+    description: "Streams live stock quotes (RTD)"
+    category: "Finance"
+    mode: "rtd"
+    args:
+      - name: "symbol"
+        type: "string"
+        description: "Stock symbol (e.g. AAPL, GOOG)"
+    return: "any"
+
   # Simple integer addition
   - name: "Add"
     description: "Adds two integers"
