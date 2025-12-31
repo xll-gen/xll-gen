@@ -67,7 +67,7 @@ FetchContent_MakeAvailable(phmap)
 FetchContent_Declare(
   rtd
   GIT_REPOSITORY https://github.com/xll-gen/rtd.git
-  GIT_TAG HEAD
+  GIT_TAG {{ .Deps.RTD }}
 )
 FetchContent_GetProperties(rtd)
 if(NOT rtd_POPULATED)
