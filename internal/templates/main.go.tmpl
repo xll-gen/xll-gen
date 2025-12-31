@@ -38,6 +38,14 @@ func (s *MyService) IsEven(ctx context.Context, val int32) (bool, error) {
 	return val%2 == 0, nil
 }
 
+func (s *MyService) OnCalculationEnded(ctx context.Context) error {
+	return nil
+}
+
+func (s *MyService) OnCalculationCanceled(ctx context.Context) error {
+	return nil
+}
+
 func main() {
 	// Connects to SHM and starts processing
 	generated.Serve(&MyService{})

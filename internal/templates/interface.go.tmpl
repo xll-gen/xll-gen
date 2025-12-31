@@ -14,6 +14,10 @@ type XllService interface {
 {{end}}{{end}}
 {{range .Events}}	{{.Handler}}(ctx context.Context) error
 {{end}}
+{{if not (hasEvent "CalculationEnded" .Events)}}	OnCalculationEnded(ctx context.Context) error
+{{end}}
+{{if not (hasEvent "CalculationCanceled" .Events)}}	OnCalculationCanceled(ctx context.Context) error
+{{end}}
 {{if .Rtd.Enabled}}
 	OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error
 	OnRtdDisconnect(ctx context.Context, topicID int32) error

@@ -38,6 +38,16 @@ func hasEvent(eventType string, events []config.Event) bool {
 	return false
 }
 
+// Helper to get the handler name for a specific event type
+func getEventHandler(eventType string, events []config.Event, defaultHandler string) string {
+	for _, e := range events {
+		if e.Type == eventType {
+			return e.Handler
+		}
+	}
+	return defaultHandler
+}
+
 // Helper to parse duration string to milliseconds
 func parseDurationToMs(s string, defaultMs int) int {
 	if s == "" {
@@ -54,9 +64,10 @@ func parseDurationToMs(s string, defaultMs int) int {
 // This centralization ensures consistency and avoids code duplication.
 func GetCommonFuncMap() template.FuncMap {
 	return template.FuncMap{
-		"hasAsync":     hasAsync,
-		"hasResizable": hasResizable,
-		"hasEvent":     hasEvent,
+		"hasAsync":       hasAsync,
+		"hasResizable":   hasResizable,
+		"hasEvent":       hasEvent,
+		"getEventHandler": getEventHandler,
 		"derefBool": func(b *bool) bool {
 			if b == nil {
 				return false

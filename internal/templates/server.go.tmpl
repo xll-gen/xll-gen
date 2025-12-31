@@ -103,10 +103,10 @@ func Serve(handler XllService) {
 
              switch uint32(mType) {
              case server.MsgCalculationEnded:
-                return sysHandler.HandleCalculationEnded(respBuf, builder, handler.OnCalculationEnded)
+                return sysHandler.HandleCalculationEnded(respBuf, builder, handler.{{getEventHandler "CalculationEnded" .Events "OnCalculationEnded"}})
 
              case server.MsgCalculationCanceled:
-                return sysHandler.HandleCalculationCanceled(handler.OnCalculationCanceled)
+                return sysHandler.HandleCalculationCanceled(handler.{{getEventHandler "CalculationCanceled" .Events "OnCalculationCanceled"}})
 
             {{if .Rtd.Enabled}}
             case server.MsgRtdConnect:
