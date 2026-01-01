@@ -178,6 +178,7 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
     *   Format: `[ReturnTypeChar][ArgTypeChars]$`
     *   Example: `QJJ$` (Returns `LPXLOPER12`, takes two `long` integers).
 3.  **Asynchronous Functions** (`mode: "async"`):
+    *   **Note**: The `async: true` configuration field is deprecated. Use `mode: "async"` in `xll.yaml` instead.
     *   Format: `>[ArgTypeChars]X$`
     *   **CRITICAL**: Omit the return type character (e.g., `Q`). The `X` character (Async Handle) acts as the return parameter placeholder in the type string.
     *   Example: `>QX$` (Takes a string `Q`, uses async handle `X`).
@@ -232,3 +233,38 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall MyFunction(int32_t a) {
 In `internal/templates/xll_main.cpp.tmpl`, all user-defined functions and built-in event handlers (like `CalculationEnded`) must be wrapped in `extern "C"`.
 
 **Verification**: Use `dumpbin /exports <filename>.xll` (Windows SDK) or `nm -D <filename>.xll` (MinGW) to verify that the exported names are "clean" and not mangled.
+
+## 22. RTD RefreshData SAFEARRAY Layout
+
+The `IRtdServer::RefreshData` method must return a two-dimensional `SAFEARRAY` of `VARIANT`s with a specific layout for Excel to correctly process real-time updates.
+
+### 22.1 Required Layout: `[2][TopicCount]`
+
+Excel expects a **2-row array** where:
+*   **Row 0**: Contains the **Topic IDs** (as `VT_I4`).
+*   **Row 1**: Contains the **Values** (as `VT_BSTR`, `VT_R8`, etc.).
+
+### 22.2 SAFEARRAY Dimension Order (C++)
+
+In C++, `SAFEARRAYBOUND` array is defined from the **least significant** (rightmost) dimension to the **most significant** (leftmost) dimension.
+
+To achieve a `[2][TopicCount]` (2 Rows, N Columns) layout:
+1.  **`bounds[0]` (Rightmost / Columns)**: Set `cElements` to the number of topics being updated (`TopicCount`).
+2.  **`bounds[1]` (Leftmost / Rows)**: Set `cElements` to `2`.
+
+```cpp
+SAFEARRAYBOUND bounds[2];
+bounds[0].cElements = *TopicCount; // Columns
+bounds[0].lLbound = 0;
+bounds[1].cElements = 2;           // Rows
+bounds[1].lLbound = 0;
+```
+
+### 22.3 Indexing with `SafeArrayPutElement`
+
+The `indices` array passed to `SafeArrayPutElement` is **strictly position-based**, where `indices[0]` is the leftmost dimension.
+
+*   **Topic ID**: `indices[0] = 0` (Row 0), `indices[1] = i` (Column i).
+*   **Value**: `indices[0] = 1` (Row 1), `indices[1] = i` (Column i).
+
+Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, often causing them to stay stuck at "Connecting...".

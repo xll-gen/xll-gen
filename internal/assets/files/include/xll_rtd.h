@@ -18,8 +18,27 @@ GUID StringToGuid(const std::wstring& str);
 // RTD Update Queue
 struct RtdValue {
     long topicId;
-    std::wstring value;
+    VARIANT value;
     bool dirty;
+
+    RtdValue() : topicId(0), dirty(false) {
+        VariantInit(&value);
+    }
+    RtdValue(const RtdValue& other) : topicId(other.topicId), dirty(other.dirty) {
+        VariantInit(&value);
+        VariantCopy(&value, (VARIANTARG*)&other.value);
+    }
+    RtdValue& operator=(const RtdValue& other) {
+        if (this != &other) {
+            topicId = other.topicId;
+            dirty = other.dirty;
+            VariantCopy(&value, (VARIANTARG*)&other.value);
+        }
+        return *this;
+    }
+    ~RtdValue() {
+        VariantClear(&value);
+    }
 };
 
 // Global RTD State

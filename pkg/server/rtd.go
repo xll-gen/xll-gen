@@ -150,14 +150,15 @@ func (m *RtdManager) sendUpdateLocked(topicID int32, value interface{}) error {
 		anyOff = protocol.AnyEnd(b)
 		anyType = protocol.AnyValueInt
 	case int64:
-		protocol.IntStart(b)
-		protocol.IntAddVal(b, int32(v))
-		valOff := protocol.IntEnd(b)
+		// Protocol only supports 32-bit int, so we send as double to preserve value (up to 53 bits)
+		protocol.NumStart(b)
+		protocol.NumAddVal(b, float64(v))
+		valOff := protocol.NumEnd(b)
 		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueInt)
+		protocol.AnyAddValType(b, protocol.AnyValueNum)
 		protocol.AnyAddVal(b, valOff)
 		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueInt
+		anyType = protocol.AnyValueNum
 	case float64:
 		protocol.NumStart(b)
 		protocol.NumAddVal(b, v)

@@ -31,25 +31,34 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     long topicID = update->topic_id();
     xll::LogDebug("RTD: Received update for TopicID " + std::to_string(topicID));
 
-    std::wstring valStr;
+    VARIANT v; VariantInit(&v);
     auto anyVal = update->val();
     if (anyVal) {
         if (anyVal->val_type() == protocol::AnyValue::Str) {
-             valStr = StringToWString(anyVal->val_as_Str()->val()->str());
+             v.vt = VT_BSTR;
+             v.bstrVal = SysAllocString(StringToWString(anyVal->val_as_Str()->val()->str()).c_str());
         } else if (anyVal->val_type() == protocol::AnyValue::Num) {
-             valStr = std::to_wstring(anyVal->val_as_Num()->val());
+             v.vt = VT_R8;
+             v.dblVal = anyVal->val_as_Num()->val();
         } else if (anyVal->val_type() == protocol::AnyValue::Int) {
-             valStr = std::to_wstring(anyVal->val_as_Int()->val());
+             v.vt = VT_I4;
+             v.lVal = anyVal->val_as_Int()->val();
         } else if (anyVal->val_type() == protocol::AnyValue::Bool) {
-             valStr = anyVal->val_as_Bool()->val() ? L"TRUE" : L"FALSE";
+             v.vt = VT_BOOL;
+             v.boolVal = anyVal->val_as_Bool()->val() ? VARIANT_TRUE : VARIANT_FALSE;
         } else {
-             valStr = L"#VALUE!";
+             v.vt = VT_ERROR;
+             v.scode = 0x80040101; // xlerrValue equivalent
         }
     }
 
     {
         std::lock_guard<std::mutex> lock(g_rtdMutex);
-        g_rtdValues[topicID] = {topicID, valStr, true};
+        RtdValue& rv = g_rtdValues[topicID];
+        rv.topicId = topicID;
+        VariantCopy(&rv.value, &v);
+        rv.dirty = true;
+        VariantClear(&v);
 
         if (g_rtdCallback) {
             xll::LogDebug("RTD: Notifying Excel via Callback->UpdateNotify()");
@@ -154,10 +163,13 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
     }
 
     // 2D Array [2][TopicCount]: Row 0 = TopicID, Row 1 = Value
+    // Based on AGENTS.md Section 22:
+    // bounds[0] (Rightmost) = TopicCount (Columns)
+    // bounds[1] (Leftmost)  = 2 (Rows)
     SAFEARRAYBOUND bounds[2];
-    bounds[0].cElements = *TopicCount; // Fastest dimension (Columns)
+    bounds[0].cElements = *TopicCount; // Columns
     bounds[0].lLbound = 0;
-    bounds[1].cElements = 2;           // Slowest dimension (Rows)
+    bounds[1].cElements = 2;           // Rows
     bounds[1].lLbound = 0;
 
     *parrayOut = SafeArrayCreate(VT_VARIANT, 2, bounds);
@@ -165,21 +177,25 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
 
     for (long i = 0; i < *TopicCount; ++i) {
             long indices[2];
-            indices[0] = i; // Column Index
-
-            // Row 0: TopicID
-            indices[1] = 0; // Row 0
+            
+            // Row 0, Col i: TopicID
+            // indices[0] (Leftmost/Row) = 0
+            // indices[1] (Rightmost/Col) = i
+            indices[0] = 0; 
+            indices[1] = i; 
+            
             VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
-            SafeArrayPutElement(*parrayOut, indices, &vID);
+            HRESULT hr1 = SafeArrayPutElement(*parrayOut, indices, &vID);
+            if (FAILED(hr1)) xll::LogError("RTD: SafeArrayPutElement(ID) failed: " + std::to_string(hr1));
 
-            // Row 1: Value
-            indices[1] = 1; // Row 1
-            VARIANT vVal; VariantInit(&vVal); vVal.vt = VT_BSTR; vVal.bstrVal = SysAllocString(updates[i].value.c_str());
-            SafeArrayPutElement(*parrayOut, indices, &vVal);
+            // Row 1, Col i: Value
+            indices[0] = 1; 
+            // indices[1] remains i
             
-            xll::LogDebug("RTD: Returning TopicID " + std::to_string(updates[i].topicId) + " Value: " + WideToUtf8(updates[i].value));
-            
-            SysFreeString(vVal.bstrVal);
+            HRESULT hr2 = SafeArrayPutElement(*parrayOut, indices, &updates[i].value);
+            if (FAILED(hr2)) xll::LogError("RTD: SafeArrayPutElement(Val) failed: " + std::to_string(hr2));
+
+            xll::LogDebug("RTD: Returning TopicID " + std::to_string(updates[i].topicId));
     }
     return S_OK;
 }
