@@ -187,7 +187,7 @@ Once loaded:
     *   Check logs for errors. In **singlefile** mode, logs are in your temporary directory (e.g., `%TEMP%\FibDemo\`):
         *   `FibDemo.log`: Go server errors.
         *   `FibDemo_native.log`: C++ XLL errors.
-        *   `xll_launch.log`: Launch details.
+        *   `{ProjectName}_go.log`: Launch details.
     *   If the server crashed, the XLL might display a message box with the error.
 *   **Compilation Errors**: Run `xll-gen doctor` to ensure your C++ compiler is set up correctly.
 

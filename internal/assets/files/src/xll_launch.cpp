@@ -117,7 +117,7 @@ namespace xll {
 
         outCmd = cmd;
         outCwd = cwd;
-        outLogPath = cwd + L"\\xll_launch.log";
+        outLogPath = cwd + L"\\" + cfg.projectName + L"_go.log";
     }
 
     bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo, std::wstring& outLogPath) {
@@ -146,7 +146,8 @@ namespace xll {
         outInfo.hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
         if (!LaunchProcess(launchCmd, launchCwd, outLogPath, outInfo, env)) {
-             MessageBoxA(NULL, "Failed to launch server process. See xll_launch.log.", "XLL Error", MB_OK | MB_ICONERROR);
+             std::wstring errorMsg = L"Failed to launch server process. See " + cfg.projectName + L"_go.log.";
+             MessageBoxW(NULL, errorMsg.c_str(), L"XLL Error", MB_OK | MB_ICONERROR);
              return false;
         }
         return true;

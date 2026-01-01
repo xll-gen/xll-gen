@@ -279,7 +279,7 @@ Ensure the XLL and the Go server are using the same shared memory name.
 **"Server Logs"**:
 *   **Standard Mode**: Logs are located in the directory specified by `logging.dir`.
 *   **Singlefile Mode**: Logs are located in the temporary directory (e.g., `%TEMP%\<ProjectName>\`).
-    *   `xll_launch.log`: Launch process stdout/stderr.
+    *   `{ProjectName}_go.log`: Launch process stdout/stderr.
     *   `<Project>_native.log`: C++ XLL internal errors.
     *   `<Project>.log`: Go server logs (if configured).
 
