@@ -15,35 +15,7 @@
 // Helper function to create CLSID from string
 GUID StringToGuid(const std::wstring& str);
 
-// RTD Update Queue
-struct RtdValue {
-    long topicId;
-    VARIANT value;
-    bool dirty;
-
-    RtdValue() : topicId(0), dirty(false) {
-        VariantInit(&value);
-    }
-    RtdValue(const RtdValue& other) : topicId(other.topicId), dirty(other.dirty) {
-        VariantInit(&value);
-        VariantCopy(&value, (VARIANTARG*)&other.value);
-    }
-    RtdValue& operator=(const RtdValue& other) {
-        if (this != &other) {
-            topicId = other.topicId;
-            dirty = other.dirty;
-            VariantCopy(&value, (VARIANTARG*)&other.value);
-        }
-        return *this;
-    }
-    ~RtdValue() {
-        VariantClear(&value);
-    }
-};
-
 // Global RTD State
-extern std::mutex g_rtdMutex;
-extern std::map<long, RtdValue> g_rtdValues;
 extern class RtdServer* g_rtdServer;
 
 void ProcessRtdUpdate(const protocol::RtdUpdate* update);
@@ -82,10 +54,9 @@ public:
     }
 
     // --- IRtdServer Implementation ---
-    // ServerStart, Heartbeat, ServerTerminate are handled by RtdServerBase
+    // ServerStart, Heartbeat, ServerTerminate, RefreshData are handled by RtdServerBase
     
     virtual HRESULT __stdcall ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) override;
-    virtual HRESULT __stdcall RefreshData(long* TopicCount, SAFEARRAY** parrayOut) override;
     virtual HRESULT __stdcall DisconnectData(long TopicID) override;
 
     // --- IDispatch ---

@@ -13,8 +13,6 @@
 extern shm::DirectHost g_host;
 
 // Global RTD State
-std::mutex g_rtdMutex;
-std::map<long, RtdValue> g_rtdValues;
 RtdServer* g_rtdServer = nullptr;
 
 GUID StringToGuid(const std::wstring& str) {
@@ -52,26 +50,21 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(g_rtdMutex);
-        RtdValue& rv = g_rtdValues[topicID];
-        rv.topicId = topicID;
-        VariantCopy(&rv.value, &v);
-        rv.dirty = true;
-        VariantClear(&v);
-
-        if (g_rtdServer) {
-            xll::LogDebug("RTD: Notifying Excel via g_rtdServer->NotifyUpdate()");
-            g_rtdServer->NotifyUpdate();
-        } else {
-            xll::LogDebug("RTD: Update notification skipped, Server is NULL");
-        }
+    if (g_rtdServer) {
+        // Update topic in RtdServerBase
+        g_rtdServer->UpdateTopic(topicID, v);
+        
+        xll::LogDebug("RTD: Notifying Excel via g_rtdServer->NotifyUpdate()");
+        g_rtdServer->NotifyUpdate();
+    } else {
+        xll::LogDebug("RTD: Update notification skipped, Server is NULL");
     }
+    VariantClear(&v);
 }
 
 // RtdServer Implementation
 
-// ServerStart is handled by RtdServerBase
+// ServerStart, Heartbeat, ServerTerminate, RefreshData are handled by RtdServerBase
 
 HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) {
     xll::LogDebug("RTD ConnectData: TopicID=" + std::to_string(TopicID));
@@ -121,6 +114,7 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
 }
 
 HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
+    // 1. Notify Go Backend
     auto slot = g_host.GetZeroCopySlot();
     SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
     flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
@@ -128,56 +122,8 @@ HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
     builder.Finish(req);
     slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_DISCONNECT, 500);
 
-    {
-            std::lock_guard<std::mutex> lock(g_rtdMutex);
-            g_rtdValues.erase(TopicID);
-    }
-    return S_OK;
+    // 2. Clean up in Base Class
+    return RtdServerBase::DisconnectData(TopicID);
 }
-
-HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut) {
-    std::lock_guard<std::mutex> lock(g_rtdMutex);
-    std::vector<RtdValue> updates;
-    for (auto& [id, val] : g_rtdValues) {
-        if (val.dirty) {
-            updates.push_back(val);
-            val.dirty = false;
-        }
-    }
-
-    *TopicCount = (long)updates.size();
-    xll::LogDebug("RTD RefreshData: " + std::to_string(*TopicCount) + " updates available");
-
-    HRESULT hr = rtd::RtdServerBase::CreateRefreshDataArray(*TopicCount, parrayOut);
-    if (FAILED(hr)) return hr;
-    
-    if (*TopicCount == 0) return S_OK;
-
-    for (long i = 0; i < *TopicCount; ++i) {
-            long indices[2];
-            
-            // Row 0, Col i: TopicID
-            // indices[0] corresponds to bounds[0] (Rightmost/Col) -> i
-            // indices[1] corresponds to bounds[1] (Leftmost/Row)  -> 0
-            indices[0] = i; 
-            indices[1] = 0; 
-            
-            VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
-            HRESULT hr1 = SafeArrayPutElement(*parrayOut, indices, &vID);
-            if (FAILED(hr1)) xll::LogError("RTD: SafeArrayPutElement(ID) failed: " + std::to_string(hr1));
-
-            // Row 1, Col i: Value
-            indices[1] = 1; 
-            // indices[0] remains i
-            
-            HRESULT hr2 = SafeArrayPutElement(*parrayOut, indices, &updates[i].value);
-            if (FAILED(hr2)) xll::LogError("RTD: SafeArrayPutElement(Val) failed: " + std::to_string(hr2));
-
-            xll::LogDebug("RTD: Returning TopicID " + std::to_string(updates[i].topicId));
-    }
-    return S_OK;
-}
-
-// Heartbeat and ServerTerminate are handled by RtdServerBase
 
 #endif // XLL_RTD_ENABLED
