@@ -238,33 +238,33 @@ In `internal/templates/xll_main.cpp.tmpl`, all user-defined functions and built-
 
 The `IRtdServer::RefreshData` method must return a two-dimensional `SAFEARRAY` of `VARIANT`s with a specific layout for Excel to correctly process real-time updates.
 
-### 22.1 Required Layout: `[2][TopicCount]`
+### 22.1 Required Layout: `[TopicCount][2]`
 
-Excel expects a **2-row array** where:
-*   **Row 0**: Contains the **Topic IDs** (as `VT_I4`).
-*   **Row 1**: Contains the **Values** (as `VT_BSTR`, `VT_R8`, etc.).
+Excel expects an array with **N rows and 2 columns**, where N is the number of topics being updated:
+*   **Column 0**: Contains the **Topic IDs** (as `VT_I4`).
+*   **Column 1**: Contains the **Values** (as `VT_BSTR`, `VT_R8`, etc.).
 
 ### 22.2 SAFEARRAY Dimension Order (C++)
 
-In C++, `SAFEARRAYBOUND` array is defined from the **least significant** (rightmost) dimension to the **most significant** (leftmost) dimension.
+In C++, the `SAFEARRAYBOUND` array is defined from the **least significant** (rightmost) dimension to the **most significant** (leftmost) dimension.
 
-To achieve a `[2][TopicCount]` (2 Rows, N Columns) layout:
-1.  **`bounds[0]` (Rightmost / Columns)**: Set `cElements` to the number of topics being updated (`TopicCount`).
-2.  **`bounds[1]` (Leftmost / Rows)**: Set `cElements` to `2`.
+To achieve a `[TopicCount][2]` (N Rows, 2 Columns) layout:
+1.  **`bounds[0]` (Rightmost / Columns)**: Set `cElements` to `2`.
+2.  **`bounds[1]` (Leftmost / Rows)**: Set `cElements` to the number of topics being updated (`TopicCount`).
 
 ```cpp
 SAFEARRAYBOUND bounds[2];
-bounds[0].cElements = *TopicCount; // Columns
+bounds[0].cElements = 2;           // Columns
 bounds[0].lLbound = 0;
-bounds[1].cElements = 2;           // Rows
+bounds[1].cElements = *TopicCount; // Rows
 bounds[1].lLbound = 0;
 ```
 
 ### 22.3 Indexing with `SafeArrayPutElement`
 
-The `indices` array passed to `SafeArrayPutElement` follows the order of dimensions in `SAFEARRAYBOUND` array, where `indices[0]` is the **rightmost** (least significant) dimension.
+The `indices` array passed to `SafeArrayPutElement` follows the order of dimensions in the `SAFEARRAYBOUND` array, where `indices[0]` corresponds to the **rightmost** (least significant) dimension.
 
-*   **Topic ID**: `indices[0] = i` (Column i), `indices[1] = 0` (Row 0).
-*   **Value**: `indices[0] = i` (Column i), `indices[1] = 1` (Row 1).
+*   **Topic ID**: `indices[0] = 0` (Column 0), `indices[1] = i` (Row i).
+*   **Value**: `indices[0] = 1` (Column 1), `indices[1] = i` (Row i).
 
-Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, often causing them to stay stuck at "Connecting...".
+Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, often causing them to stay stuck at "Connecting...". This was the root cause of the bug fixed in commit `[SHA-of-fix-commit]`.

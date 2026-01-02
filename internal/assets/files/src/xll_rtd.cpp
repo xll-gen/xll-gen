@@ -162,40 +162,42 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
         return S_OK;
     }
 
-    // 2D Array [2][TopicCount]: Row 0 = TopicID, Row 1 = Value
-    // Based on AGENTS.md Section 22:
-    // bounds[0] (Rightmost) = TopicCount (Columns)
-    // bounds[1] (Leftmost)  = 2 (Rows)
+    // The SAFEARRAY returned must be a two-dimensional array.
+    // The first dimension is the number of topics to be updated.
+    // The second dimension is 2 (TopicID and Value).
+    // The SAFEARRAY API expects dimensions in reverse order:
+    // bounds[0] (Rightmost dimension) = Columns = 2
+    // bounds[1] (Leftmost dimension)  = Rows    = TopicCount
     SAFEARRAYBOUND bounds[2];
-    bounds[0].cElements = *TopicCount; // Columns
+    bounds[0].cElements = 2;           // Columns
     bounds[0].lLbound = 0;
-    bounds[1].cElements = 2;           // Rows
+    bounds[1].cElements = *TopicCount; // Rows
     bounds[1].lLbound = 0;
 
     *parrayOut = SafeArrayCreate(VT_VARIANT, 2, bounds);
     if (!*parrayOut) return E_OUTOFMEMORY;
 
     for (long i = 0; i < *TopicCount; ++i) {
-            long indices[2];
-            
-            // Row 0, Col i: TopicID
-            // indices[0] corresponds to bounds[0] (Rightmost/Col) -> i
-            // indices[1] corresponds to bounds[1] (Leftmost/Row)  -> 0
-            indices[0] = i; 
-            indices[1] = 0; 
-            
-            VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
-            HRESULT hr1 = SafeArrayPutElement(*parrayOut, indices, &vID);
-            if (FAILED(hr1)) xll::LogError("RTD: SafeArrayPutElement(ID) failed: " + std::to_string(hr1));
+        long indices[2];
 
-            // Row 1, Col i: Value
-            indices[1] = 1; 
-            // indices[0] remains i
-            
-            HRESULT hr2 = SafeArrayPutElement(*parrayOut, indices, &updates[i].value);
-            if (FAILED(hr2)) xll::LogError("RTD: SafeArrayPutElement(Val) failed: " + std::to_string(hr2));
+        // Row i, Col 0: TopicID
+        // indices[0] (Rightmost/Col) = 0
+        // indices[1] (Leftmost/Row)  = i
+        indices[0] = 0;
+        indices[1] = i;
 
-            xll::LogDebug("RTD: Returning TopicID " + std::to_string(updates[i].topicId));
+        VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
+        HRESULT hr1 = SafeArrayPutElement(*parrayOut, indices, &vID);
+        if (FAILED(hr1)) xll::LogError("RTD: SafeArrayPutElement(ID) failed: " + std::to_string(hr1));
+
+        // Row i, Col 1: Value
+        indices[0] = 1;
+        // indices[1] remains i
+
+        HRESULT hr2 = SafeArrayPutElement(*parrayOut, indices, &updates[i].value);
+        if (FAILED(hr2)) xll::LogError("RTD: SafeArrayPutElement(Val) failed: " + std::to_string(hr2));
+
+        xll::LogDebug("RTD: Returning TopicID " + std::to_string(updates[i].topicId));
     }
     return S_OK;
 }
