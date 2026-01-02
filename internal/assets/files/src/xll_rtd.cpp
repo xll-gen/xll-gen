@@ -179,18 +179,18 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
             long indices[2];
             
             // Row 0, Col i: TopicID
-            // indices[0] (Leftmost/Row) = 0
-            // indices[1] (Rightmost/Col) = i
-            indices[0] = 0; 
-            indices[1] = i; 
+            // indices[0] corresponds to bounds[0] (Rightmost/Col) -> i
+            // indices[1] corresponds to bounds[1] (Leftmost/Row)  -> 0
+            indices[0] = i; 
+            indices[1] = 0; 
             
             VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
             HRESULT hr1 = SafeArrayPutElement(*parrayOut, indices, &vID);
             if (FAILED(hr1)) xll::LogError("RTD: SafeArrayPutElement(ID) failed: " + std::to_string(hr1));
 
             // Row 1, Col i: Value
-            indices[0] = 1; 
-            // indices[1] remains i
+            indices[1] = 1; 
+            // indices[0] remains i
             
             HRESULT hr2 = SafeArrayPutElement(*parrayOut, indices, &updates[i].value);
             if (FAILED(hr2)) xll::LogError("RTD: SafeArrayPutElement(Val) failed: " + std::to_string(hr2));

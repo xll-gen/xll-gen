@@ -262,9 +262,9 @@ bounds[1].lLbound = 0;
 
 ### 22.3 Indexing with `SafeArrayPutElement`
 
-The `indices` array passed to `SafeArrayPutElement` is **strictly position-based**, where `indices[0]` is the leftmost dimension.
+The `indices` array passed to `SafeArrayPutElement` follows the order of dimensions in `SAFEARRAYBOUND` array, where `indices[0]` is the **rightmost** (least significant) dimension.
 
-*   **Topic ID**: `indices[0] = 0` (Row 0), `indices[1] = i` (Column i).
-*   **Value**: `indices[0] = 1` (Row 1), `indices[1] = i` (Column i).
+*   **Topic ID**: `indices[0] = i` (Column i), `indices[1] = 0` (Row 0).
+*   **Value**: `indices[0] = i` (Column i), `indices[1] = 1` (Row 1).
 
 Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, often causing them to stay stuck at "Connecting...".
