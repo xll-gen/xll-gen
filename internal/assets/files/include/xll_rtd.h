@@ -44,7 +44,7 @@ struct RtdValue {
 // Global RTD State
 extern std::mutex g_rtdMutex;
 extern std::map<long, RtdValue> g_rtdValues;
-extern rtd::IRTDUpdateEvent* g_rtdCallback;
+extern class RtdServer* g_rtdServer;
 
 void ProcessRtdUpdate(const protocol::RtdUpdate* update);
 
@@ -53,9 +53,12 @@ class RtdServer : public rtd::RtdServerBase {
 public:
     RtdServer() {
         xll::LogDebug("RtdServer instance created");
+        g_rtdServer = this;
     }
 
-    virtual ~RtdServer() {}
+    virtual ~RtdServer() {
+        g_rtdServer = nullptr;
+    }
 
     // --- IUnknown ---
     virtual HRESULT __stdcall QueryInterface(REFIID riid, void** ppv) override {
@@ -79,12 +82,11 @@ public:
     }
 
     // --- IRtdServer Implementation ---
-    virtual HRESULT __stdcall ServerStart(rtd::IRTDUpdateEvent* Callback, long* pfRes) override;
+    // ServerStart, Heartbeat, ServerTerminate are handled by RtdServerBase
+    
     virtual HRESULT __stdcall ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) override;
     virtual HRESULT __stdcall RefreshData(long* TopicCount, SAFEARRAY** parrayOut) override;
     virtual HRESULT __stdcall DisconnectData(long TopicID) override;
-    virtual HRESULT __stdcall Heartbeat(long* pfRes) override;
-    virtual HRESULT __stdcall ServerTerminate() override;
 
     // --- IDispatch ---
     virtual HRESULT __stdcall GetTypeInfoCount(UINT* pctinfo) override {

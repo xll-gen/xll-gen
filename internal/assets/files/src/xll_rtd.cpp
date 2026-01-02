@@ -15,7 +15,7 @@ extern shm::DirectHost g_host;
 // Global RTD State
 std::mutex g_rtdMutex;
 std::map<long, RtdValue> g_rtdValues;
-rtd::IRTDUpdateEvent* g_rtdCallback = nullptr;
+RtdServer* g_rtdServer = nullptr;
 
 GUID StringToGuid(const std::wstring& str) {
     GUID guid;
@@ -60,27 +60,18 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         rv.dirty = true;
         VariantClear(&v);
 
-        if (g_rtdCallback) {
-            xll::LogDebug("RTD: Notifying Excel via Callback->UpdateNotify()");
-            g_rtdCallback->UpdateNotify();
+        if (g_rtdServer) {
+            xll::LogDebug("RTD: Notifying Excel via g_rtdServer->NotifyUpdate()");
+            g_rtdServer->NotifyUpdate();
         } else {
-            xll::LogDebug("RTD: Update notification skipped, Callback is NULL");
+            xll::LogDebug("RTD: Update notification skipped, Server is NULL");
         }
     }
 }
 
 // RtdServer Implementation
 
-HRESULT __stdcall RtdServer::ServerStart(rtd::IRTDUpdateEvent* Callback, long* pfRes) {
-    xll::LogDebug("RTD ServerStart called");
-    HRESULT hr = rtd::RtdServerBase::ServerStart(Callback, pfRes);
-    if (SUCCEEDED(hr)) {
-        std::lock_guard<std::mutex> lock(g_rtdMutex);
-        g_rtdCallback = Callback;
-        xll::LogDebug("RTD ServerStart succeeded, Callback stored.");
-    }
-    return hr;
-}
+// ServerStart is handled by RtdServerBase
 
 HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) {
     xll::LogDebug("RTD ConnectData: TopicID=" + std::to_string(TopicID));
@@ -157,23 +148,10 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
     *TopicCount = (long)updates.size();
     xll::LogDebug("RTD RefreshData: " + std::to_string(*TopicCount) + " updates available");
 
-    if (*TopicCount == 0) {
-        *parrayOut = nullptr;
-        return S_OK;
-    }
-
-    // 2D Array [2][TopicCount]: Row 0 = TopicID, Row 1 = Value
-    // Based on AGENTS.md Section 22:
-    // bounds[0] (Rightmost) = TopicCount (Columns)
-    // bounds[1] (Leftmost)  = 2 (Rows)
-    SAFEARRAYBOUND bounds[2];
-    bounds[0].cElements = *TopicCount; // Columns
-    bounds[0].lLbound = 0;
-    bounds[1].cElements = 2;           // Rows
-    bounds[1].lLbound = 0;
-
-    *parrayOut = SafeArrayCreate(VT_VARIANT, 2, bounds);
-    if (!*parrayOut) return E_OUTOFMEMORY;
+    HRESULT hr = rtd::RtdServerBase::CreateRefreshDataArray(*TopicCount, parrayOut);
+    if (FAILED(hr)) return hr;
+    
+    if (*TopicCount == 0) return S_OK;
 
     for (long i = 0; i < *TopicCount; ++i) {
             long indices[2];
@@ -200,17 +178,6 @@ HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut
     return S_OK;
 }
 
-HRESULT __stdcall RtdServer::Heartbeat(long* pfRes) {
-    if (pfRes) *pfRes = 1;
-    return S_OK;
-}
-
-HRESULT __stdcall RtdServer::ServerTerminate() {
-    {
-            std::lock_guard<std::mutex> lock(g_rtdMutex);
-            g_rtdCallback = nullptr;
-    }
-    return RtdServerBase::ServerTerminate();
-}
+// Heartbeat and ServerTerminate are handled by RtdServerBase
 
 #endif // XLL_RTD_ENABLED
