@@ -27,6 +27,8 @@
 #include "xll_lifecycle.h"
 #include "xll_excel.h"
 #include "SHMAllocator.h"
+#include <atlbase.h>
+#include <atlcom.h>
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
@@ -156,6 +158,52 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     {{if .Rtd.Enabled}}
     // Register RTD Server in Registry
     DllRegisterServer();
+
+    // Set RTD Throttle Interval if specified
+    {{$throttleInterval := derefInt .Rtd.ThrottleInterval}}
+    {{if ne $throttleInterval -1}}
+    LogInfo("Setting RTD.ThrottleInterval to {{$throttleInterval}}ms");
+    CComPtr<IDispatch> pXlApp;
+    CLSID clsid;
+    if (SUCCEEDED(CLSIDFromProgID(L"Excel.Application", &clsid))) {
+        IUnknown* pUnk = nullptr;
+        if (SUCCEEDED(GetActiveObject(clsid, NULL, &pUnk)) && pUnk != nullptr) {
+            pUnk->QueryInterface(IID_IDispatch, (void**)&pXlApp);
+            pUnk->Release();
+        }
+    }
+
+    if (pXlApp) {
+        CComVariant vResult;
+        DISPID dispId;
+        LPOLESTR propName = L"RTD";
+        if (SUCCEEDED(pXlApp->GetIDsOfNames(IID_NULL, &propName, 1, LOCALE_USER_DEFAULT, &dispId))) {
+            DISPPARAMS params = { NULL, NULL, 0, 0 };
+            if (SUCCEEDED(pXlApp->Invoke(dispId, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &params, &vResult, NULL, NULL)) && vResult.vt == VT_DISPATCH) {
+                CComPtr<IDispatch> pRtd = vResult.pdispVal;
+                propName = L"ThrottleInterval";
+                if (SUCCEEDED(pRtd->GetIDsOfNames(IID_NULL, &propName, 1, LOCALE_USER_DEFAULT, &dispId))) {
+                    CComVariant vArg({{$throttleInterval}});
+                    DISPID propPut = DISPID_PROPERTYPUT;
+                    DISPPARAMS params = { NULL, &propPut, 1, 1 };
+                    params.rgvarg = &vArg;
+                    HRESULT hr = pRtd->Invoke(dispId, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYPUT, &params, NULL, NULL, NULL);
+                    if (FAILED(hr)) {
+                        LogError("Failed to set RTD.ThrottleInterval property. HRESULT: " + std::to_string(hr));
+                    }
+                } else {
+                    LogError("Failed to get DISPID for RTD.ThrottleInterval property.");
+                }
+            } else {
+                LogError("Failed to get RTD property from Application object.");
+            }
+        } else {
+            LogError("Failed to get DISPID for Application.RTD property.");
+        }
+    } else {
+        LogError("Failed to get Excel Application object via GetActiveObject.");
+    }
+    {{end}}
 
     // Also register in memory for immediate access in this process
     static DWORD dwCookie = 0;

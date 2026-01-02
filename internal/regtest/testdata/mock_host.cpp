@@ -8,6 +8,7 @@
 #include "schema_generated.h"
 
 using namespace std;
+using namespace protocol;
 
 #define ASSERT_EQ(a, b, msg) { \
     if ((a) != (b)) { \
@@ -133,7 +134,7 @@ int main(int argc, char* argv[]) {
     {
         builder.Reset();
         auto val = protocol::CreateInt(builder, 10);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue::Int, val.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Int, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -148,7 +149,7 @@ int main(int argc, char* argv[]) {
         builder.Reset();
         auto s = builder.CreateString("hello");
         auto val = protocol::CreateStr(builder, s);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue::Str, val.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Str, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -162,7 +163,7 @@ int main(int argc, char* argv[]) {
     {
         builder.Reset();
         auto val = protocol::CreateNum(builder, 1.5);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue::Num, val.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Num, val.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -179,7 +180,7 @@ int main(int argc, char* argv[]) {
         std::vector<double> data = {1.1, 2.2};
         auto dataOff = builder.CreateVector(data);
         auto arr = protocol::CreateNumGrid(builder, 1, 2, dataOff);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue::NumGrid, arr.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_NumGrid, arr.Union());
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
         builder.Finish(req.Finish());
@@ -194,14 +195,14 @@ int main(int argc, char* argv[]) {
     {
         builder.Reset();
         auto val1 = protocol::CreateInt(builder, 1);
-        auto s1 = protocol::CreateScalar(builder, protocol::ScalarValue::Int, val1.Union());
+        auto s1 = protocol::CreateScalar(builder, protocol::ScalarValue_Int, val1.Union());
         auto val2 = protocol::CreateBool(builder, true);
-        auto s2 = protocol::CreateScalar(builder, protocol::ScalarValue::Bool, val2.Union());
+        auto s2 = protocol::CreateScalar(builder, protocol::ScalarValue_Bool, val2.Union());
 
         std::vector<flatbuffers::Offset<protocol::Scalar>> data = {s1, s2};
         auto dataOff = builder.CreateVector(data);
         auto arr = protocol::CreateGrid(builder, 1, 2, dataOff);
-        auto any = protocol::CreateAny(builder, protocol::AnyValue::Grid, arr.Union());
+        auto any = protocol::CreateAny(builder, protocol::AnyValue_Grid, arr.Union());
 
         ipc::CheckAnyRequestBuilder req(builder);
         req.add_val(any);
@@ -305,7 +306,7 @@ int main(int argc, char* argv[]) {
                          if (res->handle()->Get(0) != 0xAA) { cerr << "Invalid handle content" << endl; return 0; }
 
                          // Verify Result
-                         if (res->result()->val_type() != protocol::AnyValue::Int) { cerr << "Invalid result type" << endl; return 0; }
+                         if (res->result()->val_type() != protocol::AnyValue_Int) { cerr << "Invalid result type" << endl; return 0; }
                          if (res->result()->val_as_Int()->val() != val) { cerr << "Invalid result value" << endl; return 0; }
 
                          received = true;
@@ -348,14 +349,14 @@ int main(int argc, char* argv[]) {
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 command" << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        if (wrapper->cmd_type() != protocol::Command::SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
+        if (wrapper->cmd_type() != protocol::Command_SetCommand) { cerr << "Expected SetCommand" << endl; return 1; }
 
         auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
         auto rng = setCmd->target();
         ASSERT_STREQ("Sheet1", rng->sheet_name()->str(), "SetCommand Sheet");
 
         auto val = setCmd->value();
-        ASSERT_EQ((int)protocol::AnyValue::Int, (int)val->val_type(), "SetCommand ValType");
+        ASSERT_EQ((int)protocol::AnyValue_Int, (int)val->val_type(), "SetCommand ValType");
         ASSERT_EQ(100, val->val_as_Int()->val(), "SetCommand Val");
     }
 
@@ -379,7 +380,7 @@ int main(int argc, char* argv[]) {
         if (eventResp->commands()->size() != 1) { cerr << "Expected 1 format command" << endl; return 1; }
 
         auto wrapper = eventResp->commands()->Get(0);
-        if (wrapper->cmd_type() != protocol::Command::FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
+        if (wrapper->cmd_type() != protocol::Command_FormatCommand) { cerr << "Expected FormatCommand" << endl; return 1; }
 
         auto fmtCmd = static_cast<const protocol::FormatCommand*>(wrapper->cmd());
         auto rng = fmtCmd->target();
@@ -410,7 +411,7 @@ int main(int argc, char* argv[]) {
         // First: Set
         {
             auto wrapper = eventResp->commands()->Get(0);
-            if (wrapper->cmd_type() != protocol::Command::SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
+            if (wrapper->cmd_type() != protocol::Command_SetCommand) { cerr << "Expected SetCommand 1st" << endl; return 1; }
             auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
             auto val = setCmd->value();
             ASSERT_EQ(200, val->val_as_Int()->val(), "Multi SetCommand Val");
@@ -418,7 +419,7 @@ int main(int argc, char* argv[]) {
         // Second: Format
         {
             auto wrapper = eventResp->commands()->Get(1);
-            if (wrapper->cmd_type() != protocol::Command::FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
+            if (wrapper->cmd_type() != protocol::Command_FormatCommand) { cerr << "Expected FormatCommand 2nd" << endl; return 1; }
             auto fmtCmd = static_cast<const protocol::FormatCommand*>(wrapper->cmd());
             ASSERT_STREQ("Number", fmtCmd->format()->str(), "Multi FormatCommand Format");
         }
@@ -454,7 +455,7 @@ int main(int argc, char* argv[]) {
 
         for (unsigned int i=0; i<eventResp->commands()->size(); ++i) {
              auto wrapper = eventResp->commands()->Get(i);
-             if (wrapper->cmd_type() == protocol::Command::SetCommand) {
+             if (wrapper->cmd_type() == protocol::Command_SetCommand) {
                  auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
                  auto val = setCmd->value()->val_as_Int()->val();
                  if (val == 100) count100++;
@@ -489,7 +490,7 @@ int main(int argc, char* argv[]) {
         auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
         auto val = setCmd->value();
 
-        if (val->val_type() != protocol::AnyValue::Grid) {
+        if (val->val_type() != protocol::AnyValue_Grid) {
             cerr << "Expected Grid, got " << (int)val->val_type() << endl;
             return 1;
         }
@@ -502,11 +503,11 @@ int main(int argc, char* argv[]) {
         if (grid->data()->size() != 4) { cerr << "Expected 4 scalars" << endl; return 1; }
 
         auto s0 = grid->data()->Get(0);
-        ASSERT_EQ((int)protocol::ScalarValue::Int, (int)s0->val_type(), "S0 type");
+        ASSERT_EQ((int)protocol::ScalarValue_Int, (int)s0->val_type(), "S0 type");
         ASSERT_EQ(1, s0->val_as_Int()->val(), "S0 val");
 
         auto s1 = grid->data()->Get(1);
-        ASSERT_EQ((int)protocol::ScalarValue::Int, (int)s1->val_type(), "S1 type");
+        ASSERT_EQ((int)protocol::ScalarValue_Int, (int)s1->val_type(), "S1 type");
         ASSERT_EQ(2, s1->val_as_Int()->val(), "S1 val");
 
         auto s3 = grid->data()->Get(3);
@@ -519,7 +520,7 @@ int main(int argc, char* argv[]) {
         builder.Reset();
         auto keyOff = builder.CreateString("K1");
         auto valOff = protocol::CreateInt(builder, 123);
-        auto anyOff = protocol::CreateAny(builder, protocol::AnyValue::Int, valOff.Union());
+        auto anyOff = protocol::CreateAny(builder, protocol::AnyValue_Int, valOff.Union());
         auto req = protocol::CreateSetRefCacheRequest(builder, keyOff, anyOff);
         builder.Finish(req);
         vector<uint8_t> respBuf;
@@ -532,7 +533,7 @@ int main(int argc, char* argv[]) {
         builder.Reset();
         keyOff = builder.CreateString("K1");
         auto rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq(builder);
         caReq.add_val(anyOff);
         builder.Finish(caReq.Finish());
@@ -549,7 +550,7 @@ int main(int argc, char* argv[]) {
         builder.Reset();
         keyOff = builder.CreateString("K1");
         rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq2(builder);
         caReq2.add_val(anyOff);
         builder.Finish(caReq2.Finish());
@@ -565,7 +566,7 @@ int main(int argc, char* argv[]) {
         builder.Reset();
         keyOff = builder.CreateString("K1");
         rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
+        anyOff = protocol::CreateAny(builder, protocol::AnyValue_RefCache, rcVal.Union());
         ipc::CheckAnyRequestBuilder caReq3(builder);
         caReq3.add_val(anyOff);
         builder.Finish(caReq3.Finish());

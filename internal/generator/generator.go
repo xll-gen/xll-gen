@@ -133,18 +133,18 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 
 		// Generate C++ code
 	if err := ui.RunSpinner("Generating Flatbuffers C++ code...", func() error {
-		// We use --no-includes here because protocol_generated.h is provided by the 'types' library.
-		// We will post-process the generated header to include it via "types/protocol_generated.h".
-		cmd := exec.Command(flatcPath, "--cpp", "--no-includes", "-o", includeDir, schemaPath)
-		out, err := cmd.CombinedOutput()
+		// Generate for protocol.fbs first
+		cmdProtocol := exec.Command(flatcPath, "--cpp", "-o", includeDir, protocolPath)
+		out, err := cmdProtocol.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("flatc (cpp) failed: %w\n%s", err, string(out))
+			return fmt.Errorf("flatc (cpp) for protocol.fbs failed: %w\n%s", err, string(out))
 		}
 
-		// Fix include path in schema_generated.h
-		generatedHeader := filepath.Join(includeDir, "schema_generated.h")
-		if err := fixCppImports(generatedHeader); err != nil {
-			return fmt.Errorf("failed to fix C++ imports: %w", err)
+		// Then generate for schema.fbs, which includes protocol.fbs
+		cmdSchema := exec.Command(flatcPath, "--cpp", "-o", includeDir, schemaPath)
+		out, err = cmdSchema.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("flatc (cpp) for schema.fbs failed: %w\n%s", err, string(out))
 		}
 
 		return nil
@@ -184,21 +184,5 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		return err
 	}
 
-	return nil
-}
-
-// fixCppImports replaces the local protocol include with the types library prefix.
-func fixCppImports(headerPath string) error {
-	content, err := os.ReadFile(headerPath)
-	if err != nil {
-		return err
-	}
-
-	s := string(content)
-	s = strings.ReplaceAll(s, "#include \"protocol_generated.h\"", "#include \"types/protocol_generated.h\"")
-
-	if s != string(content) {
-		return os.WriteFile(headerPath, []byte(s), 0644)
-	}
 	return nil
 }

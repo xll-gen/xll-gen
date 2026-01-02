@@ -74,6 +74,12 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return *b
 		},
+		"derefInt": func(i *int) int {
+			if i == nil {
+				return -1 // Use -1 to indicate not set
+			}
+			return *i
+		},
 		"derefString": func(s *string) string {
 			if s == nil {
 				return ""

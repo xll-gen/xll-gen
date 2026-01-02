@@ -40,6 +40,10 @@ type RtdConfig struct {
 	Clsid       string `yaml:"clsid"`
 	// Description is the description of the RTD server.
 	Description string `yaml:"description"`
+	// ThrottleInterval is the minimum time in milliseconds between RTD updates from Excel.
+	// A value of 0 allows Excel to update as frequently as possible.
+	// If unset, Excel's default (typically 2000ms) is used.
+	ThrottleInterval *int `yaml:"throttle_interval,omitempty"`
 }
 
 // CacheConfig configures the global caching behavior.

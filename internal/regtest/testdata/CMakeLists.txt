@@ -48,6 +48,7 @@ FetchContent_MakeAvailable(types)
 
 add_executable(mock_host main.cpp)
 target_include_directories(mock_host PRIVATE
+    ../generated
     ../generated/cpp
     ../generated/cpp/include
 )

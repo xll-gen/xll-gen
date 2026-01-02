@@ -6,6 +6,7 @@
 #include "xll_ipc.h"
 #include "types/mem.h"
 #include <cwchar>
+#include <objbase.h>
 
 using namespace xll;
 
@@ -109,11 +110,13 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
             g_xlErrValue.xltype = xltypeErr;
             g_xlErrValue.val.err = xlerrValue;
             g_isUnloading = false;
+            CoInitialize(NULL);
             break;
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
             break;
         case DLL_PROCESS_DETACH:
+            CoUninitialize();
             // Excel may load and unload the DLL ("probe") without calling xlAutoOpen/xlAutoClose.
             // Normally, cleanup is handled exclusively in xlAutoClose.
             // However, if xlAutoClose was skipped (e.g. forced unload), we must attempt to stop threads
