@@ -13,6 +13,8 @@ import (
 	"{{.ModName}}/generated/ipc"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/server"
+	"github.com/xll-gen/xll-gen/pkg/pool"
+	"github.com/xll-gen/xll-gen/pkg/rtd"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -28,7 +30,7 @@ var (
 	chunkManager   = server.NewChunkManager()
 	commandBatcher = server.NewCommandBatcher()
 	refCache       = server.NewRefCache()
-	sysHandler     = server.NewSystemHandler(chunkManager, asyncBatcher, commandBatcher, refCache, server.GlobalRtd)
+	sysHandler     = server.NewSystemHandler(chunkManager, asyncBatcher, commandBatcher, refCache, rtd.GlobalRtd)
 )
 
 func ScheduleSet(r *protocol.Range, v *protocol.Any) {
@@ -41,7 +43,7 @@ func ScheduleFormat(r *protocol.Range, fmtStr string) {
 
 {{if .Rtd.Enabled}}
 func PushRtdUpdate(topicID int32, value interface{}) error {
-    return server.GlobalRtd.SendUpdate(topicID, value)
+    return rtd.GlobalRtd.SendUpdate(topicID, value)
 }
 {{end}}
 
@@ -69,7 +71,7 @@ func Serve(handler XllService) {
     defer client.Close()
 
     {{if .Rtd.Enabled}}
-    server.GlobalRtd.SetClient(client)
+    rtd.GlobalRtd.SetClient(client)
     {{end}}
 
 	asyncBatcher.StartWorker(func(batch []server.PendingAsyncResult) {
@@ -105,8 +107,8 @@ func Serve(handler XllService) {
 
 	var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
 	dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
-             builder := server.GetBuilder(respBuf)
-             defer server.PutBuilder(builder)
+             builder := pool.GetBuilder(respBuf)
+             defer pool.PutBuilder(builder)
 
              switch uint32(mType) {
              case server.MsgCalculationEnded:

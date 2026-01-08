@@ -1,4 +1,4 @@
-package server
+package rtd
 
 import (
 	"fmt"
@@ -8,7 +8,11 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/pkg/pool"
 )
+
+// MsgRtdUpdate is the message ID for RTD updates (must match server/types.go)
+const MsgRtdUpdate = 135
 
 // RtdManager manages RTD topic subscriptions and broadcasts.
 type RtdManager struct {
@@ -113,8 +117,8 @@ func (m *RtdManager) sendUpdateLocked(topicID int32, value interface{}) error {
 		return fmt.Errorf("server not connected")
 	}
 
-	b := GetBuilder(nil)
-	defer PutBuilder(b)
+	b := pool.GetBuilder(nil)
+	defer pool.PutBuilder(b)
 
 	// Encode Value
 	var anyOff flatbuffers.UOffsetT
