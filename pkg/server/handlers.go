@@ -10,6 +10,7 @@ import (
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/pkg/log"
+	"github.com/xll-gen/xll-gen/pkg/rtd"
 )
 
 // SystemHandler processes generic system messages.
@@ -18,11 +19,11 @@ type SystemHandler struct {
 	AsyncBatcher   *AsyncBatcher
 	CommandBatcher *CommandBatcher
 	RefCache       *RefCache
-	RtdManager     *RtdManager
+	RtdManager     *rtd.RtdManager
 }
 
 // NewSystemHandler creates a new SystemHandler.
-func NewSystemHandler(cm *ChunkManager, ab *AsyncBatcher, cb *CommandBatcher, rc *RefCache, rtd *RtdManager) *SystemHandler {
+func NewSystemHandler(cm *ChunkManager, ab *AsyncBatcher, cb *CommandBatcher, rc *RefCache, rtd *rtd.RtdManager) *SystemHandler {
 	return &SystemHandler{
 		ChunkManager:   cm,
 		AsyncBatcher:   ab,

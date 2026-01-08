@@ -13,9 +13,7 @@
 extern shm::DirectHost g_host;
 
 // Global RTD State
-std::mutex g_rtdMutex;
-std::map<long, RtdValue> g_rtdValues;
-rtd::IRTDUpdateEvent* g_rtdCallback = nullptr;
+RtdServer* g_rtdServer = nullptr;
 
 GUID StringToGuid(const std::wstring& str) {
     GUID guid;
@@ -52,35 +50,21 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(g_rtdMutex);
-        RtdValue& rv = g_rtdValues[topicID];
-        rv.topicId = topicID;
-        VariantCopy(&rv.value, &v);
-        rv.dirty = true;
-        VariantClear(&v);
-
-        if (g_rtdCallback) {
-            xll::LogDebug("RTD: Notifying Excel via Callback->UpdateNotify()");
-            g_rtdCallback->UpdateNotify();
-        } else {
-            xll::LogDebug("RTD: Update notification skipped, Callback is NULL");
-        }
+    if (g_rtdServer) {
+        // Update topic in RtdServerBase
+        g_rtdServer->UpdateTopic(topicID, v);
+        
+        xll::LogDebug("RTD: Notifying Excel via g_rtdServer->NotifyUpdate()");
+        g_rtdServer->NotifyUpdate();
+    } else {
+        xll::LogDebug("RTD: Update notification skipped, Server is NULL");
     }
+    VariantClear(&v);
 }
 
 // RtdServer Implementation
 
-HRESULT __stdcall RtdServer::ServerStart(rtd::IRTDUpdateEvent* Callback, long* pfRes) {
-    xll::LogDebug("RTD ServerStart called");
-    HRESULT hr = rtd::RtdServerBase::ServerStart(Callback, pfRes);
-    if (SUCCEEDED(hr)) {
-        std::lock_guard<std::mutex> lock(g_rtdMutex);
-        g_rtdCallback = Callback;
-        xll::LogDebug("RTD ServerStart succeeded, Callback stored.");
-    }
-    return hr;
-}
+// ServerStart, Heartbeat, ServerTerminate, RefreshData are handled by RtdServerBase
 
 HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) {
     xll::LogDebug("RTD ConnectData: TopicID=" + std::to_string(TopicID));
@@ -130,6 +114,7 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
 }
 
 HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
+    // 1. Notify Go Backend
     auto slot = g_host.GetZeroCopySlot();
     SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
     flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
@@ -137,80 +122,8 @@ HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
     builder.Finish(req);
     slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_DISCONNECT, 500);
 
-    {
-            std::lock_guard<std::mutex> lock(g_rtdMutex);
-            g_rtdValues.erase(TopicID);
-    }
-    return S_OK;
-}
-
-HRESULT __stdcall RtdServer::RefreshData(long* TopicCount, SAFEARRAY** parrayOut) {
-    std::lock_guard<std::mutex> lock(g_rtdMutex);
-    std::vector<RtdValue> updates;
-    for (auto& [id, val] : g_rtdValues) {
-        if (val.dirty) {
-            updates.push_back(val);
-            val.dirty = false;
-        }
-    }
-
-    *TopicCount = (long)updates.size();
-    xll::LogDebug("RTD RefreshData: " + std::to_string(*TopicCount) + " updates available");
-
-    if (*TopicCount == 0) {
-        *parrayOut = nullptr;
-        return S_OK;
-    }
-
-    // 2D Array [2][TopicCount]: Row 0 = TopicID, Row 1 = Value
-    // Based on AGENTS.md Section 22:
-    // bounds[0] (Rightmost) = TopicCount (Columns)
-    // bounds[1] (Leftmost)  = 2 (Rows)
-    SAFEARRAYBOUND bounds[2];
-    bounds[0].cElements = *TopicCount; // Columns
-    bounds[0].lLbound = 0;
-    bounds[1].cElements = 2;           // Rows
-    bounds[1].lLbound = 0;
-
-    *parrayOut = SafeArrayCreate(VT_VARIANT, 2, bounds);
-    if (!*parrayOut) return E_OUTOFMEMORY;
-
-    for (long i = 0; i < *TopicCount; ++i) {
-            long indices[2];
-            
-            // Row 0, Col i: TopicID
-            // indices[0] (Leftmost/Row) = 0
-            // indices[1] (Rightmost/Col) = i
-            indices[0] = 0; 
-            indices[1] = i; 
-            
-            VARIANT vID; VariantInit(&vID); vID.vt = VT_I4; vID.lVal = updates[i].topicId;
-            HRESULT hr1 = SafeArrayPutElement(*parrayOut, indices, &vID);
-            if (FAILED(hr1)) xll::LogError("RTD: SafeArrayPutElement(ID) failed: " + std::to_string(hr1));
-
-            // Row 1, Col i: Value
-            indices[0] = 1; 
-            // indices[1] remains i
-            
-            HRESULT hr2 = SafeArrayPutElement(*parrayOut, indices, &updates[i].value);
-            if (FAILED(hr2)) xll::LogError("RTD: SafeArrayPutElement(Val) failed: " + std::to_string(hr2));
-
-            xll::LogDebug("RTD: Returning TopicID " + std::to_string(updates[i].topicId));
-    }
-    return S_OK;
-}
-
-HRESULT __stdcall RtdServer::Heartbeat(long* pfRes) {
-    if (pfRes) *pfRes = 1;
-    return S_OK;
-}
-
-HRESULT __stdcall RtdServer::ServerTerminate() {
-    {
-            std::lock_guard<std::mutex> lock(g_rtdMutex);
-            g_rtdCallback = nullptr;
-    }
-    return RtdServerBase::ServerTerminate();
+    // 2. Clean up in Base Class
+    return RtdServerBase::DisconnectData(TopicID);
 }
 
 #endif // XLL_RTD_ENABLED

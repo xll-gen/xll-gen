@@ -48,8 +48,8 @@ func (s *MyService) OnCalculationCanceled(ctx context.Context) error {
 }
 
 func (s *MyService) OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error {
-	if len(strings) > 0 {
-		ticker := strings[0]
+	if len(strings) > 1 {
+		ticker := strings[1]
 		go func() {
 			for {
 				select {

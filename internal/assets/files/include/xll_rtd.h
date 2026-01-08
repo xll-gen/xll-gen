@@ -15,36 +15,8 @@
 // Helper function to create CLSID from string
 GUID StringToGuid(const std::wstring& str);
 
-// RTD Update Queue
-struct RtdValue {
-    long topicId;
-    VARIANT value;
-    bool dirty;
-
-    RtdValue() : topicId(0), dirty(false) {
-        VariantInit(&value);
-    }
-    RtdValue(const RtdValue& other) : topicId(other.topicId), dirty(other.dirty) {
-        VariantInit(&value);
-        VariantCopy(&value, (VARIANTARG*)&other.value);
-    }
-    RtdValue& operator=(const RtdValue& other) {
-        if (this != &other) {
-            topicId = other.topicId;
-            dirty = other.dirty;
-            VariantCopy(&value, (VARIANTARG*)&other.value);
-        }
-        return *this;
-    }
-    ~RtdValue() {
-        VariantClear(&value);
-    }
-};
-
 // Global RTD State
-extern std::mutex g_rtdMutex;
-extern std::map<long, RtdValue> g_rtdValues;
-extern rtd::IRTDUpdateEvent* g_rtdCallback;
+extern class RtdServer* g_rtdServer;
 
 void ProcessRtdUpdate(const protocol::RtdUpdate* update);
 
@@ -53,9 +25,12 @@ class RtdServer : public rtd::RtdServerBase {
 public:
     RtdServer() {
         xll::LogDebug("RtdServer instance created");
+        g_rtdServer = this;
     }
 
-    virtual ~RtdServer() {}
+    virtual ~RtdServer() {
+        g_rtdServer = nullptr;
+    }
 
     // --- IUnknown ---
     virtual HRESULT __stdcall QueryInterface(REFIID riid, void** ppv) override {
@@ -79,12 +54,10 @@ public:
     }
 
     // --- IRtdServer Implementation ---
-    virtual HRESULT __stdcall ServerStart(rtd::IRTDUpdateEvent* Callback, long* pfRes) override;
+    // ServerStart, Heartbeat, ServerTerminate, RefreshData are handled by RtdServerBase
+    
     virtual HRESULT __stdcall ConnectData(long TopicID, SAFEARRAY** Strings, VARIANT_BOOL* GetNewValues, VARIANT* pvarOut) override;
-    virtual HRESULT __stdcall RefreshData(long* TopicCount, SAFEARRAY** parrayOut) override;
     virtual HRESULT __stdcall DisconnectData(long TopicID) override;
-    virtual HRESULT __stdcall Heartbeat(long* pfRes) override;
-    virtual HRESULT __stdcall ServerTerminate() override;
 
     // --- IDispatch ---
     virtual HRESULT __stdcall GetTypeInfoCount(UINT* pctinfo) override {
@@ -106,7 +79,10 @@ public:
         return DISP_E_UNKNOWNNAME;
     }
     virtual HRESULT __stdcall Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr) override {
-        xll::LogDebug("RtdServer::Invoke DISPID: " + std::to_string(dispIdMember));
+        xll::LogDebug("RtdServer::Invoke DISPID: " + std::to_string(dispIdMember) + " Args: " + std::to_string(pDispParams->cArgs));
+        for (UINT i = 0; i < pDispParams->cArgs; ++i) {
+            xll::LogDebug("  Arg[" + std::to_string(i) + "] VT: " + std::to_string(pDispParams->rgvarg[i].vt));
+        }
         
         switch (dispIdMember) {
             case 10: { // ServerStart(Callback, pfRes)
@@ -129,13 +105,47 @@ public:
                 SAFEARRAY** ppSA = (pDispParams->rgvarg[1].vt == (VT_ARRAY|VT_BYREF|VT_VARIANT)) ? pDispParams->rgvarg[1].pparray : (pDispParams->rgvarg[1].vt == (VT_ARRAY|VT_VARIANT) ? &pDispParams->rgvarg[1].parray : nullptr);
                 return ConnectData(topicId, ppSA, pDispParams->rgvarg[0].pboolVal, pVarResult);
             }
-            case 12: // RefreshData(TopicCount, parrayOut)
-                return RefreshData(pDispParams->rgvarg[0].plVal, pVarResult ? &pVarResult->parray : nullptr);
-            case 13: // DisconnectData(TopicID)
-                return DisconnectData(pDispParams->rgvarg[0].lVal);
-            case 14: // Heartbeat(pfRes)
-                if (pVarResult) { pVarResult->vt = VT_I4; return Heartbeat(&pVarResult->lVal); }
-                long d; return Heartbeat(&d);
+            case 12: { // RefreshData(TopicCount, parrayOut)
+                if (pDispParams->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+                
+                long* pTopicCount = nullptr;
+                if (pDispParams->rgvarg[0].vt == (VT_I4 | VT_BYREF)) {
+                    pTopicCount = pDispParams->rgvarg[0].plVal;
+                } else if (pDispParams->rgvarg[0].vt == VT_I4) {
+                    pTopicCount = &(pDispParams->rgvarg[0].lVal);
+                }
+
+                if (!pTopicCount) {
+                    xll::LogDebug("RefreshData: Arg[0] is not VT_I4|VT_BYREF (it is " + std::to_string(pDispParams->rgvarg[0].vt) + ")");
+                    return DISP_E_TYPEMISMATCH;
+                }
+                
+                SAFEARRAY* psa = nullptr;
+                HRESULT hr = RefreshData(pTopicCount, &psa);
+                if (SUCCEEDED(hr) && pVarResult) {
+                    VariantInit(pVarResult);
+                    pVarResult->vt = VT_ARRAY | VT_VARIANT;
+                    pVarResult->parray = psa;
+                }
+                return hr;
+            }
+            case 13: { // DisconnectData(TopicID)
+                if (pDispParams->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+                // TopicID is the first parameter (index 0)
+                long topicId = (pDispParams->rgvarg[0].vt == VT_I4) ? pDispParams->rgvarg[0].lVal : 0;
+                return DisconnectData(topicId);
+            }
+            case 14: { // Heartbeat(pfRes)
+                if (pDispParams->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+                // pfRes is an [out] long* (index 0)
+                long* pfRes = (pDispParams->rgvarg[0].vt == (VT_I4 | VT_BYREF)) ? pDispParams->rgvarg[0].plVal : nullptr;
+                if (pfRes) return Heartbeat(pfRes);
+                
+                long d = 0;
+                HRESULT hr = Heartbeat(&d);
+                if (pVarResult) { VariantInit(pVarResult); pVarResult->vt = VT_I4; pVarResult->lVal = d; }
+                return hr;
+            }
             case 15: // ServerTerminate
                 return ServerTerminate();
             default: return DISP_E_MEMBERNOTFOUND;
