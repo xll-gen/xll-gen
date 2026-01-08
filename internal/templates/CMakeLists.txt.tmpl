@@ -62,21 +62,6 @@ set(PHMAP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(PHMAP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(phmap)
 
-{{ if .Rtd.Enabled }}
-# RTD Library
-FetchContent_Declare(
-  rtd
-  GIT_REPOSITORY https://github.com/xll-gen/rtd.git
-  GIT_TAG {{ .Deps.RTD }}
-)
-FetchContent_GetProperties(rtd)
-if(NOT rtd_POPULATED)
-  FetchContent_Populate(rtd)
-  # We DO NOT call add_subdirectory(rtd) to avoid building examples like MyHybridServer.xll
-  # Instead, we just use the headers.
-endif()
-{{ end }}
-
 if(NOT TARGET shm)
   add_library(shm INTERFACE)
   target_include_directories(shm INTERFACE ${shm_SOURCE_DIR}/include)
@@ -165,7 +150,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 {{ if .Rtd.Enabled }}
 target_compile_definitions(${PROJECT_NAME} PRIVATE XLL_RTD_ENABLED)
-target_include_directories(${PROJECT_NAME} PRIVATE ${rtd_SOURCE_DIR}/include)
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         ole32
