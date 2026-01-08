@@ -5,8 +5,13 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <string>
 #include "defs.h"
 #include "module.h"
+#include "types/utility.h"
+
+// Forward declaration of logging
+namespace xll { void LogDebug(const std::string& msg); }
 
 namespace rtd {
 
@@ -30,9 +35,11 @@ namespace rtd {
 
     public:
         RtdServerBase() : m_refCount(1), m_callback(nullptr) {
+            xll::LogDebug("RtdServerBase constructor");
             GlobalModule::Lock();
         }
         virtual ~RtdServerBase() {
+            xll::LogDebug("RtdServerBase destructor");
             // No need to lock mutexes; object is being destroyed (RefCount=0)
             if (m_callback) m_callback->Release();
 
@@ -81,6 +88,7 @@ namespace rtd {
 
         // --- IRtdServer Default Implementations ---
         HRESULT __stdcall ServerStart(IRTDUpdateEvent* Callback, long* pfRes) override {
+            xll::LogDebug("RtdServer::ServerStart");
             if (!pfRes) return E_POINTER;
             std::lock_guard<std::mutex> lock(m_callbackMutex);
             if (m_callback) m_callback->Release();
@@ -91,6 +99,7 @@ namespace rtd {
         }
 
         HRESULT __stdcall ServerTerminate() override {
+            xll::LogDebug("RtdServer::ServerTerminate");
             std::lock_guard<std::mutex> lock(m_callbackMutex);
             if (m_callback) {
                 m_callback->Release();
@@ -112,8 +121,11 @@ namespace rtd {
                 }
             }
             if (tempCallback) {
+                xll::LogDebug("RtdServer::NotifyUpdate calling UpdateNotify");
                 tempCallback->UpdateNotify();
                 tempCallback->Release();
+            } else {
+                xll::LogDebug("RtdServer::NotifyUpdate skipped (no callback)");
             }
         }
 
@@ -169,6 +181,7 @@ namespace rtd {
         }
 
         HRESULT __stdcall RefreshData(long* TopicCount, SAFEARRAY** parrayOut) override {
+            xll::LogDebug("RtdServer::RefreshData entry");
             if (!TopicCount || !parrayOut) return E_POINTER;
 
             std::vector<long> dirtyTopics;
@@ -177,6 +190,7 @@ namespace rtd {
             {
                 std::lock_guard<std::mutex> lock(m_topicMutex);
                 if (m_dirtyTopics.empty()) {
+                    xll::LogDebug("RtdServer::RefreshData: No dirty topics");
                     *TopicCount = 0;
                     *parrayOut = nullptr;
                     return S_OK;
@@ -199,6 +213,7 @@ namespace rtd {
             }
 
             long count = static_cast<long>(dirtyTopics.size());
+            xll::LogDebug("RtdServer::RefreshData: Updating " + std::to_string(count) + " topics");
             SAFEARRAY* psa = nullptr;
             HRESULT hr = CreateRefreshDataArray(count, &psa);
             if (FAILED(hr)) {
@@ -218,12 +233,19 @@ namespace rtd {
 
                 indices[1] = 1;
                 SafeArrayPutElement(psa, indices, &topicValues[i]);
+
+                if (topicValues[i].vt == VT_BSTR) {
+                    xll::LogDebug("RTD: RefreshData Topic " + std::to_string(dirtyTopics[i]) + " = " + WideToUtf8(topicValues[i].bstrVal));
+                } else {
+                    xll::LogDebug("RTD: RefreshData Topic " + std::to_string(dirtyTopics[i]) + " (type " + std::to_string(topicValues[i].vt) + ")");
+                }
             }
 
             for(auto& v : topicValues) VariantClear(&v);
 
             *TopicCount = count;
             *parrayOut = psa;
+            xll::LogDebug("RtdServer::RefreshData success");
             return S_OK;
         }
 

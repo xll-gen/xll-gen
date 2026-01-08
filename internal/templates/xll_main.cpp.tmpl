@@ -375,13 +375,6 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         xRes.val.err = xlerrValue;
     }
 
-    return &xRes;
-
-    if (xlRet != xlretSuccess) {
-        xRes.xltype = xltypeErr;
-        xRes.val.err = xlerrValue;
-    }
-
     // The returned XLOPER12 from xlfRtd might need to be copied if it points to internal Excel memory that might be volatile?
     // Usually xlfRtd returns a value that we can just pass back.
     // If it returns a string, we need to be careful.

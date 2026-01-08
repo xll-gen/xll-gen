@@ -92,14 +92,12 @@ As of v0.1.0, core Excel types and utilities have been extracted to the upstream
 
 ### 17.2 C++ Dependencies
 - **Types Library**: The generated `CMakeLists.txt` uses `FetchContent` to download `github.com/xll-gen/types`.
-- **Include Paths**: Common headers are included via the `types/` prefix:
-    - `#include "types/protocol_generated.h"` (Replaced static asset)
-    - `#include "types/converters.h"`
-    - `#include "types/mem.h"`
-    - `#include "types/xlcall.h"`
-    - `#include "types/utility.h"`
-    - `#include "types/ObjectPool.h"`
-    - `#include "types/PascalString.h"`
+- **SHM Library**: The generated `CMakeLists.txt` uses `FetchContent` to download `github.com/xll-gen/shm`.
+- **Internalized Assets**: Core runtime components like RTD and memory pooling are now part of the `xll-gen` assets (`internal/assets/files/include/rtd/`) and are automatically included in the generated project.
+- **Include Paths**: Common headers are included via the `types/` or `rtd/` prefix:
+    - `#include "types/protocol_generated.h"`
+    - `#include "rtd/server.h"`
+    - ...
 
 This reduces code duplication in `internal/assets/files` and ensures consistency across generated projects.
 

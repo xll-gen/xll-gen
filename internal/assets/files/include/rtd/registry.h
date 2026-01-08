@@ -13,7 +13,7 @@ namespace rtd {
     inline long DeleteKeyUser(const wchar_t* szKey) {
         if (!szKey || !*szKey) return E_INVALIDARG;
 
-        std::wstring szFullKey = L"Software\Classes\";
+        std::wstring szFullKey = L"Software\\Classes\\";
         szFullKey += szKey;
 
         // RegDeleteTreeW is available since Vista, which is safe to assume.
@@ -29,7 +29,7 @@ namespace rtd {
         if (!szKey || !*szKey) return E_INVALIDARG;
 
         HKEY hKey;
-        std::wstring szFullKey = L"Software\Classes\";
+        std::wstring szFullKey = L"Software\\Classes\\";
         szFullKey += szKey;
         if (szSubkey) {
             szFullKey += L"\\";
@@ -65,7 +65,7 @@ namespace rtd {
         std::wstring clsidStr(pszCLSID);
         CoTaskMemFree(pszCLSID);
 
-        std::wstring szCLSIDKey = L"CLSID\" + clsidStr;
+        std::wstring szCLSIDKey = L"CLSID\\" + clsidStr;
 
         // 1. ProgID -> CLSID
         if (FAILED(SetKeyAndValueUser(progID, nullptr, friendlyName))) return E_FAIL;
@@ -77,11 +77,11 @@ namespace rtd {
         if (FAILED(SetKeyAndValueUser(szCLSIDKey.c_str(), L"InprocServer32", szModule.data()))) return E_FAIL;
 
         // ThreadingModel = Apartment is crucial for Excel RTD
-        std::wstring szInprocKey = szCLSIDKey + L"\InprocServer32";
+        std::wstring szInprocKey = szCLSIDKey + L"\\InprocServer32";
 
         // Re-open InprocServer32 key to set ThreadingModel
         HKEY hKey;
-        std::wstring szFullKey = L"Software\Classes\";
+        std::wstring szFullKey = L"Software\\Classes\\";
         szFullKey += szInprocKey;
 
         if (RegOpenKeyExW(HKEY_CURRENT_USER, szFullKey.c_str(), 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
@@ -102,7 +102,7 @@ namespace rtd {
         std::wstring clsidStr(pszCLSID);
         CoTaskMemFree(pszCLSID);
 
-        std::wstring szCLSIDKey = L"CLSID\" + clsidStr;
+        std::wstring szCLSIDKey = L"CLSID\\" + clsidStr;
 
         // 1. Delete ProgID
         DeleteKeyUser(progID);
