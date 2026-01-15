@@ -48,7 +48,6 @@ func generateCMake(cfg *config.Config, dir string) error {
 			FlatBuffers string
 			SHM         string
 			Types       string
-			RTD         string
 			PHMAP       string
 			Zstd        string
 		}
@@ -61,14 +60,12 @@ func generateCMake(cfg *config.Config, dir string) error {
 			FlatBuffers string
 			SHM         string
 			Types       string
-			RTD         string
 			PHMAP       string
 			Zstd        string
 		}{
 			FlatBuffers: versions.FlatBuffers,
 			SHM:         versions.SHM,
 			Types:       versions.Types,
-			RTD:         versions.RTD,
 			PHMAP:       versions.PHMAP,
 			Zstd:        versions.Zstd,
 		},

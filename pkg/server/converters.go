@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/types/go/protocol"
 )
@@ -37,6 +39,22 @@ func ToScalar(v *protocol.Any) (ScalarValue, bool) {
 		return ScalarValue{Type: protocol.AnyValueErr, Err: int16(t.Val())}, true
 	}
 	return ScalarValue{}, false
+}
+
+func ParseInt(s string) int32 {
+	var i int32
+	fmt.Sscanf(s, "%d", &i)
+	return i
+}
+
+func ParseFloat(s string) float64 {
+	var f float64
+	fmt.Sscanf(s, "%f", &f)
+	return f
+}
+
+func ParseBool(s string) bool {
+	return s == "TRUE" || s == "1" || s == "true"
 }
 
 func CreateScalarAny(b *flatbuffers.Builder, val ScalarValue) flatbuffers.UOffsetT {

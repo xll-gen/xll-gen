@@ -48,21 +48,7 @@ func (s *MyService) OnCalculationCanceled(ctx context.Context) error {
 }
 
 func (s *MyService) OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error {
-	if len(strings) > 1 {
-		ticker := strings[1]
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(1 * time.Second):
-					// Example: push a random price update
-					price := 100.0 + (50.0 * (rand.Float64() - 0.5))
-					generated.PushRtdUpdate(topicID, fmt.Sprintf("%s: %.2f", ticker, price))
-				}
-			}
-		}()
-	}
+	// Fallback for unknown topics
 	return nil
 }
 
@@ -70,10 +56,23 @@ func (s *MyService) OnRtdDisconnect(ctx context.Context, topicID int32) error {
 	return nil
 }
 
-func (s *MyService) StockQuote(ctx context.Context, symbol string) (any, error) {
-	// RTD mode functions are called via Excel's RTD mechanism.
-	// The return value here is typically ignored as updates are pushed via PushRtdUpdate.
-	return nil, nil
+func (s *MyService) StockQuote_RTD(ctx context.Context, topicID int32, symbol string) error {
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				price := 100.0 + (50.0 * (rand.Float64() - 0.5))
+				val := fmt.Sprintf("%s: %.2f", symbol, price)
+				generated.PushRtdUpdate(topicID, val)
+			}
+		}
+	}()
+	return nil
 }
 
 func main() {

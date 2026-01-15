@@ -10,7 +10,8 @@ import (
 var _ = protocol.Bool{}
 
 type XllService interface {
-{{range .Functions}}{{if ne .Mode "rtd"}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *protocol.Range{{end}}) ({{lookupGoType .Return}}, error)
+{{range .Functions}}	{{if eq .Mode "rtd"}}	{{.Name}}_RTD(ctx context.Context, topicID int32{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}) error
+	{{else}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *protocol.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}{{end}}
 {{range .Events}}	{{.Handler}}(ctx context.Context) error
 {{end}}
