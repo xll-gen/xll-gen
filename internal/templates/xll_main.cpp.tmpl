@@ -274,7 +274,7 @@ start_worker:
     {
         // Register {{.Name}}
         ScopedXLOPER12Result xRegId;
-        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}{{if ne .Mode "rtd"}}${{end}}";
+        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$";
 
         int regRes = xll::RegisterFunction(
             *xDLL,
