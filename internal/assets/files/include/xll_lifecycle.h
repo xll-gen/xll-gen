@@ -37,6 +37,17 @@ namespace xll {
         const std::vector<std::wstring>& argumentHelp,
         XLOPER12& xRegId
     );
+
+    // Unloading Flag
+    extern std::atomic<bool> g_isUnloading;
+
+    // Process Information for Server
+    extern ProcessInfo g_procInfo;
+
+    extern std::thread g_monitorThread;
+
+    // Thread for monitoring server process
+    void MonitorThread(std::wstring logPath);
 }
 
 // Safe Block Macros for Crash Handling
@@ -61,17 +72,6 @@ namespace xll {
 extern HINSTANCE g_hModule;
 // Global Error Value
 extern XLOPER12 g_xlErrValue;
-
-// Unloading Flag
-extern std::atomic<bool> g_isUnloading;
-
-// Process Information for Server
-extern xll::ProcessInfo g_procInfo;
-
-extern std::thread g_monitorThread;
-
-// Thread for monitoring server process
-void MonitorThread(std::wstring logPath);
 
 // Log Handler for SHM
 #ifdef SHM_DEBUG

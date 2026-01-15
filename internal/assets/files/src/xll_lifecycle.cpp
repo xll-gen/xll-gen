@@ -14,22 +14,24 @@ HINSTANCE g_hModule = NULL;
 // Global Error Value
 XLOPER12 g_xlErrValue;
 
-// Unloading Flag
-std::atomic<bool> g_isUnloading(false);
+namespace xll {
+    // Unloading Flag
+    std::atomic<bool> g_isUnloading(false);
 
-// Process Information for Server
-ProcessInfo g_procInfo = { 0 };
+    // Process Information for Server
+    ProcessInfo g_procInfo = { 0 };
 
-std::thread g_monitorThread;
+    std::thread g_monitorThread;
 
-// Thread for monitoring server process
-void MonitorThread(std::wstring logPath) {
-    // If unloading has already started, return immediately to avoid touching
-    // global resources that may be freed during a forced unload.
-    if (g_isUnloading) return;
+    // Thread for monitoring server process
+    void MonitorThread(std::wstring logPath) {
+        // If unloading has already started, return immediately to avoid touching
+        // global resources that may be freed during a forced unload.
+        if (g_isUnloading) return;
 
-    // Run the monitor; MonitorProcess should honor the shutdown event.
-    MonitorProcess(g_procInfo, logPath);
+        // Run the monitor; MonitorProcess should honor the shutdown event.
+        MonitorProcess(g_procInfo, logPath);
+    }
 }
 
 int xll::RegisterFunction(
