@@ -42,6 +42,9 @@ std::mutex g_partialMessagesMutex;
 void HandleChunk(const protocol::Chunk* chunk) {
     if (!chunk) return;
 
+    // If we're unloading, bail out early to avoid touching global state
+    if (g_isUnloading) return;
+
     uint64_t msgId = chunk->id();
 
     std::lock_guard<std::mutex> lock(g_partialMessagesMutex);
@@ -51,7 +54,7 @@ void HandleChunk(const protocol::Chunk* chunk) {
         // New partial message
         // Vulnerability Fix: Limit total size to 128MB to prevent DoS
         if (chunk->total_size() > 128 * 1024 * 1024) {
-             LogWarn("Chunk total size too large: " + std::to_string(chunk->total_size()) + " bytes. Dropping.");
+             if (!g_isUnloading) LogWarn("Chunk total size too large: " + std::to_string(chunk->total_size()) + " bytes. Dropping.");
              return;
         }
 
@@ -152,7 +155,8 @@ void WorkerLoop() {
             return 0; // Unknown
         }, 50); // 50ms timeout
 
-        if (processed) {
+        // Avoid logging during unload to prevent touching freed logging resources
+        if (processed && !g_isUnloading) {
             LogDebug("Call return guest call receive complete");
         }
 

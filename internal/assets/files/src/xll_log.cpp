@@ -11,12 +11,16 @@
 #include <sstream>
 #include <mutex>
 #include <filesystem>
+#include <atomic>
 
 namespace xll {
 
 static std::string g_logPath;
 static LogLevel g_logLevel = LogLevel::INFO; // Default
 static std::mutex g_logMutex;
+
+// Extern unloading flag (defined in xll_lifecycle.cpp)
+extern std::atomic<bool> g_isUnloading;
 
 // Helper to replace all occurrences of a substring
 static void ReplaceString(std::wstring& str, const std::wstring& from, const std::wstring& to) {
@@ -29,6 +33,8 @@ static void ReplaceString(std::wstring& str, const std::wstring& from, const std
 }
 
 static void WriteLog(const std::string& levelStr, const std::string& msg) {
+    // If unloading, avoid touching filesystem/logging resources.
+    if (g_isUnloading) return;
     if (g_logPath.empty()) return;
     std::lock_guard<std::mutex> lock(g_logMutex);
     // Use filesystem::path for proper Unicode handling on Windows
@@ -52,18 +58,21 @@ static void WriteLog(const std::string& levelStr, const std::string& msg) {
 }
 
 void LogError(const std::string& msg) {
+    if (g_isUnloading) return;
     if (g_logLevel >= LogLevel::ERROR) {
         WriteLog("ERROR", msg);
     }
 }
 
 void LogWarn(const std::string& msg) {
+    if (g_isUnloading) return;
     if (g_logLevel >= LogLevel::WARN) {
         WriteLog("WARN", msg);
     }
 }
 
 void LogInfo(const std::string& msg) {
+    if (g_isUnloading) return;
     if (g_logLevel >= LogLevel::INFO) {
         WriteLog("INFO", msg);
     }

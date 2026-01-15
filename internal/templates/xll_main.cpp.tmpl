@@ -38,6 +38,17 @@
 #include "rtd/registry.h"
 {{end}}
 
+// Safe logging macros: no-op during forced unload to avoid touching freed resources.
+#define SAFE_LOG_CALL(level, msg) do { if (!g_isUnloading) level(msg); } while(0)
+#define SAFE_LOG_INFO(msg) SAFE_LOG_CALL(LogInfo, msg)
+#define SAFE_LOG_WARN(msg) SAFE_LOG_CALL(LogWarn, msg)
+#define SAFE_LOG_ERROR(msg) SAFE_LOG_CALL(LogError, msg)
+#ifdef XLL_DEBUG_LOGGING
+#define SAFE_LOG_DEBUG(msg) SAFE_LOG_CALL(LogDebug, msg)
+#else
+#define SAFE_LOG_DEBUG(msg) do {} while(0)
+#endif
+
 // Disable "unreferenced formal parameter" warning
 #pragma warning(disable: 4100)
 
@@ -67,7 +78,7 @@ extern "C" {
         LPOLESTR pszCLSID, pszIID;
         StringFromCLSID(rclsid, &pszCLSID);
         StringFromIID(riid, &pszIID);
-        xll::LogDebug("DllGetClassObject: " + WideToUtf8(pszCLSID) + " | IID: " + WideToUtf8(pszIID));
+        SAFE_LOG_DEBUG("DllGetClassObject: " + WideToUtf8(pszCLSID) + " | IID: " + WideToUtf8(pszIID));
         CoTaskMemFree(pszCLSID);
         CoTaskMemFree(pszIID);
 
@@ -142,14 +153,14 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
             // Logging is critical for debugging but not for core functionality.
             MessageBoxA(NULL, ("Failed to initialize logging: " + logInitError).c_str(), "XLL Initialization Warning", MB_OK | MB_ICONWARNING);
     } else {
-            LogInfo("Logging Initialized Successfully. LogPath: " + WideToUtf8(logPath));
+            SAFE_LOG_INFO("Logging Initialized Successfully. LogPath: " + WideToUtf8(logPath));
     }
 
 #ifdef SHM_DEBUG
     shm::SetLogHandler(LogHandler);
 #endif
 
-    LogInfo("xlAutoOpen: Loading XLL...");
+    SAFE_LOG_INFO("xlAutoOpen: Loading XLL...");
 
     xll::CallExcel(xlGetName, xDLL);
 
@@ -164,9 +175,9 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     pFactory->Release();
 
     if (FAILED(hr_reg)) {
-        LogError("CoRegisterClassObject failed: " + std::to_string(hr_reg));
+        SAFE_LOG_ERROR("CoRegisterClassObject failed: " + std::to_string(hr_reg));
     } else {
-        LogInfo("RTD Server registered in memory successfully.");
+        SAFE_LOG_INFO("RTD Server registered in memory successfully.");
     }
     {{end}}
 
@@ -178,7 +189,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     shmName += "_" + std::to_string(GetCurrentProcessId());
     {{end}}
 
-    LogInfo("Initializing Shared Memory: " + shmName);
+    SAFE_LOG_INFO("Initializing Shared Memory: " + shmName);
 
     // HostConfig: hostSlots, guestSlots.
     shm::HostConfig hostCfg{};
@@ -197,7 +208,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     auto initRes = g_host.Init(hostCfg);
     if (initRes.HasError()) {
             std::string err = "Failed to initialize shared memory: " + SHMErrorToString(initRes.GetError());
-            LogError(err);
+            SAFE_LOG_ERROR(err);
             MessageBoxA(NULL, err.c_str(), "XLL Error", MB_OK | MB_ICONERROR);
             return 0; // Fail loading
     }
@@ -207,8 +218,8 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     // Check if already running
     if (g_procInfo.hProcess != NULL) {
         DWORD exitCode = 0;
-        if (GetExitCodeProcess(g_procInfo.hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
-            LogInfo("Server process is already running. Skipping launch.");
+            if (GetExitCodeProcess(g_procInfo.hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+                SAFE_LOG_INFO("Server process is already running. Skipping launch.");
         } else {
              // Process is dead, clean up handles
              if (g_procInfo.hProcess) CloseHandle(g_procInfo.hProcess);
@@ -241,7 +252,7 @@ launch_server:
 
 start_worker:
     {{else}}
-    LogInfo("Server launch disabled by configuration.");
+    SAFE_LOG_INFO("Server launch disabled by configuration.");
     {{end}}
 
     // Start Worker Thread for Async Results
@@ -294,16 +305,16 @@ start_worker:
         );
 
         if (regRes != xlretSuccess) {
-            LogError("Failed to register function '{{.Name}}'. Code: " + std::to_string(regRes));
+            SAFE_LOG_ERROR("Failed to register function '{{.Name}}'. Code: " + std::to_string(regRes));
         } else {
             std::string idStr = "Unknown";
             if (xRegId->xltype == xltypeNum) idStr = std::to_string((int)xRegId->val.num);
-            LogInfo("Registered function '{{.Name}}' successfully. ID: " + idStr);
+            SAFE_LOG_INFO("Registered function '{{.Name}}' successfully. ID: " + idStr);
         }
     }
 {{end}}
 
-        LogInfo("xlAutoOpen: Initialization complete. Returning 1.");
+        SAFE_LOG_INFO("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
     XLL_SAFE_BLOCK_END(0)
 }
@@ -314,7 +325,7 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
-    LogInfo("Event {{.Type}} triggered");
+    SAFE_LOG_INFO("Event {{.Type}} triggered");
 }
 {{end}}
 
@@ -329,7 +340,7 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
 // User Functions
 {{range $i, $fn := .Functions}}
 extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mode "rtd"}}LPXLOPER12{{else}}{{lookupCppType .Return}}{{end}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if eq .Mode "async"}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
-    LogDebug("Func Entry: {{.Name}}");
+    SAFE_LOG_DEBUG("Func Entry: {{.Name}}");
 
     {{if eq .Mode "rtd"}}
     // RTD Wrapper Implementation
@@ -369,7 +380,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     );
 
     if (xlRet != xlretSuccess) {
-        xll::LogError("xlfRtd failed for {{.Name}}. Return code: " + std::to_string(xlRet));
+        SAFE_LOG_ERROR("xlfRtd failed for {{.Name}}. Return code: " + std::to_string(xlRet));
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
@@ -379,7 +390,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         else if (xRes.xltype & xltypeBool) valStr = xRes.val.xbool ? "TRUE" : "FALSE";
         else if (xRes.xltype & xltypeErr) valStr = "Error:" + std::to_string(xRes.val.err);
         
-        xll::LogDebug("xlfRtd called for {{.Name}}. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
+        SAFE_LOG_DEBUG("xlfRtd called for {{.Name}}. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
     }
 
     return &xRes;
@@ -544,20 +555,20 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
 
     {{if eq .Mode "async"}}
     // Async Send
-    LogDebug("Async Send Start: {{.Name}}");
+    SAFE_LOG_DEBUG("Async Send Start: {{.Name}}");
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.AsyncAckTimeout 2000}}{{end}});
-    LogDebug("Async Send End: {{.Name}}");
+    SAFE_LOG_DEBUG("Async Send End: {{.Name}}");
 
     if (res.HasError()) {
             std::string err = "Async send failed: " + SHMErrorToString(res.GetError());
-            LogError(err);
+            SAFE_LOG_ERROR(err);
             XLOPER12 xErr;
             xErr.xltype = xltypeErr;
             xErr.val.err = xlerrValue;
             xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErr);
             return;
     }
-    LogDebug("Func Exit: {{.Name}}");
+    SAFE_LOG_DEBUG("Func Exit: {{.Name}}");
     return;
     {{else}}
     // Sync Send

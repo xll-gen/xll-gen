@@ -24,6 +24,11 @@ std::thread g_monitorThread;
 
 // Thread for monitoring server process
 void MonitorThread(std::wstring logPath) {
+    // If unloading has already started, return immediately to avoid touching
+    // global resources that may be freed during a forced unload.
+    if (g_isUnloading) return;
+
+    // Run the monitor; MonitorProcess should honor the shutdown event.
     MonitorProcess(g_procInfo, logPath);
 }
 
@@ -132,8 +137,13 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
                  xll::ForceTerminateWorker();
 
                  // 3. Detach Monitor Thread
+                 // Detach monitor thread if running; it should check g_isUnloading and exit.
                  if (g_monitorThread.joinable()) {
-                     g_monitorThread.detach();
+                     try {
+                         g_monitorThread.detach();
+                     } catch (...) {
+                         // Swallow any exception during detach - we're already in forced unload.
+                     }
                  }
 
                  // 4. Signal Shutdown Event (wakes up MonitorThread if it's still running detached)
