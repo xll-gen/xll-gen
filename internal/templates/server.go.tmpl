@@ -24,6 +24,8 @@ import (
 var _ = time.Now
 var _ = protocol.Bool{}
 var _ = rand.Int63
+var _ = flatbuffers.NewBuilder
+{{if .Functions}}var _ = &ipc.{{(index .Functions 0).Name}}Request{}{{end}}
 
 var (
 	asyncBatcher   = server.NewAsyncBatcher()

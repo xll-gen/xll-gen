@@ -57,12 +57,14 @@ namespace xll {
     #define XLL_SAFE_BLOCK_BEGIN __try {
     #define XLL_SAFE_BLOCK_END(ret_val) } __except (xll::LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { return ret_val; }
     #define XLL_SAFE_BLOCK_END_VOID } __except (xll::LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { return; }
+    #define XLL_SAFE_BLOCK_END_CONTINUE } __except (xll::LogException(GetExceptionCode(), GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) { }
 
 #else
     // For GCC/Clang (MinGW)
     #define XLL_SAFE_BLOCK_BEGIN try {
     #define XLL_SAFE_BLOCK_END(ret_val) } catch (...) { xll::LogError("Fatal Error: Unknown exception caught in safe block"); return ret_val; }
     #define XLL_SAFE_BLOCK_END_VOID } catch (...) { xll::LogError("Fatal Error: Unknown exception caught in safe block"); return; }
+    #define XLL_SAFE_BLOCK_END_CONTINUE } catch (...) { xll::LogError("Fatal Error: Unknown exception caught in safe block"); }
 #endif
 
 // Macros for SEH
@@ -81,6 +83,11 @@ void LogHandler(shm::LogLevel level, const std::string& msg);
 // Entry point
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved);
 
+namespace xll {
+    int OnAutoClose();
+}
+
 // XLL Interface Functions
-extern "C" __declspec(dllexport) int __stdcall xlAutoClose();
+// xlAutoClose is now defined in xll_main.cpp to handle project-specific cleanup (like RTD)
+// before calling xll::OnAutoClose()
 extern "C" __declspec(dllexport) int __stdcall xlAutoAdd(void);

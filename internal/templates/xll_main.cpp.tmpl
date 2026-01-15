@@ -104,7 +104,26 @@ extern "C" {
         return rtd::UnregisterServer(GetRtdClsid(), g_szProgID);
     }
 }
+// Cookie for In-Proc RTD Registration
+DWORD g_rtdCookie = 0;
 {{end}}
+
+extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
+    {{if .Rtd.Enabled}}
+    if (g_rtdCookie != 0) {
+        XLL_SAFE_BLOCK_BEGIN
+            HRESULT hr = CoRevokeClassObject(g_rtdCookie);
+            if (FAILED(hr)) {
+                SAFE_LOG_ERROR("CoRevokeClassObject failed: " + std::to_string(hr));
+            } else {
+                SAFE_LOG_INFO("Revoked RTD Class Object.");
+            }
+        XLL_SAFE_BLOCK_END_CONTINUE
+        g_rtdCookie = 0;
+    }
+    {{end}}
+    return xll::OnAutoClose();
+}
 
 // XLL Interface Functions
 
@@ -169,9 +188,8 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     DllRegisterServer();
 
     // Also register in memory for immediate access in this process
-    static DWORD dwCookie = 0;
     rtd::ClassFactory<RtdServer>* pFactory = new rtd::ClassFactory<RtdServer>();
-    HRESULT hr_reg = CoRegisterClassObject(GetRtdClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &dwCookie);
+    HRESULT hr_reg = CoRegisterClassObject(GetRtdClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &g_rtdCookie);
     pFactory->Release();
 
     if (FAILED(hr_reg)) {

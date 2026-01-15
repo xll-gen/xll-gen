@@ -159,7 +159,7 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
     return TRUE;
 }
 
-extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
+int xll::OnAutoClose() {
     XLL_SAFE_BLOCK_BEGIN
         if (g_isUnloading) return 1; // Already called
         g_isUnloading = true;
