@@ -76,15 +76,60 @@ namespace rtd {
             return res;
         }
 
-        // --- IDispatch (Stub) ---
+        // --- IDispatch ---
         HRESULT __stdcall GetTypeInfoCount(UINT* pctinfo) override {
             if (!pctinfo) return E_POINTER;
             *pctinfo = 0;
             return S_OK;
         }
         HRESULT __stdcall GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
-        HRESULT __stdcall GetIDsOfNames(REFIID, LPOLESTR*, UINT, LCID, DISPID*) override { return E_NOTIMPL; }
-        HRESULT __stdcall Invoke(DISPID, REFIID, LCID, WORD, DISPPARAMS*, VARIANT*, EXCEPINFO*, UINT*) override { return E_NOTIMPL; }
+        HRESULT __stdcall GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT cNames, LCID, DISPID* rgDispId) override {
+            if (!rgDispId || !rgszNames || cNames == 0) return E_POINTER;
+            std::wstring name(rgszNames[0]);
+            if (name == L"ServerStart") *rgDispId = 10;
+            else if (name == L"ConnectData") *rgDispId = 11;
+            else if (name == L"RefreshData") *rgDispId = 12;
+            else if (name == L"DisconnectData") *rgDispId = 13;
+            else if (name == L"Heartbeat") *rgDispId = 14;
+            else if (name == L"ServerTerminate") *rgDispId = 15;
+            else return DISP_E_UNKNOWNNAME;
+            return S_OK;
+        }
+
+        HRESULT __stdcall Invoke(DISPID dispIdMember, REFIID, LCID, WORD, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO*, UINT*) override {
+            xll::LogDebug("RtdServer::Invoke DISPID: " + std::to_string(dispIdMember) + " Args: " + std::to_string(pDispParams->cArgs));
+            
+            switch (dispIdMember) {
+            case 10: // ServerStart(Callback, pfRes)
+                if (pDispParams->cArgs < 2) return DISP_E_BADPARAMCOUNT;
+                // Args: [1]Callback, [0]pfRes (Reverse order)
+                return ServerStart((IRTDUpdateEvent*)pDispParams->rgvarg[1].punkVal, pDispParams->rgvarg[0].plVal);
+
+            case 11: // ConnectData(TopicID, Strings, GetNewValues, pvarOut)
+                if (pDispParams->cArgs < 4) return DISP_E_BADPARAMCOUNT;
+                // Args: [3]TopicID, [2]Strings, [1]GetNewValues, [0]pvarOut
+                return ConnectData(pDispParams->rgvarg[3].lVal, (SAFEARRAY**)pDispParams->rgvarg[2].pparray, pDispParams->rgvarg[1].pboolVal, pDispParams->rgvarg[0].pvarVal);
+
+            case 12: // RefreshData(TopicCount, parrayOut)
+                if (pDispParams->cArgs < 2) return DISP_E_BADPARAMCOUNT;
+                // Args: [1]TopicCount, [0]parrayOut
+                return RefreshData(pDispParams->rgvarg[1].plVal, (SAFEARRAY**)pDispParams->rgvarg[0].pparray);
+
+            case 13: // DisconnectData(TopicID)
+                if (pDispParams->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+                return DisconnectData(pDispParams->rgvarg[0].lVal);
+
+            case 14: // Heartbeat(pfRes)
+                if (pDispParams->cArgs < 1) return DISP_E_BADPARAMCOUNT;
+                return Heartbeat(pDispParams->rgvarg[0].plVal);
+
+            case 15: // ServerTerminate()
+                return ServerTerminate();
+
+            default:
+                return DISP_E_MEMBERNOTFOUND;
+            }
+        }
 
         // --- IRtdServer Default Implementations ---
         HRESULT __stdcall ServerStart(IRTDUpdateEvent* Callback, long* pfRes) override {
@@ -131,9 +176,9 @@ namespace rtd {
 
         /**
          * @brief Helper to create the standard 2D SafeArray for RefreshData.
-         * The array is [2][topicCount].
-         * Row 0: Topic IDs.
-         * Row 1: Values.
+         * The array is [topicCount][2].
+         * Dimension 1: [0]=TopicID, [1]=Value (Fastest changing)
+         * Dimension 2: Topic Index (0 to topicCount-1)
          */
         static HRESULT CreateRefreshDataArray(long topicCount, SAFEARRAY** ppArray) {
             if (!ppArray) return E_POINTER;
@@ -145,25 +190,16 @@ namespace rtd {
             }
 
             SAFEARRAYBOUND bounds[2];
-            // To achieve a 2D array of [2][topicCount] (2 Rows, N Columns):
-            // The first element in the bounds array (bounds[0]) defines the right-most dimension (Columns).
-            // The last element (bounds[1]) defines the left-most dimension (Rows).
+            // bounds[0] is the right-most (fastest changing) dimension.
+            // bounds[1] is the left-most dimension.
 
-            // Dimension 1 (Right-most): Columns (Number of topics)
-            bounds[0].cElements = topicCount;
+            // Dimension 1 (Fastest): Row index (0=TopicID, 1=Value)
+            bounds[0].cElements = 2;
             bounds[0].lLbound = 0;
 
-            // Dimension 2 (Left-most): Rows (0=TopicID, 1=Value)
-            bounds[1].cElements = 2;
+            // Dimension 2 (Slowest): Column index (Topic Index)
+            bounds[1].cElements = topicCount;
             bounds[1].lLbound = 0;
-
-            // Note on SafeArrayPutElement indices:
-            // indices[0] corresponds to the first dimension in 'bounds' (the right-most one, i.e., the column index).
-            // indices[1] corresponds to the second dimension (the left-most one, i.e., the row index).
-            // So:
-            // indices[0] = topicIndex (Column)
-            // indices[1] = 0 (for TopicID row) or 1 (for Value row)
-            // This is the standard and expected mapping.
 
             *ppArray = SafeArrayCreate(VT_VARIANT, 2, bounds);
             if (!*ppArray) return E_OUTOFMEMORY;
@@ -223,15 +259,18 @@ namespace rtd {
 
             for (long i = 0; i < count; ++i) {
                 long indices[2];
-                indices[0] = i;
+                // indices[0] refers to bounds[0] (Fastest changing: Row)
+                // indices[1] refers to bounds[1] (Slowest changing: Topic Index)
 
-                indices[1] = 0;
+                indices[0] = 0; // Row 0: TopicID
+                indices[1] = i; // Column i
                 VARIANT vTopicId;
                 vTopicId.vt = VT_I4;
                 vTopicId.lVal = dirtyTopics[i];
                 SafeArrayPutElement(psa, indices, &vTopicId);
 
-                indices[1] = 1;
+                indices[0] = 1; // Row 1: Value
+                indices[1] = i; // Column i
                 SafeArrayPutElement(psa, indices, &topicValues[i]);
 
                 if (topicValues[i].vt == VT_BSTR) {

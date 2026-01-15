@@ -274,7 +274,7 @@ start_worker:
     {
         // Register {{.Name}}
         ScopedXLOPER12Result xRegId;
-        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$";
+        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}{{if ne .Mode "rtd"}}${{end}}";
 
         int regRes = xll::RegisterFunction(
             *xDLL,
@@ -368,28 +368,18 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         {{range $j, $arg := .Args}}, t{{add $j 1}}.c_str(){{end}}
     );
 
-    xll::LogDebug("xlfRtd called. Return code: " + std::to_string(xlRet) + ", Result type: " + std::to_string(xRes.xltype));
-
     if (xlRet != xlretSuccess) {
+        xll::LogError("xlfRtd failed for {{.Name}}. Return code: " + std::to_string(xlRet));
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
-    }
-
-    // The returned XLOPER12 from xlfRtd might need to be copied if it points to internal Excel memory that might be volatile?
-    // Usually xlfRtd returns a value that we can just pass back.
-    // If it returns a string, we need to be careful.
-    if (xRes.xltype & xltypeStr) {
-        xRes.xltype |= xlbitDLLFree; // Assume we need to free it? No, xlfRtd returns Excel memory.
-        // Actually, if we return it to Excel, we should just return it.
-        // But if we want to be safe, we might deep copy it.
-        // For now, let's assume direct return is okay as long as we don't set xlbitDLLFree unless we allocated it.
-        // Wait, xlfRtd writes to &xRes. If xRes has xlbitXLFree set, we need to be careful.
-        // We should probably DeepCopy it to a return buffer if we were managing memory manually,
-        // but here we are returning LPXLOPER12 to Excel.
-        // Excel will handle its own memory if we pass back what it gave us?
-        // NO. We are returning a pointer to xRes which is thread_local.
-        // If xRes contains pointers to Excel memory (xlbitXLFree), that memory is valid until next API call.
-        // Returning it immediately is fine.
+    } else {
+        std::string valStr = "Unknown";
+        if (xRes.xltype & xltypeStr) valStr = WideToUtf8(PascalToWString(xRes.val.str));
+        else if (xRes.xltype & xltypeNum) valStr = std::to_string(xRes.val.num);
+        else if (xRes.xltype & xltypeBool) valStr = xRes.val.xbool ? "TRUE" : "FALSE";
+        else if (xRes.xltype & xltypeErr) valStr = "Error:" + std::to_string(xRes.val.err);
+        
+        xll::LogDebug("xlfRtd called for {{.Name}}. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
     }
 
     return &xRes;

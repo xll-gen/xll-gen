@@ -110,6 +110,7 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
         pvarOut->bstrVal = SysAllocString(L"Connecting...");
     }
     
+    xll::LogDebug("RTD: Returning TopicID " + std::to_string(TopicID));
     return S_OK;
 }
 
