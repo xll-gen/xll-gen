@@ -20,6 +20,19 @@ extern class RtdServer* g_rtdServer;
 
 void ProcessRtdUpdate(const protocol::RtdUpdate* update);
 
+/**
+ * @brief Wait for in-flight RTD ConnectData detached threads to drain.
+ *
+ * Each RtdServer::ConnectData call spawns a detached thread that publishes
+ * the connect request to g_host. To avoid a use-after-free on g_phost during
+ * OnAutoClose, the lifecycle owner must call this drain BEFORE `delete g_phost`.
+ *
+ * @param timeoutMs Maximum time to wait (in milliseconds).
+ * @return true if drained within the timeout, false on timeout (a leak/UAF
+ *         race window remains in the timeout case — caller should log).
+ */
+bool WaitForRtdConnectDrain(unsigned int timeoutMs);
+
 // RTD Server Implementation
 class RtdServer : public rtd::RtdServerBase {
 public:

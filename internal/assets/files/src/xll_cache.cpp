@@ -2,9 +2,19 @@
 #include "xll_log.h"
 #include "xll_excel.h"
 #include "types/utility.h"
+#include "types/xlcall.h"
 #include <sstream>
 #include <random>
 #include <iomanip>
+
+// Guard the assumption used by the in-place XLMREF12 buffer below.
+// XLMREF12 is { WORD count; XLREF12 reftbl[1]; } so sizeof(XLMREF12) is at
+// least sizeof(WORD) + sizeof(XLREF12); compilers will typically pad
+// `count` up to the alignment of XLREF12 (4 bytes), giving sizeof()==20
+// rather than the naive 18. If this assertion ever fires the mrefBuf
+// allocation in GetOrComputeRefHash must be revisited.
+static_assert(sizeof(XLMREF12) >= sizeof(WORD) + sizeof(XLREF12),
+              "XLMREF12 size assumption invalidated; recheck mrefBuf allocation");
 
 namespace xll {
 
@@ -88,9 +98,14 @@ std::string CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, std::functio
                 // struct { WORD count; XLREF12 reftbl[1]; } tempMRef;
                 // But we must match layout.
 
-                // Easier: Use a small buffer.
-                char mrefBuf[sizeof(WORD) + sizeof(XLREF12)];
-                XLMREF12* tempMRef = (XLMREF12*)mrefBuf;
+                // Use sizeof(XLMREF12) (not WORD + XLREF12) and align the
+                // buffer to XLMREF12's alignment. The previous code allocated
+                // only sizeof(WORD)+sizeof(XLREF12) bytes which, due to
+                // padding of `count` to XLREF12's 4-byte alignment, overran
+                // the stack buffer by 2 bytes on common ABIs. See the
+                // file-scope static_assert above for the size invariant.
+                alignas(XLMREF12) char mrefBuf[sizeof(XLMREF12)];
+                XLMREF12* tempMRef = reinterpret_cast<XLMREF12*>(mrefBuf);
                 tempMRef->count = 1;
                 tempMRef->reftbl[0] = rect;
 

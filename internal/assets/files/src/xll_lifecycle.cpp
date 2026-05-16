@@ -130,15 +130,30 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
                  // We cannot safely Join threads here due to Loader Lock, but we can signal them to stop.
                  // We assume that if g_isUnloading is false, xlAutoClose was NOT called.
 
+                 // Per AGENTS.md §20.2: under DLL_PROCESS_DETACH without a
+                 // prior xlAutoClose, the rule is "leak, don't crash" — we
+                 // must minimize work and never block. The ordering below
+                 // signals the threads FIRST (a kernel SetEvent is safe
+                 // under the loader lock) and only then detaches, giving
+                 // them a brief chance to observe g_isUnloading / the
+                 // shutdown event before we orphan them. We do not add any
+                 // new work; we only reorder the existing steps.
+
                  // 1. Signal Unload
                  g_isUnloading = true;
 
-                 // 2. Detach Worker Thread
+                 // 2. Signal Shutdown Event first so MonitorThread can wake
+                 //    and observe g_isUnloading before we detach it.
+                 if (g_procInfo.hShutdownEvent) {
+                     SetEvent(g_procInfo.hShutdownEvent);
+                 }
+
+                 // 3. Detach Worker Thread
                  // Use ForceTerminateWorker to detach the thread so the C++ runtime
                  // doesn't call std::terminate() when the global std::thread is destructed.
                  xll::ForceTerminateWorker();
 
-                 // 3. Detach Monitor Thread
+                 // 4. Detach Monitor Thread
                  // Detach monitor thread if running; it should check g_isUnloading and exit.
                  if (g_monitorThread.joinable()) {
                      try {
@@ -146,11 +161,6 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
                      } catch (...) {
                          // Swallow any exception during detach - we're already in forced unload.
                      }
-                 }
-
-                 // 4. Signal Shutdown Event (wakes up MonitorThread if it's still running detached)
-                 if (g_procInfo.hShutdownEvent) {
-                     SetEvent(g_procInfo.hShutdownEvent);
                  }
             }
             break;

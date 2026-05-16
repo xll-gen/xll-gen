@@ -1,4 +1,5 @@
 #include "xll_embed.h"
+#include "xll_lifecycle.h" // for g_hModule (HINSTANCE); single source of truth
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -14,8 +15,6 @@
 
 // Resource ID defined in resource.rc (assumed to be 101)
 #define IDR_GO_ZST 101
-
-extern HMODULE g_hModule;
 
 namespace embed {
 

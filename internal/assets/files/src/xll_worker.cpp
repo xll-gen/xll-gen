@@ -4,6 +4,7 @@
 #include "xll_worker.h"
 #include "xll_log.h"
 #include "xll_lifecycle.h"
+#include "xll_async.h"
 #include <windows.h>
 #include <vector>
 #include <string>
@@ -19,7 +20,6 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update);
 #endif
 
 // External declaration
-void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch);
 void ExecuteCommands(const flatbuffers::Vector<flatbuffers::Offset<protocol::CommandWrapper>>* commands);
 
 namespace xll {

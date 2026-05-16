@@ -61,14 +61,33 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 	id := reqObj.Id()
 	total := int(reqObj.TotalSize())
 	offset := int(reqObj.Offset())
+	offsetU32 := reqObj.Offset()
 	dataLen := reqObj.DataLength()
 
-	buf := h.ChunkManager.GetChunkBuffer(id, total)
+	buf, err := h.ChunkManager.GetChunkBuffer(id, total)
+	if err != nil {
+		// Wire-supplied total was non-positive or exceeded
+		// MaxChunkBufferBytes. Refuse: no buffer was inserted into
+		// chunkCache. Surface a SystemError to the producer so it
+		// stops retransmitting and the calling side can fail fast.
+		log.Error("HandleChunk: rejecting allocation", "id", id, "total", total, "err", err)
+		return 0, shm.MsgType(MsgSystemError)
+	}
 
 	buf.Mutex.Lock()
+	// Defensive bounds check (load-bearing per AGENTS.md §23 Cache
+	// Visibility Discipline): silently drop OOB writes.
 	if offset+dataLen <= len(buf.Data) {
-		copy(buf.Data[offset:], reqObj.DataBytes())
-		buf.Received += dataLen
+		// Dedup by chunk offset. A retransmit of the same chunk
+		// (e.g. after a dropped ACK) MUST NOT advance Received,
+		// otherwise duplicates push Received past TotalSize and
+		// trigger premature completion with the trailing bytes
+		// still zero — data corruption. See AGENTS.md §23.3.
+		if !buf.ReceivedOffsets[offsetU32] {
+			copy(buf.Data[offset:], reqObj.DataBytes())
+			buf.Received += dataLen
+			buf.ReceivedOffsets[offsetU32] = true
+		}
 	}
 	isComplete := buf.Received >= buf.TotalSize
 	buf.Mutex.Unlock()
@@ -216,6 +235,7 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
 
      // Chunking needed
      transferId := generateTransferID()
+     const chunkSize = 950 * 1024
      out := &OutgoingChunk{
          Data:       make([]byte, len(payload)),
          Id:         transferId,
@@ -223,17 +243,23 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
          LastAccess: time.Now(),
      }
      copy(out.Data, payload)
-     cm.AddOutgoingChunk(transferId, out)
 
-     const chunkSize = 950 * 1024
      currentSize := chunkSize
      if len(out.Data) < chunkSize {
          currentSize = len(out.Data)
      }
 
-     chunkPayload := BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
-
+     // Publication order is load-bearing: set out.Offset BEFORE exposing
+     // `out` to ChunkManager. AddOutgoingChunk publishes the pointer into
+     // a concurrently-reachable map, so a HandleAck that races us here
+     // could otherwise call GetNextChunk and observe Offset==0 — the
+     // first slice would be resent and the consumer would double-receive
+     // bytes [0, currentSize). Do NOT "optimize" this back to setting
+     // Offset after publication. See AGENTS.md §23.3.
      out.Offset = currentSize
+     cm.AddOutgoingChunk(transferId, out)
+
+     chunkPayload := BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
 
      if len(chunkPayload) > len(respBuf) {
          log.Error("Chunk header overhead too large", "size", len(chunkPayload))

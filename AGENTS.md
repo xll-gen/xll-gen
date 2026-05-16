@@ -1,3 +1,34 @@
+# AI Agent Instructions for xll-gen
+
+This file is the authoritative guidance for AI agents and contributors working on `xll-gen`.
+
+## 0. Scope & Companion Repos
+
+`xll-gen` generates Excel XLL add-ins backed by an out-of-process Go server, communicating via shared memory + FlatBuffers. It coordinates three companion repos that each have their own `AGENTS.md`:
+
+* **`github.com/xll-gen/shm`** — lock-free C++/Go shared-memory IPC. See its `AGENTS.md` before touching anything that crosses the IPC boundary.
+* **`github.com/xll-gen/types`** — FlatBuffers protocol schema and C++ ↔ XLOPER12 converters. See its `AGENTS.md` when changing wire types.
+* **`github.com/xll-gen/sugar`** — Windows COM automation in Go (xlwings-parity surface). Not in the generated runtime path; consult its `AGENTS.md` if you write tooling that drives Excel directly.
+
+When a change crosses repo boundaries, update **all** affected `AGENTS.md` files in the same change.
+
+## 0.1. Platform Support (HARD CONSTRAINT)
+
+`xll-gen` is **Windows-only** and targets **x86 / x86-64 (Intel/AMD)** architectures exclusively. This is not a "primary focus" — it is a hard constraint:
+
+* **OS**: Microsoft Windows. No Linux, no macOS, no WSL as a runtime target.
+* **CPU**: x86 (32-bit) and x86-64 (64-bit, "x64"). **No ARM (incl. Windows-on-ARM, Apple Silicon).**
+* **Excel**: A generated XLL's bitness MUST match the host Excel's bitness. 32-bit Excel → 32-bit XLL; 64-bit Excel → 64-bit XLL.
+* **Memory model assumption**: x86/x64 provides Total Store Order (TSO). Implementations and reviews MAY rely on TSO guarantees — sequential consistency of acquire-release pairs is hardware-provided. ARM weak-memory-model concerns are out of scope for the xll-gen runtime path.
+
+**Implications for agents and reviewers**:
+
+* Findings phrased as "ARM-only bug" or "weak memory model concern" against xll-gen runtime code are **non-issues** unless they also affect x86 (rare).
+* Cross-platform build infra (Linux CI for Go-only unit tests, etc.) is acceptable as a developer convenience but is NOT a supported deployment target.
+* Companion repos have different platform stories: `shm` is cross-platform by design (its Linux backend exists for testing and potential reuse) but its production deployment via `xll-gen` is Windows x86/x64 only; `sugar` is Windows-only (COM-bound); `types` Go code is portable but its C++ side targets Windows + the SDK.
+
+When in doubt about whether a concern applies, ask: "Does this affect Windows x86/x64 with stock MSVC/MinGW + recent Excel?" If no → out of scope for xll-gen.
+
 ## Development Setup
 
 For optimal developer experience (DX), please ensure `go-task` and `flatc` are available before starting work.
@@ -264,3 +295,52 @@ The `indices` array passed to `SafeArrayPutElement` follows the order of dimensi
 *   **Value**: `indices[0] = 1` (Row 1), `indices[1] = i` (Topic i).
 
 Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, causing them to stay stuck at "Connecting..." or show #N/A.
+
+## 23. Known Improvement Backlog
+
+These came out of a code review on 2026-05-16. Address them as part of normal work; do not block on a dedicated epic.
+
+### 23.0 C++ Audit (2026-05-16) — Status
+
+A focused C++ audit on 2026-05-16 produced 3 HIGH + 7 MED + 5 LOW findings. The items below tracked as **DONE** were patched the same day; **OPEN** items remain.
+
+* **DONE — HIGH:** `internal/assets/files/src/xll_cache.cpp` `GetOrComputeRefHash`: stack buffer for `XLMREF12` was sized as `sizeof(WORD) + sizeof(XLREF12)` (18) but padding makes `sizeof(XLMREF12)==20` on common ABIs, overrunning by 2 bytes. Fixed by using `alignas(XLMREF12) char mrefBuf[sizeof(XLMREF12)]` and adding a file-scope `static_assert(sizeof(XLMREF12) >= sizeof(WORD) + sizeof(XLREF12), ...)`.
+* **DONE — HIGH:** `internal/assets/files/include/xll_async.h` declared `int32_t ProcessAsyncBatchResponse(const uint8_t*, std::vector<XLOPER12>&, std::vector<XLOPER12>&)` while the implementation in `xll_async.cpp` was `void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse*)` — a latent ODR violation. Header updated to match the implementation; `xll_worker.cpp` now `#include`s `xll_async.h` instead of forward-declaring locally (single source of truth).
+* **DONE — HIGH/MED:** `types/src/mem.cpp` `xlAutoFree12` lacked `__declspec(dllexport)`. When `types` is linked as a static library into the XLL, Excel cannot resolve the symbol by name and every `xlbitDLLFree`-marked `XLOPER12` leaks. Fixed by introducing a `TYPES_EXCEL_CALLBACK` macro (`extern "C" __declspec(dllexport) void __stdcall` on `_WIN32`, callback-only `extern "C" void __stdcall` elsewhere) in `types/include/types/mem.h` and applying it to the declaration and definition.
+* **DONE — MED:** `internal/assets/files/src/xll_embed.cpp` had `extern HMODULE g_hModule;` while `xll_lifecycle.h` / `xll_lifecycle.cpp` define `HINSTANCE g_hModule`. Both alias `void*` on Windows so it linked, but it was ODR-divergent. Replaced the local `extern` with `#include "xll_lifecycle.h"` so there is one source of truth for the declaration.
+* **DONE — MED:** `internal/assets/files/src/xll_lifecycle.cpp` `DllMain` forced-unload branch reordered so `SetEvent(g_procInfo.hShutdownEvent)` runs **before** `ForceTerminateWorker()` and `g_monitorThread.detach()`. This gives the threads a brief chance to observe shutdown before being orphaned, while still honoring §20.2 ("leak, don't crash") — no new work is added in `DLL_PROCESS_DETACH`, only existing steps reordered.
+* **PARTIAL — HIGH (memory-safety-auditor A4, 2026-05-16):** `internal/assets/files/src/xll_rtd.cpp` `RtdServer::ConnectData` spawns a detached `std::thread` whose lambda accesses `g_host`. On forced unload (per §20) or graceful close (`OnAutoClose` deletes `g_phost`), the lambda could touch freed memory. Patched in-file: the lambda now checks `xll::g_isUnloading` at every yield point (top, before `g_host.GetZeroCopySlot()`, before `slot.Send`); a file-static `g_rtdConnectInFlight` counter is incremented/decremented via an RAII guard; `WaitForRtdConnectDrain(timeoutMs)` is declared in `xll_rtd.h` and defined in `xll_rtd.cpp`. **REMAINING:** `xll_lifecycle.cpp` `OnAutoClose` (and/or `xll_main.cpp`'s `xlAutoClose` wrapper) must call `WaitForRtdConnectDrain(N_ms)` **before** `delete g_phost` to fully close the UAF window. Until that integration lands, the unloading-flag checks shrink — but do not eliminate — the race.
+
+Open items from the same audit (remaining MED + all LOW) live in the lower §23.x subsections (where applicable) and in `types/AGENTS.md`'s backlog; the C++ reviewer agent should re-confirm on the next pass.
+
+### 23.1 Code Quality
+* `internal/assets/assets.go` (around the embed init): replace `panic(err)` in `init()` with a returned error surfaced at first use, so an embed failure doesn't take down the whole package on import.
+* `pkg/server/types.go`: add doc comments to every exported type (`ScalarValue`, `ChunkBuffer`, `OutgoingChunk`, `QueuedCommand`, `PendingAsyncResult`). All exported symbols in this package should have `// Name ...` docstrings.
+* `pkg/log/logger.go`: wrap `os.OpenFile` errors with `fmt.Errorf("%w", err)` plus path context so log-init failures are diagnosable.
+* `internal/flatc/flatc.go`: add a `// EnsureFlatc ...` doc comment on the exported function.
+
+### 23.2 Tunability
+* `pkg/server/manager.go`: the 30-second cleanup tick and 60-second TTL are hard-coded. Promote them to configurable fields on `ChunkManager` (and thread through `xll.yaml` → `internal/config`) so deployments with longer/shorter chunked-message lifecycles can tune them.
+
+### 23.3 Test Coverage
+* RTD (`pkg/rtd/`) and async batching (`pkg/server/async_batcher.go`) still lack unit tests. Add table-driven tests covering: timeout, partial chunk arrival, duplicate chunk, oversized payload.
+* Chunk reassembly (`pkg/server/manager.go`) is now covered by `pkg/server/manager_test.go` (`TestChunkManager`, `TestChunkManager_ConcurrentArrivals`), exercising all four edge cases under `-race`. **Resolved findings (2026-05-16, stabilization pass — Stabilizer):**
+  * **Resolved — Duplicate chunk premature completion (HIGH, data corruption).** `ChunkBuffer.Received` was a naive byte counter, so a duplicate of the first chunk in a multi-chunk message pushed `Received` past `TotalSize` and triggered premature completion with the trailing bytes still zero. Fix: added `ChunkBuffer.ReceivedOffsets map[uint32]bool`; `HandleChunk` now skips the byte copy and `Received` bump when the offset has already been seen. The defensive `offset+dataLen <= len(buf.Data)` bounds check is preserved. Regression: `TestChunkManager/DuplicateChunk_IdempotentReceive` (calls `HandleChunk` end-to-end and asserts (a) duplicate does not complete, (b) reassembled buffer is byte-identical to the non-duplicate sequence).
+  * **Resolved — `SendAckOrChunk` publication-order race (HIGH).** `AddOutgoingChunk` published the `OutgoingChunk` pointer to a concurrently-reachable map BEFORE `out.Offset = currentSize` was written, so a `HandleAck → GetNextChunk` racing this path could observe `Offset==0` and resend the first slice. Fix: write `out.Offset = currentSize` BEFORE the `cm.AddOutgoingChunk` call; load-bearing comment added at the call site. Regression: `TestChunkManager/SendAckOrChunk_OffsetPublishedBeforeMapInsert` (steady-state + 200-iter stress under `-race` — `-race` flags the data race on the previous code).
+  * **Resolved — `GetChunkBuffer` unbounded allocation (HIGH, DoS).** The wire-supplied `total` was trusted as the allocation size. Fix: added `ChunkManager.MaxChunkBufferBytes` (default `256 << 20`, settable via `NewChunkManagerWithMax`); `GetChunkBuffer` now returns `(*ChunkBuffer, error)` and refuses requests > the cap without inserting into `chunkCache`. `HandleChunk` propagates refusal to the wire as `MsgSystemError` (value 127, mirroring `shm.MsgTypeSystemError` in shm@HEAD; defined locally in `pkg/server/types.go` because the pinned shm module v0.5.4 does not yet export that constant). Regressions: `TestChunkManager/OversizedTotal_AllocationRejected` (1 TiB request via direct API and via wire path), `TestChunkManager/OversizedTotal_CustomLimitHonored`.
+* `internal/regtest`: regression tests bind to Excel via COM (`internal/regtest/runner.go`). Add a short doc note explaining how to run them on a fresh Windows machine (which Excel SKUs work, what registry entries are needed).
+* Follow-ups uncovered during the stabilization pass:
+  * `MaxChunkBufferBytes` is currently only mutable through code (`ChunkManager` field or `NewChunkManagerWithMax`). Plumb it through `xll.yaml` → `internal/config` so deployments can tune it without rebuilds. Co-change cluster: pairs with the §23.2 cleanup-tick/TTL promotion.
+  * When `shm` v0.5.5+ ships `MsgTypeSystemError`, fold the local `MsgSystemError` sentinel in `pkg/server/types.go` away and use `shm.MsgTypeSystemError` directly. Single-line replacement, no wire change.
+  * Wire `Chunk` schema (in `types/`) does not carry an explicit `total_chunks` field; dedup is keyed on offset (unique per chunk on first transmission) which is sufficient given chunk size is sender-controlled and offsets do not overlap. If a future change introduces variable-sized chunks within a transfer, revisit and key on `(offset, length)` or add an explicit chunk-index field.
+
+### 23.4 Dependencies
+* `go.mod`: `golang.org/x/sys v0.1.0` (Jan 2022) is pulled transitively via `go-ole`. Bump `go-ole` (or add an explicit `require` for a recent `x/sys`) once Go 1.24's stdlib `syscall` coverage doesn't already shadow the difference.
+* Verify no other transitive deps are >2 years old at each release; if so, document why.
+
+### 23.5 Windows-Specific Code Layout
+* Windows-only branches are scattered across `cmd/doctor.go`, `internal/flatc/flatc.go`, `cmd/regression_helpers_test.go`, etc. Consider consolidating into `internal/platform/` with `_windows.go` / `_other.go` build tags so the conditionals don't leak into business logic.
+
+## 24. CLAUDE.md / Agent Tool Compatibility
+
+This repository is configured so that AI tools using `CLAUDE.md` (Claude Code) read this `AGENTS.md` as the authoritative source. **All durable agent guidance must live here, not in `CLAUDE.md`.** `CLAUDE.md`, if present, must contain only a one-line redirect to this file.
