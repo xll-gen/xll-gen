@@ -20,10 +20,9 @@ RtdServer* g_rtdServer = nullptr;
 
 // In-flight counter for detached ConnectData lambdas. Each spawned thread
 // increments on entry and decrements on exit via RtdConnectInFlightGuard.
-// OnAutoClose may call WaitForRtdConnectDrain() to drain these before
-// `delete g_phost` is performed (integration in xll_lifecycle.cpp is pending —
-// the API is exposed here so the lifecycle owner can wire it in without
-// touching this file).
+// OnAutoClose calls WaitForRtdConnectDrain() to drain these before
+// `delete g_phost` is performed. The wiring lives in
+// xll_lifecycle.cpp::OnAutoClose (guarded by XLL_RTD_ENABLED).
 static std::atomic<int> g_rtdConnectInFlight{0};
 
 namespace {
@@ -131,20 +130,14 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
     bool newVal = (GetNewValues && *GetNewValues);
 
     // The detached thread accesses g_host (a global owned by xll_ipc / lifecycle).
-    // On a graceful close, OnAutoClose deletes g_phost; on a forced unload
-    // (DllMain DLL_PROCESS_DETACH per AGENTS.md §20), threads are leaked rather
-    // than joined. To make this safe:
+    // On a graceful close, OnAutoClose calls WaitForRtdConnectDrain (in
+    // xll_lifecycle.cpp, guarded by XLL_RTD_ENABLED) BEFORE deleting g_phost;
+    // on a forced unload (DllMain DLL_PROCESS_DETACH per AGENTS.md §20),
+    // threads are leaked rather than joined. To make this safe:
     //   1. Re-check xll::g_isUnloading at every yield point — top of lambda,
     //      before SHM access, after each blocking SHM call returns.
-    //   2. Hold an RtdConnectInFlightGuard so OnAutoClose can call
-    //      WaitForRtdConnectDrain(timeoutMs) before deleting g_phost.
-    //
-    // NOTE (2026-05-16): the call-site integration in OnAutoClose lives in
-    // xll_lifecycle.cpp, which is owned by another in-flight agent. This file
-    // exposes the drain API and the per-yield-point unloading checks; once the
-    // lifecycle owner wires `WaitForRtdConnectDrain(N_ms)` into OnAutoClose
-    // before `delete g_phost`, the UAF window closes entirely. Until then the
-    // unloading-flag checks reduce — but do not fully eliminate — the race.
+    //   2. Hold an RtdConnectInFlightGuard so OnAutoClose can wait for
+    //      in-flight Connects to drain before tearing down g_phost.
     std::thread([TopicID, strings, newVal]() {
         RtdConnectInFlightGuard inflight;
 

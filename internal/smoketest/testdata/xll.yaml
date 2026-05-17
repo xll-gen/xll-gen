@@ -1,0 +1,47 @@
+project:
+  name: "xll_smoke"
+  version: "0.1.0"
+
+# Smoke harness expects deterministic SHM name across XLL and Go server.
+# disable_pid_suffix keeps both sides on "xll_smoke" (no PID tail).
+gen:
+  go:
+    package: "generated"
+  disable_pid_suffix: true
+
+logging:
+  level: "info"
+  dir: "TEMP_DIR"
+
+server:
+  workers: 2
+  timeout: "5s"
+  async_ack_timeout: "1s"
+
+# Enable RTD so the smoke harness can validate the in-proc COM path.
+# clsid is auto-derived from prog_id (uuid v5 over the prog_id string).
+rtd:
+  enabled: true
+  prog_id: "XllSmoke.Rtd"
+  description: "xll-gen smoke harness RTD"
+
+functions:
+  - name: "Add"
+    description: "Returns a + b (sync)."
+    args:
+      - {name: "a", type: "int", description: "First addend."}
+      - {name: "b", type: "int", description: "Second addend."}
+    return: "int"
+  - name: "AsyncAdd"
+    description: "Returns a + b (async)."
+    args:
+      - {name: "a", type: "int", description: "First addend."}
+      - {name: "b", type: "int", description: "Second addend."}
+    return: "int"
+    mode: "async"
+  - name: "RtdTick"
+    description: "Pushes v * 7 via RTD."
+    args:
+      - {name: "v", type: "int", description: "Value to multiply by 7."}
+    return: "int"
+    mode: "rtd"

@@ -6,6 +6,9 @@
 #include "xll_ipc.h"
 #include "types/mem.h"
 #include <cwchar>
+#ifdef XLL_RTD_ENABLED
+#include "xll_rtd.h"
+#endif
 
 using namespace xll;
 
@@ -185,6 +188,18 @@ int xll::OnAutoClose() {
         // Join threads before closing handles
         xll::JoinWorker();
         if (g_monitorThread.joinable()) g_monitorThread.join();
+
+#ifdef XLL_RTD_ENABLED
+        // Drain in-flight RTD ConnectData detached threads BEFORE deleting
+        // g_phost. Closes the UAF window documented in AGENTS.md §23.0 (the
+        // PARTIAL fix exposed the drain API but did not wire it into the
+        // graceful-close path). 2-second cap matches typical SHM round-trip
+        // budgets; a timeout here is logged but does not block — the
+        // residual race is still narrower than the unpatched window.
+        if (!WaitForRtdConnectDrain(2000)) {
+            LogWarn("RTD ConnectData drain timed out; potential UAF window if a detached thread outlives g_phost");
+        }
+#endif
 
         // Cleanup SHM Host (Explicitly)
         if (g_phost) {
