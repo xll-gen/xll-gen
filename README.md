@@ -151,6 +151,12 @@ server:
     enabled: true    # Automatically start the Go server when XLL loads
     # command: "${BIN}" # Optional: Defaults to the server executable
     # cwd: "${BIN_DIR}" # Optional: Defaults to the directory containing the executable
+  # chunk: (optional, v0.3.5+) — tune the runtime ChunkManager.
+  #   Omit the block to keep defaults: 256 MiB cap, 30s sweep, 60s idle TTL.
+  # chunk:
+  #   max_buffer_bytes: 134217728   # 128 MiB cap on per-transfer reassembly
+  #   cleanup_interval: "30s"        # Sweep cadence
+  #   buffer_ttl: "60s"              # Idle window before eviction
 
 # Real-Time Data (RTD) Server Configuration
 rtd:
