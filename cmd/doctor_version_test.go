@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/internal/versions"
 )
 
 // TestFlatbuffersVersionConsistency ensures that the flatc version
@@ -41,5 +44,22 @@ func TestFlatbuffersVersionConsistency(t *testing.T) {
 	expectedTag := "GIT_TAG {{ .Deps.FlatBuffers }}"
 	if !strings.Contains(cmakeContent, expectedTag) {
 		t.Errorf("CMakeLists.txt.tmpl does not use dynamic versioning. Expected to find: %q", expectedTag)
+	}
+}
+
+// TestFlatbuffersVersion_TypesProvenance cross-checks that the flatc
+// version recorded in the upstream `types` module matches the version
+// xll-gen pins. A skew here means `types` was bumped without
+// regenerating its FlatBuffers Go sources (or vice versa) — the
+// generated Scalar/Any/etc. types may be wire-incompatible with what
+// xll-gen's CMake fetched on the C++ side.
+//
+// Added in v0.3.15 alongside types v0.2.5 which introduced
+// protocol.FlatcVersion.
+func TestFlatbuffersVersion_TypesProvenance(t *testing.T) {
+	xllGenPin := strings.TrimPrefix(versions.FlatBuffers, "v")
+	if protocol.FlatcVersion != xllGenPin {
+		t.Fatalf("flatc version skew: types module recorded %q but xll-gen pins %q — regenerate types/go/protocol or sync versions.FlatBuffers",
+			protocol.FlatcVersion, xllGenPin)
 	}
 }
