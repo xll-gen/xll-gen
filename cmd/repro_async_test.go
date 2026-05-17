@@ -49,9 +49,17 @@ functions:
 	}
 	sContent := string(content)
 
-	if c := strings.Count(sContent, "func queueAsyncResult"); c > 1 {
-		t.Errorf("queueAsyncResult declared %d times", c)
-	} else if c == 0 {
-		t.Errorf("queueAsyncResult declared 0 times")
+	// The original assertion checked for a `queueAsyncResult` helper that
+	// the server.go template declared once and called from each async func
+	// site. That helper was refactored away when async batching moved
+	// behind `asyncBatcher.QueueResult` (now invoked at each call site
+	// directly). The new invariant: every async function in xll.yaml gets
+	// its own `asyncBatcher.QueueResult` call wired up — at least one per
+	// function, no fewer. With 2 async functions declared above we expect
+	// at least 2 calls.
+	const want = 2
+	got := strings.Count(sContent, "asyncBatcher.QueueResult(")
+	if got < want {
+		t.Errorf("asyncBatcher.QueueResult invoked %d times, want >= %d", got, want)
 	}
 }

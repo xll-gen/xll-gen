@@ -65,6 +65,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		Version       string
 		Logging       config.LoggingConfig
 		Rtd           config.RtdConfig
+		Chunk         *config.ChunkConfig
 	}{
 		Package:       pkg,
 		ModName:       modName,
@@ -76,6 +77,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		Version:       version.Version,
 		Logging:       cfg.Logging,
 		Rtd:           cfg.Rtd,
+		Chunk:         cfg.Server.Chunk,
 	}
 
 	return executeTemplate("server.go.tmpl", filepath.Join(dir, "server.go"), data, GetCommonFuncMap())

@@ -29,7 +29,11 @@ var _ = flatbuffers.NewBuilder
 
 var (
 	asyncBatcher   = server.NewAsyncBatcher()
-	chunkManager   = server.NewChunkManager()
+	chunkManager   = {{if .Chunk}}server.NewChunkManagerFromConfig(server.ChunkManagerConfig{
+		MaxBufferBytes:  {{.Chunk.MaxBufferBytes}},
+		CleanupInterval: time.Duration({{parseDurationToNs .Chunk.CleanupInterval}}),
+		BufferTTL:       time.Duration({{parseDurationToNs .Chunk.BufferTTL}}),
+	}){{else}}server.NewChunkManager(){{end}}
 	commandBatcher = server.NewCommandBatcher()
 	refCache       = server.NewRefCache()
 	sysHandler     = server.NewSystemHandler(chunkManager, asyncBatcher, commandBatcher, refCache, rtd.GlobalRtd)

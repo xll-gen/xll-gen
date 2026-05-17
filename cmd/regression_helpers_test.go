@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/xll-gen/xll-gen/internal/config"
@@ -14,37 +17,66 @@ import (
 
 // --- Helpers ---
 
-// setupMockFlatc creates a dummy flatc binary in the temp dir.
-// Returns the path to the binary and a cleanup function.
+var (
+	fakeFlatcOnce sync.Once
+	fakeFlatcPath string
+	fakeFlatcErr  error
+)
+
+// setupMockFlatc returns the path to a real PE that stands in for the flatc
+// compiler. The stub is built once per `go test` invocation from
+// cmd/testdata/fakeflatc/main.go and cached in the user cache dir.
+//
+// Cross-platform notes: the previous implementation wrote a /bin/sh or batch
+// script to a file named "flatc.exe", which Windows refused to load (it
+// validates the PE header before falling back to shell interpretation).
+// Building a real PE via `go build` works on every supported OS; the trade
+// is a one-time ~500ms compile per test process. The returned path can be
+// passed straight to generator.Options{FlatcPath: ...}.
+//
+// tempDir is accepted for API compatibility with the prior signature but
+// is no longer used — the stub is shared, so per-test cleanup is a no-op.
 func setupMockFlatc(t *testing.T, tempDir string) (string, func()) {
-	binDir := filepath.Join(tempDir, "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		t.Fatal(err)
+	t.Helper()
+	_ = tempDir
+	fakeFlatcOnce.Do(buildFakeFlatc)
+	if fakeFlatcErr != nil {
+		t.Fatalf("setupMockFlatc: %v", fakeFlatcErr)
 	}
+	return fakeFlatcPath, func() {}
+}
 
-	flatcName := "flatc"
+func buildFakeFlatc() {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		fakeFlatcErr = fmt.Errorf("user cache dir: %w", err)
+		return
+	}
+	binDir := filepath.Join(cacheDir, "xll-gen", "test-fake-flatc")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		fakeFlatcErr = fmt.Errorf("mkdir cache: %w", err)
+		return
+	}
+	binName := "fake-flatc"
 	if runtime.GOOS == "windows" {
-		flatcName += ".exe"
+		binName += ".exe"
 	}
-	flatcPath := filepath.Join(binDir, flatcName)
+	binPath := filepath.Join(binDir, binName)
 
-	// Mock flatc that satisfies EnsureFlatc check if possible, or just exists.
-	script := "#!/bin/sh\necho flatc version 25.9.23\n"
-	if runtime.GOOS == "windows" {
-		script = "@echo off\necho flatc version 25.9.23\n"
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		fakeFlatcErr = fmt.Errorf("runtime.Caller failed")
+		return
 	}
-	if err := os.WriteFile(flatcPath, []byte(script), 0755); err != nil {
-		t.Fatal(err)
-	}
+	srcDir := filepath.Join(filepath.Dir(thisFile), "testdata", "fakeflatc")
 
-	// Make executable on unix
-	if runtime.GOOS != "windows" {
-		os.Chmod(flatcPath, 0755)
+	cmd := exec.Command("go", "build", "-o", binPath, srcDir)
+	cmd.Env = os.Environ()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fakeFlatcErr = fmt.Errorf("build fake flatc: %w\n%s", err, out)
+		return
 	}
-
-	return flatcPath, func() {
-		os.Remove(flatcPath)
-	}
+	fakeFlatcPath = binPath
 }
 
 // runGenerateInDir runs the generator in the specified directory.

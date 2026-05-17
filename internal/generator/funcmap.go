@@ -159,6 +159,20 @@ func GetCommonFuncMap() template.FuncMap {
 		"parseDurationToMs": func(s string) int {
 			return parseDurationToMs(s, 0)
 		},
+		// parseDurationToNs emits the nanosecond count for a Go time.Duration
+		// literal. Used by server.go.tmpl when threading server.chunk.*
+		// durations into ChunkManagerConfig (the runtime expects
+		// time.Duration, not strings).
+		"parseDurationToNs": func(s string) int64 {
+			if s == "" {
+				return 0
+			}
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return 0
+			}
+			return int64(d)
+		},
 		"MsgUserStart": func() int {
 			return 140
 		},

@@ -62,6 +62,25 @@ func NewChunkManager() *ChunkManager {
 // defaults; mutate ChunkManager.CleanupInterval / .ChunkBufferTTL on the
 // returned value before traffic flows to override.
 func NewChunkManagerWithMax(maxBytes int64) *ChunkManager {
+	return NewChunkManagerFromConfig(ChunkManagerConfig{MaxBufferBytes: maxBytes})
+}
+
+// ChunkManagerConfig groups every knob ChunkManager exposes so generated
+// servers can construct one from a YAML block without touching individual
+// fields after the background goroutine has captured them. Zeros mean "use
+// the corresponding Default* constant".
+type ChunkManagerConfig struct {
+	MaxBufferBytes  int64
+	CleanupInterval time.Duration
+	BufferTTL       time.Duration
+}
+
+// NewChunkManagerFromConfig builds a ChunkManager with all settings captured
+// before the cleanup goroutine starts — the only safe way to override
+// CleanupInterval/BufferTTL, since cleanupLoop reads them once on launch.
+// Used by the generated server when xll.yaml carries a `server.chunk` block.
+func NewChunkManagerFromConfig(c ChunkManagerConfig) *ChunkManager {
+	maxBytes := c.MaxBufferBytes
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxChunkBufferBytes
 	}
@@ -69,6 +88,8 @@ func NewChunkManagerWithMax(maxBytes int64) *ChunkManager {
 		chunkCache:          make(map[uint64]*ChunkBuffer),
 		outgoingChunks:      make(map[uint64]*OutgoingChunk),
 		MaxChunkBufferBytes: maxBytes,
+		CleanupInterval:     c.CleanupInterval,
+		ChunkBufferTTL:      c.BufferTTL,
 	}
 	go cm.cleanupLoop()
 	return cm

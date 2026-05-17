@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -92,6 +93,27 @@ type ServerConfig struct {
 	AsyncAckTimeout string `yaml:"async_ack_timeout"`
 	// Launch controls whether the XLL automatically launches the server process.
 	Launch  *LaunchConfig `yaml:"launch"`
+	// Chunk configures the runtime ChunkManager (reassembly buffer cap, sweep
+	// cadence, idle TTL). All fields are optional; omitting Chunk or any of
+	// its sub-fields leaves the corresponding ChunkManager defaults in
+	// effect (see pkg/server/manager.go: Default* constants).
+	Chunk *ChunkConfig `yaml:"chunk"`
+}
+
+// ChunkConfig is the YAML-facing knob for runtime chunked-message handling.
+// Fields map 1:1 onto pkg/server.ChunkManager — see that type for semantics.
+// Validation runs in Validate(); ApplyDefaults leaves zeros so the Go-side
+// constants remain the single source of truth for defaults.
+type ChunkConfig struct {
+	// MaxBufferBytes caps per-transfer reassembly allocations (DoS guard).
+	// Zero means pkg/server.DefaultMaxChunkBufferBytes (256 MiB).
+	MaxBufferBytes int64 `yaml:"max_buffer_bytes"`
+	// CleanupInterval is the sweep cadence (e.g. "30s"). Zero/empty means
+	// pkg/server.DefaultCleanupInterval.
+	CleanupInterval string `yaml:"cleanup_interval"`
+	// BufferTTL is the idle window before a buffer is evicted (e.g. "60s").
+	// Zero/empty means pkg/server.DefaultChunkBufferTTL.
+	BufferTTL string `yaml:"buffer_ttl"`
 }
 
 // LaunchConfig controls the automatic process launching behavior.
@@ -268,7 +290,31 @@ func Validate(config *Config) error {
 		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
 	}
 
+	if c := config.Server.Chunk; c != nil {
+		if c.MaxBufferBytes < 0 {
+			return fmt.Errorf("server.chunk.max_buffer_bytes must be non-negative, got %d", c.MaxBufferBytes)
+		}
+		if c.CleanupInterval != "" {
+			if _, err := parseDuration(c.CleanupInterval); err != nil {
+				return fmt.Errorf("server.chunk.cleanup_interval: %w", err)
+			}
+		}
+		if c.BufferTTL != "" {
+			if _, err := parseDuration(c.BufferTTL); err != nil {
+				return fmt.Errorf("server.chunk.buffer_ttl: %w", err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// parseDuration is a tiny wrapper around time.ParseDuration so Validate can
+// surface YAML field name + parse error in one message. Kept private to
+// match the existing config package surface — callers should not be
+// re-parsing durations here.
+func parseDuration(s string) (time.Duration, error) {
+	return time.ParseDuration(s)
 }
 
 func validateProjectName(name string) error {
