@@ -8,8 +8,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.2
 	github.com/xll-gen/shm v0.7.3
-	github.com/xll-gen/sugar v0.7.0
-	github.com/xll-gen/types v0.2.5
+	github.com/xll-gen/sugar v0.7.1
+	github.com/xll-gen/types v0.2.6
 	gopkg.in/yaml.v3 v3.0.1
 )
 
