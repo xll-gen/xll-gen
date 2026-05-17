@@ -301,8 +301,8 @@ func TestChunkManager(t *testing.T) {
 			return 0, 0
 		}
 		size, mt := h.HandleChunk(oversizedChunk, respBuf, b, dispatch)
-		if size != 0 || mt != shm.MsgType(MsgSystemError) {
-			t.Fatalf("HandleChunk must return (0, MsgSystemError) on oversized total; got (%d, %d)", size, mt)
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("HandleChunk must return (0, MsgTypeSystemError) on oversized total; got (%d, %d)", size, mt)
 		}
 
 		cm.chunkMutex.Lock()

@@ -71,7 +71,7 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 		// chunkCache. Surface a SystemError to the producer so it
 		// stops retransmitting and the calling side can fail fast.
 		log.Error("HandleChunk: rejecting allocation", "id", id, "total", total, "err", err)
-		return 0, shm.MsgType(MsgSystemError)
+		return 0, shm.MsgTypeSystemError
 	}
 
 	buf.Mutex.Lock()

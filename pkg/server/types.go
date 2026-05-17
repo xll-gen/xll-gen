@@ -27,14 +27,9 @@ type ScalarValue struct {
 
 const (
 	MsgAck = 2
-	// MsgSystemError signals the producer that the server refused or
-	// failed to handle a request at the system level (e.g. an
-	// allocation request exceeded ChunkManager.MaxChunkBufferBytes).
-	// Value 127 mirrors shm.MsgTypeSystemError in shm@HEAD; we define
-	// it locally so this package compiles against the currently
-	// pinned shm module version. See pkg/server/handlers.go callers
-	// and AGENTS.md §23.3.
-	MsgSystemError         = 127
+	// System error signals are sourced from shm directly — see
+	// shm.MsgTypeSystemError (value 127). The local mirror that used to
+	// live here was removed in xll-gen v0.3.8 / shm v0.6.0+.
 	MsgBatchAsyncResponse  = 128
 	MsgChunk               = 129
 	MsgSetRefCache         = 130
