@@ -2,49 +2,55 @@ package assets
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
-// assetsFS embeds all files in the files/ directory.
+// assetsFS embeds every file under files/ at compile time.
 //
 //go:embed files/*
 var assetsFS embed.FS
 
-// AssetsMap holds the content of all embedded assets, keyed by relative path (e.g., "xlcall.h" or "tools/compressor.cpp").
-// It is populated during package initialization.
-var AssetsMap = make(map[string]string)
+var (
+	once     sync.Once
+	assetMap map[string]string
+	loadErr  error
+)
 
-// init walks the embedded filesystem and populates AssetsMap.
-func init() {
-	// Populate AssetsMap from embedded files
-	// The root is "files"
-	err := fs.WalkDir(assetsFS, "files", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			content, err := assetsFS.ReadFile(path)
+// Assets returns the embedded asset map keyed by forward-slash relative path
+// (e.g. "xlcall.h", "tools/compressor.cpp"). The walk runs once on first
+// call; any error is cached and returned on subsequent calls.
+//
+// Prior versions populated a package var in init() and panicked on walk
+// failure, taking down every importer of this package — including read-only
+// tools that never need the assets. Lazy load + returned error lets callers
+// surface the failure at the point of first use.
+func Assets() (map[string]string, error) {
+	once.Do(func() {
+		m := make(map[string]string)
+		walkErr := fs.WalkDir(assetsFS, "files", func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-
-			// Compute relative path from "files" root
-			// path is "files/tools/compressor.cpp", we want "tools/compressor.cpp"
-			// path is "files/xlcall.h", we want "xlcall.h"
-			relPath := strings.TrimPrefix(path, "files/")
-
-			// Use the relative path as the key to preserve directory structure
-			// Ensure we use forward slashes for consistency across platforms if needed,
-			// though embedded FS usually uses forward slashes.
-			relPath = filepath.ToSlash(relPath)
-
-			AssetsMap[relPath] = string(content)
+			if d.IsDir() {
+				return nil
+			}
+			content, rerr := assetsFS.ReadFile(path)
+			if rerr != nil {
+				return fmt.Errorf("read %s: %w", path, rerr)
+			}
+			rel := filepath.ToSlash(strings.TrimPrefix(path, "files/"))
+			m[rel] = string(content)
+			return nil
+		})
+		if walkErr != nil {
+			loadErr = fmt.Errorf("embed asset walk: %w", walkErr)
+			return
 		}
-		return nil
+		assetMap = m
 	})
-	if err != nil {
-		panic(err)
-	}
+	return assetMap, loadErr
 }

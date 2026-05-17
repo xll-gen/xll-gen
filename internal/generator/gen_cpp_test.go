@@ -1,11 +1,13 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/pkg/server"
 )
 
 func TestGenCpp_ComplexReturnTypes(t *testing.T) {
@@ -122,23 +124,21 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	}
 	content := string(contentBytes)
 
-	// Verify TestStr error return (MsgID 133)
-    // Expect: auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)133, ...);
-    // Note: The template now uses slot.Send with specific arguments.
-    // The exact string might vary slightly due to template logic (e.g. casting).
-    // Let's check for the key elements.
-    if !strings.Contains(content, "slot.Send(-((int)builder.GetSize()), (shm::MsgType)133") {
-         t.Fatal("Could not find expected slot.Send call for TestStr (MsgId 133)")
+    // Verify TestStr / TestInt slot.Send call site uses MsgUserStart + index.
+    // Deriving from server.MsgUserStart avoids the silent rot the prior
+    // hardcoded 133 introduced when MsgUserStart bumped to 140.
+    strID := fmt.Sprintf("slot.Send(-((int)builder.GetSize()), (shm::MsgType)%d", server.MsgUserStart+0)
+    intID := fmt.Sprintf("slot.Send(-((int)builder.GetSize()), (shm::MsgType)%d", server.MsgUserStart+1)
+    if !strings.Contains(content, strID) {
+         t.Fatalf("Could not find expected slot.Send call for TestStr (MsgId %d)", server.MsgUserStart+0)
+    }
+    if !strings.Contains(content, intID) {
+         t.Fatalf("Could not find expected slot.Send call for TestInt (MsgId %d)", server.MsgUserStart+1)
     }
 
     // Expect: if (res.HasError())
     if !strings.Contains(content, "if (res.HasError())") {
          t.Fatal("Could not find expected HasError check")
-    }
-
-    // Verify TestInt error return (MsgID 134)
-    if !strings.Contains(content, "slot.Send(-((int)builder.GetSize()), (shm::MsgType)134") {
-         t.Fatal("Could not find expected slot.Send call for TestInt (MsgId 134)")
     }
 
     // Check that HasError is used at least twice (once for each function)

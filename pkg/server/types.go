@@ -8,8 +8,14 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 )
 
+// AnyValue aliases protocol.AnyValue so consumers in pkg/server can speak in
+// FlatBuffers union-tag terms without importing protocol directly.
 type AnyValue = protocol.AnyValue
 
+// ScalarValue is a tagged-union representation of an Excel cell scalar — the
+// Go-side mirror of protocol.Scalar. Only the field selected by Type is
+// meaningful; the other fields are zero. Used by ChunkManager and command
+// queue when an XLOPER12 is deserialized into something less stringly.
 type ScalarValue struct {
 	Type AnyValue
 	Num  float64
@@ -66,6 +72,12 @@ type ChunkBuffer struct {
 	LastAccess      time.Time
 }
 
+// OutgoingChunk holds an in-progress outbound chunked message awaiting ACKs.
+// Offset is the byte index of the next chunk to send; it MUST be published
+// BEFORE the OutgoingChunk pointer becomes reachable through chunkManager's
+// outgoing map (see AGENTS.md §23.3 publication-order race). Id is the
+// chunked-message correlation key; MsgType is the eventual user-visible
+// message type emitted with the final chunk.
 type OutgoingChunk struct {
 	Data       []byte
 	Offset     int
@@ -74,6 +86,11 @@ type OutgoingChunk struct {
 	LastAccess time.Time
 }
 
+// QueuedCommand is a single batched command from the Go server to the XLL
+// host (Set value, Format cell). CmdType discriminates the kind; the Data
+// slice carries the serialized request, while the Optimized fields below
+// allow the consumer to avoid re-parsing payloads it already shaped during
+// enqueue.
 type QueuedCommand struct {
 	CmdType int // 0: Set, 1: Format
 	Data    []byte
@@ -85,9 +102,13 @@ type QueuedCommand struct {
 	FormatStr string
 }
 
+// PendingAsyncResult is one async return waiting to be flushed by the
+// AsyncBatcher. Handle is the XLOPER12 async handle blob Excel hands the XLL
+// at call time; Val/ValType carry the user value (or are zero when Err is
+// non-empty). The batcher coalesces these into a single MsgBatchAsyncResponse.
 type PendingAsyncResult struct {
 	Handle  []byte
-	Val     interface{}
+	Val     any
 	ValType AnyValue
 	Err     string
 }

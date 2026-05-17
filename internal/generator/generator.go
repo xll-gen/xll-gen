@@ -61,7 +61,11 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 		return err
 	}
 
-	for name, content := range assets.AssetsMap {
+	assetMap, err := assets.Assets()
+	if err != nil {
+		return fmt.Errorf("load embedded assets: %w", err)
+	}
+	for name, content := range assetMap {
 		var destPath string
 		if strings.HasPrefix(name, "tools/") {
 			// e.g. tools/compressor.cpp -> generated/cpp/tools/compressor.cpp

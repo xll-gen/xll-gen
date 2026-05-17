@@ -13,6 +13,17 @@ import (
 // Override with ChunkManager.MaxChunkBufferBytes (or the constructor option).
 const DefaultMaxChunkBufferBytes int64 = 256 << 20
 
+// DefaultCleanupInterval is how often the ChunkManager sweep loop scans for
+// stale buffers. Override with ChunkManager.CleanupInterval before traffic
+// flows (the loop captures the value once at startup).
+const DefaultCleanupInterval = 30 * time.Second
+
+// DefaultChunkBufferTTL is the per-buffer idle window after which a partially
+// reassembled inbound transfer (or an unacked outbound chunk) is evicted.
+// Buffers older than this are dropped on each cleanup sweep. Override with
+// ChunkManager.ChunkBufferTTL before traffic flows.
+const DefaultChunkBufferTTL = 60 * time.Second
+
 type ChunkManager struct {
 	chunkCache     map[uint64]*ChunkBuffer
 	chunkMutex     sync.Mutex
@@ -26,6 +37,19 @@ type ChunkManager struct {
 	// the field directly before traffic flows. Zero/negative means
 	// DefaultMaxChunkBufferBytes is used.
 	MaxChunkBufferBytes int64
+
+	// CleanupInterval is how often the background sweep runs. Set before
+	// the manager handles any traffic; the cleanup loop reads it once at
+	// startup. Zero means DefaultCleanupInterval. Surfaced as a field
+	// (rather than a constructor option) because deployments with very
+	// short or very long chunked-message lifecycles need to tune it
+	// without code changes — see AGENTS.md §23.2.
+	CleanupInterval time.Duration
+
+	// ChunkBufferTTL is the idle window before a partially-reassembled
+	// inbound buffer or an unacked outbound chunk is evicted. Zero means
+	// DefaultChunkBufferTTL. See AGENTS.md §23.2.
+	ChunkBufferTTL time.Duration
 }
 
 func NewChunkManager() *ChunkManager {
@@ -34,7 +58,9 @@ func NewChunkManager() *ChunkManager {
 
 // NewChunkManagerWithMax constructs a ChunkManager with a configurable upper
 // bound on per-transfer allocation size. Passing maxBytes <= 0 falls back to
-// DefaultMaxChunkBufferBytes.
+// DefaultMaxChunkBufferBytes. The cleanup interval and TTL pick up their
+// defaults; mutate ChunkManager.CleanupInterval / .ChunkBufferTTL on the
+// returned value before traffic flows to override.
 func NewChunkManagerWithMax(maxBytes int64) *ChunkManager {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxChunkBufferBytes
@@ -49,9 +75,17 @@ func NewChunkManagerWithMax(maxBytes int64) *ChunkManager {
 }
 
 func (cm *ChunkManager) cleanupLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := cm.CleanupInterval
+	if interval <= 0 {
+		interval = DefaultCleanupInterval
+	}
+	ttl := cm.ChunkBufferTTL
+	if ttl <= 0 {
+		ttl = DefaultChunkBufferTTL
+	}
+	ticker := time.NewTicker(interval)
 	for range ticker.C {
-		cm.runCleanupOnce(time.Now(), 60*time.Second)
+		cm.runCleanupOnce(time.Now(), ttl)
 	}
 }
 

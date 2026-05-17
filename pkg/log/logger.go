@@ -2,6 +2,7 @@ package log
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -29,13 +30,13 @@ func Init(path string, level string) error {
 		dir := filepath.Dir(path)
 		if dir != "." && dir != "" {
 			if err := os.MkdirAll(dir, 0755); err != nil {
-				return err
+				return fmt.Errorf("log: mkdir %q: %w", dir, err)
 			}
 		}
 
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return err
+			return fmt.Errorf("log: open %q: %w", path, err)
 		}
 		w = f
 	}
