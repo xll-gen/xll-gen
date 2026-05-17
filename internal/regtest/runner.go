@@ -6,11 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -72,14 +72,10 @@ func Run() error {
 func runSimulation(cfg *config.Config, simDir, serverPath string) error {
 	fmt.Println("[5/6] Starting Simulation...")
 
-	// Locate mock_host
-	mockBinName := "mock_host"
-	if runtime.GOOS == "windows" {
-		mockBinName += ".exe"
-	}
-	mockPath := filepath.Join(simDir, "build", mockBinName)
-	if _, err := os.Stat(mockPath); os.IsNotExist(err) {
-		mockPath = filepath.Join(simDir, "build", "Release", mockBinName)
+	// Locate mock_host (single-config vs multi-config build dirs).
+	mockPath, err := platform.FindBuiltExe(filepath.Join(simDir, "build"), "mock_host")
+	if err != nil {
+		return err
 	}
 
 	// Start Mock Host

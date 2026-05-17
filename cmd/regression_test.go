@@ -7,12 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/platform"
 	"github.com/xll-gen/xll-gen/internal/regtest"
 )
 
@@ -69,10 +69,7 @@ func TestRegression(t *testing.T) {
 		t.Fatalf("go mod tidy failed: %v\nOutput: %s", err, out)
 	}
 
-	serverBin := projectName
-	if runtime.GOOS == "windows" {
-		serverBin += ".exe"
-	}
+	serverBin := platform.ExeName(projectName)
 	if err := os.MkdirAll(filepath.Join(projectDir, "build"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -114,13 +111,9 @@ func TestRegression(t *testing.T) {
 		t.Fatalf("cmake build failed: %s", out)
 	}
 
-	mockBin := filepath.Join(simDir, "build", "mock_host")
-	if runtime.GOOS == "windows" {
-		if _, err := os.Stat(mockBin + ".exe"); os.IsNotExist(err) {
-			mockBin = filepath.Join(simDir, "build", "Release", "mock_host.exe")
-		} else {
-			mockBin += ".exe"
-		}
+	mockBin, err := platform.FindBuiltExe(filepath.Join(simDir, "build"), "mock_host")
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// Run Mock Host with unique SHM name

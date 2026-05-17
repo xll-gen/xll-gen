@@ -80,8 +80,10 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return *s
 		},
-		// Case conversion helpers
-		"Title": strings.Title,
+		// Case conversion helpers. Title is intentionally NOT exposed —
+		// strings.Title is deprecated and no current template uses it; add
+		// a proper Unicode-aware replacement (golang.org/x/text/cases) if a
+		// future template needs title-casing.
 		"Lower": strings.ToLower,
 		"Upper": strings.ToUpper,
 		"capitalize": func(s string) string {

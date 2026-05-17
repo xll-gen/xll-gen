@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/xll-gen/xll-gen/internal/platform"
 	"github.com/xll-gen/xll-gen/internal/ui"
 	"github.com/xll-gen/xll-gen/internal/versions"
 )
@@ -48,11 +49,7 @@ func EnsureFlatc() (string, error) {
 		return "", fmt.Errorf("error getting cache dir: %w", err)
 	}
 	binDir := filepath.Join(cacheDir, "xll-gen", "bin", flatcVersion)
-	exeName := "flatc"
-	if runtime.GOOS == "windows" {
-		exeName += ".exe"
-	}
-	flatcPath := filepath.Join(binDir, exeName)
+	flatcPath := filepath.Join(binDir, platform.ExeName("flatc"))
 
 	if _, err := os.Stat(flatcPath); err == nil {
 		return flatcPath, nil

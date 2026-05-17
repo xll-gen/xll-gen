@@ -5,11 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -66,10 +66,7 @@ func buildGoServer(cfg *config.Config) (string, error) {
 		return "", fmt.Errorf("go mod tidy failed: %w", err)
 	}
 
-	serverBinName := cfg.Project.Name
-	if runtime.GOOS == "windows" {
-		serverBinName += ".exe"
-	}
+	serverBinName := platform.ExeName(cfg.Project.Name)
 	buildDir := "build"
 	if err := os.MkdirAll(buildDir, 0755); err != nil {
 		return "", err

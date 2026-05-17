@@ -12,6 +12,7 @@ import (
 
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -57,11 +58,7 @@ func buildFakeFlatc() {
 		fakeFlatcErr = fmt.Errorf("mkdir cache: %w", err)
 		return
 	}
-	binName := "fake-flatc"
-	if runtime.GOOS == "windows" {
-		binName += ".exe"
-	}
-	binPath := filepath.Join(binDir, binName)
+	binPath := filepath.Join(binDir, platform.ExeName("fake-flatc"))
 
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {

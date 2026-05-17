@@ -349,7 +349,7 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
 * Verify no other transitive deps are >2 years old at each release; if so, document why.
 
 ### 23.5 Windows-Specific Code Layout
-* Windows-only branches are scattered across `cmd/doctor.go`, `internal/flatc/flatc.go`, `cmd/regression_helpers_test.go`, etc. Consider consolidating into `internal/platform/` with `_windows.go` / `_other.go` build tags so the conditionals don't leak into business logic.
+* **DONE (2026-05-17):** Created `internal/platform/` with `_windows.go` / `_other.go` build-tagged constants. Migrated 6 `.exe`-extension branches (`internal/flatc/flatc.go`, `internal/regtest/prepare.go`, `internal/regtest/runner.go`, `cmd/regression_test.go`, `cmd/regression_helpers_test.go`) to `platform.ExeName`. Added `platform.FindBuiltExe` for the single-config vs multi-config cmake output layout (used by 2 sites). The remaining `runtime.GOOS == "windows"` checks in `cmd/doctor.go` are install-hint specific (winget) — not the same kind of duplication, intentionally left as-is. Smoketest files use file-level `//go:build windows`, already idiomatic.
 
 ## 24. CLAUDE.md / Agent Tool Compatibility
 
