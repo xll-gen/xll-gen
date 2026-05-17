@@ -127,12 +127,16 @@ The `xll.yaml` file is the single source of truth for your add-in.
 ```yaml
 project:
   name: "my-project"
-  version: "0.2.0"
+  version: "1.0.0"          # YOUR add-in version, independent of xll-gen
 
 gen:
   go:
     package: "generated"
-  disable_pid_suffix: false # Useful for testing/stable IPC names
+  # disable_pid_suffix: by default the SHM name is "<project>_<pid>" so a
+  # second XLL instance never collides with the first. Set to true ONLY for
+  # tests/dev where you need a deterministic SHM name and guarantee no
+  # concurrent instance.
+  disable_pid_suffix: false
 
 build:
   # 'xll' embeds the Go server executable inside the XLL file (default).
@@ -230,6 +234,26 @@ The code generator runs `flatc` with the `--no-includes` flag. This means:
 3.  You must manually generate code for any extra included files if you need them.
 
 This design ensures that the pre-compiled `protocol.fbs` (system types) is used efficiently without regeneration.
+
+## Events
+
+`xll-gen` can subscribe to Excel application events. Declare them in `xll.yaml` and implement matching handlers on your service:
+
+```yaml
+events:
+  - type: CalculationEnded
+    handler: OnCalculationEnded
+```
+
+```go
+func (s *Service) OnCalculationEnded(ctx context.Context) error {
+    // Runs after each Excel recalc completes. Safe place to issue
+    // ScheduleSet / ScheduleFormat calls (see "Command Scheduling").
+    return nil
+}
+```
+
+Supported event types map onto Excel's `xlEvent*` constants — `CalculationEnded`, `CalculationCanceled`. If your handler is omitted but the event is needed internally (e.g. `any`-typed args or `cache.enabled`), `xll-gen` registers a built-in `CalculationEnded` handler automatically.
 
 ## Command Scheduling
 
