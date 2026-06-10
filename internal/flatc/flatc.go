@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xll-gen/xll-gen/internal/platform"
 	"github.com/xll-gen/xll-gen/internal/ui"
@@ -19,6 +21,10 @@ import (
 )
 
 var flatcMu sync.Mutex
+
+// httpClient bounds GitHub API/asset requests so doctor/generate cannot
+// hang indefinitely on a stalled connection.
+var httpClient = &http.Client{Timeout: 5 * time.Minute}
 
 // EnsureFlatc checks for the presence of the 'flatc' compiler.
 // It searches in the system PATH and the user's cache directory.
@@ -58,6 +64,10 @@ func EnsureFlatc() (string, error) {
 	fmt.Println("flatc not found. Attempting to download...")
 	if err := downloadFlatc(binDir, flatcVersion); err != nil {
 		return "", err
+	}
+
+	if _, err := os.Stat(flatcPath); err != nil {
+		return "", fmt.Errorf("flatc downloaded but not found at %s: %w", flatcPath, err)
 	}
 
 	return flatcPath, nil
@@ -105,7 +115,7 @@ type asset struct {
 //   - error: An error if download or extraction fails.
 func downloadFlatc(destDir string, version string) error {
 	url := "https://api.github.com/repos/google/flatbuffers/releases/tags/" + version
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to fetch releases: %w", err)
 	}
@@ -176,7 +186,7 @@ func downloadFlatc(destDir string, version string) error {
 	defer tmpFile.Close()
 
 	// Download
-	dlResp, err := http.Get(downloadURL)
+	dlResp, err := httpClient.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("failed to download asset: %w", err)
 	}
@@ -202,8 +212,12 @@ func downloadFlatc(destDir string, version string) error {
 	}
 	defer r.Close()
 
+	extracted := false
 	for _, f := range r.File {
-		if f.Name == "flatc" || f.Name == "flatc.exe" {
+		// Match by basename: release zips have shipped the binary both at
+		// the archive root and under subdirectories.
+		base := path.Base(f.Name)
+		if base == "flatc" || base == "flatc.exe" {
 			rc, err := f.Open()
 			if err != nil {
 				return err
@@ -211,7 +225,7 @@ func downloadFlatc(destDir string, version string) error {
 
 			// Extract to a temporary file first to prevent race conditions (ETXTBSY)
 			// when multiple processes try to download/execute flatc simultaneously.
-			tempFile, err := os.CreateTemp(destDir, f.Name+".*.part")
+			tempFile, err := os.CreateTemp(destDir, base+".*.part")
 			if err != nil {
 				rc.Close()
 				return fmt.Errorf("failed to create temp file: %w", err)
@@ -232,7 +246,7 @@ func downloadFlatc(destDir string, version string) error {
 				return fmt.Errorf("failed to chmod temp file: %w", err)
 			}
 
-			destPath := filepath.Join(destDir, f.Name)
+			destPath := filepath.Join(destDir, base)
 			if err := os.Rename(tempName, destPath); err != nil {
 				// On Windows, Rename fails if destPath exists.
 				// On Linux, it replaces atomically.
@@ -250,7 +264,12 @@ func downloadFlatc(destDir string, version string) error {
 
 			s.Stop()
 			fmt.Printf("Extracted %s to %s\n", f.Name, destPath)
+			extracted = true
 		}
+	}
+
+	if !extracted {
+		return fmt.Errorf("downloaded archive %s did not contain a flatc binary", assetName)
 	}
 
 	return nil

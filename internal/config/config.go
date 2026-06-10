@@ -284,6 +284,22 @@ func Validate(config *Config) error {
 				return fmt.Errorf("function '%s': invalid mode '%s' (allowed: sync, async, rtd)", fn.Name, fn.Mode)
 			}
 		}
+		if fn.Timeout != "" {
+			if _, err := parseDuration(fn.Timeout); err != nil {
+				return fmt.Errorf("function '%s': timeout: %w", fn.Name, err)
+			}
+		}
+	}
+
+	if config.Server.Timeout != "" {
+		if _, err := parseDuration(config.Server.Timeout); err != nil {
+			return fmt.Errorf("server.timeout: %w", err)
+		}
+	}
+	if config.Server.AsyncAckTimeout != "" {
+		if _, err := parseDuration(config.Server.AsyncAckTimeout); err != nil {
+			return fmt.Errorf("server.async_ack_timeout: %w", err)
+		}
 	}
 
 	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
@@ -346,6 +362,9 @@ func ApplyDefaults(config *Config) {
 	// Normalize Function Modes
 	for i := range config.Functions {
 		fn := &config.Functions[i]
+		// Validate() accepts mode case-insensitively; consumers (templates,
+		// Async sync below) compare exact lowercase, so normalize here.
+		fn.Mode = strings.ToLower(fn.Mode)
 		if fn.Mode == "" {
 			if fn.Async {
 				fn.Mode = "async"

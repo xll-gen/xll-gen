@@ -1,3 +1,8 @@
+// RTD end-to-end test: generates a project, builds the XLL via CMake, and
+// drives a real Excel instance. Opt-in only (mirrors smoke_test's xll_smoke
+// gating) so a plain `go test ./...` never launches toolchains or Excel.
+//go:build windows && xll_rtdtest
+
 package rtdtest
 
 import (
@@ -130,7 +135,7 @@ func main() {
 
 	t.Log("Starting Excel...")
 	var xlApp excel.Application
-	err := sugar.Do(func(ctx *sugar.Context) error {
+	err := sugar.Do(func(ctx sugar.Context) error {
 		xlApp = excel.NewApplication(ctx)
 		xlApp.Put("Visible", true)
 		
@@ -151,7 +156,7 @@ func main() {
 			}
 			// We can't easily quit here if we use sugar.Do at the top level, 
 			// but we can try to call Quit.
-			sugar.Do(func(innerCtx *sugar.Context) error {
+			sugar.Do(func(innerCtx sugar.Context) error {
 				if xlApp != nil {
 					xlApp.Call("Quit")
 				}
