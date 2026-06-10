@@ -140,14 +140,14 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 	topicID := reqObj.TopicId()
 	newVal := reqObj.NewValues()
 
-	var strings []string
+	var topicStrings []string
 	if reqObj.StringsLength() > 0 {
 		for i := 0; i < reqObj.StringsLength(); i++ {
-			strings = append(strings, string(reqObj.Strings(i)))
+			topicStrings = append(topicStrings, string(reqObj.Strings(i)))
 		}
 	}
 
-	log.Info("RTD Connect request received", "topicID", topicID, "strings", strings)
+	log.Info("RTD Connect request received", "topicID", topicID, "strings", topicStrings)
 
 	ctx := context.Background()
 	go func() {
@@ -157,7 +157,7 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 			}
 		}()
 		if onConnect != nil {
-			if err := onConnect(ctx, topicID, strings, newVal); err != nil {
+			if err := onConnect(ctx, topicID, topicStrings, newVal); err != nil {
 				log.Error("OnRtdConnect failed", "error", err)
 			}
 		}
