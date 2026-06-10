@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	mrand "math/rand/v2"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -38,7 +39,7 @@ func (h *SystemHandler) HandleAck(data []byte, respBuf []byte, b *flatbuffers.Bu
 	reqObj := protocol.GetRootAsAck(data, 0)
 	id := reqObj.Id()
 
-	const chunkSize = 950 * 1024
+	const chunkSize = DefaultChunkSize
 	chunkData, msgType, totalSize, offset, found := h.ChunkManager.GetNextChunk(id, chunkSize)
 
 	if !found {
@@ -89,10 +90,19 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 			buf.ReceivedOffsets[offsetU32] = true
 		}
 	}
-	isComplete := buf.Received >= buf.TotalSize
+	// Claim the dispatch under buf.Mutex. When a retransmitted FINAL chunk
+	// races the original, both goroutines can observe Received >= TotalSize.
+	// Only the first to flip Dispatched (still holding Mutex) is permitted to
+	// dispatch; the loser must not re-run the user function or emit a second
+	// response. See AGENTS.md §23.3.
+	claimedDispatch := false
+	if buf.Received >= buf.TotalSize && !buf.Dispatched {
+		buf.Dispatched = true
+		claimedDispatch = true
+	}
 	buf.Mutex.Unlock()
 
-	if isComplete {
+	if claimedDispatch {
 		h.ChunkManager.RemoveChunkBuffer(id)
 		payloadMsgType := reqObj.MsgType()
 		return dispatch(buf.Data, respBuf, shm.MsgType(payloadMsgType))
@@ -100,7 +110,15 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 
 	payload := BuildAckResponse(b, id, true)
 
-	return SendAckOrChunk(payload, respBuf, MsgChunk, h.ChunkManager, b)
+	// This is an Ack response to a synchronous Chunk request, not chunk
+	// data — label it MsgAck for consistency with HandleSetRefCache below
+	// (which sends the identical Ack payload). The C++ host (xll_worker.cpp)
+	// dispatches inbound chunks on the FlatBuffer's own chunk->msg_type() and
+	// parses Ack responses by structure; the SHM response msgType on this
+	// reply path is not inspected, so the previous MsgChunk label was a
+	// harmless mislabel rather than a load-bearing distinction. Unified per
+	// IMPROVEMENT_BACKLOG.md §3.
+	return SendAckOrChunk(payload, respBuf, MsgAck, h.ChunkManager, b)
 }
 
 // HandleSetRefCache processes a request to store data in the reference cache.
@@ -129,7 +147,7 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 		}
 	}
 
-    log.Info("RTD Connect request received", "topicID", topicID, "strings", strings)
+	log.Info("RTD Connect request received", "topicID", topicID, "strings", strings)
 
 	ctx := context.Background()
 	go func() {
@@ -228,53 +246,58 @@ func (h *SystemHandler) HandleCalculationCanceled(onCanceled func(context.Contex
 // It uses ChunkManager if necessary.
 // It returns the values expected by the shm.Handle callback.
 func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *ChunkManager, b *flatbuffers.Builder) (int32, shm.MsgType) {
-     if len(payload) <= len(respBuf) {
-         copy(respBuf, payload)
-         return int32(len(payload)), msgType
-     }
+	if len(payload) <= len(respBuf) {
+		copy(respBuf, payload)
+		return int32(len(payload)), msgType
+	}
 
-     // Chunking needed
-     transferId := generateTransferID()
-     const chunkSize = 950 * 1024
-     out := &OutgoingChunk{
-         Data:       make([]byte, len(payload)),
-         Id:         transferId,
-         MsgType:    uint32(msgType),
-         LastAccess: time.Now(),
-     }
-     copy(out.Data, payload)
+	// Chunking needed
+	transferId := generateTransferID()
+	const chunkSize = DefaultChunkSize
+	out := &OutgoingChunk{
+		Data:       make([]byte, len(payload)),
+		Id:         transferId,
+		MsgType:    uint32(msgType),
+		LastAccess: time.Now(),
+	}
+	copy(out.Data, payload)
 
-     currentSize := chunkSize
-     if len(out.Data) < chunkSize {
-         currentSize = len(out.Data)
-     }
+	currentSize := chunkSize
+	if len(out.Data) < chunkSize {
+		currentSize = len(out.Data)
+	}
 
-     // Publication order is load-bearing: set out.Offset BEFORE exposing
-     // `out` to ChunkManager. AddOutgoingChunk publishes the pointer into
-     // a concurrently-reachable map, so a HandleAck that races us here
-     // could otherwise call GetNextChunk and observe Offset==0 — the
-     // first slice would be resent and the consumer would double-receive
-     // bytes [0, currentSize). Do NOT "optimize" this back to setting
-     // Offset after publication. See AGENTS.md §23.3.
-     out.Offset = currentSize
-     cm.AddOutgoingChunk(transferId, out)
+	// Publication order is load-bearing: set out.Offset BEFORE exposing
+	// `out` to ChunkManager. AddOutgoingChunk publishes the pointer into
+	// a concurrently-reachable map, so a HandleAck that races us here
+	// could otherwise call GetNextChunk and observe Offset==0 — the
+	// first slice would be resent and the consumer would double-receive
+	// bytes [0, currentSize). Do NOT "optimize" this back to setting
+	// Offset after publication. See AGENTS.md §23.3.
+	out.Offset = currentSize
+	cm.AddOutgoingChunk(transferId, out)
 
-     chunkPayload := BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
+	chunkPayload := BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
 
-     if len(chunkPayload) > len(respBuf) {
-         log.Error("Chunk header overhead too large", "size", len(chunkPayload))
-         return 0, 0
-     }
-     copy(respBuf, chunkPayload)
-     return int32(len(chunkPayload)), MsgChunk
+	if len(chunkPayload) > len(respBuf) {
+		log.Error("Chunk header overhead too large", "size", len(chunkPayload))
+		return 0, 0
+	}
+	copy(respBuf, chunkPayload)
+	return int32(len(chunkPayload)), MsgChunk
 }
 
 func generateTransferID() uint64 {
 	var b [8]byte
 	_, err := rand.Read(b[:])
 	if err != nil {
-		// Fallback to weak random if crypto fails (unlikely)
-		return 0
+		// crypto/rand should essentially never fail, but if it does,
+		// returning a constant 0 would collide every concurrent transfer
+		// onto the same correlation key — guaranteed corruption. Fall back
+		// to math/rand/v2's Uint64 (auto-seeded, lock-free) so IDs stay
+		// distinct even on the degraded path.
+		log.Error("generateTransferID: crypto/rand failed, falling back to math/rand/v2", "err", err)
+		return mrand.Uint64()
 	}
 	return binary.LittleEndian.Uint64(b[:])
 }

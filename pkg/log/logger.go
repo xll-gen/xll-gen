@@ -13,6 +13,10 @@ import (
 
 var (
 	mu sync.Mutex
+	// currentFile holds the log file opened by the most recent Init call (nil
+	// when logging to stdout). On a subsequent Init we close it before opening
+	// a new one so re-initialization does not leak file handles. Guarded by mu.
+	currentFile *os.File
 )
 
 // Init initializes the global logger.
@@ -26,6 +30,7 @@ func Init(path string, level string) error {
 	defer mu.Unlock()
 
 	var w io.Writer = os.Stdout
+	var newFile *os.File
 	if path != "" {
 		dir := filepath.Dir(path)
 		if dir != "." && dir != "" {
@@ -36,10 +41,22 @@ func Init(path string, level string) error {
 
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
+			// Leave the previously-installed logger (and its file) intact on
+			// failure; we have not swapped anything yet.
 			return fmt.Errorf("log: open %q: %w", path, err)
 		}
 		w = f
+		newFile = f
 	}
+
+	// Close the file from a prior Init (if any) now that the new destination
+	// has been opened successfully. Without this, repeated Init calls leak the
+	// previous handle. Closing only after the new open succeeds means a failed
+	// re-Init does not tear down a working logger.
+	if currentFile != nil {
+		_ = currentFile.Close()
+	}
+	currentFile = newFile
 
 	lvl := parseLevel(level)
 	opts := &slog.HandlerOptions{

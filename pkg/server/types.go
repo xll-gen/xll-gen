@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xll-gen/xll-gen/pkg/algo"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/pkg/algo"
 )
 
 // AnyValue aliases protocol.AnyValue so consumers in pkg/server can speak in
@@ -45,6 +45,12 @@ const (
 	MsgUserStart = 140
 )
 
+// DefaultChunkSize is the per-chunk payload byte budget for chunked
+// transfers to the host. It is derived from the 1 MiB SHM slot payload
+// (hostCfg.payloadSize in xll_main.cpp.tmpl) minus FlatBuffers/chunk-header
+// overhead. If the slot payload size ever changes, this must change with it.
+const DefaultChunkSize = 950 * 1024
+
 // ChunkBuffer accumulates the payload of an inbound chunked message until all
 // chunks have arrived. Concurrency: all field reads/writes happen under
 // Mutex; the buffer pointer itself is published into ChunkManager.chunkCache
@@ -58,11 +64,20 @@ const (
 // in a multi-chunk message would push Received past TotalSize and trigger
 // premature completion with the trailing bytes still zero — a data
 // corruption hazard. See AGENTS.md §23.3.
+//
+// Dispatched guards against a second, concurrent observation of completion.
+// When a retransmitted FINAL chunk races the original (e.g. after a dropped
+// ACK), both goroutines can observe Received >= TotalSize under Mutex. Only
+// the goroutine that flips Dispatched from false to true (under Mutex) is
+// allowed to call dispatch(); the loser returns without re-running the user
+// function. Without this, the user function executes twice (side effects!)
+// and two responses are written. See AGENTS.md §23.3.
 type ChunkBuffer struct {
 	Data            []byte
 	TotalSize       int
 	Received        int
 	ReceivedOffsets map[uint32]bool
+	Dispatched      bool
 	Mutex           sync.Mutex
 	LastAccess      time.Time
 }

@@ -1,18 +1,27 @@
 package rtd
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/internal/fbany"
+	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/pool"
 )
 
 // MsgRtdUpdate is the message ID for RTD updates (must match server/types.go)
 const MsgRtdUpdate = 135
+
+// rtdClient is the subset of *shm.Client the RtdManager uses. It is an
+// interface so tests can inject slow/failing stubs without a real SHM
+// segment.
+type rtdClient interface {
+	SendGuestCallWithTimeout(data []byte, msgType shm.MsgType, timeout time.Duration) ([]byte, error)
+}
 
 // RtdManager manages RTD topic subscriptions and broadcasts.
 type RtdManager struct {
@@ -21,7 +30,7 @@ type RtdManager struct {
 	keyToIDs map[string]map[int32]struct{}
 	// map[TopicID] -> Key
 	idToKey map[int32]string
-	client  *shm.Client
+	client  rtdClient
 }
 
 // GlobalRtd is the singleton instance of RtdManager.
@@ -39,6 +48,12 @@ func NewRtdManager() *RtdManager {
 func (m *RtdManager) SetClient(c *shm.Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if c == nil {
+		// Avoid storing a typed-nil in the interface field, which would
+		// defeat the client == nil guards below.
+		m.client = nil
+		return
+	}
 	m.client = c
 }
 
@@ -82,137 +97,89 @@ func (m *RtdManager) Unsubscribe(topicID int32) {
 }
 
 // Publish broadcasts a value to all TopicIDs subscribed to the given key.
+//
+// The subscription map and client are snapshotted under a short read lock and
+// the (potentially slow, 1s-timeout-per-topic) SHM sends happen OUTSIDE the
+// lock, so Subscribe/Unsubscribe/SetClient are never blocked by a stalled
+// host. A send failure for one topic does not starve the remaining topics:
+// every topic is attempted, each failure is logged, and the per-topic errors
+// are returned joined via errors.Join (nil when all sends succeed).
 func (m *RtdManager) Publish(key string, value interface{}) error {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	client := m.client
+	ids := m.keyToIDs[key]
+	topicIDs := make([]int32, 0, len(ids))
+	for id := range ids {
+		topicIDs = append(topicIDs, id)
+	}
+	m.mu.RUnlock()
 
-	ids, ok := m.keyToIDs[key]
-	if !ok || len(ids) == 0 {
+	if len(topicIDs) == 0 {
 		return nil
 	}
 
-	if m.client == nil {
+	if client == nil {
 		return fmt.Errorf("RTD server not connected")
 	}
 
-	// Iterate and send updates
-	for id := range ids {
-		if err := m.sendUpdateLocked(id, value); err != nil {
-			return err
+	// Iterate and send updates (outside the lock; continue past errors)
+	var errs []error
+	for _, id := range topicIDs {
+		if err := sendUpdate(client, id, value); err != nil {
+			log.Error("RTD publish failed for topic", "key", key, "topicID", id, "error", err)
+			errs = append(errs, fmt.Errorf("topic %d: %w", id, err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // SendUpdate sends a direct update to a specific TopicID.
 func (m *RtdManager) SendUpdate(topicID int32, value interface{}) error {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.sendUpdateLocked(topicID, value)
+	client := m.client
+	m.mu.RUnlock()
+	return sendUpdate(client, topicID, value)
 }
 
-func (m *RtdManager) sendUpdateLocked(topicID int32, value interface{}) error {
-	if m.client == nil {
+// sendUpdate serializes value into an RtdUpdate message and sends it via
+// client. It takes the client as a parameter (instead of reading m.client)
+// so callers can snapshot the client under the manager lock and perform the
+// blocking SHM send after releasing it.
+func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
+	if client == nil {
 		return fmt.Errorf("server not connected")
 	}
 
 	b := pool.GetBuilder(nil)
 	defer pool.PutBuilder(b)
 
-	// Encode Value
-	var anyOff flatbuffers.UOffsetT
-	var anyType protocol.AnyValue
-
+	// Map the Go value onto a protocol.Any union tag + payload.
+	var tag protocol.AnyValue
+	var payload any
 	switch v := value.(type) {
 	case string:
-		sOff := b.CreateString(v)
-		protocol.StrStart(b)
-		protocol.StrAddVal(b, sOff)
-		valOff := protocol.StrEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueStr)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueStr
+		tag, payload = protocol.AnyValueStr, v
 	case int:
 		// Go int can be 64-bit, so send as double to prevent truncation
-		protocol.NumStart(b)
-		protocol.NumAddVal(b, float64(v))
-		valOff := protocol.NumEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueNum)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueNum
+		tag, payload = protocol.AnyValueNum, float64(v)
 	case int32:
-		protocol.IntStart(b)
-		protocol.IntAddVal(b, v)
-		valOff := protocol.IntEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueInt)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueInt
+		tag, payload = protocol.AnyValueInt, v
 	case int64:
 		// Protocol only supports 32-bit int, so we send as double to preserve value (up to 53 bits)
-		protocol.NumStart(b)
-		protocol.NumAddVal(b, float64(v))
-		valOff := protocol.NumEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueNum)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueNum
+		tag, payload = protocol.AnyValueNum, float64(v)
 	case float64:
-		protocol.NumStart(b)
-		protocol.NumAddVal(b, v)
-		valOff := protocol.NumEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueNum)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueNum
+		tag, payload = protocol.AnyValueNum, v
 	case float32:
-		protocol.NumStart(b)
-		protocol.NumAddVal(b, float64(v))
-		valOff := protocol.NumEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueNum)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueNum
+		tag, payload = protocol.AnyValueNum, float64(v)
 	case bool:
-		protocol.BoolStart(b)
-		protocol.BoolAddVal(b, v)
-		valOff := protocol.BoolEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueBool)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueBool
+		tag, payload = protocol.AnyValueBool, v
 	case time.Time:
-		sOff := b.CreateString(v.Format(time.RFC3339))
-		protocol.StrStart(b)
-		protocol.StrAddVal(b, sOff)
-		valOff := protocol.StrEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueStr)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueStr
+		tag, payload = protocol.AnyValueStr, v.Format(time.RFC3339)
 	default:
-		sOff := b.CreateString(fmt.Sprintf("%v", v))
-		protocol.StrStart(b)
-		protocol.StrAddVal(b, sOff)
-		valOff := protocol.StrEnd(b)
-		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueStr)
-		protocol.AnyAddVal(b, valOff)
-		anyOff = protocol.AnyEnd(b)
-		anyType = protocol.AnyValueStr
+		tag, payload = protocol.AnyValueStr, fmt.Sprintf("%v", v)
 	}
-	_ = anyType
+	anyOff := fbany.Build(b, tag, payload)
 
 	protocol.RtdUpdateStart(b)
 	protocol.RtdUpdateAddTopicId(b, topicID)
@@ -222,6 +189,6 @@ func (m *RtdManager) sendUpdateLocked(topicID int32, value interface{}) error {
 
 	data := b.FinishedBytes()
 
-	_, err := m.client.SendGuestCallWithTimeout(data, MsgRtdUpdate, 1000*time.Millisecond)
+	_, err := client.SendGuestCallWithTimeout(data, MsgRtdUpdate, 1000*time.Millisecond)
 	return err
 }

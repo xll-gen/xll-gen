@@ -7,15 +7,37 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/shm/go"
-	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/internal/fbany"
+	"github.com/xll-gen/xll-gen/pkg/log"
 )
 
-// Heap Builder Pool for outgoing messages (retains buffer capacity)
+// Heap Builder Pool for outgoing messages (retains buffer capacity).
+//
+// NOT replaceable by pkg/pool.GetBuilder/PutBuilder: that pool's PutBuilder
+// unconditionally sets b.Bytes = nil (to detach SHM-backed buffers), so the
+// pool never retains capacity. Here the builders only ever own heap buffers,
+// and retaining the grown capacity across flushes is the whole point.
 var heapBuilderPool = sync.Pool{
 	New: func() interface{} {
 		return flatbuffers.NewBuilder(1024)
 	},
+}
+
+// sendWithRetry sends payload as msgType via the SHM client, retrying up to
+// 10 times with exponential backoff (5ms, 10ms, ... ~2.5s max total wait) to
+// ride out transient buffer fullness. It returns nil on success, or the last
+// send error after exhausting all attempts.
+func sendWithRetry(client *shm.Client, payload []byte, msgType shm.MsgType) error {
+	var err error
+	for i := 0; i < 10; i++ {
+		if _, err = client.SendGuestCall(payload, msgType); err == nil {
+			return nil
+		}
+		// Backoff: 5ms, 10ms, ... 2.5s max total wait
+		time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
+	}
+	return err
 }
 
 func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
@@ -36,35 +58,7 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 		if res.Err != "" {
 			errOff = b.CreateString(res.Err)
 		} else {
-			// Build Any Table
-			var uOff flatbuffers.UOffsetT
-			switch res.ValType {
-			case protocol.AnyValueInt:
-				protocol.IntStart(b)
-				protocol.IntAddVal(b, res.Val.(int32))
-				uOff = protocol.IntEnd(b)
-			case protocol.AnyValueNum:
-				protocol.NumStart(b)
-				protocol.NumAddVal(b, res.Val.(float64))
-				uOff = protocol.NumEnd(b)
-			case protocol.AnyValueBool:
-				protocol.BoolStart(b)
-				protocol.BoolAddVal(b, res.Val.(bool))
-				uOff = protocol.BoolEnd(b)
-			case protocol.AnyValueStr:
-				sOff := b.CreateString(res.Val.(string))
-				protocol.StrStart(b)
-				protocol.StrAddVal(b, sOff)
-				uOff = protocol.StrEnd(b)
-			case protocol.AnyValueNil:
-				protocol.NilStart(b)
-				uOff = protocol.NilEnd(b)
-			}
-
-			protocol.AnyStart(b)
-			protocol.AnyAddValType(b, res.ValType)
-			protocol.AnyAddVal(b, uOff)
-			anyOff = protocol.AnyEnd(b)
+			anyOff = fbany.Build(b, res.ValType, res.Val)
 		}
 
 		hOff := b.CreateByteVector(res.Handle)
@@ -93,23 +87,14 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 	msgBytes := b.FinishedBytes()
 
 	// Chunking Logic
-	const maxPayload = 950 * 1024 // 1MB - overhead
+	const maxPayload = DefaultChunkSize
 	if len(msgBytes) > maxPayload {
 		sendChunkedAsync(msgBytes, client)
 		return
 	}
 
 	// We implement a short retry loop to handle transient buffer fullness.
-	var err error
-	for i := 0; i < 10; i++ {
-		if _, err = client.SendGuestCall(msgBytes, MsgBatchAsyncResponse); err == nil {
-			return
-		}
-		// Backoff: 5ms, 10ms, ... 2.5s max total wait
-		time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
-	}
-
-	if err != nil {
+	if err := sendWithRetry(client, msgBytes, MsgBatchAsyncResponse); err != nil {
 		log.Error("Error sending batch async response after retries", "error", err)
 	}
 }
@@ -118,7 +103,7 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 	transferId := uint64(rand.Int63())
 	total := len(data)
 	offset := 0
-	const chunkSize = 950 * 1024
+	const chunkSize = DefaultChunkSize
 
 	for offset < total {
 		end := offset + chunkSize
@@ -132,19 +117,11 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 		payload := BuildChunkResponse(b, chunkData, transferId, total, offset, MsgBatchAsyncResponse)
 
 		// Send Chunk with Retry
-		var err error
-		sent := false
-		for i := 0; i < 10; i++ {
-			if _, err = client.SendGuestCall(payload, MsgChunk); err == nil {
-				sent = true
-				break
-			}
-			time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
-		}
+		err := sendWithRetry(client, payload, MsgChunk)
 
 		heapBuilderPool.Put(b)
 
-		if !sent {
+		if err != nil {
 			log.Error("Failed to send async chunk", "error", err, "id", transferId, "offset", offset)
 			return // Abort transfer
 		}

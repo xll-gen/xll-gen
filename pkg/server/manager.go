@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/xll-gen/xll-gen/pkg/log"
 )
 
 // DefaultMaxChunkBufferBytes caps the per-transfer reassembly buffer that
@@ -50,6 +52,13 @@ type ChunkManager struct {
 	// inbound buffer or an unacked outbound chunk is evicted. Zero means
 	// DefaultChunkBufferTTL. See AGENTS.md §23.2.
 	ChunkBufferTTL time.Duration
+
+	// stop signals the cleanup goroutine to exit. Closed exactly once by
+	// Close(); closeOnce makes Close idempotent so a double-shutdown (e.g.
+	// a deferred Close plus an explicit one on a teardown path) does not
+	// panic on a second channel close.
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
 func NewChunkManager() *ChunkManager {
@@ -90,6 +99,7 @@ func NewChunkManagerFromConfig(c ChunkManagerConfig) *ChunkManager {
 		MaxChunkBufferBytes: maxBytes,
 		CleanupInterval:     c.CleanupInterval,
 		ChunkBufferTTL:      c.BufferTTL,
+		stop:                make(chan struct{}),
 	}
 	go cm.cleanupLoop()
 	return cm
@@ -105,9 +115,26 @@ func (cm *ChunkManager) cleanupLoop() {
 		ttl = DefaultChunkBufferTTL
 	}
 	ticker := time.NewTicker(interval)
-	for range ticker.C {
-		cm.runCleanupOnce(time.Now(), ttl)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			cm.runCleanupOnce(time.Now(), ttl)
+		case <-cm.stop:
+			return
+		}
 	}
+}
+
+// Close stops the background cleanup goroutine and releases its ticker. It is
+// idempotent and safe to call from any goroutine; subsequent calls are no-ops.
+// Wire this into the server's shutdown path. After Close returns, the cleanup
+// sweep no longer runs, but the manager's maps remain readable — Close does not
+// invalidate in-flight buffer pointers, it only halts eviction.
+func (cm *ChunkManager) Close() {
+	cm.closeOnce.Do(func() {
+		close(cm.stop)
+	})
 }
 
 // runCleanupOnce performs a single cleanup sweep, evicting any buffers whose
@@ -157,6 +184,17 @@ func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, erro
 
 	cm.chunkMutex.Lock()
 	buf, exists := cm.chunkCache[id]
+	if exists && buf.TotalSize != total {
+		// The id was reused with a different declared total. This can happen
+		// when a transfer id collides with a stale, never-completed buffer
+		// (e.g. a producer reset after a dropped final chunk). Keeping the old
+		// buffer would wedge the transfer until the TTL sweep evicts it,
+		// because the new chunks' offsets/total no longer match. Reset to a
+		// fresh buffer sized for the new total. See IMPROVEMENT_BACKLOG.md §3.
+		log.Warn("ChunkManager: chunk buffer total mismatch on reuse; resetting buffer",
+			"id", id, "oldTotal", buf.TotalSize, "newTotal", total)
+		exists = false
+	}
 	if !exists {
 		buf = &ChunkBuffer{
 			Data:            make([]byte, total),

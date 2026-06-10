@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -524,6 +526,50 @@ func TestChunkManager(t *testing.T) {
 	})
 }
 
+// TestChunkManager_TotalMismatchResetsBuffer verifies that reusing a transfer
+// id with a different declared total resets the buffer to a fresh one sized
+// for the new total, instead of silently wedging the transfer until the TTL
+// sweep (IMPROVEMENT_BACKLOG.md §3, manager.go GetChunkBuffer).
+func TestChunkManager_TotalMismatchResetsBuffer(t *testing.T) {
+	cm := NewChunkManager()
+	const id uint64 = 0x9001
+
+	// First allocation: total=64, partially fill it.
+	buf1 := mustGetChunkBuffer(t, cm, id, 64)
+	buf1.Mutex.Lock()
+	copy(buf1.Data, bytes.Repeat([]byte{0xAB}, 32))
+	buf1.Received = 32
+	buf1.ReceivedOffsets[0] = true
+	buf1.Mutex.Unlock()
+
+	// Reuse the same id with a different total. Must reset.
+	buf2 := mustGetChunkBuffer(t, cm, id, 128)
+	if buf2 == buf1 {
+		t.Fatal("buffer was not reset on total mismatch; same pointer returned")
+	}
+	if buf2.TotalSize != 128 {
+		t.Fatalf("reset buffer TotalSize=%d, want 128", buf2.TotalSize)
+	}
+	if len(buf2.Data) != 128 {
+		t.Fatalf("reset buffer len(Data)=%d, want 128", len(buf2.Data))
+	}
+	if buf2.Received != 0 {
+		t.Fatalf("reset buffer Received=%d, want 0", buf2.Received)
+	}
+	if len(buf2.ReceivedOffsets) != 0 {
+		t.Fatalf("reset buffer ReceivedOffsets not empty: %v", buf2.ReceivedOffsets)
+	}
+	if !bytes.Equal(buf2.Data, make([]byte, 128)) {
+		t.Fatal("reset buffer Data not zeroed")
+	}
+
+	// A subsequent fetch with the SAME (new) total must return buf2, not reset.
+	buf3 := mustGetChunkBuffer(t, cm, id, 128)
+	if buf3 != buf2 {
+		t.Fatal("matching-total fetch unexpectedly reset the buffer")
+	}
+}
+
 // TestChunkManager_ConcurrentArrivals stresses the ChunkManager under -race
 // to catch any cache-visibility / ordering hazards on shared ChunkBuffer
 // fields. This is a regression guard for the discipline rules in AGENTS.md
@@ -565,4 +611,127 @@ func TestChunkManager_ConcurrentArrivals(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestChunkManager_ConcurrentDuplicateFinalChunk is the regression for the
+// HIGH finding (handlers.go:77-98): a retransmitted FINAL chunk processed
+// concurrently with the original. Before the fix, both goroutines observed
+// Received >= TotalSize under buf.Mutex and BOTH called dispatch() — the user
+// function re-executed (side effects!) and two responses were written. After
+// the fix, ChunkBuffer.Dispatched is flipped under buf.Mutex by exactly one
+// goroutine, so dispatch fires exactly once.
+//
+// We drive HandleChunk end-to-end. A two-chunk transfer: chunk0 lands first,
+// then N copies of the FINAL chunk1 arrive concurrently (simulating ACK loss /
+// retransmits). Exactly one dispatch must occur.
+func TestChunkManager_ConcurrentDuplicateFinalChunk(t *testing.T) {
+	const replays = 64
+
+	for iter := 0; iter < 50; iter++ {
+		cm := NewChunkManager()
+		h := &SystemHandler{ChunkManager: cm}
+
+		const id uint64 = 0x5151
+		const totalU32 uint32 = 20 // two 10-byte chunks
+		first := bytes.Repeat([]byte{0xAA}, 10)
+		second := bytes.Repeat([]byte{0xBB}, 10)
+
+		// Land the first (non-final) chunk synchronously.
+		respBuf0 := make([]byte, 4096)
+		b0 := flatbuffers.NewBuilder(1024)
+		neverDispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+			t.Fatalf("iter %d: dispatch fired after only chunk0", iter)
+			return 0, 0
+		}
+		h.HandleChunk(buildChunkRequest(t, id, totalU32, 0, first, 0), respBuf0, b0, neverDispatch)
+
+		// Now fire the FINAL chunk concurrently `replays` times. Each
+		// goroutine gets its own respBuf and builder (those are not safe to
+		// share) but they all hit the same ChunkBuffer.
+		var dispatchCount int32
+		var dispatchedData atomic.Value
+		var startGate sync.WaitGroup
+		startGate.Add(1)
+		var wg sync.WaitGroup
+		wg.Add(replays)
+		for r := 0; r < replays; r++ {
+			go func() {
+				defer wg.Done()
+				localResp := make([]byte, 4096)
+				localB := flatbuffers.NewBuilder(1024)
+				finalChunk := buildChunkRequest(t, id, totalU32, 10, second, 0)
+				dispatch := func(data []byte, _ []byte, _ shm.MsgType) (int32, shm.MsgType) {
+					atomic.AddInt32(&dispatchCount, 1)
+					cp := append([]byte(nil), data...)
+					dispatchedData.Store(cp)
+					return 0, 0
+				}
+				startGate.Wait()
+				h.HandleChunk(finalChunk, localResp, localB, dispatch)
+			}()
+		}
+		startGate.Done()
+		wg.Wait()
+
+		if got := atomic.LoadInt32(&dispatchCount); got != 1 {
+			t.Fatalf("iter %d: expected exactly 1 dispatch for concurrent duplicate final chunk; got %d", iter, got)
+		}
+		if dd, ok := dispatchedData.Load().([]byte); ok {
+			want := append(append([]byte{}, first...), second...)
+			if !bytes.Equal(dd, want) {
+				t.Fatalf("iter %d: reassembled payload mismatch.\n got %v\nwant %v", iter, dd, want)
+			}
+		}
+	}
+}
+
+// TestChunkManager_CloseStopsCleanupGoroutine is the regression for the MED
+// finding (manager.go:94-111): the cleanupLoop goroutine + ticker could never
+// be stopped — there was no Close(). After the fix, Close() (idempotent) signals
+// the stop channel and the goroutine exits. We assert via goroutine count: each
+// NewChunkManager spawns one cleanup goroutine; Close must let it return.
+func TestChunkManager_CloseStopsCleanupGoroutine(t *testing.T) {
+	// Settle any goroutines left over from prior subtests.
+	settle := func() {
+		for i := 0; i < 50; i++ {
+			runtime.GC()
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	settle()
+	before := runtime.NumGoroutine()
+
+	const n = 25
+	cms := make([]*ChunkManager, n)
+	for i := range cms {
+		// Tiny interval so the loop is actively selecting on the ticker.
+		cms[i] = NewChunkManagerFromConfig(ChunkManagerConfig{CleanupInterval: time.Millisecond})
+	}
+	// Give the goroutines a moment to actually be scheduled and running.
+	time.Sleep(20 * time.Millisecond)
+	during := runtime.NumGoroutine()
+	if during < before+n {
+		t.Fatalf("expected at least %d new cleanup goroutines after spawning %d managers; before=%d during=%d", n, n, before, during)
+	}
+
+	for _, cm := range cms {
+		cm.Close()
+		// Idempotency: a second Close must not panic on a double channel close.
+		cm.Close()
+	}
+
+	// Wait for the goroutines to drain back to (about) the baseline.
+	deadline := time.Now().Add(5 * time.Second)
+	var after int
+	for {
+		settle()
+		after = runtime.NumGoroutine()
+		if after <= before+2 { // small slack for test-runtime goroutines
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cleanup goroutines did not exit after Close(): before=%d after=%d (leaked ~%d)", before, after, after-before)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

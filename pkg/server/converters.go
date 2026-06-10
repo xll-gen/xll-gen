@@ -1,10 +1,12 @@
 package server
 
 import (
-	"fmt"
+	"strconv"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/internal/fbany"
+	"github.com/xll-gen/xll-gen/pkg/log"
 )
 
 func ToScalar(v *protocol.Any) (ScalarValue, bool) {
@@ -41,50 +43,51 @@ func ToScalar(v *protocol.Any) (ScalarValue, bool) {
 	return ScalarValue{}, false
 }
 
+// ParseInt parses an RTD topic argument as an int32. On a malformed value it
+// returns 0 and logs a warning rather than silently swallowing the error (the
+// old fmt.Sscanf path discarded the error, so "abc" became 0 with no trace).
+// Signature is preserved (callers in the RTD path expect a bare int32).
 func ParseInt(s string) int32 {
-	var i int32
-	fmt.Sscanf(s, "%d", &i)
-	return i
+	v, err := strconv.ParseInt(s, 10, 32)
+	if err != nil {
+		log.Warn("RTD arg: invalid integer, defaulting to 0", "value", s, "error", err)
+		return 0
+	}
+	return int32(v)
 }
 
+// ParseFloat parses an RTD topic argument as a float64. On a malformed value
+// it returns 0 and logs a warning (see ParseInt). Signature is preserved.
 func ParseFloat(s string) float64 {
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		log.Warn("RTD arg: invalid float, defaulting to 0", "value", s, "error", err)
+		return 0
+	}
+	return v
 }
 
 func ParseBool(s string) bool {
 	return s == "TRUE" || s == "1" || s == "true"
 }
 
+// CreateScalarAny serializes a ScalarValue into a protocol.Any table via the
+// canonical internal/fbany builder, returning the Any offset.
 func CreateScalarAny(b *flatbuffers.Builder, val ScalarValue) flatbuffers.UOffsetT {
-	var uOff flatbuffers.UOffsetT
 	switch val.Type {
 	case protocol.AnyValueInt:
-		protocol.IntStart(b)
-		protocol.IntAddVal(b, val.Int)
-		uOff = protocol.IntEnd(b)
+		return fbany.Build(b, val.Type, val.Int)
 	case protocol.AnyValueNum:
-		protocol.NumStart(b)
-		protocol.NumAddVal(b, val.Num)
-		uOff = protocol.NumEnd(b)
+		return fbany.Build(b, val.Type, val.Num)
 	case protocol.AnyValueBool:
-		protocol.BoolStart(b)
-		protocol.BoolAddVal(b, val.Bool)
-		uOff = protocol.BoolEnd(b)
+		return fbany.Build(b, val.Type, val.Bool)
 	case protocol.AnyValueStr:
-		sOff := b.CreateString(val.Str)
-		protocol.StrStart(b)
-		protocol.StrAddVal(b, sOff)
-		uOff = protocol.StrEnd(b)
+		return fbany.Build(b, val.Type, val.Str)
 	case protocol.AnyValueErr:
-		protocol.ErrStart(b)
-		protocol.ErrAddVal(b, protocol.XlError(val.Err))
-		uOff = protocol.ErrEnd(b)
+		return fbany.Build(b, val.Type, val.Err)
 	}
-
-	protocol.AnyStart(b)
-	protocol.AnyAddValType(b, val.Type)
-	protocol.AnyAddVal(b, uOff)
-	return protocol.AnyEnd(b)
+	// Tags outside the five scalar kinds (incl. the AnyValueNONE zero value)
+	// historically produced an Any with an empty union member. ToScalar never
+	// constructs such a ScalarValue; preserved for byte-identity.
+	return fbany.BuildEmpty(b, val.Type)
 }
