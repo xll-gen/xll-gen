@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -38,8 +39,12 @@ func pidFromHwnd(hwnd uintptr) uint32 {
 // initialized COM — callers are expected to runtime.LockOSThread() and to
 // invoke openExcel/Close from inside that locked goroutine.
 type excelApp struct {
-	disp *ole.IDispatch
-	pid  uint32 // captured before Quit so we can force-kill if it hangs
+	disp     *ole.IDispatch
+	pid      uint32    // captured before Quit so we can force-kill if it hangs
+	teardown sync.Once // guards CoUninitialize + UnlockOSThread (paired with the
+	// CoInitializeEx + LockOSThread done in openExcel). Without this, a second
+	// Close() would CoUninitialize an already-uninitialized apartment and
+	// UnlockOSThread an already-unlocked thread — both undefined / unbalanced.
 }
 
 func openExcel() (*excelApp, error) {
@@ -48,6 +53,7 @@ func openExcel() (*excelApp, error) {
 		// S_FALSE just means already initialized for this thread; treat as success.
 		oleErr, ok := err.(*ole.OleError)
 		if !ok || oleErr.Code() != 0x00000001 /* S_FALSE */ {
+			runtime.UnlockOSThread()
 			return nil, fmt.Errorf("CoInitializeEx: %w", err)
 		}
 	}
@@ -55,12 +61,14 @@ func openExcel() (*excelApp, error) {
 	unk, err := oleutil.CreateObject("Excel.Application")
 	if err != nil {
 		ole.CoUninitialize()
+		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("CreateObject(Excel.Application): %w", err)
 	}
 	disp, err := unk.QueryInterface(ole.IID_IDispatch)
 	unk.Release()
 	if err != nil {
 		ole.CoUninitialize()
+		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("QueryInterface(IDispatch): %w", err)
 	}
 
@@ -117,8 +125,12 @@ func (a *excelApp) Close() {
 		a.disp = nil
 	}
 
-	ole.CoUninitialize()
-	runtime.UnlockOSThread()
+	// CoUninitialize + UnlockOSThread exactly once, no matter how many times
+	// Close is called (the doc above promises "safe to call multiple times").
+	a.teardown.Do(func() {
+		ole.CoUninitialize()
+		runtime.UnlockOSThread()
+	})
 
 	// Belt-and-suspenders: force-kill anything still around. We never spawned
 	// Excel manually — the COM CreateObject above did — so only PIDs we
@@ -240,19 +252,6 @@ func (a *excelApp) CalculateFull() error {
 	return nil
 }
 
-// pumpMessages services pending COM/STA window messages. We call this in
-// polling loops so RTD UpdateNotify callbacks (delivered via WM_USER posts on
-// the COM-init thread) actually get dispatched.
-//
-// Without this, Excel's RTD update loop appears frozen because our goroutine
-// is sleeping and Sub Messages never get pumped.
-func pumpMessages() {
-	// go-ole exposes a single-shot peek/dispatch via DoEvents on some forks;
-	// here we rely on the COM library's automatic pumping triggered by any
-	// outbound call. A no-arg Application.Hwnd read suffices and is cheap.
-	// (Falls back to nothing if the dispatch is already torn down.)
-}
-
 // PollUntilNumeric repeatedly reads `cellAddr` until its value is a numeric
 // non-error, or `timeout` elapses. Returns the numeric value as int32 plus
 // the raw final value for diagnostics. Async cells start as "#GETTING_DATA"
@@ -273,8 +272,10 @@ func (a *excelApp) PollUntilNumeric(sheet *ole.IDispatch, cellAddr string, timeo
 		if !time.Now().Before(deadline) {
 			return 0, last, fmt.Errorf("cell %s did not resolve to a number within %s (last=%v %T)", cellAddr, timeout, last, last)
 		}
-		pumpMessages()
-		// A short sleep is fine; Excel's RTD throttle is the rate-limiter.
+		// The GetCellValue COM round-trip above implicitly services the STA
+		// message queue, so RTD UpdateNotify callbacks get dispatched without a
+		// separate pump. A short sleep is fine; Excel's RTD throttle is the
+		// rate-limiter.
 		time.Sleep(150 * time.Millisecond)
 	}
 }

@@ -34,6 +34,12 @@ void ProcessAsyncBatchResponse(const protocol::BatchAsyncResponse* batch) {
         }
 
         if (pxResult) {
+            // xlAsyncReturn copies the result XLOPER12 synchronously into
+            // Excel's own storage before returning (it does NOT retain our
+            // pointer past this call). That is what makes the immediate
+            // free/release below safe — once xlAsyncReturn has returned, Excel
+            // no longer references pxResult or anything it points at. See
+            // IMPROVEMENT_BACKLOG.md §3.
             xll::CallExcel(xlAsyncReturn, nullptr, &xAsyncHandle, pxResult);
             // Cleanup: AnyToXLOPER12 and NewExcelString use NewXLOPER12/ObjectPool.
             // We must ensure the node is returned to the pool.

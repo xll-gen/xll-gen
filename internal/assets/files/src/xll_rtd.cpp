@@ -15,6 +15,16 @@
 // Defined in xll_ipc.cpp
 extern shm::DirectHost g_host;
 
+// SCODE placed in the VT_ERROR VARIANT when an RTD update carries a value of
+// an AnyValue kind this client does not know how to render (the else branch in
+// ProcessRtdUpdate). 0x80040101 is the classic Automation "value not available"
+// error scode (the historical inline comment called it the "xlerrValue
+// equivalent"). It is distinct from the refresh-time placeholder at
+// rtd/server.h (scode 2043, xlErrGettingData), which marks a cell that has not
+// yet received its first value; this constant marks a value we received but
+// cannot convert. Named per IMPROVEMENT_BACKLOG.md §3.
+static constexpr SCODE kRtdUnsupportedValueScode = 0x80040101;
+
 // Global RTD State
 RtdServer* g_rtdServer = nullptr;
 
@@ -86,7 +96,7 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
              v.boolVal = anyVal->val_as_Bool()->val() ? VARIANT_TRUE : VARIANT_FALSE;
         } else {
              v.vt = VT_ERROR;
-             v.scode = 0x80040101; // xlerrValue equivalent
+             v.scode = kRtdUnsupportedValueScode;
         }
     }
 

@@ -118,15 +118,22 @@ func runSimulation(cfg *config.Config, simDir, serverPath string) error {
 		return fmt.Errorf("failed to start server: %w", err)
 	}
 	defer func() {
+		// The server has no stdin shutdown protocol, so force-kill is the only
+		// lever. Always Wait() after Kill() to reap the process and release its
+		// OS handles — a bare Kill() leaves a zombie/handle leak.
 		if serverCmd.Process != nil {
-			serverCmd.Process.Kill()
+			_ = serverCmd.Process.Kill()
+			_ = serverCmd.Wait()
 		}
 	}()
 
 	// Read remaining output from Host
-	// The host should run tests and exit
+	// The host should run tests and exit. The channel is buffered (size 1) so
+	// the consumer goroutine can always deliver hostCmd.Wait() and exit even
+	// if we took the timeout branch below and stopped receiving — otherwise it
+	// would block forever on the send and leak.
 	exitCode := 0
-	done := make(chan error)
+	done := make(chan error, 1)
 	go func() {
 		// Consume rest of stdout
 		for scanner.Scan() {
@@ -148,13 +155,22 @@ func runSimulation(cfg *config.Config, simDir, serverPath string) error {
 	case <-time.After(30 * time.Second):
 		fmt.Println("Simulation timed out")
 		exitCode = 1
-		hostCmd.Process.Kill()
+		// Force-kill the host AND reap it. The deferred Kill() only guards the
+		// process pointer; we additionally drain `done` so the consumer
+		// goroutine's hostCmd.Wait() completes and the goroutine exits rather
+		// than leaking. The buffered channel means the send never blocks even
+		// if Wait() returns after this select has moved on.
+		if hostCmd.Process != nil {
+			_ = hostCmd.Process.Kill()
+		}
+		<-done
 	}
 
 	if exitCode == 0 {
 		fmt.Println("Simulation PASSED")
 	} else {
 		fmt.Println("Simulation FAILED")
+		return fmt.Errorf("simulation failed (exit code %d)", exitCode)
 	}
 
 	return nil

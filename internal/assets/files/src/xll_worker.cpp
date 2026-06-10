@@ -71,8 +71,12 @@ void HandleChunk(const protocol::Chunk* chunk) {
     PartialMessage& pm = it->second;
     pm.lastUpdate = std::chrono::steady_clock::now();
 
-    // Validate offset and size
-    if (chunk->offset() + chunk->data()->size() > pm.totalSize) {
+    // Validate offset and size. Subtraction form: the additive check
+    // (offset + size > total) can wrap for wire-supplied values near the
+    // unsigned max and pass validation while memcpy writes out of bounds.
+    if (!chunk->data() ||
+        chunk->offset() > pm.totalSize ||
+        chunk->data()->size() > pm.totalSize - chunk->offset()) {
         // Error: Overflow. Discard.
         g_partialMessages.erase(it);
         return;
