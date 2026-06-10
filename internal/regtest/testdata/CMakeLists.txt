@@ -29,6 +29,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/xll-gen/shm.git
   GIT_TAG v0.7.3
   GIT_SHALLOW TRUE
+  GIT_SUBMODULES ""
 )
 FetchContent_MakeAvailable(shm)
 

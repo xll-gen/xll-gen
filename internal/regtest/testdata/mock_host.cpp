@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cmath>
 #include "shm/DirectHost.h"
-#include "protocol_generated.h"
+// protocol_generated.h now ships in the `types` library (extracted in v0.1.0);
+// consume it via the types/ prefix to match the generated XLL sources.
+#include "types/protocol_generated.h"
 #include "schema_generated.h"
 
 using namespace std;
