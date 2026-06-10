@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <unordered_set>
 #include <mutex>
 #include <chrono>
 #include <thread>
@@ -28,16 +29,38 @@ std::atomic<bool> g_workerRunning = false;
 std::thread g_workerThread;
 
 // Chunk Reassembly Logic
+//
+// CO-CHANGE ANCHOR (§18.6 style): this mirrors the Go-side reassembler in
+// pkg/server/manager.go (ChunkBuffer) + pkg/server/handlers.go (HandleChunk).
+// Keep the two in lockstep:
+//   - receivedOffsets here  <->  ChunkBuffer.ReceivedOffsets (map[uint32]bool)
+//   - kMaxChunkTotalSize    <->  server.DefaultMaxChunkBufferBytes (256 MiB)
+//   - the >= completion test <-> handlers.go `buf.Received >= buf.TotalSize`
+// The offset type matches protocol::Chunk::offset() / total_size(), which the
+// FlatBuffers schema (protocol.fbs) declares as uint32.
 struct PartialMessage {
     std::vector<uint8_t> buffer;
     size_t receivedSize;
     size_t totalSize;
     int32_t finalMsgType;
+    // Dedup set keyed by chunk offset. A retransmitted chunk (e.g. after a
+    // dropped ACK) MUST NOT re-copy + re-advance receivedSize, otherwise a
+    // duplicate pushes receivedSize past totalSize and triggers premature
+    // completion with trailing bytes still zero — data corruption. This is
+    // the exact hazard fixed on the Go side (AGENTS.md §23.3).
+    std::unordered_set<uint32_t> receivedOffsets;
     std::chrono::steady_clock::time_point lastUpdate;
 };
 
 std::map<uint64_t, PartialMessage> g_partialMessages;
 std::mutex g_partialMessagesMutex;
+
+// Upper bound on the wire-supplied total_size a single inbound transfer may
+// declare, mirroring the Go guest's server.DefaultMaxChunkBufferBytes
+// (256 MiB, pkg/server/manager.go). Previously C++ capped at 128 MiB while Go
+// accepted up to 256 MiB, so a ~200 MB response was accepted by Go but
+// silently dropped here. Keep these two in lockstep (CO-CHANGE ANCHOR, §18.6).
+static constexpr uint64_t kMaxChunkTotalSize = 256ull * 1024 * 1024;
 
 void HandleChunk(const protocol::Chunk* chunk) {
     if (!chunk) return;
@@ -52,8 +75,10 @@ void HandleChunk(const protocol::Chunk* chunk) {
 
     if (it == g_partialMessages.end()) {
         // New partial message
-        // Vulnerability Fix: Limit total size to 128MB to prevent DoS
-        if (chunk->total_size() > 128 * 1024 * 1024) {
+        // Vulnerability Fix: bound the wire-supplied total size to prevent a
+        // multi-GiB allocation (DoS). Aligned to the Go guest cap; see
+        // kMaxChunkTotalSize above.
+        if (chunk->total_size() > kMaxChunkTotalSize) {
              if (!g_isUnloading) LogWarn("Chunk total size too large: " + std::to_string(chunk->total_size()) + " bytes. Dropping.");
              return;
         }
@@ -82,12 +107,25 @@ void HandleChunk(const protocol::Chunk* chunk) {
         return;
     }
 
-    // Copy data
-    std::memcpy(pm.buffer.data() + chunk->offset(), chunk->data()->Data(), chunk->data()->size());
-    pm.receivedSize += chunk->data()->size();
+    // Dedup by chunk offset (mirrors Go ChunkBuffer.ReceivedOffsets,
+    // AGENTS.md §23.3). A retransmitted chunk (e.g. after a dropped ACK) is
+    // dropped here: we skip BOTH the copy and the receivedSize advance, exactly
+    // as the Go side does. Without this, a duplicate advances receivedSize past
+    // totalSize and trips premature completion with the trailing region still
+    // zero (data corruption). emplace().second is false when the offset was
+    // already seen, so the body runs only on first observation of each offset.
+    if (pm.receivedOffsets.emplace(chunk->offset()).second) {
+        // First time we see this offset: copy + advance.
+        std::memcpy(pm.buffer.data() + chunk->offset(), chunk->data()->Data(), chunk->data()->size());
+        pm.receivedSize += chunk->data()->size();
+    }
 
-    // Check completion
-    if (pm.receivedSize == pm.totalSize) {
+    // Check completion. With offset dedup, receivedSize can only reach
+    // totalSize via distinct offsets, so >= is safe and matches the Go-side
+    // semantics (handlers.go: `buf.Received >= buf.TotalSize`). Using >=
+    // rather than == keeps completion reachable even if a producer's chunk
+    // sizes don't sum exactly as expected.
+    if (pm.receivedSize >= pm.totalSize) {
         // Process the full message
         int32_t type = pm.finalMsgType;
         const uint8_t* data = pm.buffer.data();

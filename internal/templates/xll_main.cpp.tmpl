@@ -358,6 +358,29 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
 // User Functions
 {{range $i, $fn := .Functions}}
 extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mode "rtd"}}LPXLOPER12{{else}}{{lookupCppType .Return}}{{end}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if eq .Mode "async"}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+    // Probe-unload guard: OnAutoClose frees and nulls g_phost (xll_ipc.h:
+    // `#define g_host (*g_phost)`). A stale Excel calc thread can still enter
+    // a registered UDF after probe-unload; dereferencing g_host (e.g.
+    // GetZeroCopySlot below) would crash on a null deref. Bail out early with
+    // the same error value the SHM-failure path returns. Mirrors the
+    // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
+    if (g_phost == nullptr) {
+        {{if eq .Mode "async"}}
+        // Async UDFs return void; Excel was told the result would arrive via
+        // xlAsyncReturn. With the host gone there is nothing to send — bail.
+        return;
+        {{else if and (ne .Mode "rtd") (eq .Return "numgrid")}}
+        // FP12* (K%) functions cannot return an XLOPER12 sentinel; a null
+        // FP12* is the established error convention (NumGridToFP12's own
+        // error paths return nullptr; Excel renders #NUM!).
+        return nullptr;
+        {{else}}
+        // Sync and RTD wrappers both return LPXLOPER12; surface the shared
+        // error sentinel, identical to the res.HasError() path below.
+        return &g_xlErrValue;
+        {{end}}
+    }
+
     SAFE_LOG_DEBUG("Func Entry: {{.Name}}");
 
     {{if eq .Mode "rtd"}}
@@ -593,7 +616,12 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
 
     if (res.HasError()) {
+            {{if eq .Return "numgrid"}}
+            // FP12* (K%) error convention: null FP12* (matches NumGridToFP12).
+            return nullptr;
+            {{else}}
             return &g_xlErrValue;
+            {{end}}
     }
 
     auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(slot.GetRespBuffer());
