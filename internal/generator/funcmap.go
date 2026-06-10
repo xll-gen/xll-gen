@@ -1,32 +1,14 @@
 package generator
 
 import (
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/pkg/server"
 )
-
-// Helper to check if a slice of functions contains any async functions
-func hasAsync(funcs []config.Function) bool {
-	for _, f := range funcs {
-		if f.Async {
-			return true
-		}
-	}
-	return false
-}
-
-// Helper to check if a slice of functions contains any resizable functions
-func hasResizable(funcs []config.Function) bool {
-	for _, f := range funcs {
-		if f.Resizable {
-			return true
-		}
-	}
-	return false
-}
 
 // Helper to check if a specific event type is registered
 func hasEvent(eventType string, events []config.Event) bool {
@@ -64,9 +46,7 @@ func parseDurationToMs(s string, defaultMs int) int {
 // This centralization ensures consistency and avoids code duplication.
 func GetCommonFuncMap() template.FuncMap {
 	return template.FuncMap{
-		"hasAsync":       hasAsync,
-		"hasResizable":   hasResizable,
-		"hasEvent":       hasEvent,
+		"hasEvent":        hasEvent,
 		"getEventHandler": getEventHandler,
 		"derefBool": func(b *bool) bool {
 			if b == nil {
@@ -74,18 +54,6 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return *b
 		},
-		"derefString": func(s *string) string {
-			if s == nil {
-				return ""
-			}
-			return *s
-		},
-		// Case conversion helpers. Title is intentionally NOT exposed —
-		// strings.Title is deprecated and no current template uses it; add
-		// a proper Unicode-aware replacement (golang.org/x/text/cases) if a
-		// future template needs title-casing.
-		"Lower": strings.ToLower,
-		"Upper": strings.ToUpper,
 		"capitalize": func(s string) string {
 			if len(s) == 0 {
 				return ""
@@ -111,9 +79,6 @@ func GetCommonFuncMap() template.FuncMap {
 		"lookupCppArgType": func(t string) string {
 			return LookupArgCppType(t)
 		},
-		"defaultErrorVal": func(t string) string {
-			return DefaultErrorVal(t)
-		},
 		"lookupEventCode": func(t string) string {
 			// Map event types to xlEvent... constants
 			switch t {
@@ -131,9 +96,9 @@ func GetCommonFuncMap() template.FuncMap {
 			// Currently events like CalculationEnded are MsgID 131.
 			switch t {
 			case "CalculationEnded":
-				return "131"
+				return strconv.Itoa(server.MsgCalculationEnded)
 			case "CalculationCanceled":
-				return "132"
+				return strconv.Itoa(server.MsgCalculationCanceled)
 			default:
 				return "0"
 			}
@@ -176,7 +141,7 @@ func GetCommonFuncMap() template.FuncMap {
 			return int64(d)
 		},
 		"MsgUserStart": func() int {
-			return 140
+			return server.MsgUserStart
 		},
 	}
 }

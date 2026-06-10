@@ -37,11 +37,3 @@ func executeTemplate(tmplName string, destPath string, data interface{}, funcMap
 
 	return nil
 }
-
-// parseDurationToMs parses a duration string (e.g. "2s", "500ms") and returns milliseconds as int.
-// Note: This is also defined in funcmap.go, but needed here for utility usage if any.
-// To avoid redeclaration errors, we should check if it's used elsewhere or remove one.
-// The error log showed: "parseDurationToMs redeclared in this block".
-// So we should remove it from here if it is in funcmap.go and accessible, OR rename it, OR remove it from funcmap.go.
-// Since funcmap.go is in the same package, we only need it once.
-// I will NOT include parseDurationToMs here to avoid the redeclaration error seen earlier.

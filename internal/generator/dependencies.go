@@ -12,81 +12,80 @@ import (
 	"github.com/xll-gen/xll-gen/internal/versions"
 )
 
+// goStep describes one "spinner + go command" step of updateDependencies.
+// warnFormat is a fmt format string receiving the error as its single %v
+// argument; successLabel/successMsg feed ui.PrintSuccess on the happy path.
+type goStep struct {
+	spinnerMsg   string
+	warnFormat   string
+	successLabel string
+	successMsg   string
+	args         []string
+}
+
+// runGoStep runs `go <args...>` in baseDir behind a spinner. Failures are
+// warn-don't-fail: the error is printed as a Warning and the step completes
+// normally, preserving the historical updateDependencies behavior.
+func runGoStep(baseDir string, step goStep) {
+	cmd := exec.Command("go", step.args...)
+	if baseDir != "" {
+		cmd.Dir = baseDir
+	}
+	if err := ui.RunSpinner(step.spinnerMsg, func() error {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, string(out))
+		}
+		return nil
+	}); err != nil {
+		ui.PrintWarning("Warning", fmt.Sprintf(step.warnFormat, err))
+	} else {
+		ui.PrintSuccess(step.successLabel, step.successMsg)
+	}
+}
+
 // updateDependencies runs go get for required dependencies and go mod tidy.
 func updateDependencies(baseDir string, opts Options) error {
 	ui.PrintHeader("Dependencies:")
 
-	shmCmd := exec.Command("go", "get", "github.com/xll-gen/shm@"+versions.SHM)
-	if baseDir != "" {
-		shmCmd.Dir = baseDir
-	}
-	if err := ui.RunSpinner("Updating SHM dependency...", func() error {
-		out, err := shmCmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%w: %s", err, string(out))
-		}
-		return nil
-	}); err != nil {
-		ui.PrintWarning("Warning", fmt.Sprintf("'go get shm' failed: %v", err))
-	} else {
-		ui.PrintSuccess("Updated", "SHM dependency to "+versions.SHM)
-	}
+	runGoStep(baseDir, goStep{
+		spinnerMsg:   "Updating SHM dependency...",
+		warnFormat:   "'go get shm' failed: %v",
+		successLabel: "Updated",
+		successMsg:   "SHM dependency to " + versions.SHM,
+		args:         []string{"get", "github.com/xll-gen/shm@" + versions.SHM},
+	})
 
-	typesCmd := exec.Command("go", "get", "github.com/xll-gen/types@"+versions.Types)
-	if baseDir != "" {
-		typesCmd.Dir = baseDir
-	}
-	if err := ui.RunSpinner("Updating types dependency...", func() error {
-		out, err := typesCmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%w: %s", err, string(out))
-		}
-		return nil
-	}); err != nil {
-		ui.PrintWarning("Warning", fmt.Sprintf("'go get types' failed: %v", err))
-	} else {
-		ui.PrintSuccess("Updated", "Types dependency to "+versions.Types)
-	}
+	runGoStep(baseDir, goStep{
+		spinnerMsg:   "Updating types dependency...",
+		warnFormat:   "'go get types' failed: %v",
+		successLabel: "Updated",
+		successMsg:   "Types dependency to " + versions.Types,
+		args:         []string{"get", "github.com/xll-gen/types@" + versions.Types},
+	})
 
 	if opts.DevMode {
-		cmdGetXll := exec.Command("go", "get", "github.com/xll-gen/xll-gen@"+versions.XllGenDev)
-		if baseDir != "" {
-			cmdGetXll.Dir = baseDir
-		}
-		if err := ui.RunSpinner("Updating xll-gen dependency...", func() error {
-			out, err := cmdGetXll.CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("%w: %s", err, string(out))
-			}
-			return nil
-		}); err != nil {
-			ui.PrintWarning("Warning", fmt.Sprintf("'go get xll-gen@main' failed: %v", err))
-		} else {
-			ui.PrintSuccess("Updated", "xll-gen dependency to "+versions.XllGenDev)
-		}
+		runGoStep(baseDir, goStep{
+			spinnerMsg:   "Updating xll-gen dependency...",
+			warnFormat:   "'go get xll-gen@main' failed: %v",
+			successLabel: "Updated",
+			successMsg:   "xll-gen dependency to " + versions.XllGenDev,
+			args:         []string{"get", "github.com/xll-gen/xll-gen@" + versions.XllGenDev},
+		})
 	}
 
-	cmdTidy := exec.Command("go", "mod", "tidy")
-	if baseDir != "" {
-		cmdTidy.Dir = baseDir
-	}
-	if err := ui.RunSpinner("Running 'go mod tidy'...", func() error {
-		out, err := cmdTidy.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%w: %s", err, string(out))
-		}
-		return nil
-	}); err != nil {
-		ui.PrintWarning("Warning", fmt.Sprintf("'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.", err))
-	} else {
-		ui.PrintSuccess("Completed", "'go mod tidy'")
-	}
+	runGoStep(baseDir, goStep{
+		spinnerMsg:   "Running 'go mod tidy'...",
+		warnFormat:   "'go mod tidy' failed: %v. You may need to run it manually after checking dependencies.",
+		successLabel: "Completed",
+		successMsg:   "'go mod tidy'",
+		args:         []string{"mod", "tidy"},
+	})
 
 	fmt.Println("") // Spacing
 
 	return nil
 }
-
 
 // fixGoImports traverses the generated directory and replaces local protocol imports
 // with the correct package path github.com/xll-gen/types/go/protocol.

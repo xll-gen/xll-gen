@@ -73,9 +73,3 @@ func generateCMake(cfg *config.Config, dir string) error {
 
 	return executeTemplate("CMakeLists.txt.tmpl", filepath.Join(dir, "CMakeLists.txt"), data, nil)
 }
-
-// generateCppLaunch generates the C++ launch configuration
-func generateCppLaunch(cfg *config.Config, dir string) error {
-	// Not implemented yet - using static asset for now
-	return nil
-}
