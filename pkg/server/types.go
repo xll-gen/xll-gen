@@ -157,3 +157,14 @@ type PendingAsyncResult struct {
 	ValType AnyValue
 	Err     string
 }
+
+// CommandContext carries invocation metadata to a user command handler
+// (ribbon button click, keyboard shortcut, or typed macro name).
+type CommandContext struct {
+	// CommandName is the invoked commands[].name from xll.yaml.
+	CommandName string
+	// ControlID is the clicked ribbon control id ("" for shortcut/Alt+F8).
+	ControlID string
+	// ExcelPID is the parent Excel process id, for multi-instance COM attach.
+	ExcelPID uint32
+}
