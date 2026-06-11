@@ -6,6 +6,12 @@ events:
   - type: CalculationEnded
     handler: OnCalculationEnded
 
+# Ribbon/macro command. Exercises the MSG_COMMAND_INVOKE (137) round-trip:
+# the mock host sends a CommandInvokeRequest and asserts the delivery ack.
+commands:
+  - name: "RunReport"
+    handler: "RunReport"
+
 gen:
   go:
     package: "generated"
