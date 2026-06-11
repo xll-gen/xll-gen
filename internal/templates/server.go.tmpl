@@ -155,7 +155,17 @@ func Serve(handler XllService) {
 
              case server.MsgChunk:
                 return sysHandler.HandleChunk(data, respBuf, builder, dispatch)
-
+{{if .Commands}}
+             case server.MsgCommandInvoke:
+                return sysHandler.HandleCommandInvoke(data, respBuf, builder, func(name string) (func(context.Context, server.CommandContext) error, bool) {
+                    switch name {
+                    {{range .Commands}}case "{{.Name}}":
+                        return handler.{{.Handler}}, true
+                    {{end}}default:
+                        return nil, false
+                    }
+                })
+{{end}}
 {{range .Events}}
              {{if and (ne .Type "CalculationEnded") (ne .Type "CalculationCanceled")}}
              case {{lookupEventId .Type}}:
