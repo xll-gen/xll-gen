@@ -27,6 +27,7 @@ enum ext_DisconnectMode {
     ext_dm_UserClosed     = 1,
 };
 static_assert(sizeof(ext_ConnectMode) == sizeof(int), "automation enum must be int-sized");
+static_assert(sizeof(ext_DisconnectMode) == sizeof(int), "automation enum must be int-sized");
 
 struct IDTExtensibility2 : public IDispatch {
     virtual HRESULT STDMETHODCALLTYPE OnConnection(IDispatch* Application, ext_ConnectMode ConnectMode, IDispatch* AddInInst, SAFEARRAY** custom) = 0;
