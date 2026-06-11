@@ -111,6 +111,13 @@ func TestCommandValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "empty command name",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: ""}}
+			},
+			wantErr: "command name cannot be empty",
+		},
+		{
 			name: "command name collides with function name",
 			mutate: func(c *Config) {
 				c.Commands = []Command{{Name: "MyFunc"}}
