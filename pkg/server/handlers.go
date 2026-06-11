@@ -258,6 +258,14 @@ var excelParentPID = uint32(os.Getppid())
 // response is a delivery ack only — the handler runs fire-and-forget in its
 // own goroutine, because the C++ side must return from onAction immediately
 // (Excel's STA thread) and the handler may re-enter Excel via COM.
+//
+// Both success and unknown-command replies ride the MsgCommandInvoke type;
+// the C++ side must branch on the payload's ok()/error() fields, not the SHM
+// msgType (same payload-over-msgType idiom as HandleChunk's Ack replies).
+//
+// Unlike RTD ConnectData there is no shutdown drain for these goroutines:
+// they live in the Go server process (not the XLL), so server exit reaps
+// them whole and they never touch freed cross-process state.
 func (h *SystemHandler) HandleCommandInvoke(data []byte, respBuf []byte, b *flatbuffers.Builder, resolve func(name string) (func(context.Context, CommandContext) error, bool)) (int32, shm.MsgType) {
 	reqObj := protocol.GetRootAsCommandInvokeRequest(data, 0)
 	name := string(reqObj.CommandName())
