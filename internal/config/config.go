@@ -268,17 +268,19 @@ var validArgTypes = map[string]bool{
 
 // validReturnTypes is the set of allowed return types in xll.yaml.
 //
-// Scalar only: the generated Go server cannot serialize composite/any types
-// (range/grid/numgrid/any) as RETURNS — the sync path emits a scalar
-// AddResult call that fails to compile against a pointer result, and the async
-// QueueResult chain has no branch for them so the result is silently dropped.
-// These types remain valid as ARGUMENTS (see validArgTypes); request decoding
-// handles them. See IMPROVEMENT_BACKLOG.md §7.
+// Scalars plus "any": the generated Go server serializes scalar returns
+// directly and "any" returns through the canonical Go-value→protocol.Any
+// mapping (handlers return a plain Go any; see pkg/server.BuildAnyFromGo).
+// Composite table types (range/grid/numgrid) are still arg-only — the sync
+// path would emit a scalar AddResult call that fails to compile against a
+// pointer result, and the async QueueResult chain has no branch for them so
+// the result is silently dropped. See IMPROVEMENT_BACKLOG.md §7.
 var validReturnTypes = map[string]bool{
 	"int":    true,
 	"float":  true,
 	"string": true,
 	"bool":   true,
+	"any":    true,
 }
 
 // compositeArgOnlyTypes are types valid as arguments but not yet supported as
@@ -288,7 +290,6 @@ var compositeArgOnlyTypes = map[string]bool{
 	"range":   true,
 	"grid":    true,
 	"numgrid": true,
-	"any":     true,
 }
 
 // Validate checks the configuration for errors, such as duplicate event types
@@ -326,8 +327,8 @@ func Validate(config *Config) error {
 	for _, fn := range config.Functions {
 		// RTD functions stream their results through the RTD server path
 		// (pkg/rtd), NOT the sync/async server serialization that breaks on
-		// composite/any returns — server.go.tmpl skips handler generation for
-		// mode:"rtd" entirely. So composite/any returns are valid for RTD and
+		// composite returns — server.go.tmpl skips handler generation for
+		// mode:"rtd" entirely. So composite returns are valid for RTD and
 		// only the scalar+composite union is allowed there.
 		isRtd := strings.EqualFold(fn.Mode, "rtd")
 		if isRtd {
@@ -336,7 +337,7 @@ func Validate(config *Config) error {
 			}
 		} else if !validReturnTypes[fn.Return] {
 			if compositeArgOnlyTypes[fn.Return] {
-				return fmt.Errorf("function '%s': '%s' is supported as an argument type but not yet as a return type for sync/async functions (the Go server cannot serialize composite/any returns; use mode:\"rtd\" or see IMPROVEMENT_BACKLOG.md)", fn.Name, fn.Return)
+				return fmt.Errorf("function '%s': '%s' is supported as an argument type but not yet as a return type for sync/async functions (the Go server cannot serialize composite returns; use mode:\"rtd\" or see IMPROVEMENT_BACKLOG.md)", fn.Name, fn.Return)
 			}
 			return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 		}

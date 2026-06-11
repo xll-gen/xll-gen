@@ -141,11 +141,12 @@ func serverDataReturn(returnType string, async bool) interface{} {
 // composite-return bug slipped past: nothing compiled/parsed the generated Go
 // server for the various return types, so a return type that rendered invalid
 // Go (composite/any) shipped. config.Validate now rejects composite returns
-// upstream, so this gate covers the SCALAR returns the server must serialize —
-// asserting each renders Go that both parses and gofmts, for sync and async.
+// upstream, so this gate covers the returns the server must serialize —
+// scalars plus "any" — asserting each renders Go that both parses and
+// gofmts, for sync and async.
 func TestGenServer_ScalarReturnsParse(t *testing.T) {
 	t.Parallel()
-	for _, ret := range []string{"int", "float", "string", "bool"} {
+	for _, ret := range []string{"int", "float", "string", "bool", "any"} {
 		for _, async := range []bool{false, true} {
 			mode := "sync"
 			if async {
