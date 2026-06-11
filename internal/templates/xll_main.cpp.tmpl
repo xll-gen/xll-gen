@@ -156,11 +156,22 @@ extern "C" {
 }
 {{end}}
 
+{{if .Ribbon.Enabled}}
+// Forward declaration: xlAutoClose (below) disconnects the ribbon add-in, but
+// SetRibbonConnected is defined after xlAutoOpen further down this file.
+static bool SetRibbonConnected(bool connected);
+{{end}}
+
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     {{if .Ribbon.Enabled}}
     XLL_SAFE_BLOCK_BEGIN
-        // Teardown order per com/ribbon_addin.h contract:
-        // (1) revoke/unregister so no NEW ribbon Invoke can spawn threads,
+        // Teardown order (com/ribbon_addin.h contract + Excel-DNA practice):
+        // (0) explicitly disconnect so Excel releases its RibbonAddIn
+        //     reference while this DLL is still mapped (prevents quit crash),
+        // (1) revoke/unregister so nothing new can resolve the class,
+        if (!SetRibbonConnected(false)) {
+            SAFE_LOG_WARN("Ribbon: explicit disconnect failed; Excel may release the add-in late.");
+        }
         if (g_ribbonCookie != 0) {
             CoRevokeClassObject(g_ribbonCookie);
             g_ribbonCookie = 0;
@@ -216,7 +227,13 @@ static BOOL CALLBACK FindXlMainProc(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-static bool ConnectRibbonAddin() {
+// Sets Application.COMAddIns.Item(progId).Connect = <connected>. Used both
+// to connect at xlAutoOpen and — critically — to DISCONNECT at xlAutoClose:
+// revoking the class object does not release the live add-in instance Excel
+// holds; without an explicit Connect=false Excel can keep a vtable pointer
+// into this DLL past FreeLibrary and crash on quit (Excel-DNA does the same
+// explicit disconnect for its helper add-in).
+static bool SetRibbonConnected(bool connected) {
     HWND frame = nullptr;
     EnumThreadWindows(GetCurrentThreadId(), FindXlMainProc, reinterpret_cast<LPARAM>(&frame));
     if (!frame) return false;
@@ -244,10 +261,10 @@ static bool ConnectRibbonAddin() {
             VARIANT vItem; VariantInit(&vItem);
             if (SUCCEEDED(xll::com::Invoke(vAddins.pdispVal, L"Item", DISPATCH_METHOD | DISPATCH_PROPERTYGET, { vProg }, &vItem))
                 && vItem.vt == VT_DISPATCH && vItem.pdispVal) {
-                VARIANT vTrue; VariantInit(&vTrue);
-                vTrue.vt = VT_BOOL;
-                vTrue.boolVal = VARIANT_TRUE;
-                ok = SUCCEEDED(xll::com::Invoke(vItem.pdispVal, L"Connect", DISPATCH_PROPERTYPUT, { vTrue }, nullptr));
+                VARIANT vConn; VariantInit(&vConn);
+                vConn.vt = VT_BOOL;
+                vConn.boolVal = connected ? VARIANT_TRUE : VARIANT_FALSE;
+                ok = SUCCEEDED(xll::com::Invoke(vItem.pdispVal, L"Connect", DISPATCH_PROPERTYPUT, { vConn }, nullptr));
             }
             VariantClear(&vItem);
             VariantClear(&vProg);  // frees the BSTR (caller owns args per dispatch_helpers contract)
@@ -497,13 +514,15 @@ start_worker:
             HRESULT hr = CoRegisterClassObject(GetRibbonClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &g_ribbonCookie);
             pFactory->Release();
             if (FAILED(hr)) {
-                SAFE_LOG_WARN("Ribbon: CoRegisterClassObject failed: " + std::to_string(hr));
+                char hrBuf[16];
+                snprintf(hrBuf, sizeof(hrBuf), "0x%08lX", static_cast<unsigned long>(hr));
+                SAFE_LOG_WARN(std::string("Ribbon: CoRegisterClassObject failed: ") + hrBuf);
                 ribbonOk = false;
             }
         }
         // 4. Connect through Application.COMAddIns (synchronous; Excel calls
         //    GetCustomUI during this call).
-        if (ribbonOk && !ConnectRibbonAddin()) {
+        if (ribbonOk && !SetRibbonConnected(true)) {
             SAFE_LOG_WARN("Ribbon: COMAddIns connect failed; ribbon UI disabled.");
             ribbonOk = false;
         }

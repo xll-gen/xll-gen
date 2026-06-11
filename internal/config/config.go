@@ -391,6 +391,14 @@ func Validate(config *Config) error {
 		if cmd.Name == "" {
 			return fmt.Errorf("command name cannot be empty")
 		}
+		for _, r := range cmd.Name {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+				return fmt.Errorf("command '%s': name must match [A-Za-z0-9_]+ (it is emitted into generated C++ and registered with Excel via xlfRegister)", cmd.Name)
+			}
+		}
+		if cmd.Name[0] >= '0' && cmd.Name[0] <= '9' {
+			return fmt.Errorf("command '%s': name must not start with a digit", cmd.Name)
+		}
 		if fnNames[cmd.Name] {
 			return fmt.Errorf("command '%s' collides with a function of the same name (xlfRegister namespace is shared)", cmd.Name)
 		}

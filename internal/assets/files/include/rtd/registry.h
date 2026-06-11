@@ -130,9 +130,9 @@ namespace rtd {
         DWORD loadBehavior = 0;
         RegSetValueExW(hKey, L"LoadBehavior", 0, REG_DWORD, (const BYTE*)&loadBehavior, sizeof(loadBehavior));
         if (friendlyName)
-            RegSetValueExW(hKey, L"FriendlyName", 0, REG_SZ, (const BYTE*)friendlyName, (wcslen(friendlyName) + 1) * sizeof(wchar_t));
+            RegSetValueExW(hKey, L"FriendlyName", 0, REG_SZ, (const BYTE*)friendlyName, static_cast<DWORD>((wcslen(friendlyName) + 1) * sizeof(wchar_t)));
         if (description)
-            RegSetValueExW(hKey, L"Description", 0, REG_SZ, (const BYTE*)description, (wcslen(description) + 1) * sizeof(wchar_t));
+            RegSetValueExW(hKey, L"Description", 0, REG_SZ, (const BYTE*)description, static_cast<DWORD>((wcslen(description) + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
         return S_OK;
     }

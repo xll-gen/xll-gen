@@ -118,6 +118,34 @@ func TestCommandValidation(t *testing.T) {
 			wantErr: "command name cannot be empty",
 		},
 		{
+			name: "command name with double-quote rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: `A"B`}}
+			},
+			wantErr: "must match",
+		},
+		{
+			name: "command name with backslash rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: `A\B`}}
+			},
+			wantErr: "must match",
+		},
+		{
+			name: "command name with non-ascii rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "리포트"}}
+			},
+			wantErr: "must match",
+		},
+		{
+			name: "command name starting with digit rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "1Run"}}
+			},
+			wantErr: "must not start",
+		},
+		{
 			name: "command name collides with function name",
 			mutate: func(c *Config) {
 				c.Commands = []Command{{Name: "MyFunc"}}
