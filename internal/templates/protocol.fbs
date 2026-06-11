@@ -137,3 +137,15 @@ table RtdUpdate {
 table BatchRtdUpdate {
   updates: [RtdUpdate];
 }
+
+// Command (ribbon/macro) Messages
+
+table CommandInvokeRequest {
+  command_name: string;     // routes to the registered Go handler
+  control_id: string;       // ribbon control id; empty for shortcut/Alt+F8
+}
+
+table CommandInvokeResponse {  // delivery ack, NOT handler completion
+  ok: bool;
+  error: string;
+}

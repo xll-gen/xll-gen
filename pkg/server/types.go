@@ -41,6 +41,10 @@ const (
 	MsgRtdUpdate     = 135
 	MsgRtdHeartbeat  = 136
 
+	// Command (ribbon/macro) invocation — must stay in sync with
+	// MSG_COMMAND_INVOKE in internal/assets/files/include/xll_ipc.h.
+	MsgCommandInvoke = 137
+
 	// User Messages Start
 	MsgUserStart = 140
 )

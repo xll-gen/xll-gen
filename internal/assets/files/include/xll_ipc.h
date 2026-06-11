@@ -29,6 +29,9 @@ extern std::mutex g_refCacheMutex;
 #define MSG_RTD_UPDATE 135
 #define MSG_RTD_HEARTBEAT 136
 
+// Command (ribbon/macro) Messages (137)
+#define MSG_COMMAND_INVOKE 137
+
 // User Functions Start
 #define MSG_USER_START 140
 
