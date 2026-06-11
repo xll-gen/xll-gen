@@ -205,6 +205,34 @@ The logic in generated templates often relies on specific APIs exposed by the st
 4.  **Lifecycle**: graceful teardown clears the RTD formula BEFORE `Application.Quit` so `DisconnectData` runs while `g_phost` is still alive. The §23.0 drain (`WaitForRtdConnectDrain`) covers any in-flight Connect threads.
 **Constraint**: Changes to `XllService` interface contract (e.g., adding mandatory handlers) require updating `testdata/main.go`. Changes to RTD subscription path or SHM lifecycle require running the smoke test (`go test -tags=xll_smoke ./cmd/... -run TestSmoke_All`) before release.
 
+### 18.11 Commands & Ribbon
+Native ribbon buttons and XLL commands (macros) form one tightly-coupled cluster spanning config, the ribbon XML generator, the templates, the C++ COM helper, and the IPC protocol. A change to any one of these almost always requires touching the others.
+
+1.  **Config**: `internal/config/config.go` defines `Command` / `RibbonConfig` (+ command-name charset validation, structured-vs-raw-XML mutual exclusion, `buttons[].command` → `commands[].name` cross-check, `commands`/`functions` name-collision check).
+2.  **Ribbon package**: `internal/ribbon/` (customUI XML generation, XML validation including the raw-XML `onAction` cross-check, and embedding the XML as a C++ string literal).
+3.  **Templates**: `internal/templates/{interface.go.tmpl, server.go.tmpl, xll_main.cpp.tmpl, CMakeLists.txt.tmpl}` (generated handler interface method per command, dispatch wiring, command `xlfRegister` with `macroType=2`, and any new link/source entries).
+4.  **C++ assets**: `internal/assets/files/include/com/*` + `src/ribbon_addin.cpp` (the `RibbonAddIn` COM class — `IDTExtensibility2` + `IRibbonExtensibility` + `IDispatch`).
+5.  **Generator**: `internal/generator/gen_cpp.go` emits `ribbon_xml.h` (the embedded ribbon XML literal).
+
+**Message-ID mirror** (same discipline as §18.6): `MSG_COMMAND_INVOKE` (`internal/assets/files/include/xll_ipc.h`) ↔ `MsgCommandInvoke` (`pkg/server/types.go`) ↔ `CommandInvokeRequest` / `CommandInvokeResponse` in `protocol.fbs` — and `protocol.fbs` lives in BOTH the templates copy (`internal/templates/protocol.fbs`) AND the external `github.com/xll-gen/types` repo copy. All four must agree (§18.1 cross-repo constraint applies).
+
+**Threading contract (LOAD-BEARING — do not "optimize" away):** `RibbonAddIn::Invoke` and the generated `Cmd_*` command procs are **fire-and-forget**. They send `CommandInvokeRequest` over SHM and return immediately; they MUST NEVER wait on the Go handler. A handler may re-enter Excel via COM (sugar), which marshals back to Excel's STA thread — a synchronous wait from the same STA thread **deadlocks Excel**. The `CommandInvokeResponse` is a *delivery ack only* (routing success/failure, logged), not handler completion. The Go side runs each handler in its own panic-recovered goroutine, exactly like `HandleRtdConnect` / `HandleCalculationCanceled` in `pkg/server/handlers.go`.
+
+**Teardown contract:** `xlAutoClose` ordering is:
+1.  `SetRibbonConnected(false)` — Excel must release the live COM ref while the DLL is still mapped.
+2.  `CoRevokeClassObject`.
+3.  Unregister the HKCU COM-addin keys (best-effort; idempotent on next load).
+4.  `WaitForCommandDrain(2000)` — bounded wait for in-flight command sends; 2 s timeout logged as a warning, does not block teardown.
+5.  `OnAutoClose` (deletes `g_phost`).
+
+Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort contract as RTD `ConnectData` (§20.2 / §23.0): on forced unload each thread re-checks `g_isUnloading` at every yield point and aborts before touching `g_host`.
+
+**set-before-connect contract:** `SetCommands` / `SetRibbonXml` run on the STA thread inside `xlAutoOpen` **BEFORE** COM-addin registration and connect. The backing globals are intentionally **unsynchronized** — correctness depends on this strict ordering. NEVER move registration off-thread and NEVER introduce a message pump between the `Set*` calls and connect, or the globals become observably racy.
+
+**Graceful degradation (see design §1.4):** if HKCU registration/connect fails (group-policy-locked desktops), worksheet functions / RTD / async must keep working unchanged, registered `commands` stay invocable via shortcut and by typing the name into Alt+F8 (`xlfRegister`/`macroType=2` does not depend on the COM/ribbon path), and failure is silent except for a logged warning.
+
+**Constraint**: Adding or renaming a `commands`/`ribbon` field, changing the ribbon XML shape, or touching `CommandInvokeRequest/Response` requires walking all five locations above plus the message-ID mirror, and verifying the templates still compile.
+
 ## 19. Excel XLL Registration Rules
 
 When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow these strict rules to avoid Excel registration failures or immediate unloads.
