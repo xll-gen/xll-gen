@@ -232,6 +232,7 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 			{Name: "SumGrid", Return: "float", Args: []config.Arg{{Name: "g", Type: "grid"}}},
 			{Name: "SumNumGrid", Return: "float", Args: []config.Arg{{Name: "ng", Type: "numgrid"}}},
 			{Name: "RangeAddr", Return: "string", Args: []config.Arg{{Name: "r", Type: "range"}}},
+			{Name: "EchoAny", Return: "any", Args: []config.Arg{{Name: "v", Type: "any"}}},
 			{Name: "WhoAmI", Return: "string", Args: []config.Arg{}, Caller: true},
 		},
 		Server: config.ServerConfig{
@@ -247,6 +248,7 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 		"ConvertGrid(g, builder)",
 		"ConvertNumGrid(ng, builder)",
 		"ConvertRange(r, builder)",
+		"ConvertAny(v, builder)",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("expected marshalling call %q, not found", want)
@@ -254,7 +256,7 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	}
 
 	// Must NOT regress to the old undeclared helper names.
-	for _, bad := range []string{"GridToFlatBuffer", "NumGridToFlatBuffer", "RangeToFlatBuffer"} {
+	for _, bad := range []string{"GridToFlatBuffer", "NumGridToFlatBuffer", "RangeToFlatBuffer", "AnyToFlatBuffer(builder"} {
 		if strings.Contains(content, bad) {
 			t.Errorf("found stale undeclared converter %q; should use Convert* API", bad)
 		}
