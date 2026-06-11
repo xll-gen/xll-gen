@@ -386,6 +386,7 @@ func Validate(config *Config) error {
 		fnNames[fn.Name] = true
 	}
 	cmdNames := make(map[string]bool)
+	seenShortcuts := make(map[string]string)
 	for _, cmd := range config.Commands {
 		if cmd.Name == "" {
 			return fmt.Errorf("command name cannot be empty")
@@ -399,9 +400,16 @@ func Validate(config *Config) error {
 		cmdNames[cmd.Name] = true
 		if cmd.Shortcut != "" {
 			r := []rune(cmd.Shortcut)
+			// ASCII letters only — xlfRegister's shortcut table is ASCII
+			// (Ctrl+Shift+<letter>); do not "fix" with unicode.IsLetter.
 			if len(r) != 1 || !((r[0] >= 'a' && r[0] <= 'z') || (r[0] >= 'A' && r[0] <= 'Z')) {
 				return fmt.Errorf("command '%s': shortcut must be a single letter (Excel binds it as Ctrl+Shift+<letter>), got %q", cmd.Name, cmd.Shortcut)
 			}
+			key := strings.ToUpper(cmd.Shortcut)
+			if prev, ok := seenShortcuts[key]; ok {
+				return fmt.Errorf("command '%s': shortcut %q already used by command '%s'", cmd.Name, cmd.Shortcut, prev)
+			}
+			seenShortcuts[key] = cmd.Name
 		}
 	}
 
@@ -414,6 +422,9 @@ func Validate(config *Config) error {
 		}
 		for _, g := range config.Ribbon.Groups {
 			for _, btn := range g.Buttons {
+				if btn.Command == "" {
+					return fmt.Errorf("ribbon button '%s': command is required", btn.Label)
+				}
 				if !cmdNames[btn.Command] {
 					return fmt.Errorf("ribbon button '%s': unknown command '%s'", btn.Label, btn.Command)
 				}
@@ -425,6 +436,8 @@ func Validate(config *Config) error {
 				}
 			}
 		}
+	} else if len(config.Ribbon.Groups) > 0 {
+		return fmt.Errorf("ribbon: 'groups' requires 'tab' (structured mode)")
 	}
 
 	return nil
