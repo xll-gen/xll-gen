@@ -287,7 +287,8 @@ ribbon:                        # optional; the two modes below are MUTUALLY EXCL
 Your service implements one method per command, following the event-handler shape (`ctx` first, `error` return):
 
 ```go
-func (s *Service) RunReport(ctx context.Context, cmd generated.CommandContext) error {
+func (s *Service) RunReport(ctx context.Context, cmd server.CommandContext) error {
+    // server = github.com/xll-gen/xll-gen/pkg/server
     // cmd.CommandName, cmd.ControlID (empty for shortcut/Alt+F8), cmd.ExcelPID
     // Optionally attach to the running Excel with sugar and manipulate it.
     return nil
