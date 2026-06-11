@@ -5,6 +5,7 @@
 package ribbon
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -57,8 +58,14 @@ func GenerateXML(cfg *config.Config) (string, error) {
 	for gi, g := range r.Groups {
 		fmt.Fprintf(&b, `<group id="xllgen_grp_%d" label="%s">`, gi, escape(g.Label))
 		for bi, btn := range g.Buttons {
+			// Default size locally so GenerateXML is correct even when called
+			// without config.ApplyDefaults having normalized the button first.
+			size := btn.Size
+			if size == "" {
+				size = "normal"
+			}
 			fmt.Fprintf(&b, `<button id="xllgen_btn_%d_%d" label="%s" size="%s" onAction="%s"`,
-				gi, bi, escape(btn.Label), escape(btn.Size), escape(btn.Command))
+				gi, bi, escape(btn.Label), escape(size), escape(btn.Command))
 			if btn.Image != "" {
 				fmt.Fprintf(&b, ` imageMso="%s"`, escape(btn.Image))
 			}
@@ -84,7 +91,7 @@ func ValidateRawXML(path string, commands []config.Command) (string, error) {
 		known[c.Name] = true
 	}
 
-	dec := xml.NewDecoder(strings.NewReader(string(raw)))
+	dec := xml.NewDecoder(bytes.NewReader(raw))
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -125,12 +132,27 @@ func commandNames(cmds []config.Command) string {
 }
 
 // ToCppRawLiteral wraps XML in a C++ wide raw string literal for embedding in
-// the generated ribbon_xml.h. The delimiter is fixed; XML containing the
-// closing sequence is rejected (it cannot occur in well-formed customUI XML).
+// the generated ribbon_xml.h. The output is pure ASCII: a leading UTF-8 BOM is
+// stripped, and every rune above 0x7F is carried as an XML numeric character
+// reference (&#x...;) that Office's XML parser expands — this keeps the wide
+// literal immune to the compiler's source/execution charset (MSVC would
+// otherwise garble e.g. Korean labels). customUI element/attribute names are
+// ASCII by schema, so the blanket rune transform is safe. XML containing the
+// closing delimiter sequence is rejected (it cannot occur in well-formed
+// customUI XML).
 func ToCppRawLiteral(xmlStr string) (string, error) {
 	const delim = "XLLRIBBON"
+	xmlStr = strings.TrimPrefix(xmlStr, "\uFEFF")
 	if strings.Contains(xmlStr, ")"+delim+`"`) {
 		return "", fmt.Errorf("ribbon xml contains the raw-literal delimiter sequence )%s\"", delim)
 	}
-	return `LR"` + delim + `(` + xmlStr + `)` + delim + `"`, nil
+	var b strings.Builder
+	for _, r := range xmlStr {
+		if r > 0x7F {
+			fmt.Fprintf(&b, "&#x%X;", r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return `LR"` + delim + `(` + b.String() + `)` + delim + `"`, nil
 }
