@@ -225,6 +225,11 @@ func (h *SystemHandler) HandleCalculationEnded(respBuf []byte, b *flatbuffers.Bu
 // HandleCalculationCanceled processes the calculation canceled event.
 func (h *SystemHandler) HandleCalculationCanceled(onCanceled func(context.Context) error) (int32, shm.MsgType) {
 	h.CommandBatcher.Clear()
+	// Drop refs cached during the aborted cycle, symmetric with the
+	// HandleCalculationEnded path (RefCache.Clear there). Without this, refs
+	// from a canceled calc survive until the next calc-ended, so a run of
+	// back-to-back cancellations accumulates RefCache entries unboundedly.
+	h.RefCache.Clear()
 
 	if onCanceled != nil {
 		ctx := context.Background()
