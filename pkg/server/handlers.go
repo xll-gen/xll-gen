@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	mrand "math/rand/v2"
+	"os"
+	"runtime/debug"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -245,6 +247,52 @@ func (h *SystemHandler) HandleCalculationCanceled(onCanceled func(context.Contex
 		}()
 	}
 	return 0, 0
+}
+
+// excelParentPID is the PID of the process that spawned this server — the
+// hosting Excel. Captured once at startup; handlers receive it via
+// CommandContext.ExcelPID for multi-instance COM attachment.
+var excelParentPID = uint32(os.Getppid())
+
+// HandleCommandInvoke processes a ribbon/macro command invocation. The
+// response is a delivery ack only — the handler runs fire-and-forget in its
+// own goroutine, because the C++ side must return from onAction immediately
+// (Excel's STA thread) and the handler may re-enter Excel via COM.
+func (h *SystemHandler) HandleCommandInvoke(data []byte, respBuf []byte, b *flatbuffers.Builder, resolve func(name string) (func(context.Context, CommandContext) error, bool)) (int32, shm.MsgType) {
+	reqObj := protocol.GetRootAsCommandInvokeRequest(data, 0)
+	name := string(reqObj.CommandName())
+	controlID := string(reqObj.ControlId())
+
+	errMsg := ""
+	if fn, ok := resolve(name); ok {
+		cmd := CommandContext{CommandName: name, ControlID: controlID, ExcelPID: excelParentPID}
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("Panic in command handler", "command", name, "error", r, "stack", string(debug.Stack()))
+				}
+			}()
+			if err := fn(context.Background(), cmd); err != nil {
+				log.Error("Command handler failed", "command", name, "error", err)
+			}
+		}()
+	} else {
+		errMsg = "unknown command: " + name
+		log.Error("CommandInvoke: unknown command", "name", name)
+	}
+
+	b.Reset()
+	var errOff flatbuffers.UOffsetT
+	if errMsg != "" {
+		errOff = b.CreateString(errMsg)
+	}
+	protocol.CommandInvokeResponseStart(b)
+	protocol.CommandInvokeResponseAddOk(b, errMsg == "")
+	if errMsg != "" {
+		protocol.CommandInvokeResponseAddError(b, errOff)
+	}
+	b.Finish(protocol.CommandInvokeResponseEnd(b))
+	return SendAckOrChunk(b.FinishedBytes(), respBuf, MsgCommandInvoke, h.ChunkManager, b)
 }
 
 // SendAckOrChunk handles the complexity of sending a response that might be larger than the buffer.
