@@ -450,6 +450,15 @@ start_worker:
     }
     {{end}}
 
+    {{if .Commands}}
+    // Command names must be set before any command proc or ribbon callback
+    // can run (set-before-connect contract, see com/ribbon_addin.h). This must
+    // precede the xlfRegister loop below: once Cmd_<Name> is registered, a
+    // Ctrl+Shift shortcut can fire the proc immediately and the proc looks the
+    // name up in this table.
+    xll::ribbon::SetCommands({ {{range .Commands}}L"{{.Name}}", {{end}} });
+    {{end}}
+
     // Register User Functions
 {{range $i, $fn := .Functions}}
     {
@@ -485,9 +494,37 @@ start_worker:
 {{end}}
 
     {{if .Commands}}
-    // Command names must be set before any command proc or ribbon callback
-    // can run (set-before-connect contract, see com/ribbon_addin.h).
-    xll::ribbon::SetCommands({ {{range .Commands}}L"{{.Name}}", {{end}} });
+    // Register XLL Commands (macroType=2). Mirrors the function loop above but
+    // with no args/category and a Ctrl+Shift+<letter> shortcut. Command names
+    // were registered above so a shortcut-fired proc resolves its name.
+    {{end}}
+    {{range .Commands}}
+    {
+        // Register command Cmd_{{.Name}}
+        ScopedXLOPER12Result xRegId;
+        int regRes = xll::RegisterFunction(
+            *xDLL,
+            L"Cmd_{{.Name}}", // Procedure (exported symbol)
+            L"A", // TypeText: command returns short/bool
+            L"{{.Name}}", // FunctionText: name typed in the Alt+F8 dialog
+            L"", // ArgumentText: commands take none
+            2, // MacroType 2 = command
+            L"", // Category (unused for commands)
+            L"{{.Shortcut}}", // Shortcut letter -> Ctrl+Shift+<letter>
+            L"", // HelpTopic
+            L"{{.Description}}", // FunctionHelp
+            {}, // ArgumentHelp
+            *xRegId // Output ID
+        );
+
+        if (regRes != xlretSuccess) {
+            SAFE_LOG_ERROR("Failed to register command '{{.Name}}'. Code: " + std::to_string(regRes));
+        } else {
+            std::string idStr = "Unknown";
+            if (xRegId->xltype == xltypeNum) idStr = std::to_string((int)xRegId->val.num);
+            SAFE_LOG_INFO("Registered command '{{.Name}}' successfully. ID: " + idStr);
+        }
+    }
     {{end}}
     {{if .Ribbon.Enabled}}
     // ---- Ribbon COM add-in bootstrap. Graceful degradation: any failure
@@ -869,4 +906,19 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     {{end}}
     {{end}}
 }
+{{end}}
+
+{{if .Commands}}
+// XLL command procedures (macroType=2). Invoked via Ctrl+Shift shortcut or a
+// typed name in the Alt+F8 dialog; ribbon clicks go through
+// RibbonAddIn::Invoke instead. Same fire-and-forget dispatch — a command
+// proc must never block Excel's UI thread waiting on the Go handler.
+{{range .Commands}}
+extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
+    XLL_SAFE_BLOCK_BEGIN
+        xll::ribbon::SendCommandInvoke("{{.Name}}", "");
+    XLL_SAFE_BLOCK_END(0)
+    return 1;
+}
+{{end}}
 {{end}}

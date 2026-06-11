@@ -81,6 +81,134 @@ func TestGenCpp_ComplexReturnTypes(t *testing.T) {
     }
 }
 
+// renderCppMain runs generateCppMain into a temp dir and returns the rendered
+// xll_main.cpp source. Mirrors the helper-free style of the other gen_cpp tests
+// (exercises the real template + funcmap path, not a hand-built data struct).
+func renderCppMain(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "gencpp_cmd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+
+	if err := generateCppMain(cfg, tmpDir, false); err != nil {
+		t.Fatalf("generateCppMain failed: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(tmpDir, "xll_main.cpp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestGenCpp_Commands verifies macroType=2 command procs + registration:
+// exported Cmd_<Name> procs, literal 2 macroType for commands vs 1 for the
+// function, shortcut emission, SetCommands ordering, and that the function
+// registration loop is untouched.
+func TestGenCpp_Commands(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "Sum", Return: "int", Args: []config.Arg{{Name: "a", Type: "int"}}},
+		},
+		Commands: []config.Command{
+			{Name: "RunReport", Description: "Runs the report", Shortcut: "R", Handler: "RunReport"},
+			{Name: "Refresh", Description: "Refreshes data", Handler: "Refresh"},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	content := renderCppMain(t, cfg)
+
+	// 1. Exported command procs.
+	if !strings.Contains(content, `extern "C" __declspec(dllexport) int __stdcall Cmd_RunReport() {`) {
+		t.Errorf("missing exported Cmd_RunReport proc:\n%s", content)
+	}
+	if !strings.Contains(content, `extern "C" __declspec(dllexport) int __stdcall Cmd_Refresh() {`) {
+		t.Errorf("missing exported Cmd_Refresh proc")
+	}
+	if !strings.Contains(content, `xll::ribbon::SendCommandInvoke("RunReport", "");`) {
+		t.Errorf("Cmd_RunReport does not dispatch SendCommandInvoke")
+	}
+
+	// 2. Registration uses literal 2 for commands.
+	if !strings.Contains(content, `L"Cmd_RunReport", // Procedure (exported symbol)`) {
+		t.Errorf("missing command registration for RunReport")
+	}
+	if !strings.Contains(content, `2, // MacroType 2 = command`) {
+		t.Errorf("command registration does not use literal macroType 2")
+	}
+	// Shortcut letter emitted for the command that declares one.
+	if !strings.Contains(content, `L"R", // Shortcut letter -> Ctrl+Shift+<letter>`) {
+		t.Errorf("shortcut letter R not emitted for RunReport")
+	}
+
+	// 3. Function loop unchanged: still macroType 1.
+	if !strings.Contains(content, "1, // MacroType") {
+		t.Errorf("function registration loop changed: missing literal macroType 1")
+	}
+	if !strings.Contains(content, `L"Sum", // Procedure`) {
+		t.Errorf("function registration for Sum missing/changed")
+	}
+
+	// SetCommands must precede the registration of any command proc so a
+	// shortcut-fired proc resolves its name.
+	setIdx := strings.Index(content, "xll::ribbon::SetCommands(")
+	regIdx := strings.Index(content, `L"Cmd_RunReport", // Procedure`)
+	if setIdx < 0 {
+		t.Fatalf("SetCommands call missing")
+	}
+	if regIdx < 0 || setIdx > regIdx {
+		t.Errorf("SetCommands (idx %d) must come before command registration (idx %d)", setIdx, regIdx)
+	}
+	// SetCommands must also precede the function registration loop (set-before
+	// any proc-resolving xlfRegister; no dependency on the function loop).
+	funcRegIdx := strings.Index(content, `L"Sum", // Procedure`)
+	if funcRegIdx >= 0 && setIdx > funcRegIdx {
+		t.Errorf("SetCommands (idx %d) must precede the function registration loop (idx %d)", setIdx, funcRegIdx)
+	}
+}
+
+// TestGenCpp_NoCommands is the zero-command regression: no Cmd_ procs, no
+// command registration, no SetCommands; function registration intact.
+func TestGenCpp_NoCommands(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "Sum", Return: "int", Args: []config.Arg{{Name: "a", Type: "int"}}},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	content := renderCppMain(t, cfg)
+
+	if strings.Contains(content, "Cmd_") {
+		t.Errorf("command-less render must not emit any Cmd_ symbol")
+	}
+	if strings.Contains(content, "SendCommandInvoke") {
+		t.Errorf("command-less render must not reference SendCommandInvoke")
+	}
+	if strings.Contains(content, "SetCommands") {
+		t.Errorf("command-less render must not call SetCommands")
+	}
+	if strings.Contains(content, "MacroType 2 = command") {
+		t.Errorf("command-less render must not emit command registration")
+	}
+	// Function registration still present.
+	if !strings.Contains(content, `L"Sum", // Procedure`) {
+		t.Errorf("function registration missing in command-less render")
+	}
+}
+
 func TestGenCpp_StringErrorReturn(t *testing.T) {
 	t.Parallel()
 	// Setup temp dir
