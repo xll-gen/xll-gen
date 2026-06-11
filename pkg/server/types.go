@@ -35,7 +35,7 @@ const (
 	MsgSetRefCache         = 130
 	MsgCalculationEnded    = 131
 	MsgCalculationCanceled = 132
-	// RTD Messages (133-139)
+	// RTD Messages (133-136)
 	MsgRtdConnect    = 133
 	MsgRtdDisconnect = 134
 	MsgRtdUpdate     = 135
