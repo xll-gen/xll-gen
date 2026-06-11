@@ -786,7 +786,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     {{else if eq .Type "range"}}
     auto arg{{$j}} = ConvertRange({{.Name}}, builder);
     {{else if eq .Type "any"}}
-    auto arg{{$j}} = AnyToFlatBuffer(builder, {{.Name}});
+    auto arg{{$j}} = ConvertAny({{.Name}}, builder);
     {{end}}
     {{end}}
 
