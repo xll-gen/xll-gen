@@ -26,6 +26,7 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 		ModName   string
 		Functions []config.Function
 		Events    []config.Event
+		Commands  []config.Command
 		Version   string
 		Rtd       config.RtdConfig
 	}{
@@ -33,6 +34,7 @@ func generateInterface(cfg *config.Config, dir string, modName string) error {
 		ModName:   modName,
 		Functions: cfg.Functions,
 		Events:    cfg.Events,
+		Commands:  cfg.Commands,
 		Version:   version.Version,
 		Rtd:       cfg.Rtd,
 	}
@@ -60,6 +62,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		ProjectName   string
 		Functions     []config.Function
 		Events        []config.Event
+		Commands      []config.Command
 		ServerTimeout string
 		ServerWorkers int
 		Version       string
@@ -72,6 +75,7 @@ func generateServer(cfg *config.Config, dir string, modName string) error {
 		ProjectName:   cfg.Project.Name,
 		Functions:     cfg.Functions,
 		Events:        cfg.Events,
+		Commands:      cfg.Commands,
 		ServerTimeout: cfg.Server.Timeout,
 		ServerWorkers: cfg.Server.Workers,
 		Version:       version.Version,
