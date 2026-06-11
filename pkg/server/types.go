@@ -48,8 +48,39 @@ const (
 // DefaultChunkSize is the per-chunk payload byte budget for chunked
 // transfers to the host. It is derived from the 1 MiB SHM slot payload
 // (hostCfg.payloadSize in xll_main.cpp.tmpl) minus FlatBuffers/chunk-header
-// overhead. If the slot payload size ever changes, this must change with it.
+// overhead. It is the UPPER BOUND on a chunk; the actual budget is derived
+// per-call from the real respBuf size via ChunkBudget so a smaller slot
+// payload chunks correctly instead of overflowing.
 const DefaultChunkSize = 950 * 1024
+
+// ChunkFramingOverhead is a conservative upper bound on the bytes
+// BuildChunkResponse adds around the raw chunk payload (FlatBuffers vtable +
+// table fields id/total_size/offset/msg_type + the data vector header +
+// alignment + root offset). The real overhead is well under 100 bytes; 256
+// leaves margin so a chunk derived from respBuf via ChunkBudget always fits
+// after framing. The post-build `len(chunkPayload) > len(respBuf)` check in
+// SendAckOrChunk remains as a backstop.
+const ChunkFramingOverhead = 256
+
+// ChunkBudget returns the per-chunk payload size that is guaranteed to fit in
+// respBuf after framing, capped at DefaultChunkSize. Previously the chunk size
+// was hardcoded to DefaultChunkSize regardless of the actual response buffer,
+// so a slot payload smaller than ~950 KiB + overhead made every chunk send
+// fail the framing check. Deriving from len(respBuf) makes chunking adapt to
+// the real slot geometry; the cap keeps memory bounded for large slots and
+// preserves the historical 950 KiB behaviour for the default 1 MiB slot. Both
+// the initial send (SendAckOrChunk) and the resend path (HandleAck) call this
+// with the same respBuf, so chunk boundaries stay consistent.
+func ChunkBudget(respBuf []byte) int {
+	budget := len(respBuf) - ChunkFramingOverhead
+	if budget > DefaultChunkSize {
+		budget = DefaultChunkSize
+	}
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
+}
 
 // ChunkBuffer accumulates the payload of an inbound chunked message until all
 // chunks have arrived. Concurrency: all field reads/writes happen under
