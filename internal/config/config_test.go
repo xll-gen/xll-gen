@@ -89,17 +89,19 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 	}
 }
 
-// TestValidate_CompositeReturnTypes locks in that composite/any types
-// (range/grid/numgrid/any) are rejected as RETURN types — the generated Go
+// TestValidate_CompositeReturnTypes locks in that composite table types
+// (range/grid/numgrid) are rejected as RETURN types — the generated Go
 // server cannot serialize them as returns (sync: compile error, async: dropped
 // result) — while remaining valid as ARGUMENT types. Scalar returns
-// (int/float/string/bool) stay valid.
+// (int/float/string/bool) and "any" (serialized via pkg/server.BuildAnyFromGo)
+// stay valid.
 func TestValidate_CompositeReturnTypes(t *testing.T) {
 	composite := []string{"range", "grid", "numgrid", "any"}
+	rejected := []string{"range", "grid", "numgrid"}
 
-	// Each composite/any type must be REJECTED as a return type, with a
+	// Each composite table type must be REJECTED as a return type, with a
 	// message explaining it's arg-only.
-	for _, typ := range composite {
+	for _, typ := range rejected {
 		t.Run("reject "+typ+" return", func(t *testing.T) {
 			cfg := &Config{
 				Project:   ProjectConfig{Name: "TestProject"},
@@ -153,8 +155,10 @@ func TestValidate_CompositeReturnTypes(t *testing.T) {
 		})
 	}
 
-	// Each scalar return type must remain valid.
-	for _, typ := range []string{"int", "float", "string", "bool"} {
+	// Each scalar return type must remain valid, and "any" is valid as a
+	// sync/async return (the generated server serializes the handler's Go
+	// value through the canonical Go-value→protocol.Any mapping).
+	for _, typ := range []string{"int", "float", "string", "bool", "any"} {
 		t.Run("allow "+typ+" return", func(t *testing.T) {
 			cfg := &Config{
 				Project:   ProjectConfig{Name: "TestProject"},
