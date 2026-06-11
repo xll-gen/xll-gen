@@ -39,7 +39,7 @@ func (h *SystemHandler) HandleAck(data []byte, respBuf []byte, b *flatbuffers.Bu
 	reqObj := protocol.GetRootAsAck(data, 0)
 	id := reqObj.Id()
 
-	const chunkSize = DefaultChunkSize
+	chunkSize := ChunkBudget(respBuf)
 	chunkData, msgType, totalSize, offset, found := h.ChunkManager.GetNextChunk(id, chunkSize)
 
 	if !found {
@@ -253,7 +253,7 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
 
 	// Chunking needed
 	transferId := generateTransferID()
-	const chunkSize = DefaultChunkSize
+	chunkSize := ChunkBudget(respBuf)
 	out := &OutgoingChunk{
 		Data:       make([]byte, len(payload)),
 		Id:         transferId,
