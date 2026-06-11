@@ -14,14 +14,25 @@ namespace xll { namespace ribbon {
     // Returns immediately; never blocks Excel's STA thread on the handler.
     void SendCommandInvoke(const std::string& commandNameUtf8, const std::string& controlIdUtf8);
 
-    // Drains in-flight SendCommandInvoke threads before g_phost teardown;
-    // mirrors WaitForRtdConnectDrain. Returns false on timeout.
+    // Drains in-flight SendCommandInvoke threads. CONTRACT (generated
+    // xlAutoClose must honor, in order): (1) disconnect/revoke the COM
+    // add-in so no new Invoke arrives, (2) call WaitForCommandDrain, (3)
+    // only then let OnAutoClose delete g_phost. The 2000ms drain cap is
+    // shorter than SendCommandInvoke's 5000ms SHM Send timeout — same
+    // accepted residual documented for WaitForRtdConnectDrain (a command
+    // thread blocked >2s inside Send is a narrow, click-bounded window
+    // because step (1) stops new spawns). Returns false on timeout.
     bool WaitForCommandDrain(unsigned int timeoutMs);
 }} // namespace xll::ribbon
 
 #ifdef XLL_RIBBON_ENABLED
 #include "com/extensibility.h"
 
+// NOTE (COM identity): both bases derive from IDispatch, so this object has
+// two IDispatch vtables; QI(IID_IDispatch) always returns the
+// IDTExtensibility2 one, and both route to the same final overrides below.
+// Do not add further IDispatch-derived bases without revisiting QI.
+//
 // RibbonAddIn is the COM add-in helper class hosted by the XLL itself.
 // Excel loads it through DllGetClassObject (in-memory class object first via
 // CoRegisterClassObject), QIs IRibbonExtensibility for GetCustomUI, and
@@ -46,8 +57,8 @@ public:
                              VARIANT*, EXCEPINFO*, UINT*) override;
 
     // IDTExtensibility2
-    HRESULT __stdcall OnConnection(IDispatch* Application, int ConnectMode, IDispatch* AddInInst, SAFEARRAY** custom) override;
-    HRESULT __stdcall OnDisconnection(int RemoveMode, SAFEARRAY** custom) override;
+    HRESULT __stdcall OnConnection(IDispatch* Application, ext_ConnectMode ConnectMode, IDispatch* AddInInst, SAFEARRAY** custom) override;
+    HRESULT __stdcall OnDisconnection(ext_DisconnectMode RemoveMode, SAFEARRAY** custom) override;
     HRESULT __stdcall OnAddInsUpdate(SAFEARRAY** custom) override;
     HRESULT __stdcall OnStartupComplete(SAFEARRAY** custom) override;
     HRESULT __stdcall OnBeginShutdown(SAFEARRAY** custom) override;

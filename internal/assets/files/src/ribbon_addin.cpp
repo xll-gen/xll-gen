@@ -48,6 +48,10 @@ namespace xll { namespace ribbon {
     }
 
     void SendCommandInvoke(const std::string& commandNameUtf8, const std::string& controlIdUtf8) {
+        // Log on the calling (STA) thread, not in the detached lambda, so
+        // logging never races teardown.
+        xll::LogDebug("CommandInvoke dispatch: " + commandNameUtf8);
+
         // Detached fire-and-forget thread; mirrors xll_rtd.cpp::ConnectData.
         // Re-checks xll::g_isUnloading at every yield point so that on a graceful
         // close WaitForCommandDrain() can drain in-flight threads before g_phost
@@ -73,15 +77,27 @@ namespace xll { namespace ribbon {
 
             slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_COMMAND_INVOKE, 5000);
 
-            // After Send returns (success or timeout) we touch nothing on g_phost;
-            // the ZeroCopySlot destructor only touches its own slot header (mirrors
-            // xll_rtd.cpp).
+            // After Send returns (success or timeout) we touch nothing on
+            // g_phost; mirrors xll_rtd.cpp ConnectData. The ZeroCopySlot
+            // destructor only touches its own slot header.
         }).detach();
     }
 
 }} // namespace xll::ribbon
 
 #ifdef XLL_RIBBON_ENABLED
+
+namespace {
+    // Some hosts late-bind _IDTExtensibility2 members through IDispatch
+    // instead of the vtable. Our extensibility methods are all no-ops that
+    // return S_OK, so resolving their names and succeeding in Invoke is
+    // exactly equivalent to a faithful vtable forward.
+    constexpr DISPID kDispIdExtBase = -1005; // OnConnection..OnBeginShutdown -> -1005..-1001
+    const wchar_t* const kExtNames[] = {
+        L"OnConnection", L"OnDisconnection", L"OnAddInsUpdate",
+        L"OnStartupComplete", L"OnBeginShutdown",
+    };
+}
 
 // --- RibbonAddIn ---
 
@@ -118,6 +134,12 @@ HRESULT __stdcall RibbonAddIn::GetTypeInfo(UINT, LCID, ITypeInfo** ppTInfo) {
 
 HRESULT __stdcall RibbonAddIn::GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT cNames, LCID, DISPID* rgDispId) {
     if (cNames != 1 || !rgszNames || !rgDispId) return E_INVALIDARG;
+    for (size_t i = 0; i < (sizeof(kExtNames) / sizeof(kExtNames[0])); ++i) {
+        if (_wcsicmp(rgszNames[0], kExtNames[i]) == 0) {
+            rgDispId[0] = kDispIdExtBase + static_cast<DISPID>(i);
+            return S_OK;
+        }
+    }
     for (size_t i = 0; i < g_commandNames.size(); ++i) {
         if (_wcsicmp(rgszNames[0], g_commandNames[i].c_str()) == 0) {
             rgDispId[0] = kDispIdBase + static_cast<DISPID>(i);
@@ -130,6 +152,9 @@ HRESULT __stdcall RibbonAddIn::GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT c
 
 HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, DISPPARAMS* pDispParams,
                                       VARIANT*, EXCEPINFO*, UINT*) {
+    // Late-bound extensibility members (see kExtNames): all no-ops returning S_OK.
+    if (dispIdMember >= kDispIdExtBase && dispIdMember < kDispIdExtBase + 5) return S_OK;
+
     size_t idx = static_cast<size_t>(dispIdMember - kDispIdBase);
     if (dispIdMember < kDispIdBase || idx >= g_commandNames.size()) return DISP_E_MEMBERNOTFOUND;
 
@@ -137,9 +162,15 @@ HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, D
     std::string controlId;
     if (pDispParams && pDispParams->cArgs >= 1) {
         VARIANT& v = pDispParams->rgvarg[pDispParams->cArgs - 1]; // args reversed
-        if (v.vt == VT_DISPATCH && v.pdispVal) {
+        IDispatch* ctrl = nullptr;
+        if (v.vt == VT_DISPATCH) {
+            ctrl = v.pdispVal;
+        } else if (v.vt == (VT_DISPATCH | VT_BYREF) && v.ppdispVal) {
+            ctrl = *v.ppdispVal;
+        }
+        if (ctrl) {
             VARIANT idVar; VariantInit(&idVar);
-            if (SUCCEEDED(xll::com::GetProperty(v.pdispVal, L"Id", &idVar)) && idVar.vt == VT_BSTR && idVar.bstrVal) {
+            if (SUCCEEDED(xll::com::GetProperty(ctrl, L"Id", &idVar)) && idVar.vt == VT_BSTR && idVar.bstrVal) {
                 controlId = WideToUtf8(std::wstring(idVar.bstrVal, SysStringLen(idVar.bstrVal)));
             }
             VariantClear(&idVar);
@@ -150,8 +181,8 @@ HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, D
     return S_OK; // returns immediately — never wait for the Go handler (STA deadlock)
 }
 
-HRESULT __stdcall RibbonAddIn::OnConnection(IDispatch*, int, IDispatch*, SAFEARRAY**) { return S_OK; }
-HRESULT __stdcall RibbonAddIn::OnDisconnection(int, SAFEARRAY**) { return S_OK; }
+HRESULT __stdcall RibbonAddIn::OnConnection(IDispatch*, ext_ConnectMode, IDispatch*, SAFEARRAY**) { return S_OK; }
+HRESULT __stdcall RibbonAddIn::OnDisconnection(ext_DisconnectMode, SAFEARRAY**) { return S_OK; }
 HRESULT __stdcall RibbonAddIn::OnAddInsUpdate(SAFEARRAY**) { return S_OK; }
 HRESULT __stdcall RibbonAddIn::OnStartupComplete(SAFEARRAY**) { return S_OK; }
 HRESULT __stdcall RibbonAddIn::OnBeginShutdown(SAFEARRAY**) { return S_OK; }

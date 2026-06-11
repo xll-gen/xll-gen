@@ -12,9 +12,25 @@ static const IID IID_IDTExtensibility2 =
 static const IID IID_IRibbonExtensibility =
     { 0x000C0396, 0x0000, 0x0000, { 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };
 
+// ext_ConnectMode / ext_DisconnectMode from the AddInDesignerObjects typelib.
+// Automation enums are ABI-int (4 bytes, __stdcall slot-compatible); do NOT
+// change these param types to long/short — Excel calls through the vtable by
+// slot and size.
+enum ext_ConnectMode {
+    ext_cm_AfterStartup = 0,
+    ext_cm_Startup      = 1,
+    ext_cm_External     = 2,
+    ext_cm_CommandLine  = 3,
+};
+enum ext_DisconnectMode {
+    ext_dm_HostShutdown   = 0,
+    ext_dm_UserClosed     = 1,
+};
+static_assert(sizeof(ext_ConnectMode) == sizeof(int), "automation enum must be int-sized");
+
 struct IDTExtensibility2 : public IDispatch {
-    virtual HRESULT STDMETHODCALLTYPE OnConnection(IDispatch* Application, int ConnectMode, IDispatch* AddInInst, SAFEARRAY** custom) = 0;
-    virtual HRESULT STDMETHODCALLTYPE OnDisconnection(int RemoveMode, SAFEARRAY** custom) = 0;
+    virtual HRESULT STDMETHODCALLTYPE OnConnection(IDispatch* Application, ext_ConnectMode ConnectMode, IDispatch* AddInInst, SAFEARRAY** custom) = 0;
+    virtual HRESULT STDMETHODCALLTYPE OnDisconnection(ext_DisconnectMode RemoveMode, SAFEARRAY** custom) = 0;
     virtual HRESULT STDMETHODCALLTYPE OnAddInsUpdate(SAFEARRAY** custom) = 0;
     virtual HRESULT STDMETHODCALLTYPE OnStartupComplete(SAFEARRAY** custom) = 0;
     virtual HRESULT STDMETHODCALLTYPE OnBeginShutdown(SAFEARRAY** custom) = 0;
