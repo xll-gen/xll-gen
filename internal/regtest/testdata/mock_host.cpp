@@ -515,65 +515,60 @@ int main(int argc, char* argv[]) {
         ASSERT_EQ(4, s3->val_as_Int()->val(), "S3 val");
     }
 
-    // 13. RefCache Cleanup on Canceled (ID 130, 132, 144)
+    // 13. RefCache Cleanup on Canceled (ID 130, 132, 131, 144)
+    // Product decision (IMPROVEMENT_BACKLOG.md §7 / refcache_test.go
+    // TestHandleCalculationCanceled_ClearsRefCache): a CANCELED calc clears the
+    // RefCache, symmetric with calc-ENDED. This case asserts BOTH clear paths.
     {
-        // 1. Send SetRefCache "K1" = Int(123)
-        builder.Reset();
-        auto keyOff = builder.CreateString("K1");
-        auto valOff = protocol::CreateInt(builder, 123);
-        auto anyOff = protocol::CreateAny(builder, protocol::AnyValue::Int, valOff.Union());
-        auto req = protocol::CreateSetRefCacheRequest(builder, keyOff, anyOff);
-        builder.Finish(req);
+        // Helper: set RefCache "K1" = Int(123) and assert it resolves via CheckAny.
+        auto setK1 = [&](vector<uint8_t>& respBuf) -> bool {
+            builder.Reset();
+            auto keyOff = builder.CreateString("K1");
+            auto valOff = protocol::CreateInt(builder, 123);
+            auto anyOff = protocol::CreateAny(builder, protocol::AnyValue::Int, valOff.Union());
+            auto req = protocol::CreateSetRefCacheRequest(builder, keyOff, anyOff);
+            builder.Finish(req);
+            if (host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)130, respBuf).ValueOr(-1) < 0) return false;
+            auto ack = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
+            return ack->ok();
+        };
+        // Helper: CheckAny on RefCache("K1") and return the rendered result string.
+        auto checkK1 = [&](vector<uint8_t>& respBuf) -> string {
+            builder.Reset();
+            auto keyOff = builder.CreateString("K1");
+            auto rcVal = protocol::CreateRefCache(builder, keyOff);
+            auto anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
+            ipc::CheckAnyRequestBuilder caReq(builder);
+            caReq.add_val(anyOff);
+            builder.Finish(caReq.Finish());
+            if (host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return string();
+            auto caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
+            return caResp->result()->str();
+        };
+
         vector<uint8_t> respBuf;
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)130, respBuf).ValueOr(-1) < 0) return 1;
-        // Expect Ack
-        auto ack = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
-        ASSERT_EQ(true, ack->ok(), "SetRefCache Ack");
 
-        // 2. Send CheckAny with RefCache("K1") -> Expect "Int:123"
-        builder.Reset();
-        keyOff = builder.CreateString("K1");
-        auto rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
-        ipc::CheckAnyRequestBuilder caReq(builder);
-        caReq.add_val(anyOff);
-        builder.Finish(caReq.Finish());
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
-        auto caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
-        ASSERT_STREQ("Int:123", caResp->result()->str(), "CheckAny RefCache Resolved");
+        // --- Canceled clears the cache ---
+        // 1. Set "K1" and confirm it resolves to "Int:123".
+        ASSERT_EQ(true, setK1(respBuf), "SetRefCache Ack (canceled case)");
+        ASSERT_STREQ("Int:123", checkK1(respBuf).c_str(), "CheckAny RefCache Resolved (pre-cancel)");
 
-        // 3. Send CalculationCanceled (ID 132)
+        // 2. Send CalculationCanceled (ID 132); no response payload expected.
         if(host.Send(nullptr, 0, (shm::MsgType)132, respBuf).ValueOr(-1) < 0) return 1;
-        // No response payload expected (size 0)
 
-        // 4. Verify RefCache persists after Canceled (since we reverted the cleanup)
-        // Send CheckAny with RefCache("K1") -> Expect "Int:123"
-        builder.Reset();
-        keyOff = builder.CreateString("K1");
-        rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
-        ipc::CheckAnyRequestBuilder caReq2(builder);
-        caReq2.add_val(anyOff);
-        builder.Finish(caReq2.Finish());
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
-        caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
-        ASSERT_STREQ("Int:123", caResp->result()->str(), "CheckAny RefCache Persists");
+        // 3. Cache must now be cleared -> CheckAny renders the unresolved key.
+        ASSERT_STREQ("RefCache:K1", checkK1(respBuf).c_str(), "CheckAny RefCache Cleared on Cancel");
 
-        // 5. Send CalculationEnded (ID 131)
+        // --- Ended also clears the cache ---
+        // 4. Re-establish "K1" so the calc-ended path has something to clear.
+        ASSERT_EQ(true, setK1(respBuf), "SetRefCache Ack (ended case)");
+        ASSERT_STREQ("Int:123", checkK1(respBuf).c_str(), "CheckAny RefCache Resolved (pre-end)");
+
+        // 5. Send CalculationEnded (ID 131).
         if(host.Send(nullptr, 0, (shm::MsgType)131, respBuf).ValueOr(-1) < 0) return 1;
 
-        // 6. Verify RefCache Cleared after Ended
-        // Send CheckAny with RefCache("K1") -> Expect "RefCache:K1"
-        builder.Reset();
-        keyOff = builder.CreateString("K1");
-        rcVal = protocol::CreateRefCache(builder, keyOff);
-        anyOff = protocol::CreateAny(builder, protocol::AnyValue::RefCache, rcVal.Union());
-        ipc::CheckAnyRequestBuilder caReq3(builder);
-        caReq3.add_val(anyOff);
-        builder.Finish(caReq3.Finish());
-        if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)144, respBuf).ValueOr(-1) < 0) return 1;
-        caResp = flatbuffers::GetRoot<ipc::CheckAnyResponse>(respBuf.data());
-        ASSERT_STREQ("RefCache:K1", caResp->result()->str(), "CheckAny RefCache Cleared");
+        // 6. Cache must be cleared after Ended too.
+        ASSERT_STREQ("RefCache:K1", checkK1(respBuf).c_str(), "CheckAny RefCache Cleared on End");
     }
 
     // 14. Command invoke (MSG_COMMAND_INVOKE = 137)
