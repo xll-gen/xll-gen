@@ -780,11 +780,11 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     {{if eq .Type "string"}}
     auto arg{{$j}} = builder.CreateString(({{.Name}}->xltype == xltypeStr) ? ConvertExcelString({{.Name}}->val.str) : "");
     {{else if eq .Type "grid"}}
-    auto arg{{$j}} = GridToFlatBuffer(builder, {{.Name}});
+    auto arg{{$j}} = ConvertGrid({{.Name}}, builder);
     {{else if eq .Type "numgrid"}}
-    auto arg{{$j}} = NumGridToFlatBuffer(builder, {{.Name}});
+    auto arg{{$j}} = ConvertNumGrid({{.Name}}, builder);
     {{else if eq .Type "range"}}
-    auto arg{{$j}} = RangeToFlatBuffer(builder, {{.Name}});
+    auto arg{{$j}} = ConvertRange({{.Name}}, builder);
     {{else if eq .Type "any"}}
     auto arg{{$j}} = AnyToFlatBuffer(builder, {{.Name}});
     {{end}}
@@ -794,16 +794,16 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     flatbuffers::Offset<protocol::Range> caller_off = 0;
     {
         ScopedXLOPER12 xCaller;
-        if (xll::CallExcel(xlfCaller, &xCaller) == xlretSuccess) {
+        if (xll::CallExcel(xlfCaller, xCaller) == xlretSuccess) {
             std::string callerFormat = "";
             XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
             ScopedXLOPER12 xFormat;
-            if (xll::CallExcel(xlfGetCell, &xFormat, &xType, &xCaller) == xlretSuccess) {
-                if (xFormat->xltype == xltypeStr) {
-                        callerFormat = ConvertExcelString(xFormat->val.str);
+            if (xll::CallExcel(xlfGetCell, xFormat, &xType, xCaller) == xlretSuccess) {
+                if (xFormat.get()->xltype == xltypeStr) {
+                        callerFormat = ConvertExcelString(xFormat.get()->val.str);
                 }
             }
-            caller_off = ConvertRange(&xCaller, builder, callerFormat);
+            caller_off = ConvertRange(xCaller.get(), builder, callerFormat);
         }
     }
     {{end}}

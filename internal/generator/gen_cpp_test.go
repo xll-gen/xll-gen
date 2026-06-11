@@ -217,6 +217,66 @@ func TestGenCpp_NoCommands(t *testing.T) {
 	}
 }
 
+// TestGenCpp_ArgMarshalling pins the request-building marshalling call shape for
+// composite ARG types and the caller-aware (caller:true) path. Regression guard
+// for the codegen bug where the template emitted undeclared GridToFlatBuffer /
+// NumGridToFlatBuffer / RangeToFlatBuffer with swapped (builder, op) args (real
+// API is ConvertGrid/ConvertNumGrid/ConvertRange(op, builder)), and the caller
+// path passed ScopedXLOPER12* (&xCaller/&xFormat) plus operator-> that
+// ScopedXLOPER12 lacks. Both made the generated xll_main.cpp fail to compile.
+func TestGenCpp_ArgMarshalling(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "SumGrid", Return: "float", Args: []config.Arg{{Name: "g", Type: "grid"}}},
+			{Name: "SumNumGrid", Return: "float", Args: []config.Arg{{Name: "ng", Type: "numgrid"}}},
+			{Name: "RangeAddr", Return: "string", Args: []config.Arg{{Name: "r", Type: "range"}}},
+			{Name: "WhoAmI", Return: "string", Args: []config.Arg{}, Caller: true},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	content := renderCppMain(t, cfg)
+
+	// Composite arg converters: correct names + (op, builder) order.
+	for _, want := range []string{
+		"ConvertGrid(g, builder)",
+		"ConvertNumGrid(ng, builder)",
+		"ConvertRange(r, builder)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("expected marshalling call %q, not found", want)
+		}
+	}
+
+	// Must NOT regress to the old undeclared helper names.
+	for _, bad := range []string{"GridToFlatBuffer", "NumGridToFlatBuffer", "RangeToFlatBuffer"} {
+		if strings.Contains(content, bad) {
+			t.Errorf("found stale undeclared converter %q; should use Convert* API", bad)
+		}
+	}
+
+	// Caller path: ScopedXLOPER12 has no operator-> and CallExcel/ConvertRange
+	// want LPXLOPER12, not ScopedXLOPER12*. Pass the scoped object by ref / via
+	// .get(); never take its address, never use operator->.
+	if strings.Contains(content, "&xCaller") {
+		t.Errorf("caller path passes ScopedXLOPER12* (&xCaller); must pass the scoped object directly or via .get()")
+	}
+	if strings.Contains(content, "&xFormat") {
+		t.Errorf("caller path passes ScopedXLOPER12* (&xFormat); must pass the scoped object directly")
+	}
+	if !strings.Contains(content, "xFormat.get()->") {
+		t.Errorf("caller path must dereference via xFormat.get()-> (ScopedXLOPER12 has no operator->)")
+	}
+	if !strings.Contains(content, "ConvertRange(xCaller.get(), builder, callerFormat)") {
+		t.Errorf("caller path must call ConvertRange(xCaller.get(), builder, callerFormat)")
+	}
+}
+
 func TestGenCpp_StringErrorReturn(t *testing.T) {
 	t.Parallel()
 	// Setup temp dir
