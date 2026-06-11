@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"smoke_proj/generated"
 	types "github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/pkg/server"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -324,6 +325,14 @@ func (s *Service) ScheduleGridCmd(ctx context.Context) (int32, error) {
 
     generated.ScheduleSet(r, v)
     return 1, nil
+}
+
+// RunReport is a ribbon/macro command handler. It runs fire-and-forget; the
+// mock host only asserts the delivery ack (ok=true), so we just log to prove
+// the MSG_COMMAND_INVOKE route reached the handler with the right context.
+func (s *Service) RunReport(ctx context.Context, cmd server.CommandContext) error {
+	fmt.Printf("SERVER: RunReport invoked name=%q controlID=%q\n", cmd.CommandName, cmd.ControlID)
+	return nil
 }
 
 func (s *Service) OnCalculationEnded(ctx context.Context) error {

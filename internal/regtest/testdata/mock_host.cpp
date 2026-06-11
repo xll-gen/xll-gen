@@ -576,6 +576,43 @@ int main(int argc, char* argv[]) {
         ASSERT_STREQ("RefCache:K1", caResp->result()->str(), "CheckAny RefCache Cleared");
     }
 
+    // 14. Command invoke (MSG_COMMAND_INVOKE = 137)
+    // The mock host plays the XLL/ribbon role: it sends a CommandInvokeRequest
+    // and asserts the delivery ack. Handlers run fire-and-forget on the server,
+    // so the ack (ok/error) is all that comes back over the same slot.
+    {
+        // 14a. Known command -> ok=true
+        builder.Reset();
+        auto req = protocol::CreateCommandInvokeRequestDirect(builder, "RunReport", "btn1");
+        builder.Finish(req);
+        vector<uint8_t> respBuf;
+        if (host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) {
+            cerr << "Send failed for CommandInvoke (known)" << endl;
+            return 1;
+        }
+        auto resp = flatbuffers::GetRoot<protocol::CommandInvokeResponse>(respBuf.data());
+        if (!resp->ok()) {
+            cerr << "FAIL: CommandInvoke known: expected ok=true, error="
+                 << (resp->error() ? resp->error()->str() : "") << endl;
+            return 1;
+        }
+
+        // 14b. Unknown command -> ok=false
+        builder.Reset();
+        auto reqUnknown = protocol::CreateCommandInvokeRequestDirect(builder, "NoSuchCommand", "btn1");
+        builder.Finish(reqUnknown);
+        respBuf.clear();
+        if (host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)137, respBuf).ValueOr(-1) < 0) {
+            cerr << "Send failed for CommandInvoke (unknown)" << endl;
+            return 1;
+        }
+        auto respUnknown = flatbuffers::GetRoot<protocol::CommandInvokeResponse>(respBuf.data());
+        if (respUnknown->ok()) {
+            cerr << "FAIL: CommandInvoke unknown: expected ok=false" << endl;
+            return 1;
+        }
+    }
+
     cout << "PASSED" << endl;
     return 0;
 }
