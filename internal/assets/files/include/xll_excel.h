@@ -11,7 +11,14 @@ namespace xll {
         // Pass-through for nullptr
         inline LPXLOPER12 make_keeper(std::nullptr_t) { return nullptr; }
 
-        // Wrap everything else in ScopedXLOPER12
+        // Pass-through for an existing ScopedXLOPER12 (caller owns its lifetime,
+        // which outlives the CallExcel invocation). ScopedXLOPER12 is move-only,
+        // so we cannot copy it into the keeper tuple; extract its pointer instead.
+        // This makes passing a live ScopedXLOPER12 (e.g. xlfCaller's result) to a
+        // subsequent Excel call work without taking its address.
+        inline LPXLOPER12 make_keeper(ScopedXLOPER12& s) { return s.get(); }
+
+        // Wrap everything else (int/double/bool/wchar_t* literals) in ScopedXLOPER12
         template <typename T>
         inline ScopedXLOPER12 make_keeper(T&& val) { return ScopedXLOPER12(std::forward<T>(val)); }
 
