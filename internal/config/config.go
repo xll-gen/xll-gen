@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -221,8 +222,39 @@ type RibbonButton struct {
 	Command string `yaml:"command"`
 	// Size is "large" or "normal" (default "normal").
 	Size string `yaml:"size"`
-	// Image is an optional imageMso name.
+	// Image is an imageMso name (e.g. "HappyFace") or a path to a
+	// PNG/JPG/JPEG/BMP/GIF/ICO file relative to xll.yaml. File images are
+	// embedded into the XLL and served via the loadImage ribbon callback.
 	Image string `yaml:"image"`
+}
+
+// ribbonImageFileExts are the formats the runtime decoder (GDI+) accepts for
+// ribbon button image files.
+var ribbonImageFileExts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".bmp": true, ".gif": true, ".ico": true,
+}
+
+// ClassifyRibbonImage reports how a ribbon button image value is interpreted:
+// a file path (embedded into the XLL, served via loadImage) or a built-in
+// imageMso name. A path-like value (contains / or \) with an unsupported
+// extension is an error; imageMso names never contain separators or dots.
+func ClassifyRibbonImage(value string) (isFile bool, err error) {
+	if value == "" {
+		return false, nil
+	}
+	// Extension after the last dot of the last path segment, either separator.
+	base := value
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	ext := strings.ToLower(path.Ext(base))
+	if ribbonImageFileExts[ext] {
+		return true, nil
+	}
+	if strings.ContainsAny(value, `/\`) {
+		return false, fmt.Errorf("ribbon image %q looks like a file path but has an unsupported extension (supported: .png .jpg .jpeg .bmp .gif .ico)", value)
+	}
+	return false, nil
 }
 
 // RibbonGroup is one group of buttons in a structured-mode ribbon tab.
@@ -462,6 +494,11 @@ func Validate(config *Config) error {
 				}
 				if !cmdNames[btn.Command] {
 					return fmt.Errorf("ribbon button '%s': unknown command '%s'", btn.Label, btn.Command)
+				}
+				if btn.Image != "" {
+					if _, err := ClassifyRibbonImage(btn.Image); err != nil {
+						return fmt.Errorf("ribbon button '%s': %w", btn.Label, err)
+					}
 				}
 				switch btn.Size {
 				case "", "normal", "large":
