@@ -10,6 +10,14 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/server"
 )
 
+// TestGenCpp_ComplexReturnTypes exercises the C++ template's rendering of
+// composite/any RETURN types in isolation. Note: config.Validate now rejects
+// range/grid/numgrid/any as return types end-to-end (the Go server cannot
+// serialize composite returns — see internal/config), so these functions could
+// never reach codegen via the real pipeline. This test calls generateCppMain
+// directly, bypassing Validate, to keep coverage of the C++ converter selection
+// (AnyToXLOPER12 etc.) at the template level should composite returns ever be
+// supported.
 func TestGenCpp_ComplexReturnTypes(t *testing.T) {
 	t.Parallel()
 	// Setup temp dir
