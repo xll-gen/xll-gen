@@ -267,11 +267,24 @@ var validArgTypes = map[string]bool{
 }
 
 // validReturnTypes is the set of allowed return types in xll.yaml.
+//
+// Scalar only: the generated Go server cannot serialize composite/any types
+// (range/grid/numgrid/any) as RETURNS — the sync path emits a scalar
+// AddResult call that fails to compile against a pointer result, and the async
+// QueueResult chain has no branch for them so the result is silently dropped.
+// These types remain valid as ARGUMENTS (see validArgTypes); request decoding
+// handles them. See IMPROVEMENT_BACKLOG.md §7.
 var validReturnTypes = map[string]bool{
-	"int":     true,
-	"float":   true,
-	"string":  true,
-	"bool":    true,
+	"int":    true,
+	"float":  true,
+	"string": true,
+	"bool":   true,
+}
+
+// compositeArgOnlyTypes are types valid as arguments but not yet supported as
+// return types (the Go server cannot serialize them as returns). Used to emit a
+// targeted error explaining the asymmetry rather than a generic "not supported".
+var compositeArgOnlyTypes = map[string]bool{
 	"range":   true,
 	"grid":    true,
 	"numgrid": true,
@@ -311,7 +324,20 @@ func Validate(config *Config) error {
 	}
 
 	for _, fn := range config.Functions {
-		if !validReturnTypes[fn.Return] {
+		// RTD functions stream their results through the RTD server path
+		// (pkg/rtd), NOT the sync/async server serialization that breaks on
+		// composite/any returns — server.go.tmpl skips handler generation for
+		// mode:"rtd" entirely. So composite/any returns are valid for RTD and
+		// only the scalar+composite union is allowed there.
+		isRtd := strings.EqualFold(fn.Mode, "rtd")
+		if isRtd {
+			if !validArgTypes[fn.Return] {
+				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validArgTypes))
+			}
+		} else if !validReturnTypes[fn.Return] {
+			if compositeArgOnlyTypes[fn.Return] {
+				return fmt.Errorf("function '%s': '%s' is supported as an argument type but not yet as a return type for sync/async functions (the Go server cannot serialize composite/any returns; use mode:\"rtd\" or see IMPROVEMENT_BACKLOG.md)", fn.Name, fn.Return)
+			}
 			return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 		}
 		for _, arg := range fn.Args {

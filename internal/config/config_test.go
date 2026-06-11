@@ -89,6 +89,84 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 	}
 }
 
+// TestValidate_CompositeReturnTypes locks in that composite/any types
+// (range/grid/numgrid/any) are rejected as RETURN types — the generated Go
+// server cannot serialize them as returns (sync: compile error, async: dropped
+// result) — while remaining valid as ARGUMENT types. Scalar returns
+// (int/float/string/bool) stay valid.
+func TestValidate_CompositeReturnTypes(t *testing.T) {
+	composite := []string{"range", "grid", "numgrid", "any"}
+
+	// Each composite/any type must be REJECTED as a return type, with a
+	// message explaining it's arg-only.
+	for _, typ := range composite {
+		t.Run("reject "+typ+" return", func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "TestProject"},
+				Functions: []Function{{Name: "TestFunc", Return: typ}},
+			}
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("Validate() expected error for return type %q, got nil", typ)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "argument type but not yet as a return type") {
+				t.Errorf("Validate() error = %v, want explanation about arg-only support", err)
+			}
+			if !strings.Contains(msg, typ) {
+				t.Errorf("Validate() error = %v, want mention of type %q", err, typ)
+			}
+		})
+	}
+
+	// Each composite/any type must STILL be ACCEPTED as a RETURN type for RTD
+	// functions: RTD streams results through pkg/rtd, not the sync/async
+	// server serialization that breaks on composite returns. The default
+	// scaffold ships StockQuote (mode:"rtd", return:"any").
+	for _, typ := range composite {
+		t.Run("allow "+typ+" return for rtd", func(t *testing.T) {
+			cfg := &Config{
+				Project: ProjectConfig{Name: "TestProject"},
+				Functions: []Function{
+					{Name: "TestFunc", Mode: "rtd", Return: typ},
+				},
+			}
+			if err := Validate(cfg); err != nil {
+				t.Errorf("Validate() unexpected error for rtd return %q: %v", typ, err)
+			}
+		})
+	}
+
+	// Each composite/any type must STILL be ACCEPTED as an argument type when
+	// the return is scalar.
+	for _, typ := range composite {
+		t.Run("allow "+typ+" argument", func(t *testing.T) {
+			cfg := &Config{
+				Project: ProjectConfig{Name: "TestProject"},
+				Functions: []Function{
+					{Name: "TestFunc", Args: []Arg{{Name: "a", Type: typ}}, Return: "int"},
+				},
+			}
+			if err := Validate(cfg); err != nil {
+				t.Errorf("Validate() unexpected error for %q argument: %v", typ, err)
+			}
+		})
+	}
+
+	// Each scalar return type must remain valid.
+	for _, typ := range []string{"int", "float", "string", "bool"} {
+		t.Run("allow "+typ+" return", func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "TestProject"},
+				Functions: []Function{{Name: "TestFunc", Return: typ}},
+			}
+			if err := Validate(cfg); err != nil {
+				t.Errorf("Validate() unexpected error for scalar return %q: %v", typ, err)
+			}
+		})
+	}
+}
+
 func baseCmdCfg() *Config {
 	return &Config{
 		Project: ProjectConfig{Name: "demo"},

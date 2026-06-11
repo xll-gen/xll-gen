@@ -98,6 +98,67 @@ func serverData(cmds []config.Command) interface{} {
 	}
 }
 
+// serverDataReturn mirrors the anonymous struct built in generateServer but
+// lets the test vary the function's return type. Used by the scalar-return
+// parse gate below.
+func serverDataReturn(returnType string, async bool) interface{} {
+	mode := "sync"
+	if async {
+		mode = "async"
+	}
+	return struct {
+		Package       string
+		ModName       string
+		ProjectName   string
+		Functions     []config.Function
+		Events        []config.Event
+		Commands      []config.Command
+		ServerTimeout string
+		ServerWorkers int
+		Version       string
+		Logging       config.LoggingConfig
+		Rtd           config.RtdConfig
+		Chunk         *config.ChunkConfig
+	}{
+		Package:     "generated",
+		ModName:     "testmod",
+		ProjectName: "TestProj",
+		Functions: []config.Function{
+			{
+				Name:   "Echo",
+				Return: returnType,
+				Async:  async,
+				Mode:   mode,
+				Args:   []config.Arg{{Name: "a", Type: "int"}},
+			},
+		},
+		Version: "test",
+		Logging: config.LoggingConfig{Level: "info", Dir: "logs"},
+	}
+}
+
+// TestGenServer_ScalarReturnsParse is the structural parse gate that the
+// composite-return bug slipped past: nothing compiled/parsed the generated Go
+// server for the various return types, so a return type that rendered invalid
+// Go (composite/any) shipped. config.Validate now rejects composite returns
+// upstream, so this gate covers the SCALAR returns the server must serialize —
+// asserting each renders Go that both parses and gofmts, for sync and async.
+func TestGenServer_ScalarReturnsParse(t *testing.T) {
+	t.Parallel()
+	for _, ret := range []string{"int", "float", "string", "bool"} {
+		for _, async := range []bool{false, true} {
+			mode := "sync"
+			if async {
+				mode = "async"
+			}
+			t.Run(ret+"/"+mode, func(t *testing.T) {
+				src := renderTemplate(t, "server.go.tmpl", serverDataReturn(ret, async))
+				assertParses(t, "server.go", src)
+			})
+		}
+	}
+}
+
 func TestGenCommands_Present(t *testing.T) {
 	t.Parallel()
 
