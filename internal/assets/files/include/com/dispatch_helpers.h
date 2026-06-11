@@ -16,6 +16,11 @@ namespace xll { namespace com {
 
     // Invoke flags: DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT or DISPATCH_METHOD.
     // Args are passed in natural order and reversed internally per IDispatch ABI.
+    // Late-bound invoke. Args are borrowed [in] parameters: this function
+    // copies VARIANTs shallowly and never clears them — the CALLER retains
+    // ownership and must free contained BSTR/IDispatch* after the call.
+    // For property puts (e.g. Connect = VARIANT_TRUE) pass
+    // DISPATCH_PROPERTYPUT; the DISPID_PROPERTYPUT named arg is set up here.
     inline HRESULT Invoke(IDispatch* disp, const wchar_t* name, WORD flags,
                           std::vector<VARIANT> args, VARIANT* result) {
         DISPID dispid;
