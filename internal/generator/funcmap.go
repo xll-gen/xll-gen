@@ -67,6 +67,9 @@ func GetCommonFuncMap() template.FuncMap {
 		"lookupGoType": func(t string) string {
 			return LookupGoType(t)
 		},
+		"lookupRetGoType": func(t string) string {
+			return LookupRetGoType(t)
+		},
 		"lookupCppType": func(t string) string {
 			return LookupCppType(t)
 		},

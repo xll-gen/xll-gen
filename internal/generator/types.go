@@ -4,6 +4,13 @@ package generator
 type TypeInfo struct {
 	SchemaType string
 	GoType     string
+	// RetGoType is the Go type handlers RETURN for this xll.yaml type when it
+	// differs from GoType (the argument-position type). FlatBuffers read views
+	// like *protocol.Any make sense as arguments but cannot be constructed by
+	// a handler, so e.g. "any" is received as *protocol.Any but returned as a
+	// plain Go any that the generated code serializes (see fbany.MapGo).
+	// Empty means "same as GoType".
+	RetGoType  string
 	CppType    string
 	ArgCppType string
 	XllType    string
@@ -64,6 +71,7 @@ var typeRegistry = map[string]TypeInfo{
 	"any": {
 		SchemaType:      "protocol.Any",
 		GoType:          "*protocol.Any",
+		RetGoType:       "any",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
 		XllType:         "U",
@@ -84,6 +92,16 @@ func LookupGoType(t string) string {
 		return info.GoType
 	}
 	return t
+}
+
+// LookupRetGoType returns the Go type a handler returns for the given
+// xll.yaml type. Falls back to LookupGoType when no return-specific type is
+// registered.
+func LookupRetGoType(t string) string {
+	if info, ok := typeRegistry[t]; ok && info.RetGoType != "" {
+		return info.RetGoType
+	}
+	return LookupGoType(t)
 }
 
 // LookupCppType returns the C++ type for the given xll.yaml type (used for returns).
