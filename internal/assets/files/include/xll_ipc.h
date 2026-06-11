@@ -23,11 +23,14 @@ extern std::mutex g_refCacheMutex;
 #define MSG_CALCULATION_ENDED 131
 #define MSG_CALCULATION_CANCELED 132
 
-// RTD System Messages (133-139)
+// RTD System Messages (133-136)
 #define MSG_RTD_CONNECT 133
 #define MSG_RTD_DISCONNECT 134
 #define MSG_RTD_UPDATE 135
 #define MSG_RTD_HEARTBEAT 136
+
+// Command (ribbon/macro) Messages (137)
+#define MSG_COMMAND_INVOKE 137
 
 // User Functions Start
 #define MSG_USER_START 140

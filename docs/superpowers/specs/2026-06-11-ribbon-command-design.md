@@ -105,7 +105,7 @@ commands:                         # XLL commands == Go handlers (macroType=2)
   - name: RunReport               # exported command name (runnable by typing it in Alt+F8; XLL commands are not LISTED there)
     description: "월간 리포트 생성"
     handler: RunReport            # Go method name; defaults to name
-    shortcut: "Ctrl+Shift+R"      # optional key binding
+    shortcut: "R"          # bound as Ctrl+Shift+R (single letter)
 
 ribbon:                           # optional; two MUTUALLY EXCLUSIVE modes
   # -- mode 1: structured (xll-gen generates customUI XML) --
@@ -129,6 +129,8 @@ Validation rules (in `internal/config/config.go` `Validate()`):
   runtime no-op).
 - `commands[].name` must not collide with `functions[].name` (single xlfRegister
   namespace).
+- `commands[].name` must match `[A-Za-z0-9_]+` with no leading digit (valid C/Go
+  identifier; used to derive the exported `Cmd_*` proc and the handler method).
 - `commands` without `ribbon` is valid (shortcut/Alt+F8 only). `ribbon` without
   `commands` is an error.
 

@@ -33,9 +33,27 @@
 #include "types/protocol_generated.h"
 {{if .Rtd.Enabled}}
 #include "xll_rtd.h"
+{{end}}
+{{if or .Rtd.Enabled .Ribbon.Enabled}}
 #include "rtd/factory.h"
 #include "rtd/module.h"
 #include "rtd/registry.h"
+{{end}}
+{{if .Ribbon.Enabled}}
+// Must precede com/ribbon_addin.h so the RibbonAddIn class declaration
+// (guarded by XLL_RIBBON_ENABLED) is visible in this translation unit.
+// CMake also defines this for every TU; the guard avoids a redefinition warning.
+#ifndef XLL_RIBBON_ENABLED
+#define XLL_RIBBON_ENABLED
+#endif
+{{end}}
+{{if .Commands}}
+#include "com/ribbon_addin.h"
+#include "com/dispatch_helpers.h"
+{{end}}
+{{if .Ribbon.Enabled}}
+#include "ribbon_xml.h"
+#include <oleacc.h>
 {{end}}
 
 // Safe logging macros: no-op during forced unload to avoid touching freed resources.
@@ -70,6 +88,25 @@ const CLSID& GetRtdClsid() {
 const wchar_t* g_szProgID = L"{{.Rtd.ProgID}}";
 const wchar_t* g_szFriendlyName = L"{{.Rtd.Description}}";
 
+// Cookie for In-Proc RTD Registration
+DWORD g_rtdCookie = 0;
+{{end}}
+
+{{if .Ribbon.Enabled}}
+const CLSID& GetRibbonClsid() {
+    static CLSID clsid = []{
+        CLSID c{};
+        CLSIDFromString(L"{{.Ribbon.Clsid}}", &c);
+        return c;
+    }();
+    return clsid;
+}
+const wchar_t* g_szRibbonProgID = L"{{.Ribbon.ProgID}}";
+// Cookie for In-Proc Ribbon Add-in Registration
+DWORD g_ribbonCookie = 0;
+{{end}}
+
+{{if or .Rtd.Enabled .Ribbon.Enabled}}
 extern "C" {
     __declspec(dllexport) HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
         if (!ppv) return E_POINTER;
@@ -82,6 +119,7 @@ extern "C" {
         CoTaskMemFree(pszCLSID);
         CoTaskMemFree(pszIID);
 
+        {{if .Rtd.Enabled}}
         if (IsEqualGUID(rclsid, GetRtdClsid())) {
             rtd::ClassFactory<RtdServer>* pFactory = new rtd::ClassFactory<RtdServer>();
             if (!pFactory) return E_OUTOFMEMORY;
@@ -89,6 +127,16 @@ extern "C" {
             pFactory->Release();
             return hr;
         }
+        {{end}}
+        {{if .Ribbon.Enabled}}
+        if (IsEqualGUID(rclsid, GetRibbonClsid())) {
+            rtd::ClassFactory<RibbonAddIn>* pFactory = new rtd::ClassFactory<RibbonAddIn>();
+            if (!pFactory) return E_OUTOFMEMORY;
+            HRESULT hr = pFactory->QueryInterface(riid, ppv);
+            pFactory->Release();
+            return hr;
+        }
+        {{end}}
         return CLASS_E_CLASSNOTAVAILABLE;
     }
 
@@ -96,6 +144,7 @@ extern "C" {
         return (rtd::GlobalModule::GetLockCount() == 0) ? S_OK : S_FALSE;
     }
 
+    {{if .Rtd.Enabled}}
     __declspec(dllexport) HRESULT __stdcall DllRegisterServer() {
         return rtd::RegisterServer(g_hModule, GetRtdClsid(), g_szProgID, g_szFriendlyName);
     }
@@ -103,12 +152,40 @@ extern "C" {
     __declspec(dllexport) HRESULT __stdcall DllUnregisterServer() {
         return rtd::UnregisterServer(GetRtdClsid(), g_szProgID);
     }
+    {{end}}
 }
-// Cookie for In-Proc RTD Registration
-DWORD g_rtdCookie = 0;
+{{end}}
+
+{{if .Ribbon.Enabled}}
+// Forward declaration: xlAutoClose (below) disconnects the ribbon add-in, but
+// SetRibbonConnected is defined after xlAutoOpen further down this file.
+static bool SetRibbonConnected(bool connected);
 {{end}}
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
+    {{if .Ribbon.Enabled}}
+    XLL_SAFE_BLOCK_BEGIN
+        // Teardown order (com/ribbon_addin.h contract + Excel-DNA practice):
+        // (0) explicitly disconnect so Excel releases its RibbonAddIn
+        //     reference while this DLL is still mapped (prevents quit crash),
+        // (1) revoke/unregister so nothing new can resolve the class,
+        if (!SetRibbonConnected(false)) {
+            SAFE_LOG_WARN("Ribbon: explicit disconnect failed; Excel may release the add-in late.");
+        }
+        if (g_ribbonCookie != 0) {
+            CoRevokeClassObject(g_ribbonCookie);
+            g_ribbonCookie = 0;
+        }
+        rtd::UnregisterOfficeAddinKey(g_szRibbonProgID);
+        rtd::UnregisterServer(GetRibbonClsid(), g_szRibbonProgID);
+    XLL_SAFE_BLOCK_END_CONTINUE
+    {{end}}
+    {{if .Commands}}
+    XLL_SAFE_BLOCK_BEGIN
+        // (2) drain in-flight command sends BEFORE OnAutoClose deletes g_phost.
+        xll::ribbon::WaitForCommandDrain(2000);
+    XLL_SAFE_BLOCK_END_CONTINUE
+    {{end}}
     {{if .Rtd.Enabled}}
     if (g_rtdCookie != 0) {
         XLL_SAFE_BLOCK_BEGIN
@@ -124,6 +201,81 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     {{end}}
     return xll::OnAutoClose();
 }
+
+{{if .Ribbon.Enabled}}
+// Finds the hosting Excel's Application IDispatch and connects our COM
+// add-in: Application.COMAddIns.Item(progId).Connect = true. Uses the
+// in-process accessibility route: XLMAIN -> XLDESK -> EXCEL7 child window
+// -> AccessibleObjectFromWindow(OBJID_NATIVEOM).
+static BOOL CALLBACK FindExcel7Proc(HWND hwnd, LPARAM lParam) {
+    wchar_t cls[16] = {};
+    GetClassNameW(hwnd, cls, 15);
+    if (wcscmp(cls, L"EXCEL7") == 0) {
+        *reinterpret_cast<HWND*>(lParam) = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL CALLBACK FindXlMainProc(HWND hwnd, LPARAM lParam) {
+    wchar_t cls[32] = {};
+    GetClassNameW(hwnd, cls, 31);
+    if (wcscmp(cls, L"XLMAIN") == 0) {
+        *reinterpret_cast<HWND*>(lParam) = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// Sets Application.COMAddIns.Item(progId).Connect = <connected>. Used both
+// to connect at xlAutoOpen and — critically — to DISCONNECT at xlAutoClose:
+// revoking the class object does not release the live add-in instance Excel
+// holds; without an explicit Connect=false Excel can keep a vtable pointer
+// into this DLL past FreeLibrary and crash on quit (Excel-DNA does the same
+// explicit disconnect for its helper add-in).
+static bool SetRibbonConnected(bool connected) {
+    HWND frame = nullptr;
+    EnumThreadWindows(GetCurrentThreadId(), FindXlMainProc, reinterpret_cast<LPARAM>(&frame));
+    if (!frame) return false;
+
+    HWND excel7 = nullptr;
+    HWND xldesk = FindWindowExW(frame, nullptr, L"XLDESK", nullptr);
+    if (xldesk) excel7 = FindWindowExW(xldesk, nullptr, L"EXCEL7", nullptr);
+    if (!excel7) {
+        EnumChildWindows(frame, FindExcel7Proc, reinterpret_cast<LPARAM>(&excel7));
+    }
+    if (!excel7) return false;
+
+    IDispatch* pWindow = nullptr;
+    if (FAILED(AccessibleObjectFromWindow(excel7, OBJID_NATIVEOM, IID_IDispatch, reinterpret_cast<void**>(&pWindow))) || !pWindow)
+        return false;
+
+    bool ok = false;
+    VARIANT vApp; VariantInit(&vApp);
+    if (SUCCEEDED(xll::com::GetProperty(pWindow, L"Application", &vApp)) && vApp.vt == VT_DISPATCH && vApp.pdispVal) {
+        VARIANT vAddins; VariantInit(&vAddins);
+        if (SUCCEEDED(xll::com::GetProperty(vApp.pdispVal, L"COMAddIns", &vAddins)) && vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
+            VARIANT vProg; VariantInit(&vProg);
+            vProg.vt = VT_BSTR;
+            vProg.bstrVal = SysAllocString(g_szRibbonProgID);
+            VARIANT vItem; VariantInit(&vItem);
+            if (SUCCEEDED(xll::com::Invoke(vAddins.pdispVal, L"Item", DISPATCH_METHOD | DISPATCH_PROPERTYGET, { vProg }, &vItem))
+                && vItem.vt == VT_DISPATCH && vItem.pdispVal) {
+                VARIANT vConn; VariantInit(&vConn);
+                vConn.vt = VT_BOOL;
+                vConn.boolVal = connected ? VARIANT_TRUE : VARIANT_FALSE;
+                ok = SUCCEEDED(xll::com::Invoke(vItem.pdispVal, L"Connect", DISPATCH_PROPERTYPUT, { vConn }, nullptr));
+            }
+            VariantClear(&vItem);
+            VariantClear(&vProg);  // frees the BSTR (caller owns args per dispatch_helpers contract)
+        }
+        VariantClear(&vAddins);
+    }
+    VariantClear(&vApp);
+    pWindow->Release();
+    return ok;
+}
+{{end}}
 
 // XLL Interface Functions
 
@@ -298,6 +450,15 @@ start_worker:
     }
     {{end}}
 
+    {{if .Commands}}
+    // Command names must be set before any command proc or ribbon callback
+    // can run (set-before-connect contract, see com/ribbon_addin.h). This must
+    // precede the xlfRegister loop below: once Cmd_<Name> is registered, a
+    // Ctrl+Shift shortcut can fire the proc immediately and the proc looks the
+    // name up in this table.
+    xll::ribbon::SetCommands({ {{range .Commands}}L"{{.Name}}", {{end}} });
+    {{end}}
+
     // Register User Functions
 {{range $i, $fn := .Functions}}
     {
@@ -331,6 +492,82 @@ start_worker:
         }
     }
 {{end}}
+
+    {{if .Commands}}
+    // Register XLL Commands (macroType=2). Mirrors the function loop above but
+    // with no args/category and a Ctrl+Shift+<letter> shortcut. Command names
+    // were registered above so a shortcut-fired proc resolves its name.
+    {{end}}
+    {{range .Commands}}
+    {
+        // Register command Cmd_{{.Name}}
+        ScopedXLOPER12Result xRegId;
+        int regRes = xll::RegisterFunction(
+            *xDLL,
+            L"Cmd_{{.Name}}", // Procedure (exported symbol)
+            L"A", // TypeText: command returns short/bool
+            L"{{.Name}}", // FunctionText: name typed in the Alt+F8 dialog
+            L"", // ArgumentText: commands take none
+            2, // MacroType 2 = command
+            L"", // Category (unused for commands)
+            L"{{.Shortcut}}", // Shortcut letter -> Ctrl+Shift+<letter>
+            L"", // HelpTopic
+            L"{{.Description}}", // FunctionHelp
+            {}, // ArgumentHelp
+            *xRegId // Output ID
+        );
+
+        if (regRes != xlretSuccess) {
+            SAFE_LOG_ERROR("Failed to register command '{{.Name}}'. Code: " + std::to_string(regRes));
+        } else {
+            std::string idStr = "Unknown";
+            if (xRegId->xltype == xltypeNum) idStr = std::to_string((int)xRegId->val.num);
+            SAFE_LOG_INFO("Registered command '{{.Name}}' successfully. ID: " + idStr);
+        }
+    }
+    {{end}}
+    {{if .Ribbon.Enabled}}
+    // ---- Ribbon COM add-in bootstrap. Graceful degradation: any failure
+    // logs a warning and leaves functions/commands fully operational. ----
+    XLL_SAFE_BLOCK_BEGIN
+        xll::ribbon::SetRibbonXml(kXllRibbonXml);
+
+        bool ribbonOk = true;
+
+        // 1. HKCU COM registration (CLSID/InprocServer32 + ProgID).
+        if (FAILED(rtd::RegisterServer(g_hModule, GetRibbonClsid(), g_szRibbonProgID, L"{{.ProjectName}} Ribbon"))) {
+            SAFE_LOG_WARN("Ribbon: HKCU COM registration failed (locked-down registry?); ribbon UI disabled.");
+            ribbonOk = false;
+        }
+        // 2. Office Addins key so COMAddIns enumerates us.
+        if (ribbonOk && FAILED(rtd::RegisterOfficeAddinKey(g_szRibbonProgID, L"{{.ProjectName}}", L"{{.ProjectName}} ribbon helper"))) {
+            SAFE_LOG_WARN("Ribbon: Office Addins key registration failed; ribbon UI disabled.");
+            ribbonOk = false;
+        }
+        // 3. In-memory class object so CoCreateInstance resolves without a
+        //    registry CLSID lookup (mirrors the RTD pattern).
+        if (ribbonOk) {
+            rtd::ClassFactory<RibbonAddIn>* pFactory = new rtd::ClassFactory<RibbonAddIn>();
+            HRESULT hr = CoRegisterClassObject(GetRibbonClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &g_ribbonCookie);
+            pFactory->Release();
+            if (FAILED(hr)) {
+                char hrBuf[16];
+                snprintf(hrBuf, sizeof(hrBuf), "0x%08lX", static_cast<unsigned long>(hr));
+                SAFE_LOG_WARN(std::string("Ribbon: CoRegisterClassObject failed: ") + hrBuf);
+                ribbonOk = false;
+            }
+        }
+        // 4. Connect through Application.COMAddIns (synchronous; Excel calls
+        //    GetCustomUI during this call).
+        if (ribbonOk && !SetRibbonConnected(true)) {
+            SAFE_LOG_WARN("Ribbon: COMAddIns connect failed; ribbon UI disabled.");
+            ribbonOk = false;
+        }
+        if (ribbonOk) {
+            SAFE_LOG_INFO("Ribbon: COM add-in connected.");
+        }
+    XLL_SAFE_BLOCK_END_CONTINUE
+    {{end}}
 
         SAFE_LOG_INFO("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
@@ -669,4 +906,19 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     {{end}}
     {{end}}
 }
+{{end}}
+
+{{if .Commands}}
+// XLL command procedures (macroType=2). Invoked via Ctrl+Shift shortcut or a
+// typed name in the Alt+F8 dialog; ribbon clicks go through
+// RibbonAddIn::Invoke instead. Same fire-and-forget dispatch — a command
+// proc must never block Excel's UI thread waiting on the Go handler.
+{{range .Commands}}
+extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
+    XLL_SAFE_BLOCK_BEGIN
+        xll::ribbon::SendCommandInvoke("{{.Name}}", "");
+    XLL_SAFE_BLOCK_END(0)
+    return 1;
+}
+{{end}}
 {{end}}

@@ -113,6 +113,41 @@ namespace rtd {
         return S_OK;
     }
 
+    /**
+     * @brief Registers the COM add-in under Excel's HKCU Addins key so
+     * Application.COMAddIns can see it. LoadBehavior=0: we connect
+     * programmatically from xlAutoOpen, never on Excel startup.
+     */
+    inline HRESULT RegisterOfficeAddinKey(const wchar_t* progID, const wchar_t* friendlyName, const wchar_t* description) {
+        if (!progID || !*progID) return E_INVALIDARG;
+        std::wstring key = L"Software\\Microsoft\\Office\\Excel\\Addins\\";
+        key += progID;
+
+        HKEY hKey;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+            return E_FAIL;
+
+        DWORD loadBehavior = 0;
+        RegSetValueExW(hKey, L"LoadBehavior", 0, REG_DWORD, (const BYTE*)&loadBehavior, sizeof(loadBehavior));
+        if (friendlyName)
+            RegSetValueExW(hKey, L"FriendlyName", 0, REG_SZ, (const BYTE*)friendlyName, static_cast<DWORD>((wcslen(friendlyName) + 1) * sizeof(wchar_t)));
+        if (description)
+            RegSetValueExW(hKey, L"Description", 0, REG_SZ, (const BYTE*)description, static_cast<DWORD>((wcslen(description) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+        return S_OK;
+    }
+
+    /**
+     * @brief Removes the Excel Addins key (best-effort; re-created on next load).
+     */
+    inline HRESULT UnregisterOfficeAddinKey(const wchar_t* progID) {
+        if (!progID || !*progID) return E_INVALIDARG;
+        std::wstring key = L"Software\\Microsoft\\Office\\Excel\\Addins\\";
+        key += progID;
+        RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+        return S_OK;
+    }
+
 } // namespace rtd
 
 #endif // RTD_REGISTRY_H

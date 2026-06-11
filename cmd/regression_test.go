@@ -53,6 +53,19 @@ func TestRegression(t *testing.T) {
 		t.Fatalf("go mod edit replace failed: %v\nOutput: %s", err, out)
 	}
 
+	// The generated server's command path imports CommandInvoke symbols from
+	// `types`, which the pinned types tag (versions.Types) does not yet ship.
+	// When XLLGEN_TYPES_SRC points at a local types checkout that has them,
+	// replace the module so the temp project's Go build resolves them. (The
+	// xll-gen module's own types replace is not inherited by the temp project.)
+	if typesSrc := os.Getenv("XLLGEN_TYPES_SRC"); typesSrc != "" {
+		editCmd = exec.Command("go", "mod", "edit", "-replace", "github.com/xll-gen/types="+typesSrc)
+		editCmd.Dir = projectDir
+		if out, err := editCmd.CombinedOutput(); err != nil {
+			t.Fatalf("go mod edit replace types failed: %v\nOutput: %s", err, out)
+		}
+	}
+
 	if err := os.WriteFile(filepath.Join(projectDir, "xll.yaml"), []byte(regtest.XllYaml), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +114,18 @@ func TestRegression(t *testing.T) {
 		t.Logf("Failed to create regtest cache dir: %v", err)
 	}
 
-	cmd = exec.Command("cmake", "-S", simDir, "-B", filepath.Join(simDir, "build"), "-DFETCHCONTENT_BASE_DIR="+regtestCache)
+	cmakeArgs := []string{"-S", simDir, "-B", filepath.Join(simDir, "build"), "-DFETCHCONTENT_BASE_DIR=" + regtestCache}
+	// The command-invoke regtest exercises CommandInvokeRequest/Response, which
+	// is not in any released `types` tag (the CMakeLists pins one). Point CMake
+	// at a local types checkout that has the message via
+	// FETCHCONTENT_SOURCE_DIR_TYPES so the mock host compiles. If the env var is
+	// unset the build uses the pinned tag and the command case won't compile —
+	// set XLLGEN_TYPES_SRC (e.g. C:\...\types) to run this test until the types
+	// tag with CommandInvoke is released and the CMakeLists pin is bumped.
+	if typesSrc := os.Getenv("XLLGEN_TYPES_SRC"); typesSrc != "" {
+		cmakeArgs = append(cmakeArgs, "-DFETCHCONTENT_SOURCE_DIR_TYPES="+typesSrc)
+	}
+	cmd = exec.Command("cmake", cmakeArgs...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cmake config failed: %s", out)
 	}

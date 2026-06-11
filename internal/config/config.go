@@ -29,6 +29,10 @@ type Config struct {
 	Events    []Event       `yaml:"events"`
 	// Rtd contains configuration for the Real-Time Data server.
 	Rtd       RtdConfig     `yaml:"rtd"`
+	// Commands is a list of Excel commands (macros) backed by Go handlers.
+	Commands  []Command    `yaml:"commands"`
+	// Ribbon declares the custom ribbon UI referencing Commands.
+	Ribbon    RibbonConfig `yaml:"ribbon"`
 }
 
 // RtdConfig configures the Real-Time Data server.
@@ -195,6 +199,61 @@ type Arg struct {
 	Description string `yaml:"description"`
 }
 
+// Command represents a user-defined Excel command (macro), invocable from
+// ribbon buttons, a Ctrl+Shift shortcut, or by typing its name in the
+// Alt+F8 dialog (XLL commands are runnable there but not listed).
+type Command struct {
+	// Name is the command name registered with Excel (xlfRegister, macroType=2).
+	Name string `yaml:"name"`
+	// Description is the help text for the command.
+	Description string `yaml:"description"`
+	// Handler is the Go method name on XllService. Defaults to Name.
+	Handler string `yaml:"handler"`
+	// Shortcut is a single letter; Excel binds it as Ctrl+Shift+<letter>.
+	Shortcut string `yaml:"shortcut"`
+}
+
+// RibbonButton is one button in a structured-mode ribbon group.
+type RibbonButton struct {
+	// Label is the button caption.
+	Label string `yaml:"label"`
+	// Command is the name of the Command this button invokes (onAction).
+	Command string `yaml:"command"`
+	// Size is "large" or "normal" (default "normal").
+	Size string `yaml:"size"`
+	// Image is an optional imageMso name.
+	Image string `yaml:"image"`
+}
+
+// RibbonGroup is one group of buttons in a structured-mode ribbon tab.
+type RibbonGroup struct {
+	// Label is the group caption.
+	Label string `yaml:"label"`
+	// Buttons is the list of buttons in this group.
+	Buttons []RibbonButton `yaml:"buttons"`
+}
+
+// RibbonConfig declares the add-in's custom ribbon UI. Two mutually
+// exclusive modes: structured (Tab + Groups, XML is generated) or raw
+// (XML names a customUI XML file authored by the user).
+type RibbonConfig struct {
+	// Tab is the custom tab label (structured mode).
+	Tab string `yaml:"tab"`
+	// Groups are the button groups under Tab (structured mode).
+	Groups []RibbonGroup `yaml:"groups"`
+	// XML is a path to a raw customUI XML file, relative to xll.yaml (raw mode).
+	XML string `yaml:"xml"`
+	// ProgID identifies the COM add-in helper (default "<project>.Ribbon").
+	ProgID string `yaml:"prog_id"`
+	// Clsid is the helper's class ID (derived from ProgID if empty).
+	Clsid string `yaml:"clsid"`
+}
+
+// Enabled reports whether a ribbon UI was declared in either mode.
+func (r RibbonConfig) Enabled() bool {
+	return r.Tab != "" || r.XML != ""
+}
+
 // validArgTypes is the set of allowed argument types in xll.yaml.
 var validArgTypes = map[string]bool{
 	"int":     true,
@@ -322,6 +381,73 @@ func Validate(config *Config) error {
 		}
 	}
 
+	fnNames := make(map[string]bool)
+	for _, fn := range config.Functions {
+		fnNames[fn.Name] = true
+	}
+	cmdNames := make(map[string]bool)
+	seenShortcuts := make(map[string]string)
+	for _, cmd := range config.Commands {
+		if cmd.Name == "" {
+			return fmt.Errorf("command name cannot be empty")
+		}
+		for _, r := range cmd.Name {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+				return fmt.Errorf("command '%s': name must match [A-Za-z0-9_]+ (it is emitted into generated C++ and registered with Excel via xlfRegister)", cmd.Name)
+			}
+		}
+		if cmd.Name[0] >= '0' && cmd.Name[0] <= '9' {
+			return fmt.Errorf("command '%s': name must not start with a digit", cmd.Name)
+		}
+		if fnNames[cmd.Name] {
+			return fmt.Errorf("command '%s' collides with a function of the same name (xlfRegister namespace is shared)", cmd.Name)
+		}
+		if cmdNames[cmd.Name] {
+			return fmt.Errorf("duplicate command name: %s", cmd.Name)
+		}
+		cmdNames[cmd.Name] = true
+		if cmd.Shortcut != "" {
+			r := []rune(cmd.Shortcut)
+			// ASCII letters only — xlfRegister's shortcut table is ASCII
+			// (Ctrl+Shift+<letter>); do not "fix" with unicode.IsLetter.
+			if len(r) != 1 || !((r[0] >= 'a' && r[0] <= 'z') || (r[0] >= 'A' && r[0] <= 'Z')) {
+				return fmt.Errorf("command '%s': shortcut must be a single letter (Excel binds it as Ctrl+Shift+<letter>), got %q", cmd.Name, cmd.Shortcut)
+			}
+			key := strings.ToUpper(cmd.Shortcut)
+			if prev, ok := seenShortcuts[key]; ok {
+				return fmt.Errorf("command '%s': shortcut %q already used by command '%s'", cmd.Name, cmd.Shortcut, prev)
+			}
+			seenShortcuts[key] = cmd.Name
+		}
+	}
+
+	if config.Ribbon.Enabled() {
+		if len(config.Commands) == 0 {
+			return fmt.Errorf("ribbon requires at least one entry in 'commands'")
+		}
+		if config.Ribbon.XML != "" && (config.Ribbon.Tab != "" || len(config.Ribbon.Groups) > 0) {
+			return fmt.Errorf("ribbon: 'xml' and 'tab'/'groups' are mutually exclusive")
+		}
+		for _, g := range config.Ribbon.Groups {
+			for _, btn := range g.Buttons {
+				if btn.Command == "" {
+					return fmt.Errorf("ribbon button '%s': command is required", btn.Label)
+				}
+				if !cmdNames[btn.Command] {
+					return fmt.Errorf("ribbon button '%s': unknown command '%s'", btn.Label, btn.Command)
+				}
+				switch btn.Size {
+				case "", "normal", "large":
+					// ok
+				default:
+					return fmt.Errorf("ribbon button '%s': invalid size '%s' (allowed: normal, large)", btn.Label, btn.Size)
+				}
+			}
+		}
+	} else if len(config.Ribbon.Groups) > 0 {
+		return fmt.Errorf("ribbon: 'groups' requires 'tab' (structured mode)")
+	}
+
 	return nil
 }
 
@@ -405,6 +531,29 @@ func ApplyDefaults(config *Config) {
 		if config.Rtd.Clsid == "" && config.Rtd.ProgID != "" {
 			u := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(config.Rtd.ProgID))
 			config.Rtd.Clsid = "{" + u.String() + "}"
+		}
+	}
+
+	for i := range config.Commands {
+		if config.Commands[i].Handler == "" {
+			config.Commands[i].Handler = config.Commands[i].Name
+		}
+	}
+
+	if config.Ribbon.Enabled() {
+		if config.Ribbon.ProgID == "" {
+			config.Ribbon.ProgID = config.Project.Name + ".Ribbon"
+		}
+		if config.Ribbon.Clsid == "" {
+			u := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(config.Ribbon.ProgID))
+			config.Ribbon.Clsid = "{" + u.String() + "}"
+		}
+		for gi := range config.Ribbon.Groups {
+			for bi := range config.Ribbon.Groups[gi].Buttons {
+				if config.Ribbon.Groups[gi].Buttons[bi].Size == "" {
+					config.Ribbon.Groups[gi].Buttons[bi].Size = "normal"
+				}
+			}
 		}
 	}
 }

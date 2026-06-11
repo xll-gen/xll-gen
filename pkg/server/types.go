@@ -35,11 +35,15 @@ const (
 	MsgSetRefCache         = 130
 	MsgCalculationEnded    = 131
 	MsgCalculationCanceled = 132
-	// RTD Messages (133-139)
+	// RTD Messages (133-136)
 	MsgRtdConnect    = 133
 	MsgRtdDisconnect = 134
 	MsgRtdUpdate     = 135
 	MsgRtdHeartbeat  = 136
+
+	// Command (ribbon/macro) invocation — must stay in sync with
+	// MSG_COMMAND_INVOKE in internal/assets/files/include/xll_ipc.h.
+	MsgCommandInvoke = 137
 
 	// User Messages Start
 	MsgUserStart = 140
@@ -152,4 +156,15 @@ type PendingAsyncResult struct {
 	Val     any
 	ValType AnyValue
 	Err     string
+}
+
+// CommandContext carries invocation metadata to a user command handler
+// (ribbon button click, keyboard shortcut, or typed macro name).
+type CommandContext struct {
+	// CommandName is the invoked commands[].name from xll.yaml.
+	CommandName string
+	// ControlID is the clicked ribbon control id ("" for shortcut/Alt+F8).
+	ControlID string
+	// ExcelPID is the parent Excel process id, for multi-instance COM attach.
+	ExcelPID uint32
 }

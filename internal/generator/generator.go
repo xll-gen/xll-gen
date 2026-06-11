@@ -173,6 +173,13 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	}
 	ui.PrintSuccess("Generated", "xll_main.cpp")
 
+	if err := generateRibbonXmlHeader(cfg, includeDir, baseDir); err != nil {
+		return err
+	}
+	if cfg.Ribbon.Enabled() {
+		ui.PrintSuccess("Generated", "ribbon_xml.h")
+	}
+
 	if err := generateCMake(cfg, cppDir); err != nil {
 		return err
 	}

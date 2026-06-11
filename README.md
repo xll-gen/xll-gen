@@ -255,6 +255,53 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
 
 Supported event types map onto Excel's `xlEvent*` constants — `CalculationEnded`, `CalculationCanceled`. If your handler is omitted but the event is needed internally (e.g. `any`-typed args or `cache.enabled`), `xll-gen` registers a built-in `CalculationEnded` handler automatically.
 
+## Commands & Ribbon
+
+> **Note:** "Commands" here are user-invoked macros (ribbon buttons, keyboard shortcuts, Alt+F8) — distinct from "Command Scheduling" below, which defers `xlSet`/formatting until after recalc.
+
+`xll-gen` can register **commands** (Go handlers invoked as Excel macros) and optionally surface them as native **Ribbon** buttons. A command is independently invocable; a ribbon button merely points at one.
+
+```yaml
+commands:
+  - name: RunReport            # exported command name; valid identifier [A-Za-z0-9_]+, no leading digit
+    description: "Generate the monthly report"
+    handler: RunReport         # Go method name; defaults to name
+    shortcut: "R"              # optional single letter; Excel binds it as Ctrl+Shift+R
+
+ribbon:                        # optional; the two modes below are MUTUALLY EXCLUSIVE
+  # -- mode 1: structured (xll-gen generates the customUI XML) --
+  tab: "My Tools"
+  groups:
+    - label: "Reports"
+      buttons:
+        - label: "Monthly Report"
+          command: RunReport   # must match a commands[].name
+          size: large          # large | normal (default normal)
+          image: "report"      # optional imageMso name
+
+  # -- mode 2: raw XML escape hatch (full customUI control) --
+  # xml: "ribbon.xml"          # path relative to xll.yaml; every onAction="X"
+                               # must match a commands[].name (checked at build time)
+```
+
+Your service implements one method per command, following the event-handler shape (`ctx` first, `error` return):
+
+```go
+func (s *Service) RunReport(ctx context.Context, cmd server.CommandContext) error {
+    // server = github.com/xll-gen/xll-gen/pkg/server
+    // cmd.CommandName, cmd.ControlID (empty for shortcut/Alt+F8), cmd.ExcelPID
+    // Optionally attach to the running Excel with sugar and manipulate it.
+    return nil
+}
+```
+
+Notes:
+
+*   **Shortcuts** are a single letter, bound by Excel as `Ctrl+Shift+<letter>`.
+*   **Alt+F8**: registered commands are runnable by typing their exact name into Excel's macro dialog (XLL commands are runnable there but not *listed*).
+*   **Fire-and-forget**: clicking a button or firing a shortcut returns to Excel immediately; the handler runs server-side in a goroutine. Errors/panics are logged server-side and do **not** surface to the cell/UI — give the user feedback from inside the handler (e.g. write a cell or the status bar via `sugar`).
+*   **Graceful degradation**: on group-policy-locked desktops where the ribbon's HKCU COM-add-in registration is blocked, worksheet functions / RTD / async keep working unchanged and commands stay invocable via shortcut and Alt+F8. The failure is silent except for a logged warning — no startup error dialogs.
+
 ## Command Scheduling
 
 You can schedule Excel commands (like `xlSet` or formatting) to run after the calculation cycle ends. This is useful for modifying cells or formatting, which is restricted during function execution.

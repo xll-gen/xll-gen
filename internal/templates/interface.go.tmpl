@@ -4,7 +4,8 @@ package {{.Package}}
 import (
 	"context"
 	"github.com/xll-gen/types/go/protocol"
-)
+{{if .Commands}}	"github.com/xll-gen/xll-gen/pkg/server"
+{{end}})
 
 // Force usage of protocol to avoid unused import error
 var _ = protocol.Bool{}
@@ -14,6 +15,8 @@ type XllService interface {
 	{{else}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *protocol.Range{{end}}) ({{lookupGoType .Return}}, error)
 {{end}}{{end}}
 {{range .Events}}	{{.Handler}}(ctx context.Context) error
+{{end}}
+{{range .Commands}}	{{.Handler}}(ctx context.Context, cmd server.CommandContext) error
 {{end}}
 {{if not (hasEvent "CalculationEnded" .Events)}}	OnCalculationEnded(ctx context.Context) error
 {{end}}
