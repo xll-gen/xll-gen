@@ -139,6 +139,20 @@ func TestCommandValidation(t *testing.T) {
 			wantErr: "shortcut",
 		},
 		{
+			name: "non-ascii shortcut rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A", Shortcut: "é"}}
+			},
+			wantErr: "shortcut",
+		},
+		{
+			name: "duplicate shortcut across commands",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A", Shortcut: "r"}, {Name: "B", Shortcut: "R"}}
+			},
+			wantErr: "already used",
+		},
+		{
 			name: "ribbon without commands",
 			mutate: func(c *Config) {
 				c.Ribbon = RibbonConfig{Tab: "Tools"}
@@ -152,6 +166,24 @@ func TestCommandValidation(t *testing.T) {
 				c.Ribbon = RibbonConfig{Tab: "Tools", XML: "ribbon.xml"}
 			},
 			wantErr: "mutually exclusive",
+		},
+		{
+			name: "button with empty command",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", Groups: []RibbonGroup{
+					{Label: "G", Buttons: []RibbonButton{{Label: "B", Command: ""}}},
+				}}
+			},
+			wantErr: "command is required",
+		},
+		{
+			name: "ribbon groups without tab",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Groups: []RibbonGroup{{Label: "G"}}}
+			},
+			wantErr: "requires 'tab'",
 		},
 		{
 			name: "button references unknown command",
