@@ -6,21 +6,23 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 )
 
-func (cb *CommandBatcher) flushBuffers() {
-	cb.bufferLock.Lock()
+// flushBuffersLocked compresses the per-cell Set/Format buffers into queued
+// commands and appends them to cmdQueue. The caller MUST hold cb.mu — both the
+// buffer maps and cmdQueue are mutated here without taking any lock, so that
+// the surrounding ScheduleSet/ScheduleFormat/FlushCommands operation stays
+// atomic. GreedyMesh therefore runs under cb.mu; this is a deliberate
+// correctness-over-contention trade-off (see CommandBatcher's doc comment).
+func (cb *CommandBatcher) flushBuffersLocked() {
 	if len(cb.bufferedSets) == 0 && len(cb.bufferedFormats) == 0 {
-		cb.bufferLock.Unlock()
 		return
 	}
 
-	// Move maps to local variables to minimize lock holding time during GreedyMesh
 	sets := cb.bufferedSets
 	formats := cb.bufferedFormats
 
 	// Reset buffers
 	cb.bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
 	cb.bufferedFormats = make(map[string]map[algo.Cell]string)
-	cb.bufferLock.Unlock()
 
 	// Process Sets
 	for sheet, cells := range sets {
@@ -40,14 +42,12 @@ func (cb *CommandBatcher) flushBuffers() {
 				}
 				batch := rects[i:end]
 
-				cb.cmdQueueLock.Lock()
 				cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
 					CmdType:   cmdTypeSet,
 					Sheet:     sheet,
 					Rects:     batch,
 					ScalarVal: val,
 				})
-				cb.cmdQueueLock.Unlock()
 			}
 		}
 	}
@@ -69,32 +69,30 @@ func (cb *CommandBatcher) flushBuffers() {
 				}
 				batch := rects[i:end]
 
-				cb.cmdQueueLock.Lock()
 				cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
 					CmdType:   cmdTypeFormat,
 					Sheet:     sheet,
 					Rects:     batch,
 					FormatStr: fmt,
 				})
-				cb.cmdQueueLock.Unlock()
 			}
 		}
 	}
 }
 
 func (cb *CommandBatcher) FlushCommands(b *flatbuffers.Builder) []byte {
-	cb.flushBuffers()
-
-	cb.cmdQueueLock.Lock()
+	// Flush buffers and take ownership of the queue atomically, then build the
+	// FlatBuffer response from the private local copy outside the lock so the
+	// expensive serialization does not block concurrent scheduling.
+	cb.mu.Lock()
+	cb.flushBuffersLocked()
 	if len(cb.cmdQueue) == 0 {
-		cb.cmdQueueLock.Unlock()
+		cb.mu.Unlock()
 		return nil
 	}
-
-	// Swap queue to local variable to release lock early
 	queue := cb.cmdQueue
 	cb.cmdQueue = nil
-	cb.cmdQueueLock.Unlock()
+	cb.mu.Unlock()
 
 	wrappers := make([]flatbuffers.UOffsetT, len(queue))
 

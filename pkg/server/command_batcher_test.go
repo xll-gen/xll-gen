@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sync"
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -133,4 +134,80 @@ func TestCommandBatcher_Mixed(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestCommandBatcher_ConcurrentConsistency exercises the batcher the way the
+// generated server actually drives it: async UDF worker goroutines call
+// ScheduleSet/ScheduleFormat while a calc-boundary goroutine calls
+// FlushCommands (calc-ended) or Clear (calc-canceled) concurrently. Each
+// public method must be atomic as a whole — otherwise the flush-then-enqueue
+// sequence interleaves with a concurrent Flush/Clear, reordering or leaking
+// commands. Run under -race; the batcher must never panic, corrupt its maps,
+// or emit an unparseable response.
+func TestCommandBatcher_ConcurrentConsistency(t *testing.T) {
+	cb := NewCommandBatcher()
+
+	// Pre-build a small (buffered path) and a large (queued path) range plus a
+	// scalar value, all immutable and shareable across goroutines.
+	b := flatbuffers.NewBuilder(1024)
+	rSmallOff := createRange(b, 0, 0, 0, 0)
+	b.Finish(rSmallOff)
+	rSmall := protocol.GetRootAsRange(append([]byte(nil), b.FinishedBytes()...), 0)
+
+	b.Reset()
+	rLargeOff := createRange(b, 1, 999, 0, 25) // > batchingThreshold
+	b.Finish(rLargeOff)
+	rLarge := protocol.GetRootAsRange(append([]byte(nil), b.FinishedBytes()...), 0)
+
+	b.Reset()
+	vOff := createScalarAny(b, 7)
+	b.Finish(vOff)
+	val := protocol.GetRootAsAny(append([]byte(nil), b.FinishedBytes()...), 0)
+
+	const iters = 400
+	var wg sync.WaitGroup
+
+	// Schedulers (simulate async UDF workers).
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				cb.ScheduleSet(rSmall, val)
+				cb.ScheduleSet(rLarge, val)
+				cb.ScheduleFormat(rSmall, "0.00")
+			}
+		}()
+	}
+
+	// Calc-ended flusher: each FlushCommands result must be nil or a valid
+	// CalculationEndedResponse.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fb := flatbuffers.NewBuilder(1024)
+		for i := 0; i < iters; i++ {
+			fb.Reset()
+			out := cb.FlushCommands(fb)
+			if out != nil {
+				resp := protocol.GetRootAsCalculationEndedResponse(out, 0)
+				// Touching the union forces a parse; a corrupt buffer would
+				// panic or yield a nonsensical length.
+				if n := resp.CommandsLength(); n < 0 {
+					t.Errorf("negative commands length %d", n)
+				}
+			}
+		}
+	}()
+
+	// Calc-canceled clearer.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			cb.Clear()
+		}
+	}()
+
+	wg.Wait()
 }
