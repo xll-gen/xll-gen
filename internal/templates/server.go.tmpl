@@ -345,13 +345,16 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			} else {
 				asyncBatcher.QueueResult(handle, nil, protocol.AnyValueNil, "")
 			}
+			{{else if eq .Return "any"}}
+			tag, payload := server.MapAnyValue(res)
+			asyncBatcher.QueueResult(handle, payload, tag, "")
 			{{end}}
 		}
 	}()
 
 	return 0, 0
 	{{else}}
-	var res {{lookupGoType .Return}}
+	var res {{lookupRetGoType .Return}}
 	var err error
 
 	log.Debug("Sync function start", "func", "{{.Name}}")
@@ -400,13 +403,18 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		protocol.BoolAddVal(b, *res)
 		resOffset = protocol.BoolEnd(b)
 	}
+	{{else if eq .Return "any"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil {
+		resOffset = server.BuildAnyFromGo(b, res)
+	}
 	{{end}}
 
 	ipc.{{.Name}}ResponseStart(b)
 	if err != nil {
 		ipc.{{.Name}}ResponseAddError(b, errOffset)
 	} else {
-		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?")}}
+		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "any")}}
 		if resOffset > 0 {
 			ipc.{{.Name}}ResponseAddResult(b, resOffset)
 		}

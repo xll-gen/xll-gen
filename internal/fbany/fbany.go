@@ -10,6 +10,9 @@
 package fbany
 
 import (
+	"fmt"
+	"time"
+
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/types/go/protocol"
 )
@@ -78,6 +81,54 @@ func Build(b *flatbuffers.Builder, tag protocol.AnyValue, val any) flatbuffers.U
 	protocol.AnyAddValType(b, tag)
 	protocol.AnyAddVal(b, uOff)
 	return protocol.AnyEnd(b)
+}
+
+// MapGo maps an arbitrary Go value onto a protocol.Any union tag plus the
+// payload Build expects for that tag. This is the canonical Go-value→Any
+// mapping shared by the RTD update path and the generated sync/async
+// `return: "any"` paths, so a value renders identically in a cell no matter
+// which route delivered it:
+//
+//	nil          → AnyValueNil  (empty cell)
+//	string       → AnyValueStr
+//	int32        → AnyValueInt
+//	int, int64   → AnyValueNum  (Go ints can exceed 32 bits; double keeps 53)
+//	float64/32   → AnyValueNum
+//	bool         → AnyValueBool
+//	time.Time    → AnyValueStr  (RFC3339)
+//	anything else → AnyValueStr via fmt.Sprintf("%v", v)
+func MapGo(value any) (protocol.AnyValue, any) {
+	switch v := value.(type) {
+	case nil:
+		return protocol.AnyValueNil, nil
+	case string:
+		return protocol.AnyValueStr, v
+	case int:
+		// Go int can be 64-bit, so send as double to prevent truncation
+		return protocol.AnyValueNum, float64(v)
+	case int32:
+		return protocol.AnyValueInt, v
+	case int64:
+		// Protocol only supports 32-bit int, so we send as double to preserve value (up to 53 bits)
+		return protocol.AnyValueNum, float64(v)
+	case float64:
+		return protocol.AnyValueNum, v
+	case float32:
+		return protocol.AnyValueNum, float64(v)
+	case bool:
+		return protocol.AnyValueBool, v
+	case time.Time:
+		return protocol.AnyValueStr, v.Format(time.RFC3339)
+	default:
+		return protocol.AnyValueStr, fmt.Sprintf("%v", v)
+	}
+}
+
+// BuildGo maps value through MapGo and serializes it with Build, returning
+// the protocol.Any offset. Convenience for callers that don't need the tag.
+func BuildGo(b *flatbuffers.Builder, value any) flatbuffers.UOffsetT {
+	tag, payload := MapGo(value)
+	return Build(b, tag, payload)
 }
 
 // BuildEmpty wraps an empty union member (offset 0) in a protocol.Any table

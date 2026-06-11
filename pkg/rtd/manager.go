@@ -154,32 +154,9 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
 	b := pool.GetBuilder(nil)
 	defer pool.PutBuilder(b)
 
-	// Map the Go value onto a protocol.Any union tag + payload.
-	var tag protocol.AnyValue
-	var payload any
-	switch v := value.(type) {
-	case string:
-		tag, payload = protocol.AnyValueStr, v
-	case int:
-		// Go int can be 64-bit, so send as double to prevent truncation
-		tag, payload = protocol.AnyValueNum, float64(v)
-	case int32:
-		tag, payload = protocol.AnyValueInt, v
-	case int64:
-		// Protocol only supports 32-bit int, so we send as double to preserve value (up to 53 bits)
-		tag, payload = protocol.AnyValueNum, float64(v)
-	case float64:
-		tag, payload = protocol.AnyValueNum, v
-	case float32:
-		tag, payload = protocol.AnyValueNum, float64(v)
-	case bool:
-		tag, payload = protocol.AnyValueBool, v
-	case time.Time:
-		tag, payload = protocol.AnyValueStr, v.Format(time.RFC3339)
-	default:
-		tag, payload = protocol.AnyValueStr, fmt.Sprintf("%v", v)
-	}
-	anyOff := fbany.Build(b, tag, payload)
+	// Map the Go value onto a protocol.Any union tag + payload (canonical
+	// mapping shared with the generated sync/async `any`-return paths).
+	anyOff := fbany.BuildGo(b, value)
 
 	protocol.RtdUpdateStart(b)
 	protocol.RtdUpdateAddTopicId(b, topicID)
