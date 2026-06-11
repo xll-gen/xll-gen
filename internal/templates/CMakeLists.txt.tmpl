@@ -164,6 +164,25 @@ if(WIN32)
 endif()
 {{ end }}
 
+{{ if .Commands }}
+# Command/ribbon IPC sender (xll::ribbon namespace) lives in src/ribbon_addin.cpp,
+# already swept up by the file(GLOB SOURCES ... src/*.cpp) above. The RibbonAddIn
+# COM class inside that TU compiles only when XLL_RIBBON_ENABLED is defined.
+{{ if .Ribbon.Enabled }}
+target_compile_definitions(${PROJECT_NAME} PRIVATE XLL_RIBBON_ENABLED)
+if(WIN32)
+    # ole32/oleaut32/uuid for COM; oleacc for AccessibleObjectFromWindow
+    # (the in-process Application IDispatch route in ConnectRibbonAddin).
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ole32
+        oleaut32
+        uuid
+        oleacc
+    )
+endif()
+{{ end }}
+{{ end }}
+
 {{ if eq .Build.Singlefile "xll" }}
 target_link_libraries(${PROJECT_NAME} PRIVATE libzstd_static)
 target_include_directories(${PROJECT_NAME} PRIVATE ${zstd_SOURCE_DIR}/lib)
