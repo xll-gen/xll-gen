@@ -14,13 +14,30 @@ const (
 	cmdTypeFormat     = 1
 )
 
+// CommandBatcher accumulates Set/Format commands scheduled by user functions
+// during a calculation cycle and flushes them into a single response at
+// calc-end.
+//
+// Concurrency: the generated server calls ScheduleSet/ScheduleFormat from async
+// UDF worker goroutines, while the calc-boundary handlers call FlushCommands
+// (calc-ended) and Clear (calc-canceled) from the SHM dispatch goroutines —
+// all genuinely concurrent. A single mutex guards both the per-cell buffer and
+// the command queue so that every public method is atomic as a whole. This
+// matters because each schedule of a large/non-scalar range first flushes the
+// buffer and then enqueues its own command; with separate locks that two-step
+// sequence could interleave with a concurrent Flush/Clear, reordering commands
+// or leaking a command past a cancellation. The cost is that GreedyMesh runs
+// under the lock (FlushCommands still serializes its FlatBuffer build outside
+// the lock by swapping the queue to a local first).
+//
+// Note on async scheduling: a command scheduled after its cycle's calc-ended
+// has already flushed lands in the buffer/queue and is emitted on the next
+// calc-ended — it is deferred, not lost.
 type CommandBatcher struct {
+	mu              sync.Mutex
 	bufferedSets    map[string]map[algo.Cell]ScalarValue
 	bufferedFormats map[string]map[algo.Cell]string
-	bufferLock      sync.Mutex
-
-	cmdQueue     []QueuedCommand
-	cmdQueueLock sync.Mutex
+	cmdQueue        []QueuedCommand
 }
 
 func NewCommandBatcher() *CommandBatcher {
@@ -31,14 +48,11 @@ func NewCommandBatcher() *CommandBatcher {
 }
 
 func (cb *CommandBatcher) Clear() {
-	cb.cmdQueueLock.Lock()
+	cb.mu.Lock()
 	cb.cmdQueue = nil
-	cb.cmdQueueLock.Unlock()
-
-	cb.bufferLock.Lock()
 	cb.bufferedSets = make(map[string]map[algo.Cell]ScalarValue)
 	cb.bufferedFormats = make(map[string]map[algo.Cell]string)
-	cb.bufferLock.Unlock()
+	cb.mu.Unlock()
 }
 
 func calculateTotalCells(r *protocol.Range) int64 {
@@ -78,23 +92,25 @@ func (cb *CommandBatcher) ScheduleSet(r *protocol.Range, v *protocol.Any) {
 		// Optimization: If range is large, bypass buffer to avoid O(Cells) decomposition
 		totalCells := calculateTotalCells(r)
 		if totalCells > batchingThreshold {
-			cb.flushBuffers()
-
+			// Read the range outside the lock; flush+enqueue under it so the
+			// "flush buffered cells, then append this command" pair is atomic.
 			rects := extractAlgoRects(r)
+			sheet := string(r.SheetName())
 
-			cb.cmdQueueLock.Lock()
+			cb.mu.Lock()
+			cb.flushBuffersLocked()
 			cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
 				CmdType:   cmdTypeSet,
-				Sheet:     string(r.SheetName()),
+				Sheet:     sheet,
 				Rects:     rects,
 				ScalarVal: scalar,
 			})
-			cb.cmdQueueLock.Unlock()
+			cb.mu.Unlock()
 			return
 		}
 
 		sheet := string(r.SheetName())
-		cb.bufferLock.Lock()
+		cb.mu.Lock()
 		if cb.bufferedSets[sheet] == nil {
 			cb.bufferedSets[sheet] = make(map[algo.Cell]ScalarValue)
 		}
@@ -110,12 +126,12 @@ func (cb *CommandBatcher) ScheduleSet(r *protocol.Range, v *protocol.Any) {
 				}
 			}
 		}
-		cb.bufferLock.Unlock()
+		cb.mu.Unlock()
 		return
 	}
 
-	cb.flushBuffers()
-
+	// Non-scalar: pre-serialize outside the lock (no shared state), then
+	// flush+enqueue atomically.
 	b := flatbuffers.NewBuilder(0)
 	rOff := r.DeepCopy(b)
 	vOff := v.DeepCopy(b)
@@ -125,32 +141,34 @@ func (cb *CommandBatcher) ScheduleSet(r *protocol.Range, v *protocol.Any) {
 	protocol.SetCommandAddValue(b, vOff)
 	root := protocol.SetCommandEnd(b)
 	b.Finish(root)
+	data := b.FinishedBytes()
 
-	cb.cmdQueueLock.Lock()
-	cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{CmdType: cmdTypeSet, Data: b.FinishedBytes()})
-	cb.cmdQueueLock.Unlock()
+	cb.mu.Lock()
+	cb.flushBuffersLocked()
+	cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{CmdType: cmdTypeSet, Data: data})
+	cb.mu.Unlock()
 }
 
 func (cb *CommandBatcher) ScheduleFormat(r *protocol.Range, fmtStr string) {
 	totalCells := calculateTotalCells(r)
 	if totalCells > batchingThreshold {
-		cb.flushBuffers()
-
 		rects := extractAlgoRects(r)
+		sheet := string(r.SheetName())
 
-		cb.cmdQueueLock.Lock()
+		cb.mu.Lock()
+		cb.flushBuffersLocked()
 		cb.cmdQueue = append(cb.cmdQueue, QueuedCommand{
 			CmdType:   cmdTypeFormat,
-			Sheet:     string(r.SheetName()),
+			Sheet:     sheet,
 			Rects:     rects,
 			FormatStr: fmtStr,
 		})
-		cb.cmdQueueLock.Unlock()
+		cb.mu.Unlock()
 		return
 	}
 
 	sheet := string(r.SheetName())
-	cb.bufferLock.Lock()
+	cb.mu.Lock()
 	if cb.bufferedFormats[sheet] == nil {
 		cb.bufferedFormats[sheet] = make(map[algo.Cell]string)
 	}
@@ -166,5 +184,5 @@ func (cb *CommandBatcher) ScheduleFormat(r *protocol.Range, fmtStr string) {
 			}
 		}
 	}
-	cb.bufferLock.Unlock()
+	cb.mu.Unlock()
 }
