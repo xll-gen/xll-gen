@@ -172,12 +172,16 @@ endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE XLL_RIBBON_ENABLED)
 if(WIN32)
     # ole32/oleaut32/uuid for COM; oleacc for AccessibleObjectFromWindow
-    # (the in-process Application IDispatch route in ConnectRibbonAddin).
+    # (the in-process Application IDispatch route in ConnectRibbonAddin);
+    # gdiplus for the ribbon image decoder TU (src/ribbon_image.cpp decodes
+    # embedded PNG/JPG bytes via GDI+; ole32 already provides
+    # CreateStreamOnHGlobal, so shlwapi is not needed).
     target_link_libraries(${PROJECT_NAME} PRIVATE
         ole32
         oleaut32
         uuid
         oleacc
+        gdiplus
     )
 endif()
 {{ end }}

@@ -47,9 +47,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(types)
 
-add_executable(mock_host main.cpp)
+# ribbon_image.cpp is the standalone GDI+ decoder asset; compiling it here
+# regression-tests the embed->decode->IPictureDisp chain the real XLL uses
+# for loadImage callbacks (see mock_host test 15).
+add_executable(mock_host main.cpp ../generated/cpp/src/ribbon_image.cpp)
+target_compile_definitions(mock_host PRIVATE XLL_RIBBON_ENABLED)
 target_include_directories(mock_host PRIVATE
     ../generated/cpp
     ../generated/cpp/include
 )
-target_link_libraries(mock_host PRIVATE shm xll-gen-types flatbuffers)
+target_link_libraries(mock_host PRIVATE shm xll-gen-types flatbuffers
+    gdiplus ole32 oleaut32 uuid)

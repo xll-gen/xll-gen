@@ -277,7 +277,11 @@ ribbon:                        # optional; the two modes below are MUTUALLY EXCL
         - label: "Monthly Report"
           command: RunReport   # must match a commands[].name
           size: large          # large | normal (default normal)
-          image: "report"      # optional imageMso name
+          image: "report"      # built-in Office icon (imageMso name)
+        - label: "Export"
+          command: ExportData
+          size: normal
+          image: "./icons/export.png"   # OR an image file relative to xll.yaml
 
   # -- mode 2: raw XML escape hatch (full customUI control) --
   # xml: "ribbon.xml"          # path relative to xll.yaml; every onAction="X"
@@ -297,6 +301,7 @@ func (s *Service) RunReport(ctx context.Context, cmd server.CommandContext) erro
 
 Notes:
 
+*   **Button images** (`image:`) accept either a built-in Office icon name (imageMso, e.g. `HappyFace`) **or** a path to an image file relative to `xll.yaml` (`.png` `.jpg` `.jpeg` `.bmp` `.gif` `.ico`). File images are embedded into the `.xll` at build time and decoded with GDI+ at runtime — PNG transparency is preserved. Recommended sizes: 16×16 for `size: normal`, 32×32 for `size: large`; JPG has no alpha channel so it renders as an opaque square. Max 1 MiB per file; the same file referenced by several buttons is embedded once. (File images require structured ribbon mode — the raw-XML escape hatch rejects them.)
 *   **Shortcuts** are a single letter, bound by Excel as `Ctrl+Shift+<letter>`.
 *   **Alt+F8**: registered commands are runnable by typing their exact name into Excel's macro dialog (XLL commands are runnable there but not *listed*).
 *   **Fire-and-forget**: clicking a button or firing a shortcut returns to Excel immediately; the handler runs server-side in a goroutine. Errors/panics are logged server-side and do **not** surface to the cell/UI — give the user feedback from inside the handler (e.g. write a cell or the status bar via `sugar`).

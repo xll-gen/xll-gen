@@ -1,6 +1,9 @@
 package ribbon
 
 import (
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +31,7 @@ func cfgStructured() *config.Config {
 }
 
 func TestGenerateXMLGolden(t *testing.T) {
-	got, err := GenerateXML(cfgStructured())
+	got, err := GenerateXML(cfgStructured(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +58,7 @@ func TestGenerateXMLSizeDefaultLocal(t *testing.T) {
 			},
 		},
 	}
-	got, err := GenerateXML(cfg)
+	got, err := GenerateXML(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +152,130 @@ func TestToCppRawLiteralKorean(t *testing.T) {
 		if r > 0x7F {
 			t.Errorf("literal contains non-ASCII rune %U: %s", r, lit)
 		}
+	}
+}
+
+// writeTestPNG writes a 16x16 PNG (with partial alpha) and returns its path.
+func writeTestPNG(t *testing.T, dir, name string) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 16, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			img.Set(x, y, color.NRGBA{R: 220, G: 60, B: 40, A: uint8(255 - y*12)})
+		}
+	}
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestImagesDedupAndNaming(t *testing.T) {
+	dir := t.TempDir()
+	writeTestPNG(t, dir, "icons/a.png")
+	writeTestPNG(t, dir, "icons/b.png")
+	cfg := &config.Config{Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+		Label: "G",
+		Buttons: []config.RibbonButton{
+			{Label: "A1", Command: "c1", Image: "./icons/a.png"},
+			{Label: "A2", Command: "c1", Image: "icons/a.png"}, // same file, different spelling
+			{Label: "B", Command: "c1", Image: "icons/b.png"},
+			{Label: "M", Command: "c1", Image: "HappyFace"}, // mso, ignored
+		},
+	}}}}
+	imgs, names, err := Images(cfg, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 2 {
+		t.Fatalf("expected 2 deduped images, got %d", len(imgs))
+	}
+	if imgs[0].Name != "xllgen_img_0" || imgs[1].Name != "xllgen_img_1" {
+		t.Fatalf("bad names: %s, %s", imgs[0].Name, imgs[1].Name)
+	}
+	if len(imgs[0].Data) == 0 || len(imgs[1].Data) == 0 {
+		t.Fatal("image data must be loaded")
+	}
+	if names["./icons/a.png"] != "xllgen_img_0" || names["icons/a.png"] != "xllgen_img_0" {
+		t.Fatalf("dedup mapping broken: %v", names)
+	}
+	if names["icons/b.png"] != "xllgen_img_1" {
+		t.Fatalf("second image mapping broken: %v", names)
+	}
+	if _, ok := names["HappyFace"]; ok {
+		t.Fatal("mso value must not appear in the file-image map")
+	}
+}
+
+func TestImagesErrors(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(img string) *config.Config {
+		return &config.Config{Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+			Label: "G", Buttons: []config.RibbonButton{{Label: "B", Command: "c", Image: img}},
+		}}}}
+	}
+	// missing file
+	if _, _, err := Images(mk("nope.png"), dir); err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	// empty file
+	if err := os.WriteFile(filepath.Join(dir, "empty.png"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Images(mk("empty.png"), dir); err == nil {
+		t.Fatal("expected error for empty file")
+	}
+	// oversized file (> 1 MiB)
+	if err := os.WriteFile(filepath.Join(dir, "big.png"), make([]byte, 1<<20+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Images(mk("big.png"), dir); err == nil {
+		t.Fatal("expected error for oversized file")
+	}
+}
+
+func TestGenerateXMLFileImages(t *testing.T) {
+	cfg := &config.Config{Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+		Label: "G",
+		Buttons: []config.RibbonButton{
+			{Label: "F", Command: "c1", Image: "icons/a.png"},
+			{Label: "M", Command: "c1", Image: "HappyFace"},
+		},
+	}}}}
+	xmlStr, err := GenerateXML(cfg, map[string]string{"icons/a.png": "xllgen_img_0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		` loadImage="LoadRibbonImage"`,
+		` image="xllgen_img_0"`,
+		` imageMso="HappyFace"`,
+	} {
+		if !strings.Contains(xmlStr, want) {
+			t.Errorf("generated XML missing %q:\n%s", want, xmlStr)
+		}
+	}
+}
+
+func TestGenerateXMLNoFileImagesOmitsLoadImage(t *testing.T) {
+	cfg := &config.Config{Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+		Label: "G", Buttons: []config.RibbonButton{{Label: "M", Command: "c1", Image: "HappyFace"}},
+	}}}}
+	xmlStr, err := GenerateXML(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(xmlStr, "loadImage") {
+		t.Errorf("loadImage attribute must be absent without file images:\n%s", xmlStr)
 	}
 }
 

@@ -53,6 +53,7 @@
 {{end}}
 {{if .Ribbon.Enabled}}
 #include "ribbon_xml.h"
+#include "ribbon_images.h"
 #include <oleacc.h>
 {{end}}
 
@@ -178,6 +179,10 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         }
         rtd::UnregisterOfficeAddinKey(g_szRibbonProgID);
         rtd::UnregisterServer(GetRibbonClsid(), g_szRibbonProgID);
+        // (1b) GDI+ down only after disconnect: loadImage callbacks arrive on
+        // this same STA thread, so none can be in flight here. Created
+        // pictures survive (plain GDI bitmaps, independent of GDI+).
+        xll::ribbon::ShutdownRibbonImageEngine();
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
     {{if .Commands}}
@@ -531,6 +536,7 @@ start_worker:
     // logs a warning and leaves functions/commands fully operational. ----
     XLL_SAFE_BLOCK_BEGIN
         xll::ribbon::SetRibbonXml(kXllRibbonXml);
+        xll::ribbon::SetRibbonImages(GetXllRibbonImages());
 
         bool ribbonOk = true;
 

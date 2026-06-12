@@ -8,6 +8,10 @@
 // consume it via the types/ prefix to match the generated XLL sources.
 #include "types/protocol_generated.h"
 #include "schema_generated.h"
+// Ribbon image decode path (test 15). com/ribbon_image.h pulls in windows.h +
+// ocidl.h (IPictureDisp) itself; ribbon_images.h is the generated embed table.
+#include "com/ribbon_image.h"
+#include "ribbon_images.h"
 
 using namespace std;
 
@@ -606,6 +610,52 @@ int main(int argc, char* argv[]) {
             cerr << "FAIL: CommandInvoke unknown: expected ok=false" << endl;
             return 1;
         }
+    }
+
+    // 15. Ribbon image decode (generated ribbon_images.h -> GDI+ -> IPictureDisp).
+    // Purely local (no server round-trip): verifies the exact embed+decode
+    // chain the XLL's loadImage callback uses, including alpha-capable PNG.
+    {
+        if (FAILED(CoInitialize(nullptr))) {
+            cerr << "FAIL: CoInitialize for ribbon image test" << endl;
+            return 1;
+        }
+        // Assert the embed table itself first so a generation regression
+        // (empty table) reports as an embed bug, not a decode bug.
+        auto embedded = GetXllRibbonImages();
+        if (embedded.empty()) {
+            cerr << "FAIL: GetXllRibbonImages() table is empty (icon.png not embedded?)" << endl;
+            return 1;
+        }
+        xll::ribbon::SetRibbonImages(std::move(embedded));
+
+        IPictureDisp* pic = xll::ribbon::CreateRibbonPicture(L"xllgen_img_0");
+        if (!pic) {
+            cerr << "FAIL: CreateRibbonPicture(xllgen_img_0) returned null" << endl;
+            return 1;
+        }
+        IPicture* p = nullptr;
+        if (FAILED(pic->QueryInterface(IID_IPicture, (void**)&p)) || !p) {
+            cerr << "FAIL: IPictureDisp -> IPicture QI" << endl;
+            return 1;
+        }
+        OLE_XSIZE_HIMETRIC w = 0;
+        OLE_YSIZE_HIMETRIC h = 0;
+        p->get_Width(&w);
+        p->get_Height(&h);
+        if (w <= 0 || h <= 0) {
+            cerr << "FAIL: decoded picture has empty extent" << endl;
+            return 1;
+        }
+        // Unknown names must fail cleanly (blank icon path), never crash.
+        if (xll::ribbon::CreateRibbonPicture(L"no_such_image") != nullptr) {
+            cerr << "FAIL: unknown image name must return null" << endl;
+            return 1;
+        }
+        p->Release();
+        pic->Release();
+        xll::ribbon::ShutdownRibbonImageEngine();
+        CoUninitialize();
     }
 
     cout << "PASSED" << endl;

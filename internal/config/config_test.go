@@ -448,3 +448,53 @@ func TestValidate_ProjectName(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyRibbonImage(t *testing.T) {
+	cases := []struct {
+		value   string
+		isFile  bool
+		wantErr bool
+	}{
+		{"HappyFace", false, false},          // classic imageMso
+		{"icon.png", true, false},            // bare filename with known ext
+		{"icons/refresh.png", true, false},   // forward-slash path
+		{`icons\refresh.PNG`, true, false},   // backslash path, case-insensitive ext
+		{"./icons/a.jpeg", true, false},      // all supported exts are files
+		{"a.bmp", true, false},
+		{"a.gif", true, false},
+		{"a.ico", true, false},
+		{"icons/refresh.svg", false, true},   // path-like + unsupported ext -> error
+		{"icons/refresh", false, true},       // path-like + no ext -> error
+		{"weird.xyz", false, false},          // no separator, unknown ext -> imageMso
+		{"", false, false},                   // empty -> not a file, no error
+	}
+	for _, c := range cases {
+		isFile, err := ClassifyRibbonImage(c.value)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ClassifyRibbonImage(%q): expected error, got nil", c.value)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ClassifyRibbonImage(%q): unexpected error: %v", c.value, err)
+			continue
+		}
+		if isFile != c.isFile {
+			t.Errorf("ClassifyRibbonImage(%q) = %v, want %v", c.value, isFile, c.isFile)
+		}
+	}
+}
+
+func TestRibbonImageUnsupportedExtension(t *testing.T) {
+	cfg := baseCmdCfg()
+	cfg.Commands = []Command{{Name: "A"}}
+	cfg.Ribbon = RibbonConfig{Tab: "Tools", Groups: []RibbonGroup{
+		{Label: "G", Buttons: []RibbonButton{{Label: "B", Command: "A", Image: "icons/refresh.svg"}}},
+	}}
+	ApplyDefaults(cfg)
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatalf("expected error for unsupported ribbon image extension, got nil")
+	}
+}

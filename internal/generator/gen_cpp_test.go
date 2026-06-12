@@ -2,6 +2,9 @@ package generator
 
 import (
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,97 @@ import (
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/pkg/server"
 )
+
+// writeTestPNG writes a 16x16 PNG (with partial alpha) and returns its path.
+// Duplicated locally from internal/ribbon/ribbon_test.go (no shared test util).
+func writeTestPNG(t *testing.T, dir, name string) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 16, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			img.Set(x, y, color.NRGBA{R: 220, G: 60, B: 40, A: uint8(255 - y*12)})
+		}
+	}
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestGenerateRibbonImagesHeader(t *testing.T) {
+	baseDir := t.TempDir()
+	writeTestPNG(t, baseDir, "icon.png")
+	includeDir := filepath.Join(baseDir, "out")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "p"},
+		Commands: []config.Command{{Name: "c1", Handler: "c1"}},
+		Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+			Label: "G", Buttons: []config.RibbonButton{{Label: "B", Command: "c1", Image: "icon.png"}},
+		}}},
+	}
+	if err := generateRibbonHeaders(cfg, includeDir, baseDir); err != nil {
+		t.Fatal(err)
+	}
+	imagesH, err := os.ReadFile(filepath.Join(includeDir, "ribbon_images.h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"kXllRibbonImg0[]",
+		`L"xllgen_img_0"`,
+		"GetXllRibbonImages",
+		"0x89,", // PNG signature first byte must be embedded
+		`#include "com/ribbon_image.h"`,
+	} {
+		if !strings.Contains(string(imagesH), want) {
+			t.Errorf("ribbon_images.h missing %q", want)
+		}
+	}
+	xmlH, err := os.ReadFile(filepath.Join(includeDir, "ribbon_xml.h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(xmlH), `image="xllgen_img_0"`) {
+		t.Error("ribbon_xml.h must reference the embedded image name")
+	}
+}
+
+func TestGenerateRibbonImagesHeaderEmptyWhenNoFileImages(t *testing.T) {
+	baseDir := t.TempDir()
+	includeDir := filepath.Join(baseDir, "out")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "p"},
+		Commands: []config.Command{{Name: "c1", Handler: "c1"}},
+		Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+			Label: "G", Buttons: []config.RibbonButton{{Label: "B", Command: "c1", Image: "HappyFace"}},
+		}}},
+	}
+	if err := generateRibbonHeaders(cfg, includeDir, baseDir); err != nil {
+		t.Fatal(err)
+	}
+	imagesH, err := os.ReadFile(filepath.Join(includeDir, "ribbon_images.h"))
+	if err != nil {
+		t.Fatal(err) // header must exist even with zero images (unconditional include)
+	}
+	if !strings.Contains(string(imagesH), "GetXllRibbonImages") {
+		t.Error("empty ribbon_images.h must still define GetXllRibbonImages")
+	}
+}
 
 // TestGenCpp_ComplexReturnTypes exercises the C++ template's rendering of
 // composite/any RETURN types in isolation. Note: config.Validate now rejects
@@ -276,6 +370,70 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	}
 	if !strings.Contains(content, "ConvertRange(xCaller.get(), builder, callerFormat)") {
 		t.Errorf("caller path must call ConvertRange(xCaller.get(), builder, callerFormat)")
+	}
+}
+
+// TestXllMainRibbonImageWiring pins the Task-5 template wiring: the ribbon image
+// table is installed at bootstrap, the GDI+ engine is torn down in xlAutoClose,
+// the generated header is included, and CMake links gdiplus. Also a negative
+// case: a ribbon-DISABLED render must not reference SetRibbonImages.
+func TestXllMainRibbonImageWiring(t *testing.T) {
+	t.Parallel()
+	ribbonCfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Commands: []config.Command{{Name: "RunReport", Handler: "RunReport"}},
+		Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+			Label: "G", Buttons: []config.RibbonButton{{Label: "B", Command: "RunReport", Image: "icon.png"}},
+		}}},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	mainSrc := renderCppMain(t, ribbonCfg)
+	for _, want := range []string{
+		`#include "ribbon_images.h"`,
+		"xll::ribbon::SetRibbonImages(GetXllRibbonImages());",
+		"xll::ribbon::ShutdownRibbonImageEngine();",
+	} {
+		if !strings.Contains(mainSrc, want) {
+			t.Errorf("xll_main.cpp missing %q", want)
+		}
+	}
+
+	// CMakeLists.txt must link gdiplus for the ribbon image decoder TU.
+	cmakeDir, err := os.MkdirTemp("", "gencpp_cmake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(cmakeDir) })
+	if err := generateCMake(ribbonCfg, cmakeDir); err != nil {
+		t.Fatalf("generateCMake failed: %v", err)
+	}
+	cmakeBytes, err := os.ReadFile(filepath.Join(cmakeDir, "CMakeLists.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cmakeBytes), "gdiplus") {
+		t.Errorf("CMakeLists.txt ribbon block must link gdiplus")
+	}
+
+	// Negative: a ribbon-disabled render gates SetRibbonImages behind
+	// {{if .Ribbon.Enabled}}, so it must be absent.
+	noRibbonCfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "Sum", Return: "int", Args: []config.Arg{{Name: "a", Type: "int"}}},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+	noRibbonSrc := renderCppMain(t, noRibbonCfg)
+	if strings.Contains(noRibbonSrc, "SetRibbonImages") {
+		t.Errorf("ribbon-disabled render must not reference SetRibbonImages")
 	}
 }
 

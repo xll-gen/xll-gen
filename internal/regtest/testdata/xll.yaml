@@ -12,6 +12,17 @@ commands:
   - name: "RunReport"
     handler: "RunReport"
 
+# Ribbon with a file image. Exercises ribbon_images.h generation; the mock
+# host compiles the asset decoder TU and round-trips icon.png -> IPictureDisp.
+ribbon:
+  tab: "Smoke"
+  groups:
+    - label: "Test"
+      buttons:
+        - label: "Run"
+          command: "RunReport"
+          image: "./icon.png"
+
 gen:
   go:
     package: "generated"

@@ -70,6 +70,12 @@ func TestRegression(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The ribbon section references ./icon.png; generate reads it to embed the
+	// bytes into ribbon_images.h, so it must exist before runGenerateInDir.
+	if err := os.WriteFile(filepath.Join(projectDir, "icon.png"), regtest.IconPng, 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	runGenerateInDir(t, projectDir, generator.Options{})
 
 	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte(regtest.ServerGo), 0644); err != nil {
