@@ -1,8 +1,17 @@
 // Standalone GDI+ ribbon image decoder. Deliberately free of SHM / logging /
 // lifecycle dependencies so the regtest mock host can compile this TU
-// directly. The whole body is guarded: ribbon-less projects glob src/*.cpp
-// but must not acquire a gdiplus/shlwapi link requirement.
+// directly. gdiplus is the only extra link dependency this TU introduces. The
+// whole body is guarded: ribbon-less projects glob src/*.cpp but must not
+// acquire a gdiplus link requirement.
 #ifdef XLL_RIBBON_ENABLED
+
+// The generated CMake defines NOGDI globally (shm/Logger.h vs wingdi ERROR
+// macro). This TU needs real GDI (CreateDIBSection, gdiplus) and includes no
+// shm headers, so locally undo it before any windows header is seen.
+#ifdef NOGDI
+#undef NOGDI
+#endif
+
 #include "com/ribbon_image.h"
 
 // MinGW's gdiplus.h needs min/max visible inside namespace Gdiplus (windows.h
@@ -11,22 +20,25 @@
 namespace Gdiplus { using std::min; using std::max; }
 #include <gdiplus.h>
 
-#include <shlwapi.h> // SHCreateMemStream
+#include <objbase.h> // CreateStreamOnHGlobal (ole32)
 #include <olectl.h>  // OleCreatePictureIndirect, PICTDESC
+#include <cstring>   // memcpy
 #include <mutex>
 
 namespace {
     std::vector<xll::ribbon::RibbonImage> g_images;
-    std::once_flag g_gdiplusOnce;
+    std::mutex g_gdiplusMutex;
     ULONG_PTR g_gdiplusToken = 0;
     bool g_gdiplusStarted = false;
 
+    // Mutex-guarded (not once_flag) so the engine can restart after a
+    // ShutdownRibbonImageEngine on the reload-without-unmap path.
     bool EnsureGdiplus() {
-        std::call_once(g_gdiplusOnce, []() {
-            Gdiplus::GdiplusStartupInput input;
-            g_gdiplusStarted =
-                (Gdiplus::GdiplusStartup(&g_gdiplusToken, &input, nullptr) == Gdiplus::Ok);
-        });
+        std::lock_guard<std::mutex> lock(g_gdiplusMutex);
+        if (g_gdiplusStarted) return true;
+        Gdiplus::GdiplusStartupInput input;
+        g_gdiplusStarted =
+            (Gdiplus::GdiplusStartup(&g_gdiplusToken, &input, nullptr) == Gdiplus::Ok);
         return g_gdiplusStarted;
     }
 
@@ -71,13 +83,28 @@ namespace {
 
 namespace xll { namespace ribbon {
 
+    // Set once during xlAutoOpen (set-before-connect contract, see
+    // com/ribbon_addin.h); read-only afterwards — no lock needed.
     void SetRibbonImages(std::vector<RibbonImage> images) { g_images = std::move(images); }
 
     IPictureDisp* LoadPictureFromBytes(const unsigned char* data, size_t size) {
         if (!data || size == 0 || !EnsureGdiplus()) return nullptr;
 
-        IStream* stream = SHCreateMemStream(data, static_cast<UINT>(size));
-        if (!stream) return nullptr;
+        HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, size);
+        if (!hmem) return nullptr;
+        if (void* dst = GlobalLock(hmem)) {
+            memcpy(dst, data, size);
+            GlobalUnlock(hmem);
+        } else {
+            GlobalFree(hmem);
+            return nullptr;
+        }
+        IStream* stream = nullptr;
+        // fDeleteOnRelease=TRUE: the stream owns hmem from here on.
+        if (FAILED(CreateStreamOnHGlobal(hmem, TRUE, &stream)) || !stream) {
+            GlobalFree(hmem); // ownership only transfers on success
+            return nullptr;
+        }
 
         IPictureDisp* picture = nullptr;
         {
@@ -112,7 +139,12 @@ namespace xll { namespace ribbon {
         return nullptr;
     }
 
+    // Precondition: xlAutoClose runs on the same STA thread that services
+    // loadImage Invokes, so no decode is in flight when this is called. The
+    // lock guards only against a lazy EnsureGdiplus restart on the rare
+    // reload-without-unmap path.
     void ShutdownRibbonImageEngine() {
+        std::lock_guard<std::mutex> lock(g_gdiplusMutex);
         if (g_gdiplusStarted) {
             Gdiplus::GdiplusShutdown(g_gdiplusToken);
             g_gdiplusStarted = false;

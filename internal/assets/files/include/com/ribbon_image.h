@@ -32,7 +32,9 @@ namespace xll { namespace ribbon {
     // this after the ribbon add-in disconnects (no further loadImage can
     // arrive; xlAutoClose runs on the same STA thread as Invoke). Already-
     // created pictures stay valid: they own plain GDI HBITMAPs, independent
-    // of GDI+ once created.
+    // of GDI+ once created. The engine may lazily restart if a decode happens
+    // after shutdown — safe, since callbacks run on the STA thread and
+    // xlAutoClose disconnects the add-in first, so this is a reload-only path.
     void ShutdownRibbonImageEngine();
 
 }} // namespace xll::ribbon
