@@ -14,37 +14,37 @@ import (
 // It maps directly to the YAML configuration provided by the user.
 type Config struct {
 	// Project contains project metadata.
-	Project   ProjectConfig `yaml:"project"`
+	Project ProjectConfig `yaml:"project"`
 	// Build contains build-specific configuration.
-	Build     BuildConfig   `yaml:"build"`
+	Build BuildConfig `yaml:"build"`
 	// Logging contains logging configuration.
-	Logging   LoggingConfig `yaml:"logging"`
+	Logging LoggingConfig `yaml:"logging"`
 	// Cache contains global caching configuration.
-	Cache     CacheConfig   `yaml:"cache"`
+	Cache CacheConfig `yaml:"cache"`
 	// Server contains configuration for the Go server process.
-	Server    ServerConfig  `yaml:"server"`
+	Server ServerConfig `yaml:"server"`
 	// Functions is a list of Excel functions to register.
-	Functions []Function    `yaml:"functions"`
+	Functions []Function `yaml:"functions"`
 	// Gen contains code generation configuration.
-	Gen       GenConfig     `yaml:"gen"`
+	Gen GenConfig `yaml:"gen"`
 	// Events defines subscriptions to Excel events.
-	Events    []Event       `yaml:"events"`
+	Events []Event `yaml:"events"`
 	// Rtd contains configuration for the Real-Time Data server.
-	Rtd       RtdConfig     `yaml:"rtd"`
+	Rtd RtdConfig `yaml:"rtd"`
 	// Commands is a list of Excel commands (macros) backed by Go handlers.
-	Commands  []Command    `yaml:"commands"`
+	Commands []Command `yaml:"commands"`
 	// Ribbon declares the custom ribbon UI referencing Commands.
-	Ribbon    RibbonConfig `yaml:"ribbon"`
+	Ribbon RibbonConfig `yaml:"ribbon"`
 }
 
 // RtdConfig configures the Real-Time Data server.
 type RtdConfig struct {
 	// Enabled determines if the RTD server is enabled.
-	Enabled     bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
 	// ProgID is the Program ID for the RTD server (e.g., "MyProject.RTD").
-	ProgID      string `yaml:"prog_id"`
+	ProgID string `yaml:"prog_id"`
 	// Clsid is the Class ID for the RTD server (optional, generated if empty).
-	Clsid       string `yaml:"clsid"`
+	Clsid string `yaml:"clsid"`
 	// Description is the description of the RTD server.
 	Description string `yaml:"description"`
 	// ThrottleInterval, when set (duration string, e.g. "250ms"), makes the
@@ -58,11 +58,11 @@ type RtdConfig struct {
 // CacheConfig configures the global caching behavior.
 type CacheConfig struct {
 	// Enabled determines if caching is enabled globally.
-	Enabled bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
 	// TTL is the default Time-To-Live for cached items (e.g., "10m").
-	TTL     string `yaml:"ttl"`
+	TTL string `yaml:"ttl"`
 	// Jitter is the random variation applied to TTL (e.g., "1m").
-	Jitter  string `yaml:"jitter"`
+	Jitter string `yaml:"jitter"`
 }
 
 // LoggingConfig configures logging behavior.
@@ -70,7 +70,7 @@ type LoggingConfig struct {
 	// Level is the log level (debug, info, warn, error).
 	Level string `yaml:"level"`
 	// Dir is the log directory.
-	Dir   string `yaml:"dir"`
+	Dir string `yaml:"dir"`
 }
 
 // Event defines a subscription to a specific Excel event.
@@ -87,7 +87,7 @@ type BuildConfig struct {
 	// Options: "xll" (embed Go server in XLL), "exe" (reserved/unimplemented), or empty (no embedding).
 	Singlefile string `yaml:"singlefile"`
 	// TempDir is the directory where embedded binaries are extracted (supports env vars).
-	TempDir    string `yaml:"temp_dir"`
+	TempDir string `yaml:"temp_dir"`
 }
 
 // ServerConfig configures the runtime behavior of the Go server.
@@ -104,7 +104,7 @@ type ServerConfig struct {
 	// AsyncAckTimeout is the timeout for receiving an initial ACK for async requests (e.g., "200ms").
 	AsyncAckTimeout string `yaml:"async_ack_timeout"`
 	// Launch controls whether the XLL automatically launches the server process.
-	Launch  *LaunchConfig `yaml:"launch"`
+	Launch *LaunchConfig `yaml:"launch"`
 	// Chunk configures the runtime ChunkManager (reassembly buffer cap, sweep
 	// cadence, idle TTL). All fields are optional; omitting Chunk or any of
 	// its sub-fields leaves the corresponding ChunkManager defaults in
@@ -145,9 +145,9 @@ type ProjectConfig struct {
 // GenConfig controls the code generation process.
 type GenConfig struct {
 	// Go contains Go-specific code generation settings.
-	Go               GoConfig `yaml:"go"`
+	Go GoConfig `yaml:"go"`
 	// DisablePidSuffix, if true, prevents appending the PID to the shared memory name.
-	DisablePidSuffix bool     `yaml:"disable_pid_suffix"`
+	DisablePidSuffix bool `yaml:"disable_pid_suffix"`
 }
 
 // GoConfig contains Go-specific generation settings.
@@ -159,50 +159,78 @@ type GoConfig struct {
 // Function represents a user-defined Excel function.
 type Function struct {
 	// Name is the name of the function as it will appear in Excel.
-	Name        string `yaml:"name"`
+	Name string `yaml:"name"`
 	// Description is the help text for the function.
 	Description string `yaml:"description"`
 	// Args is the list of arguments for the function.
-	Args        []Arg  `yaml:"args"`
+	Args []Arg `yaml:"args"`
 	// Return is the return type of the function.
-	Return      string `yaml:"return"`
+	Return string `yaml:"return"`
 	// Async indicates if the function is asynchronous.
-	Async       bool   `yaml:"async"`
+	Async bool `yaml:"async"`
 	// Resizable indicates if the function returns a dynamic array (Excel 365+).
-	Resizable   bool   `yaml:"resizable"`
+	Resizable bool `yaml:"resizable"`
 	// Volatile indicates if the function is volatile (recalculated on every sheet change).
-	Volatile    bool   `yaml:"volatile"`
+	Volatile bool `yaml:"volatile"`
 	// Category is the function category in the Excel function wizard.
-	Category    string `yaml:"category"`
+	Category string `yaml:"category"`
 	// Shortcut is the keyboard shortcut for the function.
-	Shortcut    string `yaml:"shortcut"`
+	Shortcut string `yaml:"shortcut"`
 	// HelpTopic is the help topic string.
-	HelpTopic   string `yaml:"help_topic"`
+	HelpTopic string `yaml:"help_topic"`
 	// Timeout is the execution timeout for this specific function.
-	Timeout     string `yaml:"timeout"`
-	// Caller indicates if the function requires information about the calling cell.
-	Caller      bool                 `yaml:"caller"`
-	// Mode determines the execution mode of the function (sync, async, rtd).
-	// Supersedes the Async boolean.
-	Mode        string               `yaml:"mode"`
+	Timeout string `yaml:"timeout"`
+	// Caller indicates if the function requires information about the calling
+	// cell. The C++ wrapper calls xlfCaller (callable from ANY XLL function)
+	// and reports the caller's position (range rects) to the Go handler via
+	// Range. By itself it is POSITION-ONLY: the caller's number-format string
+	// (Range.Format()) is fetched via the macro-only xlfGetCell, which requires
+	// the function to also be registered as a macro-sheet equivalent — see
+	// Macro. caller:true alone stays thread-safe ('$').
+	Caller bool `yaml:"caller"`
+	// Macro registers the function as a macro-sheet equivalent ('#'), granting
+	// macro-level C-API access inside the C++ wrapper — e.g. the caller
+	// number-format fetch (xlfGetCell), which populates Range.Format(). The cost
+	// is that Excel rejects '#' combined with the thread-safe '$' marker, so a
+	// macro:true function is NOT registered thread-safe. NOTE: this does NOT
+	// make Excel's COM object model writable from Go handlers during
+	// calculation; sheet writes belong in commands or ScheduleSet.
+	Macro bool `yaml:"macro"`
+	// Mode determines the execution mode of the function (sync, async, rtd,
+	// rtd-once). Supersedes the Async boolean.
+	Mode string `yaml:"mode"`
+	// Memoize is valid ONLY with mode:"rtd-once". When false (default), a
+	// completed one-shot result is cleared at the end of the calculation
+	// cycle (CalculationEnded/Canceled) so the next user-initiated recalc
+	// (F9) recomputes — restoring normal worksheet semantics. When true, the
+	// completed result persists until the add-in unloads (xlAutoClose),
+	// turning the function into an implicit per-(name+args) memoization cache.
+	Memoize bool `yaml:"memoize"`
+	// MemoizeTTL is valid ONLY with mode:"rtd-once" and is the middle ground
+	// between the default "once" lifecycle and memoize:true. When set (a Go
+	// duration string, e.g. "30s", "5m"), a completed one-shot result is
+	// reused for recalcs within the TTL; once the TTL has elapsed the next
+	// call recomputes fresh. Mutually exclusive with Memoize (the TTL IS the
+	// intermediate option). Must parse to a positive duration.
+	MemoizeTTL string `yaml:"memoize_ttl"`
 	// Cache configures caching for this specific function.
-	Cache       *FunctionCacheConfig `yaml:"cache"`
+	Cache *FunctionCacheConfig `yaml:"cache"`
 }
 
 // FunctionCacheConfig configures caching for a specific function.
 type FunctionCacheConfig struct {
 	// Enabled overrides the global enabled setting.
-	Enabled *bool  `yaml:"enabled"`
+	Enabled *bool `yaml:"enabled"`
 	// TTL overrides the global TTL.
-	TTL     string `yaml:"ttl"`
+	TTL string `yaml:"ttl"`
 }
 
 // Arg represents a single argument of an Excel function.
 type Arg struct {
 	// Name is the name of the argument.
-	Name        string `yaml:"name"`
+	Name string `yaml:"name"`
 	// Type is the data type of the argument (e.g., "int", "string", "fp", "any").
-	Type        string `yaml:"type"`
+	Type string `yaml:"type"`
 	// Description is the help text for the argument.
 	Description string `yaml:"description"`
 }
@@ -310,16 +338,29 @@ var validArgTypes = map[string]bool{
 // Scalars plus "any": the generated Go server serializes scalar returns
 // directly and "any" returns through the canonical Go-value→protocol.Any
 // mapping (handlers return a plain Go any; see pkg/server.BuildAnyFromGo).
-// Composite table types (range/grid/numgrid) are still arg-only — the sync
-// path would emit a scalar AddResult call that fails to compile against a
-// pointer result, and the async QueueResult chain has no branch for them so
-// the result is silently dropped. See IMPROVEMENT_BACKLOG.md §7.
+//
+// "grid" and "numgrid" are return-capable for sync/async functions: the
+// generated server serializes the handler's [][]any / [][]float64 via
+// pkg/server.BuildGridFromGo / BuildNumGridFromGo, and the C++ wrapper
+// converts the response Grid/NumGrid into an xltypeMulti / FP12 XLOPER12
+// (GridToXLOPER12 / NumGridToFP12). On Excel 2021+/365 an xltypeMulti
+// returned by a `Q`-registered function (and an FP12 returned by a
+// `K%`-registered function) spills natively into the surrounding cells; on
+// pre-dynamic-array Excel the user gets the top-left cell (or must enter the
+// formula as a legacy CSE array). No version detection or registration flag
+// is required.
+//
+// "range" stays arg-only: returning a live reference (a `U`-coded return) is
+// rejected by Excel (the worksheet name resolves to #NAME?, see AGENTS.md
+// §19.2), and a value-position range has no meaningful spill semantics.
 var validReturnTypes = map[string]bool{
-	"int":    true,
-	"float":  true,
-	"string": true,
-	"bool":   true,
-	"any":    true,
+	"int":     true,
+	"float":   true,
+	"string":  true,
+	"bool":    true,
+	"any":     true,
+	"grid":    true,
+	"numgrid": true,
 }
 
 // validEventTypes is the set of Excel event types wired end-to-end (C++
@@ -331,10 +372,26 @@ var validEventTypes = map[string]bool{
 	"CalculationCanceled": true,
 }
 
-// compositeArgOnlyTypes are types valid as arguments but not yet supported as
-// return types (the Go server cannot serialize them as returns). Used to emit a
-// targeted error explaining the asymmetry rather than a generic "not supported".
+// compositeArgOnlyTypes are the composite table types. They are always valid
+// as ARGUMENTS (passed by reference to the C++ wrapper). Whether they are
+// valid as RETURNS depends on the execution mode:
+//   - sync/async: grid/numgrid spill (see validReturnTypes); range is rejected.
+//   - rtd/rtd-once: all three are rejected (the push path carries scalars/any).
+//
+// This set is used to emit a targeted error explaining the asymmetry rather
+// than a generic "not supported", and to reject composite ARGUMENTS for the
+// scalar-topic-only RTD modes.
 var compositeArgOnlyTypes = map[string]bool{
+	"range":   true,
+	"grid":    true,
+	"numgrid": true,
+}
+
+// rtdCompositeReturnTypes are composite return types rejected for the RTD
+// modes (rtd / rtd-once). Unlike sync/async, grid/numgrid cannot ride the RTD
+// push path (RtdUpdate's Any union would stringify them), so they are rejected
+// here even though sync/async now serialize them as spilling returns.
+var rtdCompositeReturnTypes = map[string]bool{
 	"range":   true,
 	"grid":    true,
 	"numgrid": true,
@@ -380,19 +437,69 @@ func Validate(config *Config) error {
 	}
 
 	for _, fn := range config.Functions {
-		// RTD functions stream their results through the RTD server path
-		// (pkg/rtd), NOT the sync/async server serialization that breaks on
-		// composite returns — server.go.tmpl skips handler generation for
-		// mode:"rtd" entirely. So composite returns are valid for RTD and
-		// only the scalar+composite union is allowed there.
+		// Plain mode:"rtd" is SCALAR-TOPIC ONLY. The C++ wrapper serializes
+		// each argument into an RTD topic string; for composite ("range"/
+		// "grid"/"numgrid") and "any" args it can only emit the literal
+		// L"[Complex]" (xll_main.cpp.tmpl), so (a) the argument CONTENTS never
+		// reach the Go handler and (b) every distinct composite value collapses
+		// onto the SAME topic string — a topic-identity collision that makes
+		// unrelated cells share a result. On the return side the RTD push path
+		// (pkg/rtd → fbany.MapGo) carries scalars and "any" only; a composite
+		// is stringified via fmt.Sprintf("%v"). So plain rtd accepts scalar/any
+		// args and scalar/any returns. Composite support is deferred to the
+		// content-hash payload path (see IMPROVEMENT_BACKLOG.md §7).
 		isRtd := strings.EqualFold(fn.Mode, "rtd")
+		// rtd-once wraps a normal (sync-shaped) handler in an RTD topic
+		// lifecycle: the result travels back through RtdUpdate's Any union, so
+		// the return must be a scalar or "any" (NOT a composite table type —
+		// the Any union cannot carry grid/numgrid/range). And because the
+		// arguments are serialized into the RTD topic strings, only scalar
+		// args are supported in this first cut; composite args need the
+		// content-hash payload path (deferred — see IMPROVEMENT_BACKLOG.md §7).
+		isRtdOnce := strings.EqualFold(fn.Mode, "rtd-once")
 		if isRtd {
-			if !validArgTypes[fn.Return] {
-				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validArgTypes))
+			// Return: scalar or "any" only (the RTD push path carries scalars
+			// and "any"; composites would be fmt.Sprintf-stringified). grid/
+			// numgrid are sync/async-spillable returns but NOT valid here, so
+			// reject them explicitly (they are now in validReturnTypes).
+			if rtdCompositeReturnTypes[fn.Return] {
+				return fmt.Errorf("function '%s': mode:\"rtd\" cannot return composite type '%s' (the RTD push path carries scalars and \"any\" only — a composite return would be stringified via fmt.Sprintf); return a scalar or \"any\", or use sync/async for spilling grid/numgrid returns, or see IMPROVEMENT_BACKLOG.md §7 for the deferred content-hash payload path", fn.Name, fn.Return)
+			}
+			if !validReturnTypes[fn.Return] {
+				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
+			}
+			// Args: scalar only. Composite/"any" args collapse onto the literal
+			// L"[Complex]" RTD topic string (topic-identity collision → wrong
+			// result sharing between cells) and their contents never reach the
+			// Go handler.
+			for _, arg := range fn.Args {
+				if compositeArgOnlyTypes[arg.Type] || arg.Type == "any" {
+					return fmt.Errorf("function '%s' argument '%s': mode:\"rtd\" supports scalar arguments only (int/float/string/bool); composite/any argument '%s' is not supported because the C++ wrapper serializes it into the RTD topic as the literal \"[Complex]\" — the contents never reach the Go handler AND every distinct value collides on the same topic, so unrelated cells share a result; the content-hash payload path is a deferred follow-up (see IMPROVEMENT_BACKLOG.md §7)", fn.Name, arg.Name, arg.Type)
+				}
+			}
+		} else if isRtdOnce {
+			// Scalar/any return only (RtdUpdate Any union). grid/numgrid are
+			// sync/async-spillable returns but NOT valid here — reject them
+			// explicitly (they are now in validReturnTypes).
+			if rtdCompositeReturnTypes[fn.Return] {
+				return fmt.Errorf("function '%s': mode:\"rtd-once\" cannot return composite type '%s' (the result travels through RtdUpdate's Any union, which carries only scalars and \"any\"); use sync/async for spilling grid/numgrid returns, or mode:\"rtd\" for streaming", fn.Name, fn.Return)
+			}
+			if !validReturnTypes[fn.Return] {
+				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
+			}
+			// Scalar args only.
+			for _, arg := range fn.Args {
+				if compositeArgOnlyTypes[arg.Type] || arg.Type == "any" {
+					return fmt.Errorf("function '%s' argument '%s': mode:\"rtd-once\" supports scalar arguments only (int/float/string/bool); composite/any argument '%s' is not yet supported because args are serialized into the RTD topic string — use plain mode:\"rtd\" for composite-arg streaming (content-hash payload path is a deferred follow-up, see IMPROVEMENT_BACKLOG.md §7)", fn.Name, arg.Name, arg.Type)
+				}
 			}
 		} else if !validReturnTypes[fn.Return] {
-			if compositeArgOnlyTypes[fn.Return] {
-				return fmt.Errorf("function '%s': '%s' is supported as an argument type but not yet as a return type for sync/async functions (the Go server cannot serialize composite returns; use mode:\"rtd\" or see IMPROVEMENT_BACKLOG.md)", fn.Name, fn.Return)
+			// grid/numgrid are now valid sync/async returns (they spill). Only
+			// "range" remains arg-only: a value-position range return is
+			// meaningless and a reference-position (`U`) return breaks Excel
+			// registration (#NAME?, AGENTS.md §19.2).
+			if fn.Return == "range" {
+				return fmt.Errorf("function '%s': 'range' is supported as an argument type but not as a return type (returning a live reference is not meaningful — a `U`-coded return breaks Excel registration; return grid/numgrid for a spilling array instead)", fn.Name)
 			}
 			return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 		}
@@ -422,11 +529,53 @@ func Validate(config *Config) error {
 		}
 		if fn.Mode != "" {
 			switch strings.ToLower(fn.Mode) {
-			case "sync", "async", "rtd":
+			case "sync", "async", "rtd", "rtd-once":
 				// ok
 			default:
-				return fmt.Errorf("function '%s': invalid mode '%s' (allowed: sync, async, rtd)", fn.Name, fn.Mode)
+				return fmt.Errorf("function '%s': invalid mode '%s' (allowed: sync, async, rtd, rtd-once)", fn.Name, fn.Mode)
 			}
+		}
+		// rtd-once requires the RTD server (its result rides the RTD push
+		// path). memoize is meaningful only for rtd-once.
+		if strings.EqualFold(fn.Mode, "rtd-once") && !config.Rtd.Enabled {
+			return fmt.Errorf("function '%s': mode:\"rtd-once\" requires rtd.enabled: true (the one-shot result is delivered through the RTD server)", fn.Name)
+		}
+		if fn.Memoize && !strings.EqualFold(fn.Mode, "rtd-once") {
+			return fmt.Errorf("function '%s': memoize is only valid with mode:\"rtd-once\" (it controls the keep-vs-rerun lifecycle of the one-shot result)", fn.Name)
+		}
+		// memoize_ttl is the middle ground between "once" (default) and
+		// memoize:true; it too is meaningful only for rtd-once, is mutually
+		// exclusive with memoize:true, and must parse to a positive duration.
+		if fn.MemoizeTTL != "" {
+			if !strings.EqualFold(fn.Mode, "rtd-once") {
+				return fmt.Errorf("function '%s': memoize_ttl is only valid with mode:\"rtd-once\" (it controls the keep-vs-rerun lifecycle of the one-shot result)", fn.Name)
+			}
+			if fn.Memoize {
+				return fmt.Errorf("function '%s': memoize_ttl and memoize:true are mutually exclusive (memoize_ttl is the intermediate option: cache for the TTL then recompute; memoize:true caches until process teardown)", fn.Name)
+			}
+			d, err := parseDuration(fn.MemoizeTTL)
+			if err != nil {
+				return fmt.Errorf("function '%s': memoize_ttl: %w", fn.Name, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("function '%s': memoize_ttl must be a positive duration, got %s", fn.Name, fn.MemoizeTTL)
+			}
+		}
+		// caller-aware is incompatible with rtd-once: the RTD wrapper routes
+		// through xlfRtd (no xlfCaller/xlfGetCell call), and the handler runs
+		// off the calc thread on a topic connect, so there is no caller cell
+		// to report.
+		if fn.Caller && strings.EqualFold(fn.Mode, "rtd-once") {
+			return fmt.Errorf("function '%s': caller-aware functions are not supported with mode:\"rtd-once\" (the handler runs on a topic connect, not in the calling cell's calc)", fn.Name)
+		}
+		// macro mirrors caller's mode rules: it is the macro-sheet ('#')
+		// registration that lets the caller wrapper call xlfGetCell, so it is
+		// only meaningful where the wrapper runs in the calling cell's calc.
+		// Reject it for rtd-once for the same reason caller is rejected (the
+		// handler runs off the calc thread on a topic connect). It is allowed
+		// for sync/async/rtd, exactly like caller.
+		if fn.Macro && strings.EqualFold(fn.Mode, "rtd-once") {
+			return fmt.Errorf("function '%s': macro:true (macro-sheet registration) is not supported with mode:\"rtd-once\" (the handler runs on a topic connect, not in the calling cell's calc, so the macro-level C-API is unreachable)", fn.Name)
 		}
 		if fn.Timeout != "" {
 			if _, err := parseDuration(fn.Timeout); err != nil {

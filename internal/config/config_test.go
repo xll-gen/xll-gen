@@ -89,31 +89,89 @@ func TestValidate_UnsupportedTypes(t *testing.T) {
 	}
 }
 
-// TestValidate_CompositeReturnTypes locks in that composite table types
-// (range/grid/numgrid) are rejected as RETURN types — the generated Go
-// server cannot serialize them as returns (sync: compile error, async: dropped
-// result) — while remaining valid as ARGUMENT types. Scalar returns
-// (int/float/string/bool) and "any" (serialized via pkg/server.BuildAnyFromGo)
-// stay valid.
+// TestValidate_CompositeReturnTypes locks in the spill-support return rules:
+//   - grid/numgrid are ACCEPTED as sync/async return types (they spill in
+//     dynamic-array Excel; the Go server serializes them via
+//     pkg/server.BuildGridFromGo / BuildNumGridFromGo).
+//   - range stays REJECTED as a return type (a value-position range is
+//     meaningless; a `U`-coded reference return breaks Excel registration).
+//   - all three stay REJECTED as RTD / RTD-once returns (the push path carries
+//     scalars and "any" only).
+//
+// All three remain valid as ARGUMENT types. Scalar returns and "any" stay
+// valid.
 func TestValidate_CompositeReturnTypes(t *testing.T) {
 	composite := []string{"range", "grid", "numgrid", "any"}
-	rejected := []string{"range", "grid", "numgrid"}
+	rtdRejected := []string{"range", "grid", "numgrid"}
 
-	// Each composite table type must be REJECTED as a return type, with a
-	// message explaining it's arg-only.
-	for _, typ := range rejected {
-		t.Run("reject "+typ+" return", func(t *testing.T) {
+	// range is the only composite type still rejected as a sync/async return.
+	t.Run("reject range return", func(t *testing.T) {
+		cfg := &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Functions: []Function{{Name: "TestFunc", Return: "range"}},
+		}
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatalf("Validate() expected error for return type %q, got nil", "range")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "not meaningful") {
+			t.Errorf("Validate() error = %v, want explanation that returning a reference is not meaningful", err)
+		}
+		if !strings.Contains(msg, "range") {
+			t.Errorf("Validate() error = %v, want mention of type %q", err, "range")
+		}
+	})
+
+	// grid/numgrid are now ACCEPTED as sync AND async return types (spill).
+	for _, typ := range []string{"grid", "numgrid"} {
+		for _, mode := range []string{"sync", "async"} {
+			t.Run("allow "+typ+" return ("+mode+")", func(t *testing.T) {
+				cfg := &Config{
+					Project: ProjectConfig{Name: "TestProject"},
+					Functions: []Function{
+						{Name: "TestFunc", Mode: mode, Async: mode == "async", Return: typ},
+					},
+				}
+				if err := Validate(cfg); err != nil {
+					t.Errorf("Validate() unexpected error for %s %q return: %v", mode, typ, err)
+				}
+			})
+		}
+	}
+
+	// "any" must STILL be ACCEPTED as a RETURN type for RTD functions: the RTD
+	// push path (pkg/rtd → fbany.MapGo) carries scalars and "any". The default
+	// scaffold ships StockQuote (mode:"rtd", return:"any").
+	t.Run("allow any return for rtd", func(t *testing.T) {
+		cfg := &Config{
+			Project: ProjectConfig{Name: "TestProject"},
+			Functions: []Function{
+				{Name: "TestFunc", Mode: "rtd", Return: "any"},
+			},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("Validate() unexpected error for rtd return %q: %v", "any", err)
+		}
+	})
+
+	// Composite returns are REJECTED for RTD: the push path stringifies a
+	// composite via fmt.Sprintf. The message must explain the push-path limit.
+	for _, typ := range rtdRejected {
+		t.Run("reject "+typ+" return for rtd", func(t *testing.T) {
 			cfg := &Config{
-				Project:   ProjectConfig{Name: "TestProject"},
-				Functions: []Function{{Name: "TestFunc", Return: typ}},
+				Project: ProjectConfig{Name: "TestProject"},
+				Functions: []Function{
+					{Name: "TestFunc", Mode: "rtd", Return: typ},
+				},
 			}
 			err := Validate(cfg)
 			if err == nil {
-				t.Fatalf("Validate() expected error for return type %q, got nil", typ)
+				t.Fatalf("Validate() expected error for rtd composite return %q, got nil", typ)
 			}
 			msg := err.Error()
-			if !strings.Contains(msg, "argument type but not yet as a return type") {
-				t.Errorf("Validate() error = %v, want explanation about arg-only support", err)
+			if !strings.Contains(msg, "RTD push path") {
+				t.Errorf("Validate() error = %v, want explanation about the RTD push path", err)
 			}
 			if !strings.Contains(msg, typ) {
 				t.Errorf("Validate() error = %v, want mention of type %q", err, typ)
@@ -121,20 +179,42 @@ func TestValidate_CompositeReturnTypes(t *testing.T) {
 		})
 	}
 
-	// Each composite/any type must STILL be ACCEPTED as a RETURN type for RTD
-	// functions: RTD streams results through pkg/rtd, not the sync/async
-	// server serialization that breaks on composite returns. The default
-	// scaffold ships StockQuote (mode:"rtd", return:"any").
+	// Composite/any ARGS are now REJECTED for RTD: they collapse onto the
+	// literal "[Complex]" topic string (topic-identity collision). The message
+	// must explain the collision.
 	for _, typ := range composite {
-		t.Run("allow "+typ+" return for rtd", func(t *testing.T) {
+		t.Run("reject "+typ+" arg for rtd", func(t *testing.T) {
 			cfg := &Config{
 				Project: ProjectConfig{Name: "TestProject"},
 				Functions: []Function{
-					{Name: "TestFunc", Mode: "rtd", Return: typ},
+					{Name: "TestFunc", Mode: "rtd", Args: []Arg{{Name: "a", Type: typ}}, Return: "any"},
+				},
+			}
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("Validate() expected error for rtd composite/any arg %q, got nil", typ)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "[Complex]") {
+				t.Errorf("Validate() error = %v, want explanation about the [Complex] topic collision", err)
+			}
+			if !strings.Contains(msg, typ) {
+				t.Errorf("Validate() error = %v, want mention of type %q", err, typ)
+			}
+		})
+	}
+
+	// Scalar args remain valid for RTD.
+	for _, typ := range []string{"int", "float", "string", "bool"} {
+		t.Run("allow "+typ+" arg for rtd", func(t *testing.T) {
+			cfg := &Config{
+				Project: ProjectConfig{Name: "TestProject"},
+				Functions: []Function{
+					{Name: "TestFunc", Mode: "rtd", Args: []Arg{{Name: "a", Type: typ}}, Return: "any"},
 				},
 			}
 			if err := Validate(cfg); err != nil {
-				t.Errorf("Validate() unexpected error for rtd return %q: %v", typ, err)
+				t.Errorf("Validate() unexpected error for rtd scalar arg %q: %v", typ, err)
 			}
 		})
 	}
@@ -455,18 +535,18 @@ func TestClassifyRibbonImage(t *testing.T) {
 		isFile  bool
 		wantErr bool
 	}{
-		{"HappyFace", false, false},          // classic imageMso
-		{"icon.png", true, false},            // bare filename with known ext
-		{"icons/refresh.png", true, false},   // forward-slash path
-		{`icons\refresh.PNG`, true, false},   // backslash path, case-insensitive ext
-		{"./icons/a.jpeg", true, false},      // all supported exts are files
+		{"HappyFace", false, false},        // classic imageMso
+		{"icon.png", true, false},          // bare filename with known ext
+		{"icons/refresh.png", true, false}, // forward-slash path
+		{`icons\refresh.PNG`, true, false}, // backslash path, case-insensitive ext
+		{"./icons/a.jpeg", true, false},    // all supported exts are files
 		{"a.bmp", true, false},
 		{"a.gif", true, false},
 		{"a.ico", true, false},
-		{"icons/refresh.svg", false, true},   // path-like + unsupported ext -> error
-		{"icons/refresh", false, true},       // path-like + no ext -> error
-		{"weird.xyz", false, false},          // no separator, unknown ext -> imageMso
-		{"", false, false},                   // empty -> not a file, no error
+		{"icons/refresh.svg", false, true}, // path-like + unsupported ext -> error
+		{"icons/refresh", false, true},     // path-like + no ext -> error
+		{"weird.xyz", false, false},        // no separator, unknown ext -> imageMso
+		{"", false, false},                 // empty -> not a file, no error
 	}
 	for _, c := range cases {
 		isFile, err := ClassifyRibbonImage(c.value)
@@ -610,4 +690,231 @@ func TestValidate_RtdThrottleInterval(t *testing.T) {
 	if err := Validate(mk(true, "-1s")); err == nil {
 		t.Error("negative throttle must be rejected")
 	}
+}
+
+// TestValidate_RtdOnce pins the mode:"rtd-once" rules:
+//   - accepted with scalar/any return + scalar args (rtd.enabled required)
+//   - composite arg rejected with a message pointing at plain rtd mode
+//   - non-scalar (composite) return rejected
+//   - memoize accepted only with rtd-once
+//   - caller-aware rejected with rtd-once
+func TestValidate_RtdOnce(t *testing.T) {
+	// Base config with RTD enabled and a single rtd-once function.
+	mk := func(fn Function) *Config {
+		return &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Rtd:       RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+			Functions: []Function{fn},
+		}
+	}
+
+	// Accepted: scalar/any returns with scalar args.
+	for _, ret := range []string{"int", "float", "string", "bool", "any"} {
+		t.Run("accept return "+ret, func(t *testing.T) {
+			cfg := mk(Function{
+				Name:   "Compute",
+				Mode:   "rtd-once",
+				Return: ret,
+				Args:   []Arg{{Name: "a", Type: "int"}, {Name: "b", Type: "string"}},
+			})
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("rtd-once with return %q + scalar args must be valid, got %v", ret, err)
+			}
+		})
+	}
+
+	// Composite return rejected, message points at plain rtd mode.
+	for _, ret := range []string{"range", "grid", "numgrid"} {
+		t.Run("reject return "+ret, func(t *testing.T) {
+			cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: ret})
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("rtd-once with composite return %q must be rejected", ret)
+			}
+			if !strings.Contains(err.Error(), "Any union") || !strings.Contains(err.Error(), `mode:"rtd"`) {
+				t.Errorf("composite-return error should explain Any union + point to rtd mode, got %v", err)
+			}
+		})
+	}
+
+	// Composite/any args rejected, message points at plain rtd mode.
+	for _, at := range []string{"range", "grid", "numgrid", "any"} {
+		t.Run("reject arg "+at, func(t *testing.T) {
+			cfg := mk(Function{
+				Name:   "Compute",
+				Mode:   "rtd-once",
+				Return: "float",
+				Args:   []Arg{{Name: "x", Type: at}},
+			})
+			err := Validate(cfg)
+			if err == nil {
+				t.Fatalf("rtd-once with composite/any arg %q must be rejected", at)
+			}
+			if !strings.Contains(err.Error(), "scalar arguments only") || !strings.Contains(err.Error(), `mode:"rtd"`) {
+				t.Errorf("composite-arg error should say scalar-only + point to rtd mode, got %v", err)
+			}
+		})
+	}
+
+	// memoize only valid on rtd-once.
+	t.Run("memoize on rtd-once ok", func(t *testing.T) {
+		cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", Memoize: true})
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("memoize on rtd-once must be valid, got %v", err)
+		}
+	})
+	for _, mode := range []string{"sync", "async", "rtd"} {
+		t.Run("memoize rejected on "+mode, func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "TestProject"},
+				Rtd:       RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+				Functions: []Function{{Name: "F", Mode: mode, Return: "int", Memoize: true}},
+			}
+			// rtd return validates against the wider set; "int" is fine there.
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), "memoize is only valid with mode:\"rtd-once\"") {
+				t.Fatalf("memoize on %q must be rejected with the memoize message, got %v", mode, err)
+			}
+		})
+	}
+
+	// rtd-once requires rtd.enabled.
+	t.Run("requires rtd.enabled", func(t *testing.T) {
+		cfg := &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Functions: []Function{{Name: "Compute", Mode: "rtd-once", Return: "float"}},
+		}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "requires rtd.enabled") {
+			t.Fatalf("rtd-once without rtd.enabled must be rejected, got %v", err)
+		}
+	})
+
+	// caller-aware rejected with rtd-once.
+	t.Run("caller rejected", func(t *testing.T) {
+		cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", Caller: true})
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "caller-aware") {
+			t.Fatalf("caller-aware rtd-once must be rejected, got %v", err)
+		}
+	})
+
+	// Mode is accepted by the mode switch (case-insensitive).
+	t.Run("mode case-insensitive", func(t *testing.T) {
+		cfg := mk(Function{Name: "Compute", Mode: "RTD-ONCE", Return: "float"})
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("RTD-ONCE (uppercase) must validate, got %v", err)
+		}
+	})
+
+	// memoize_ttl: the middle ground. Accepted on rtd-once with a positive
+	// duration; rejected on other modes; mutually exclusive with memoize:true;
+	// must parse to a positive duration.
+	t.Run("memoize_ttl on rtd-once ok", func(t *testing.T) {
+		for _, ttl := range []string{"30s", "5m", "1500ms", "1h"} {
+			cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", MemoizeTTL: ttl})
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("memoize_ttl %q on rtd-once must be valid, got %v", ttl, err)
+			}
+		}
+	})
+	for _, mode := range []string{"sync", "async", "rtd"} {
+		t.Run("memoize_ttl rejected on "+mode, func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "TestProject"},
+				Rtd:       RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+				Functions: []Function{{Name: "F", Mode: mode, Return: "int", MemoizeTTL: "30s"}},
+			}
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), "memoize_ttl is only valid with mode:\"rtd-once\"") {
+				t.Fatalf("memoize_ttl on %q must be rejected with the memoize_ttl message, got %v", mode, err)
+			}
+		})
+	}
+	t.Run("memoize_ttl + memoize:true mutually exclusive", func(t *testing.T) {
+		cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", Memoize: true, MemoizeTTL: "30s"})
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("memoize_ttl + memoize:true must be rejected as mutually exclusive, got %v", err)
+		}
+	})
+	t.Run("memoize_ttl unparseable rejected", func(t *testing.T) {
+		cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", MemoizeTTL: "notaduration"})
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "memoize_ttl") {
+			t.Fatalf("unparseable memoize_ttl must be rejected, got %v", err)
+		}
+	})
+	for _, ttl := range []string{"0s", "0", "-5s"} {
+		t.Run("memoize_ttl non-positive rejected "+ttl, func(t *testing.T) {
+			cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", MemoizeTTL: ttl})
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), "positive duration") {
+				t.Fatalf("non-positive memoize_ttl %q must be rejected, got %v", ttl, err)
+			}
+		})
+	}
+}
+
+// TestValidate_CallerMacroSplit pins the v0.5.0 caller/macro split rules:
+//   - caller:true alone is accepted on every mode it was accepted before
+//     (sync/async/rtd), and still rejected on rtd-once.
+//   - macro:true mirrors caller's mode rules exactly: accepted on
+//     sync/async/rtd, rejected on rtd-once.
+//   - caller and macro are independent flags and combine freely on the allowed
+//     modes.
+func TestValidate_CallerMacroSplit(t *testing.T) {
+	mk := func(fn Function) *Config {
+		return &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Rtd:       RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+			Functions: []Function{fn},
+		}
+	}
+
+	// caller:true alone accepted on sync/async/rtd (unchanged from pre-split).
+	for _, mode := range []string{"sync", "async", "rtd"} {
+		t.Run("caller accepted on "+mode, func(t *testing.T) {
+			cfg := mk(Function{Name: "F", Mode: mode, Return: "string", Caller: true})
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("caller:true on %q must be accepted, got %v", mode, err)
+			}
+		})
+	}
+
+	// macro:true alone accepted on the same modes caller is accepted on.
+	for _, mode := range []string{"sync", "async", "rtd"} {
+		t.Run("macro accepted on "+mode, func(t *testing.T) {
+			cfg := mk(Function{Name: "F", Mode: mode, Return: "string", Macro: true})
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("macro:true on %q must be accepted, got %v", mode, err)
+			}
+		})
+	}
+
+	// caller+macro combine freely on an allowed mode.
+	t.Run("caller+macro accepted on sync", func(t *testing.T) {
+		cfg := mk(Function{Name: "F", Mode: "sync", Return: "string", Caller: true, Macro: true})
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("caller+macro on sync must be accepted, got %v", err)
+		}
+	})
+
+	// macro:true rejected on rtd-once, mirroring caller's rejection there.
+	t.Run("macro rejected on rtd-once", func(t *testing.T) {
+		cfg := mk(Function{Name: "F", Mode: "rtd-once", Return: "float", Macro: true})
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "macro:true") {
+			t.Fatalf("macro:true on rtd-once must be rejected with the macro message, got %v", err)
+		}
+	})
+
+	// caller:true still rejected on rtd-once (pre-split rule preserved).
+	t.Run("caller rejected on rtd-once", func(t *testing.T) {
+		cfg := mk(Function{Name: "F", Mode: "rtd-once", Return: "float", Caller: true})
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "caller-aware") {
+			t.Fatalf("caller:true on rtd-once must be rejected, got %v", err)
+		}
+	})
 }

@@ -103,7 +103,9 @@ functions:
     return: "string"
 
   # Boolean logic
-  - name: "IsEven"
+  # NOTE: not "IsEven" — that collides with Excel's built-in ISEVEN, which
+  # silently shadows the XLL registration (config validation rejects it).
+  - name: "IsEvenInt"
     description: "Checks if a number is even"
     category: "Logic"
     args:

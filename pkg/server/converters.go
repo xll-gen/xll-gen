@@ -88,6 +88,46 @@ func BuildAnyFromGo(b *flatbuffers.Builder, v any) flatbuffers.UOffsetT {
 	return fbany.BuildGo(b, v)
 }
 
+// BuildGridFromGo deep-copies a row-major Go [][]any into a protocol.Grid
+// table, returning the Grid offset (NOT wrapped in Any — the per-function
+// sync Response carries a Grid directly). The grid must be rectangular and
+// non-empty; a malformed grid returns an error so the generated server can
+// route it through the error path (the cell then shows the message instead of
+// garbage). Cells accept nil/bool/string/int*/float* (see fbany.BuildGrid).
+//
+// On Excel 2021+/365 the resulting xltypeMulti (the C++ wrapper's
+// GridToXLOPER12 output) spills natively; on pre-dynamic-array Excel the user
+// sees the top-left cell (or enters the formula as a legacy CSE array).
+func BuildGridFromGo(b *flatbuffers.Builder, v [][]any) (flatbuffers.UOffsetT, error) {
+	return fbany.BuildGrid(b, v)
+}
+
+// BuildNumGridFromGo deep-copies a row-major Go [][]float64 into a
+// protocol.NumGrid table (dense doubles), returning the NumGrid offset. Same
+// rectangularity/non-empty contract and error semantics as BuildGridFromGo.
+// numgrid is registered as FP12 (`K%`); the C++ wrapper's NumGridToFP12
+// output also spills in dynamic-array Excel.
+func BuildNumGridFromGo(b *flatbuffers.Builder, v [][]float64) (flatbuffers.UOffsetT, error) {
+	return fbany.BuildNumGrid(b, v)
+}
+
+// ValidateGrid reports whether v is a well-formed (rectangular, non-empty)
+// mixed-cell grid. The async path validates at queue time — before the batch
+// builder exists — so a malformed grid becomes an async error result rather
+// than reaching fbany.Build at flush time (where it could only fall back to
+// NONE, silently blanking the cell).
+func ValidateGrid(v [][]any) error {
+	_, _, err := fbany.ValidateGridDims(v)
+	return err
+}
+
+// ValidateNumGrid reports whether v is a well-formed (rectangular, non-empty)
+// numeric grid. See ValidateGrid for why the async path validates eagerly.
+func ValidateNumGrid(v [][]float64) error {
+	_, _, err := fbany.ValidateGridDims(v)
+	return err
+}
+
 // CreateScalarAny serializes a ScalarValue into a protocol.Any table via the
 // canonical internal/fbany builder, returning the Any offset.
 func CreateScalarAny(b *flatbuffers.Builder, val ScalarValue) flatbuffers.UOffsetT {

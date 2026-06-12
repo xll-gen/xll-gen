@@ -167,7 +167,7 @@ gen:
   go:
     package: "generated"
 functions:
-  - name: "Echo"
+  - name: "EchoStr"
     description: "Echoes a string"
     args:
       - name: "msg"

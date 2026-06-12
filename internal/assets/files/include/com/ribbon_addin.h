@@ -14,14 +14,16 @@ namespace xll { namespace ribbon {
     // Returns immediately; never blocks Excel's STA thread on the handler.
     void SendCommandInvoke(const std::string& commandNameUtf8, const std::string& controlIdUtf8);
 
-    // Drains in-flight SendCommandInvoke threads. CONTRACT (generated
-    // xlAutoClose must honor, in order): (1) disconnect/revoke the COM
-    // add-in so no new Invoke arrives, (2) call WaitForCommandDrain, (3)
-    // only then let OnAutoClose delete g_phost. The 2000ms drain cap is
-    // shorter than SendCommandInvoke's 5000ms SHM Send timeout — same
-    // accepted residual documented for WaitForRtdConnectDrain (a command
-    // thread blocked >2s inside Send is a narrow, click-bounded window
-    // because step (1) stops new spawns). Returns false on timeout.
+    // Drains in-flight SendCommandInvoke threads. Called TWICE on a graceful
+    // close (AGENTS.md §18.11 teardown contract): (1) by the generated
+    // xlAutoClose right after COM add-in disconnect/revoke (no new Invoke can
+    // arrive, but g_isUnloading is NOT yet set, so a thread mid-retry has no
+    // abort signal during this first drain), and (2) by OnAutoClose AFTER it
+    // sets g_isUnloading=true and BEFORE `delete g_phost`. The second drain is
+    // the one that closes the UAF window: each command thread re-checks
+    // g_isUnloading between its <=200 ms per-attempt Sends, so it exits within
+    // ~one attempt (<~350 ms incl. the WaitEvent quantum), well inside the
+    // 2000 ms cap. Returns false on timeout (logged, non-fatal).
     bool WaitForCommandDrain(unsigned int timeoutMs);
 }} // namespace xll::ribbon
 

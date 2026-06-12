@@ -11,6 +11,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/pkg/msgid"
 )
 
 // stubCall records one SendGuestCallWithTimeout invocation.
@@ -194,8 +195,8 @@ func TestSendUpdate_ByteIdenticalToLegacy(t *testing.T) {
 			if len(calls) != 1 {
 				t.Fatalf("expected 1 send, got %d", len(calls))
 			}
-			if calls[0].msgType != MsgRtdUpdate {
-				t.Fatalf("expected msgType %d, got %d", MsgRtdUpdate, calls[0].msgType)
+			if calls[0].msgType != msgid.MsgRtdUpdate {
+				t.Fatalf("expected msgType %d, got %d", msgid.MsgRtdUpdate, calls[0].msgType)
 			}
 
 			want := legacyRtdUpdateBytes(tc.topicID, tc.value)

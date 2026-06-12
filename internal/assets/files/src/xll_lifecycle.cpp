@@ -5,6 +5,7 @@
 #include "xll_worker.h"
 #include "xll_ipc.h"
 #include "types/mem.h"
+#include "com/ribbon_addin.h" // WaitForCommandDrain (declared outside XLL_RIBBON_ENABLED)
 #include <cwchar>
 #ifdef XLL_RTD_ENABLED
 #include "xll_rtd.h"
@@ -191,15 +192,31 @@ int xll::OnAutoClose() {
 
 #ifdef XLL_RTD_ENABLED
         // Drain in-flight RTD ConnectData detached threads BEFORE deleting
-        // g_phost. Closes the UAF window documented in AGENTS.md §23.0 (the
-        // PARTIAL fix exposed the drain API but did not wire it into the
-        // graceful-close path). 2-second cap matches typical SHM round-trip
-        // budgets; a timeout here is logged but does not block — the
-        // residual race is still narrower than the unpatched window.
+        // g_phost. Closes the UAF window documented in AGENTS.md §23.0. The
+        // 2-second cap is now strictly larger than the ConnectData thread's
+        // unload responsiveness: that thread sends via a bounded retry loop of
+        // <=250 ms per-attempt timeouts and re-checks g_isUnloading between
+        // attempts (see xll_rtd.cpp::ConnectData), so it returns within ~350 ms
+        // worst case of g_isUnloading being set — well inside this cap. A timeout here is
+        // therefore should-never-happen; it is still logged (not fatal) rather
+        // than blocking teardown.
         if (!WaitForRtdConnectDrain(2000)) {
-            LogWarn("RTD ConnectData drain timed out; potential UAF window if a detached thread outlives g_phost");
+            LogWarn("RTD ConnectData drain timed out unexpectedly (a Connect thread did not observe g_isUnloading within 2s)");
         }
 #endif
+
+        // Drain in-flight SendCommandInvoke detached threads BEFORE deleting
+        // g_phost. The generated xlAutoClose already drains once (after COM
+        // add-in disconnect), but that drain runs BEFORE g_isUnloading is set,
+        // so a command thread mid-retry has no abort signal during it and can
+        // outlive it. THIS drain runs after g_isUnloading=true: each command
+        // thread re-checks the flag between its <=200 ms per-attempt Sends, so
+        // it exits within ~one attempt (<~350 ms incl. shm's WaitEvent
+        // quantum) — well inside the cap. Closes the command-path analogue of the RTD
+        // ConnectData UAF window (AGENTS.md §18.11 / §23.0).
+        if (!xll::ribbon::WaitForCommandDrain(2000)) {
+            LogWarn("CommandInvoke drain timed out unexpectedly (a command thread did not observe g_isUnloading within 2s)");
+        }
 
         // Cleanup SHM Host (Explicitly)
         if (g_phost) {

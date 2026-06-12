@@ -10,11 +10,9 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/internal/fbany"
 	"github.com/xll-gen/xll-gen/pkg/log"
+	"github.com/xll-gen/xll-gen/pkg/msgid"
 	"github.com/xll-gen/xll-gen/pkg/pool"
 )
-
-// MsgRtdUpdate is the message ID for RTD updates (must match server/types.go)
-const MsgRtdUpdate = 135
 
 // rtdClient is the subset of *shm.Client the RtdManager uses. It is an
 // interface so tests can inject slow/failing stubs without a real SHM
@@ -166,6 +164,6 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
 
 	data := b.FinishedBytes()
 
-	_, err := client.SendGuestCallWithTimeout(data, MsgRtdUpdate, 1000*time.Millisecond)
+	_, err := client.SendGuestCallWithTimeout(data, msgid.MsgRtdUpdate, 1000*time.Millisecond)
 	return err
 }

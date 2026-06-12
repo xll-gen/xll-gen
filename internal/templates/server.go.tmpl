@@ -138,6 +138,21 @@ func Serve(handler XllService) {
                         }
                         return handler.{{.Name}}_RTD(ctx, topicID {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else}}args[{{add $i 1}}]{{end}}{{end}})
                     {{end}}{{end}}
+                    {{range $fn := .Functions}}{{if eq .Mode "rtd-once" }}
+                    case "{{.Name}}":
+                        // rtd-once: the user writes {{.Name}} as a NORMAL
+                        // (sync-shaped) handler. We parse the scalar args out
+                        // of the RTD topic strings, then rtd.RunOnce runs the
+                        // handler exactly once and pushes the single result
+                        // back to this topic. The C++ wrapper tears the topic
+                        // down after the value lands (see AGENTS.md §19.3).
+                        if len(args) < {{add (len .Args) 1}} {
+                             return fmt.Errorf("insufficient arguments for rtd-once function {{.Name}}")
+                        }
+                        return rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx context.Context) (interface{}, error) {
+                            return handler.{{.Name}}(ctx {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else}}args[{{add $i 1}}]{{end}}{{end}})
+                        })
+                    {{end}}{{end}}
                     default:
                         return handler.OnRtdConnect(ctx, topicID, args, newValues)
                     }
@@ -183,7 +198,7 @@ func Serve(handler XllService) {
              {{end}}
 {{end}}
 
-{{range $i, $fn := .Functions}}{{if ne .Mode "rtd"}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
+{{range $i, $fn := .Functions}}{{if not (isRtdLike .Mode)}}             case {{add (MsgUserStart) $i}}: // {{.Name}}
                 {{if .Timeout}}
                 ctx, cancel := context.WithTimeout(context.Background(), timeout_{{.Name}})
                 {{else}}
@@ -230,7 +245,7 @@ func Serve(handler XllService) {
 
 // ... handle functions ...
 {{range $i, $fn := .Functions}}
-{{if ne .Mode "rtd"}}
+{{if not (isRtdLike .Mode)}}
 func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler XllService, b *flatbuffers.Builder, client *shm.Client, msgType shm.MsgType, refCache *server.RefCache) (int32, shm.MsgType) {
 	request := ipc.GetRootAs{{.Name}}Request(req, 0)
 	_ = request
@@ -348,6 +363,21 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 			{{else if eq .Return "any"}}
 			tag, payload := server.MapAnyValue(res)
 			asyncBatcher.QueueResult(handle, payload, tag, "")
+			{{else if eq .Return "grid"}}
+			// Validate at queue time: the batch builder does not exist yet, so a
+			// malformed grid must become an error result now (FlushAsyncBatch
+			// serializes the [][]any via fbany.Build under the Grid tag).
+			if verr := server.ValidateGrid(res); verr != nil {
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), verr.Error())
+			} else {
+				asyncBatcher.QueueResult(handle, res, protocol.AnyValueGrid, "")
+			}
+			{{else if eq .Return "numgrid"}}
+			if verr := server.ValidateNumGrid(res); verr != nil {
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), verr.Error())
+			} else {
+				asyncBatcher.QueueResult(handle, res, protocol.AnyValueNumGrid, "")
+			}
 			{{end}}
 		}
 	}()
@@ -408,13 +438,37 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	if err == nil {
 		resOffset = server.BuildAnyFromGo(b, res)
 	}
+	{{else if eq .Return "grid"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil {
+		// A malformed (non-rectangular/empty) grid is routed through the error
+		// path so the cell shows the message instead of garbage.
+		if off, gerr := server.BuildGridFromGo(b, res); gerr != nil {
+			err = gerr
+			b.Reset()
+			errOffset = b.CreateString(err.Error())
+		} else {
+			resOffset = off
+		}
+	}
+	{{else if eq .Return "numgrid"}}
+	var resOffset flatbuffers.UOffsetT
+	if err == nil {
+		if off, gerr := server.BuildNumGridFromGo(b, res); gerr != nil {
+			err = gerr
+			b.Reset()
+			errOffset = b.CreateString(err.Error())
+		} else {
+			resOffset = off
+		}
+	}
 	{{end}}
 
 	ipc.{{.Name}}ResponseStart(b)
 	if err != nil {
 		ipc.{{.Name}}ResponseAddError(b, errOffset)
 	} else {
-		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "any")}}
+		{{if or (eq .Return "string") (eq .Return "int?") (eq .Return "float?") (eq .Return "bool?") (eq .Return "any") (eq .Return "grid") (eq .Return "numgrid")}}
 		if resOffset > 0 {
 			ipc.{{.Name}}ResponseAddResult(b, resOffset)
 		}

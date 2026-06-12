@@ -214,23 +214,78 @@ The `server.launch` section supports the following variables in `command` and `c
 
 ### Supported Types
 
-| Type | Description | Go Type | Excel Type |
-| :--- | :--- | :--- | :--- |
-| `int` | 32-bit Integer | `int32` | `int` |
-| `float` | 64-bit Float | `float64` | `double` |
-| `bool` | Boolean | `bool` | `boolean` |
-| `string` | Unicode String | `string` | `string` |
-| `any` | Any Value (Scalar/Array) | `*types.Any` | `CheckRange/Variant` |
-| `range` | Reference to a range | `*types.Range` | `Reference` |
-| `grid` | Generic 2D Array | `*types.Grid` | `Array` |
-| `numgrid` | Numeric 2D Array | `*types.NumGrid` | `FP Array` |
+| Type | Description | Go Arg Type | Go Return Type | Excel Type |
+| :--- | :--- | :--- | :--- | :--- |
+| `int` | 32-bit Integer | `int32` | `int32` | `int` |
+| `float` | 64-bit Float | `float64` | `float64` | `double` |
+| `bool` | Boolean | `bool` | `bool` | `boolean` |
+| `string` | Unicode String | `string` | `string` | `string` |
+| `any` | Any Value (Scalar/Array) | `*types.Any` | `any` | `CheckRange/Variant` |
+| `range` | Reference to a range | `*types.Range` | *(not a return type)* | `Reference` |
+| `grid` | Generic 2D Array (mixed cells) | `*types.Grid` | `[][]any` | `Array` (spills) |
+| `numgrid` | Numeric 2D Array (dense doubles) | `*types.NumGrid` | `[][]float64` | `FP Array` (spills) |
+
+When a handler returns `grid` (`[][]any`) or `numgrid` (`[][]float64`), the value
+**spills** into the surrounding cells on Excel 2021+/365 — see *Dynamic arrays
+(spill)* below. `range` is argument-only: returning a live reference is not
+meaningful and breaks Excel registration.
 
 **Optional Function Flags**:
-*   `caller: true`: Passes an additional `caller *types.Range` argument to the handler, representing the cell(s) calling the function.
+*   `caller: true`: Passes an additional `caller *types.Range` argument to the handler, representing the cell(s) calling the function. This is **position-only**: the wrapper calls `xlfCaller` (callable from any worksheet function) and reports the caller's range, but `caller.Format()` (the cell's number-format string) is left empty unless the function also sets `macro: true`. Caller-only functions stay **thread-safe**.
+*   `macro: true`: Registers the function as a **macro-sheet equivalent** (`#`), granting macro-level C-API access inside the C++ wrapper — in particular the caller's number-format fetch (`xlfGetCell`) that populates `caller.Format()`. The cost is that Excel rejects the `#`+`$` combination, so a `macro: true` function is **not** registered thread-safe. It does **not** make Excel's COM object model writable from Go handlers during calculation — sheet writes belong in commands. `macro: true` is incompatible with `mode: "rtd-once"` (same as `caller: true`).
+
+> **Migration (v0.5.0)**: `caller: true` no longer registers `#`; handlers reading `Range.Format()` from the caller get an empty string unless the function also sets `macro: true`. Caller-only functions are now thread-safe (`$`).
 
 > **Note**: Nullable scalar types (`int?`, `float?`, `bool?`, `string?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
-### Choosing an Execution Mode (sync vs async vs rtd)
+### Dynamic arrays (spill)
+
+`sync` and `async` functions may return a 2D array that Excel **spills** across
+the cells below/right of the formula cell:
+
+* **`grid`** — handler returns `[][]any` (row-major). Each cell may be
+  `nil`, `bool`, `string`, an integer (`int`/`int32`/…), or a float
+  (`float32`/`float64`). Use this for tables with mixed types.
+* **`numgrid`** — handler returns `[][]float64` (row-major, dense). Lower
+  overhead than `grid` when every cell is numeric; serialized as an FP12 array.
+
+Both must be **rectangular and non-empty** (every row the same length, at least
+one cell). A malformed grid (jagged or empty) is reported as the function's
+error, so the cell shows the message instead of garbage.
+
+```yaml
+functions:
+  - name: Identity3
+    mode: sync
+    return: numgrid          # spills a 3x3 matrix
+  - name: BuildTable
+    mode: sync
+    return: grid             # spills a mixed-type table
+```
+
+```go
+func (s *Service) Identity3(ctx context.Context) ([][]float64, error) {
+    return [][]float64{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, nil
+}
+
+func (s *Service) BuildTable(ctx context.Context) ([][]any, error) {
+    return [][]any{
+        {"Name", "Qty", "InStock"},
+        {"Widget", 42, true},
+        {"Gadget", 7, false},
+    }, nil
+}
+```
+
+**No version detection or registration flag is required.** An XLL function
+registered with return code `Q` (for `grid`) or `K%`/FP12 (for `numgrid`) that
+returns an array value spills automatically on **dynamic-array Excel
+(2021+/365)**. On **pre-dynamic-array Excel** the formula returns the
+**top-left cell**; to see all cells the user must enter the formula as a legacy
+**CSE array** (`Ctrl+Shift+Enter`) over a pre-selected range. `async` functions
+spill the same way (the async result is converted via the same array path).
+
+### Choosing an Execution Mode (sync vs async vs rtd vs rtd-once)
 
 A common surprise: **`mode: "async"` does not keep the sheet responsive.**
 Excel holds the calculation transaction open until every pending async
@@ -250,7 +305,65 @@ the same reason Excel-DNA implements its async support on top of RTD.
 | :--- | :--- | :--- |
 | Up to a few hundred ms | `sync` (default) | Lowest overhead; no perceptible stall. |
 | Hundreds of ms – a few s, downstream formulas must only see the final value | `async` | Calls overlap; dependents never compute against a placeholder. |
-| Multiple seconds, interactive feel matters | `rtd` | Sheet keeps updating while the work runs. |
+| Multiple seconds, interactive feel matters, **one-shot** result | `rtd-once` | Write a normal handler; the generator wraps it in an RTD lifecycle. Cell shows `#GETTING_DATA`, then the value. |
+| A genuinely streaming/recurring topic (ticks, live quotes) | `rtd` | You manage the topic and push updates over its lifetime. |
+
+#### `rtd-once`: long one-shot work without writing RTD plumbing
+
+`mode: "rtd-once"` is the recommended mode for a single long-running
+computation when you want the sheet to stay live. You author the handler
+**exactly like a sync function** — args in, result out:
+
+```yaml
+rtd:
+  enabled: true
+  prog_id: "MyProject.Rtd"
+  throttle_interval: "250ms"   # recommended: lower Excel's 2000ms default so the one-shot result appears promptly
+
+functions:
+  - name: SlowAdd
+    mode: rtd-once
+    args:
+      - { name: a, type: int }
+      - { name: b, type: float }
+    return: float
+    # memoize_ttl: 30s         # optional — reuse the result for 30s (see below)
+    # memoize: true            # optional — see below
+```
+
+```go
+// A NORMAL handler — NOT an _RTD push handler.
+func (s *Service) SlowAdd(ctx context.Context, a int32, b float64) (float64, error) {
+    time.Sleep(3 * time.Second) // long work
+    return float64(a) + b, nil
+}
+```
+
+The generator wraps this in an RTD topic lifecycle: connect → run the
+handler **exactly once** → push the result → the cell resolves and the topic
+is released. The cell shows **`#GETTING_DATA`** while waiting (not the textual
+"Connecting…" used by plain `rtd`). On a handler error, the error string is
+pushed so the cell stops waiting.
+
+* **Scope (current):** scalar args (`int`/`float`/`string`/`bool`) and a
+  scalar or `any` return only. Composite args (`range`/`grid`/`numgrid`/`any`)
+  are rejected at config time — use plain `mode: "rtd"` for those (a
+  content-hash payload path for composite args is a planned follow-up).
+* **Result lifecycle — the once / `memoize_ttl` / `memoize` triad** (keyed by
+  function name + args; at most one of `memoize_ttl` / `memoize` may be set):
+  * **once (default, neither flag set):** the completed result is cleared at
+    end of calc cycle, so the next user-initiated recalc (F9) **recomputes** —
+    normal worksheet semantics.
+  * **`memoize_ttl: "<duration>"`** (e.g. `"30s"`, `"5m"`): the middle ground.
+    The cached result is reused for recalcs **within** the TTL; once the TTL
+    has elapsed, the next call **recomputes fresh**. Age is measured from when
+    the result was stored, using a monotonic clock (immune to wall-clock
+    changes). Must be a positive Go duration.
+  * **`memoize: true`:** the completed result persists until the add-in unloads
+    — an implicit per-input memoization cache with no expiry.
+* **Throttle:** set `rtd.throttle_interval` (e.g. `"250ms"`) so the one-shot
+  value surfaces quickly instead of waiting up to Excel's 2000ms default RTD
+  batch window.
 
 RTD caveats to keep in mind when using it for one-shot computations:
 

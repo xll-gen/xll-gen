@@ -59,16 +59,24 @@ var typeRegistry = map[string]TypeInfo{
 		ArgCppType:      "LPXLOPER12",
 		XllType:         "Q",
 		ArgXllType:      "U",	},
+	// grid: ARGUMENT is the *protocol.Grid read view; RETURN is a plain Go
+	// [][]any the handler builds (serialized via pkg/server.BuildGridFromGo).
+	// Return code "Q" (LPXLOPER12 → xltypeMulti) spills in dynamic-array Excel.
 	"grid": {
 		SchemaType:      "protocol.Grid",
 		GoType:          "*protocol.Grid",
+		RetGoType:       "[][]any",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
 		XllType:         "Q",
 		ArgXllType:      "U",	},
+	// numgrid: ARGUMENT is *protocol.NumGrid; RETURN is [][]float64
+	// (serialized via pkg/server.BuildNumGridFromGo). Return code "K%" (FP12)
+	// also spills in dynamic-array Excel.
 	"numgrid": {
 		SchemaType:      "protocol.NumGrid",
 		GoType:          "*protocol.NumGrid",
+		RetGoType:       "[][]float64",
 		CppType:         "FP12*",
 		ArgCppType:      "FP12*",
 		XllType:         "K%",

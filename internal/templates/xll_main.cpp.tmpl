@@ -34,6 +34,9 @@
 {{if .Rtd.Enabled}}
 #include "xll_rtd.h"
 {{end}}
+{{if anyRtdOnce .Functions}}
+#include "xll_rtd_once.h"
+{{end}}
 {{if or .Rtd.Enabled .Ribbon.Enabled}}
 #include "rtd/factory.h"
 #include "rtd/module.h"
@@ -343,6 +346,75 @@ static bool SetRibbonConnected(bool connected) {
     pApp->Release();
     return ok;
 }
+
+// Ribbon COM add-in bootstrap, made idempotent + retryable. The COMAddIns
+// connect (step 4) needs the in-process Application object, which is reachable
+// only through the XLDESK -> EXCEL7 child window. When the XLL loads with NO
+// workbook open (add-in auto-loaded at Excel startup), that child window does
+// not exist yet, so GetExcelApplication() returns nullptr and the connect
+// fails — leaving the ribbon tab permanently absent even after the user opens
+// a workbook. The fix mirrors TryApplyRtdThrottle: run once at xlAutoOpen and
+// re-attempt from the calc-end callback (which fires on the STA thread once a
+// workbook exists). State is a single atomic: 0=pending, 1=connected, 2=gave
+// up after bounded attempts. Registry/class-object steps (1-3) are themselves
+// idempotent, but we only redo the cheap, workbook-dependent connect (step 4)
+// on retry once the one-time registration has succeeded.
+static std::atomic<int> g_ribbonConnectState{0}; // 0=pending, 1=connected, 2=gave up
+static std::atomic<bool> g_ribbonRegistered{false};
+static bool TryConnectRibbon(const char* phase) {
+    if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return true;
+    if (g_isUnloading.load(std::memory_order_acquire)) return false;
+
+    // One-time, workbook-independent registration (steps 1-3). Done once;
+    // guarded so retries skip straight to the connect.
+    if (!g_ribbonRegistered.load(std::memory_order_acquire)) {
+        xll::ribbon::SetRibbonXml(kXllRibbonXml);
+        xll::ribbon::SetRibbonImages(GetXllRibbonImages());
+
+        // 1. HKCU COM registration (CLSID/InprocServer32 + ProgID).
+        if (FAILED(rtd::RegisterServer(g_hModule, GetRibbonClsid(), g_szRibbonProgID, L"{{.ProjectName}} Ribbon"))) {
+            SAFE_LOG_WARN("Ribbon: HKCU COM registration failed (locked-down registry?); ribbon UI disabled.");
+            g_ribbonConnectState.store(2, std::memory_order_release);
+            return false;
+        }
+        // 2. Office Addins key so COMAddIns enumerates us.
+        if (FAILED(rtd::RegisterOfficeAddinKey(g_szRibbonProgID, L"{{.ProjectName}}", L"{{.ProjectName}} ribbon helper"))) {
+            SAFE_LOG_WARN("Ribbon: Office Addins key registration failed; ribbon UI disabled.");
+            g_ribbonConnectState.store(2, std::memory_order_release);
+            return false;
+        }
+        // 3. In-memory class object so CoCreateInstance resolves without a
+        //    registry CLSID lookup (mirrors the RTD pattern).
+        rtd::ClassFactory<RibbonAddIn>* pFactory = new rtd::ClassFactory<RibbonAddIn>();
+        HRESULT hr = CoRegisterClassObject(GetRibbonClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &g_ribbonCookie);
+        pFactory->Release();
+        if (FAILED(hr)) {
+            char hrBuf[16];
+            snprintf(hrBuf, sizeof(hrBuf), "0x%08lX", static_cast<unsigned long>(hr));
+            SAFE_LOG_WARN(std::string("Ribbon: CoRegisterClassObject failed: ") + hrBuf);
+            g_ribbonConnectState.store(2, std::memory_order_release);
+            return false;
+        }
+        g_ribbonRegistered.store(true, std::memory_order_release);
+    }
+
+    // 4. Connect through Application.COMAddIns (synchronous; Excel calls
+    //    GetCustomUI during this call). Needs the EXCEL7 window -> retry from
+    //    calc-end until a workbook exists. Bounded so a pathological automation
+    //    host (no UI window ever) doesn't walk the window chain forever.
+    if (SetRibbonConnected(true)) {
+        g_ribbonConnectState.store(1, std::memory_order_release);
+        SAFE_LOG_INFO(std::string("Ribbon: COM add-in connected (") + phase + ").");
+        return true;
+    }
+
+    static std::atomic<int> s_attempts{0};
+    if (s_attempts.fetch_add(1) + 1 >= 60) {
+        g_ribbonConnectState.store(2, std::memory_order_release);
+        SAFE_LOG_WARN("Ribbon: COMAddIns connect failed after 60 attempts (no workbook window?); ribbon UI disabled.");
+    }
+    return false;
+}
 {{end}}
 
 // XLL Interface Functions
@@ -513,6 +585,12 @@ start_worker:
     {{end}}
 
     {{range $i, $fn := .Functions}}{{range .Args}}{{if eq .Type "any"}}needCalcEnded=true;{{end}}{{end}}{{end}}
+    {{if .Ribbon.Enabled}}
+    // Ribbon needs the calc-end callback as the STA-thread retry hook for the
+    // COMAddIns connect (see TryConnectRibbon): when the add-in loads with no
+    // workbook open, the connect can only succeed after a workbook exists.
+    needCalcEnded = true; // needRibbonRetry: register CalculationEnded for the connect retry
+    {{end}}
     if (needCalcEnded || hasCache) {
             xll::CallExcel(xlEventRegister, nullptr, L"CalculationEnded", xleventCalculationEnded);
     }
@@ -527,16 +605,32 @@ start_worker:
     xll::ribbon::SetCommands({ {{range .Commands}}L"{{.Name}}", {{end}} });
     {{end}}
 
+    {{if anyRtdOnce .Functions}}
+    // rtd-once: register the set of one-shot function names (the memoize
+    // subset, and the memoize_ttl subset as name->ttl-ms pairs) BEFORE any
+    // topic can connect, so ConnectData can recognize rtd-once topics and
+    // return the #GETTING_DATA placeholder, and so CalculationEnded/read-time
+    // expiry know which results to clear or age out.
+    xll::RtdOnceRegistry::Instance().SetFunctionNames(
+        { {{range .Functions}}{{if eq .Mode "rtd-once"}}L"{{.Name}}", {{end}}{{end}} },
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") .Memoize}}L"{{.Name}}", {{end}}{{end}} },
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") .MemoizeTTL}}{ L"{{.Name}}", {{durationMillis .MemoizeTTL}}ULL }, {{end}}{{end}} }
+    );
+    {{end}}
+
     // Register User Functions
 {{range $i, $fn := .Functions}}
     {
         // Register {{.Name}}
-        // Caller-aware functions are macro-sheet equivalents ('#', required by
-        // the xlfGetCell call in the wrapper) and therefore must NOT carry the
+        // macro:true functions are registered as macro-sheet equivalents ('#',
+        // required so the wrapper can call macro-only C-API like xlfGetCell for
+        // the caller's number format) and therefore must NOT carry the
         // thread-safe marker '$' — Excel rejects the '#$' combination (the
         // xlfRegister return is xltypeErr and the worksheet name yields #NAME?).
+        // caller:true alone does NOT imply '#': xlfCaller is callable from any
+        // XLL function, so a caller-without-macro function stays thread-safe.
         ScopedXLOPER12Result xRegId;
-        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}{{if not .Caller}}${{end}}";
+        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if isRtdLike .Mode}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Macro}}#{{end}}{{if .Volatile}}!{{end}}{{if not .Macro}}${{end}}";
 
         int regRes = xll::RegisterFunction(
             *xDLL,
@@ -601,44 +695,13 @@ start_worker:
     {{if .Ribbon.Enabled}}
     // ---- Ribbon COM add-in bootstrap. Graceful degradation: any failure
     // logs a warning and leaves functions/commands fully operational. ----
+    // The connect (step 4) needs the in-process Application object, only
+    // reachable via the EXCEL7 child window — which does NOT exist when the
+    // add-in is loaded with no workbook open. TryConnectRibbon makes the
+    // attempt idempotent + retryable; the calc-end handler retries it once a
+    // workbook exists (same one-shot-with-retry idiom as TryApplyRtdThrottle).
     XLL_SAFE_BLOCK_BEGIN
-        xll::ribbon::SetRibbonXml(kXllRibbonXml);
-        xll::ribbon::SetRibbonImages(GetXllRibbonImages());
-
-        bool ribbonOk = true;
-
-        // 1. HKCU COM registration (CLSID/InprocServer32 + ProgID).
-        if (FAILED(rtd::RegisterServer(g_hModule, GetRibbonClsid(), g_szRibbonProgID, L"{{.ProjectName}} Ribbon"))) {
-            SAFE_LOG_WARN("Ribbon: HKCU COM registration failed (locked-down registry?); ribbon UI disabled.");
-            ribbonOk = false;
-        }
-        // 2. Office Addins key so COMAddIns enumerates us.
-        if (ribbonOk && FAILED(rtd::RegisterOfficeAddinKey(g_szRibbonProgID, L"{{.ProjectName}}", L"{{.ProjectName}} ribbon helper"))) {
-            SAFE_LOG_WARN("Ribbon: Office Addins key registration failed; ribbon UI disabled.");
-            ribbonOk = false;
-        }
-        // 3. In-memory class object so CoCreateInstance resolves without a
-        //    registry CLSID lookup (mirrors the RTD pattern).
-        if (ribbonOk) {
-            rtd::ClassFactory<RibbonAddIn>* pFactory = new rtd::ClassFactory<RibbonAddIn>();
-            HRESULT hr = CoRegisterClassObject(GetRibbonClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &g_ribbonCookie);
-            pFactory->Release();
-            if (FAILED(hr)) {
-                char hrBuf[16];
-                snprintf(hrBuf, sizeof(hrBuf), "0x%08lX", static_cast<unsigned long>(hr));
-                SAFE_LOG_WARN(std::string("Ribbon: CoRegisterClassObject failed: ") + hrBuf);
-                ribbonOk = false;
-            }
-        }
-        // 4. Connect through Application.COMAddIns (synchronous; Excel calls
-        //    GetCustomUI during this call).
-        if (ribbonOk && !SetRibbonConnected(true)) {
-            SAFE_LOG_WARN("Ribbon: COMAddIns connect failed; ribbon UI disabled.");
-            ribbonOk = false;
-        }
-        if (ribbonOk) {
-            SAFE_LOG_INFO("Ribbon: COM add-in connected.");
-        }
+        TryConnectRibbon("xlAutoOpen");
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
@@ -665,6 +728,12 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     // reliable moment to apply rtd.throttle_interval (one-shot, see above).
     TryApplyRtdThrottle("calc event");
     {{end}}
+    {{if $.Ribbon.Enabled}}
+    // STA-thread retry hook for the ribbon COMAddIns connect (idempotent; a
+    // no-op once connected). Covers the no-workbook-at-load case where the
+    // xlAutoOpen connect could not reach the Application object.
+    TryConnectRibbon("calc event");
+    {{end}}
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
@@ -679,13 +748,19 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
     {{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
     TryApplyRtdThrottle("calc end");
     {{end}}
+    {{if .Ribbon.Enabled}}
+    // STA-thread retry hook for the ribbon COMAddIns connect (idempotent; a
+    // no-op once connected). Covers the no-workbook-at-load case where the
+    // xlAutoOpen connect could not reach the Application object.
+    TryConnectRibbon("calc end");
+    {{end}}
     HandleCalculationEnded();
 }
 {{end}}
 
 // User Functions
 {{range $i, $fn := .Functions}}
-extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mode "rtd"}}LPXLOPER12{{else}}{{lookupCppType .Return}}{{end}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if eq .Mode "async"}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLike .Mode}}LPXLOPER12{{else}}{{lookupCppType .Return}}{{end}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if eq .Mode "async"}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
     // Probe-unload guard: OnAutoClose frees and nulls g_phost (xll_ipc.h:
     // `#define g_host (*g_phost)`). A stale Excel calc thread can still enter
     // a registered UDF after probe-unload; dereferencing g_host (e.g.
@@ -697,14 +772,14 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
         return;
-        {{else if and (ne .Mode "rtd") (eq .Return "numgrid")}}
+        {{else if and (not (isRtdLike .Mode)) (eq .Return "numgrid")}}
         // FP12* (K%) functions cannot return an XLOPER12 sentinel; a null
         // FP12* is the established error convention (NumGridToFP12's own
         // error paths return nullptr; Excel renders #NUM!).
         return nullptr;
         {{else}}
-        // Sync and RTD wrappers both return LPXLOPER12; surface the shared
-        // error sentinel, identical to the res.HasError() path below.
+        // Sync, RTD and rtd-once wrappers all return LPXLOPER12; surface the
+        // shared error sentinel, identical to the res.HasError() path below.
         return &g_xlErrValue;
         {{end}}
     }
@@ -763,6 +838,79 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
     }
 
     return &xRes;
+
+    {{else if eq .Mode "rtd-once"}}
+    // rtd-once Wrapper Implementation.
+    //
+    // Builds the same topic strings as plain rtd (t0=function name, t1.. =
+    // stringified scalar args). The lifecycle (AGENTS.md §19.3):
+    //   1. Compute the key. If a completed result is already cached
+    //      (RtdOnceResults), return it WITHOUT calling xlfRtd. The cell then
+    //      holds no RTD reference, so Excel calls DisconnectData at end of
+    //      calc and the topic is torn down (Go-side unsubscribe via the
+    //      existing path).
+    //   2. Otherwise call xlfRtd. Excel calls ConnectData(topicID, strings),
+    //      which registers the topicID->key mapping and returns the
+    //      #GETTING_DATA placeholder. The Go server runs the handler once and
+    //      pushes the result; ProcessRtdUpdate caches it under the key and
+    //      recalcs the cell, which re-enters this wrapper and hits the cache.
+
+    // Topic 0: Function Name
+    std::wstring t0 = L"{{.Name}}";
+
+    {{range $j, $arg := .Args}}
+    std::wstring t{{add $j 1}};
+    {
+        {{if eq .Type "int"}}
+        t{{add $j 1}} = std::to_wstring({{.Name}});
+        {{else if eq .Type "float"}}
+        t{{add $j 1}} = std::to_wstring({{.Name}});
+        {{else if eq .Type "bool"}}
+        t{{add $j 1}} = {{.Name}} ? L"TRUE" : L"FALSE";
+        {{else if eq .Type "string"}}
+        if ({{.Name}}->xltype == xltypeStr) {
+            t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
+        }
+        {{end}}
+    }
+    {{end}}
+
+    {
+        std::vector<std::wstring> topics = { t0 {{range $j, $arg := .Args}}, t{{add $j 1}}{{end}} };
+        std::wstring onceKey = xll::MakeRtdOnceKey(topics);
+
+        // 1. Cache hit: return the completed value directly (no xlfRtd).
+        VARIANT cached; VariantInit(&cached);
+        if (xll::RtdOnceRegistry::Instance().TryGetResult(onceKey, &cached)) {
+            LPXLOPER12 op = xll::RtdOnceResultToXLOPER12(cached);
+            VariantClear(&cached);
+            if (op) return op;
+            return &g_xlErrValue;
+        }
+        VariantClear(&cached);
+    }
+
+    // 2. Cache miss: issue xlfRtd. ConnectData returns #GETTING_DATA for this
+    //    rtd-once topic (it recognizes the function name and substitutes the
+    //    placeholder for the plain-rtd "Connecting..." BSTR).
+    {
+        static thread_local XLOPER12 xRes;
+        static std::wstring wProgID = L"{{$.Rtd.ProgID}}";
+
+        int xlRet = xll::CallExcel(xlfRtd, &xRes,
+            wProgID.c_str(),
+            L"",
+            t0.c_str()
+            {{range $j, $arg := .Args}}, t{{add $j 1}}.c_str(){{end}}
+        );
+
+        if (xlRet != xlretSuccess) {
+            SAFE_LOG_ERROR("xlfRtd failed for rtd-once {{.Name}}. Return code: " + std::to_string(xlRet));
+            xRes.xltype = xltypeErr;
+            xRes.val.err = xlerrValue;
+        }
+        return &xRes;
+    }
 
     {{else}}
     {{/* Determine Cache Configuration */}}
@@ -887,17 +1035,25 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         ScopedXLOPER12 xCaller;
         if (xll::CallExcel(xlfCaller, xCaller) == xlretSuccess) {
             std::string callerFormat = "";
+            {{if .Macro}}
+            // macro:true → the function is a macro-sheet equivalent ('#'), so
+            // the wrapper may call the macro-only xlfGetCell to fetch the
+            // caller's number-format string (type 7) into Range.Format().
             XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
             // ScopedXLOPER12Result (not ScopedXLOPER12): xlfGetCell returns an
             // Excel-allocated xltypeStr that must be released with xlFree —
             // the Result destructor does that; plain ScopedXLOPER12 leaked it
-            // on every caller-aware call.
+            // on every macro caller-aware call.
             ScopedXLOPER12Result xFormat;
             if (xll::CallExcel(xlfGetCell, xFormat, &xType, xCaller) == xlretSuccess) {
                 if (xFormat.get()->xltype == xltypeStr) {
                         callerFormat = ConvertExcelString(xFormat.get()->val.str);
                 }
             }
+            {{end}}
+            // caller:true without macro:true is position-only — xlfCaller is
+            // callable from any XLL function, but xlfGetCell is not, so the
+            // number format is left empty here (Range.Format() == "").
             caller_off = ConvertRange(xCaller.get(), builder, callerFormat);
         }
     }

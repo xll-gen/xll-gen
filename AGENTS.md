@@ -164,6 +164,29 @@ When adding or modifying a data type (e.g., adding `date` support):
 3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member).
 4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type.
 
+**Return-direction (handler → cell) serialization.** A type valid as a RETURN
+may need a distinct handler-facing Go type and a server-side serializer, because
+FlatBuffers read views (`*protocol.Grid`, `*protocol.Any`) make sense as
+arguments but cannot be constructed by a handler:
+1.  Set `TypeInfo.RetGoType` in `typeRegistry` (e.g. `grid` → `[][]any`,
+    `numgrid` → `[][]float64`, `any` → `any`); `interface.go.tmpl` uses
+    `lookupRetGoType` for the return position and `lookupGoType` for args.
+2.  Add a Go-value→FlatBuffers builder. Scalars/`any` route through
+    `internal/fbany`; `grid`/`numgrid` are built by `fbany.BuildGrid` /
+    `fbany.BuildNumGrid` and wrapped by `pkg/server.BuildGridFromGo` /
+    `BuildNumGridFromGo` (sync). The async path serializes the same value at
+    flush time via `fbany.Build` under the `AnyValueGrid`/`AnyValueNumGrid` tag,
+    validated eagerly at queue time (`server.ValidateGrid`/`ValidateNumGrid`).
+3.  Add the sync result branch in `server.go.tmpl` (offset-based `AddResult` +
+    error routing) and the async branch (validate → `QueueResult` with the tag).
+4.  Confirm the C++ return conversion: sync uses `GridToXLOPER12`/`NumGridToFP12`
+    (already in `xll_main.cpp.tmpl`); async uses `AnyToXLOPER12` (handles
+    Grid/NumGrid → xltypeMulti). Both live in `github.com/xll-gen/types`.
+5.  Registration return code (`TypeInfo.XllType`): `Q` (LPXLOPER12 → xltypeMulti)
+    or `K%` (FP12) — both spill in dynamic-array Excel. `U` is never valid in
+    return position (§19.2). No version detection or registration flag is needed
+    for spilling (`Function.Resizable` stays unconsumed).
+
 ### 18.5 Regression Test Assets
 The integration tests in `internal/regtest` rely on a fixed set of files that must stay in sync.
 1.  **Test Project**: `internal/regtest/testdata/xll.yaml` defines the function signatures and order.
@@ -173,7 +196,7 @@ The integration tests in `internal/regtest` rely on a fixed set of files that mu
 
 ### 18.6 Message ID Allocation
 Message IDs are distributed across multiple definitions and must match exactly.
-1.  **Definitions**: `internal/assets/files/include/xll_ipc.h` and `pkg/server/types.go` define constants (e.g., `MSG_USER_START = 140`, `MSG_CALCULATION_ENDED = 131`, `MSG_RTD_CONNECT = 133`).
+1.  **Definitions**: the Go-side single source of truth is the leaf package `pkg/msgid` (e.g., `MsgUserStart = 140`, `MsgCalculationEnded = 131`, `MsgRtdConnect = 133`); `pkg/server/types.go` re-exports them as aliases (`MsgRtdUpdate = msgid.MsgRtdUpdate`, etc.) so all `server.Msg*` references — including generated code — keep compiling, and `pkg/rtd` imports `pkg/msgid` directly (no shadow copy). The C++ mirror is `internal/assets/files/include/xll_ipc.h` (the `MSG_*` #defines, e.g. `MSG_USER_START = 140`). `pkg/msgid/msgid_test.go` pins the numeric values. The Go side (`pkg/msgid`) and the C++ side (`xll_ipc.h`) must match exactly.
 2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` manually calculates user IDs (`140 + $i`).
 3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`140 + $i`).
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
@@ -222,14 +245,22 @@ Native ribbon buttons and XLL commands (macros) form one tightly-coupled cluster
 1.  `SetRibbonConnected(false)` — Excel must release the live COM ref while the DLL is still mapped.
 2.  `CoRevokeClassObject`.
 3.  Unregister the HKCU COM-addin keys (best-effort; idempotent on next load).
-4.  `WaitForCommandDrain(2000)` — bounded wait for in-flight command sends; 2 s timeout logged as a warning, does not block teardown.
-5.  `OnAutoClose` (deletes `g_phost`).
+4.  `WaitForCommandDrain(2000)` — bounded wait for in-flight command sends; 2 s timeout logged as a warning, does not block teardown. NOTE: this drain runs BEFORE `g_isUnloading` is set (that happens inside `OnAutoClose`), so a command thread mid-retry has no abort signal during it.
+5.  `OnAutoClose` — sets `g_isUnloading=true`, drains RTD Connects (`WaitForRtdConnectDrain(2000)`), then drains commands AGAIN (`xll::ribbon::WaitForCommandDrain(2000)`, post-flag — each command thread re-checks the flag between its ≤200 ms per-attempt Sends, so it exits within ~one attempt; this second drain is what actually closes the command-path UAF window), then deletes `g_phost`. `WaitForCommandDrain` is declared OUTSIDE `XLL_RIBBON_ENABLED` and `ribbon_addin.cpp` is always swept up by the CMake source glob, so the lifecycle call links in every project.
 
 Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort contract as RTD `ConnectData` (§20.2 / §23.0): on forced unload each thread re-checks `g_isUnloading` at every yield point and aborts before touching `g_host`.
+
+**Delivery contract (at-least-once):** the first-click retry makes command delivery **at-least-once, not exactly-once**. A timed-out SHM `Send` does NOT prove the guest never consumed the request (the slot stays `SLOT_REQ_READY`; a guest attaching late can still read it), and a delivered-but-`SYSTEM_ERROR` response also retries (`res.HasError()` does not distinguish the two cases). The same applies to RTD `ConnectData`'s retry (§23.0): `RtdManager.Subscribe` is idempotent, but the **user's** command handler / `OnRtdConnect` / rtd-once handler may RUN TWICE under a slow cold start. Write command and connect handlers to be idempotent or side-effect-tolerant.
+
+**deferred-connect contract (LOAD-BEARING — fixed 2026-06-12):** the COMAddIns connect (`Application.COMAddIns.Item(progId).Connect = true`) needs the in-process `Application` object, reachable only through the `XLMAIN → XLDESK → EXCEL7` child-window chain. When the add-in loads with **no workbook open** (auto-loaded at Excel startup), the `EXCEL7` window does not exist, `GetExcelApplication()` returns `nullptr`, and a one-shot connect at `xlAutoOpen` fails permanently — the ribbon tab never appears even after the user opens a workbook. The connect therefore runs through `TryConnectRibbon(phase)` (idempotent, single-atomic state guard `g_ribbonConnectState`: 0=pending / 1=connected / 2=gave-up after ~60 bounded attempts) and is **retried from the calc-end callback**, which fires on the STA thread once a workbook exists — the SAME one-shot-with-retry idiom as `TryApplyRtdThrottle`. Consequence: ribbon-enabled builds register `CalculationEnded` unconditionally (it is the retry hook). NEVER collapse this back to a single inline `SetRibbonConnected(true)` in `xlAutoOpen`.
+
+**first-click delivery contract (LOAD-BEARING — fixed 2026-06-12):** `SendCommandInvoke` (ribbon onAction AND `Cmd_*` shortcut/Alt+F8 procs) is fire-and-forget on a detached thread, but a click can land in the window between the server process launch (`xlAutoOpen`) and the Go guest attaching its receive workers to the host slots. In that window a host-initiated `slot.Send` has no reader and times out; with the result discarded the command is silently dropped (observed as "the button does nothing on the first click, then works after another click"). The detached thread therefore **inspects `res.HasError()` and retries with a bounded budget + short per-attempt timeout** (re-acquiring a fresh `ZeroCopySlot` each attempt — `Send` disowns its slot on timeout). This is the same first-request retry the regtest mock host uses deliberately (`internal/regtest/testdata/mock_host.cpp`). The retry runs OFF the STA thread, so it never blocks Excel; the per-attempt timeout is kept short so the `WaitForCommandDrain` teardown path is not stalled. NEVER revert to a single discard-the-result `slot.Send(..., 5000)`.
 
 **set-before-connect contract:** `SetCommands` / `SetRibbonXml` run on the STA thread inside `xlAutoOpen` **BEFORE** COM-addin registration and connect. The backing globals are intentionally **unsynchronized** — correctness depends on this strict ordering. NEVER move registration off-thread and NEVER introduce a message pump between the `Set*` calls and connect, or the globals become observably racy.
 
 **Graceful degradation (see design §1.4):** if HKCU registration/connect fails (group-policy-locked desktops), worksheet functions / RTD / async must keep working unchanged, registered `commands` stay invocable via shortcut and by typing the name into Alt+F8 (`xlfRegister`/`macroType=2` does not depend on the COM/ribbon path), and failure is silent except for a logged warning.
+
+**Decision (2026-06-12, user-confirmed — do not re-propose):** raw-XML ribbon mode does **not** support image files. The `loadImage` rejection on the raw-XML path is by design, not a bug; projects that need file-based icons must use the structured mode (`tab`/`groups`).
 
 **Constraint**: Adding or renaming a `commands`/`ribbon` field, changing the ribbon XML shape, or touching `CommandInvokeRequest/Response` requires walking all five locations above plus the message-ID mirror, and verifying the templates still compile.
 
@@ -238,7 +269,8 @@ Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort 
 When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow these strict rules to avoid Excel registration failures or immediate unloads.
 
 ### 19.1 Type String Format
-1.  **Thread Safety**: Append `$` to the end of the type string to mark the function as thread-safe — **except** for caller-aware functions. Caller-aware functions are registered as macro-sheet equivalents (`#`, required so the wrapper can call `xlfGetCell` for the caller's number format), and Excel rejects `#` combined with `$`: `xlfRegister` returns `xlretSuccess` but the register ID is `xltypeErr` and the worksheet name resolves to `#NAME?`. So: caller-aware → `...#` (no `$`), everything else → `...$`.
+1.  **Thread Safety**: Append `$` to the end of the type string to mark the function as thread-safe — **except** for macro-sheet-equivalent functions. A function registered as a macro-sheet equivalent carries `#`, and Excel rejects `#` combined with `$`: `xlfRegister` returns `xlretSuccess` but the register ID is `xltypeErr` and the worksheet name resolves to `#NAME?`. So: macro-sheet → `...#` (no `$`), everything else → `...$`.
+    *   The `#` is keyed off **`macro: true`** (config `Function.Macro`), NOT off `caller: true`. As of v0.5.0 caller-awareness and macro-sheet registration are split: `xlfCaller` (which reports the caller's position) is callable from ANY XLL function — it is an SDK-documented exception, as are `xlSheetNm`/`xlSheetId` — so `caller: true` alone stays thread-safe (`$`, no `#`) and is **position-only**. The macro-only `xlfGetCell` (used by the wrapper to fetch the caller's number-format string into `Range.Format()`) requires the `#` registration, which is what `macro: true` grants. Therefore: the caller number format is populated only when a function sets **both** `caller: true` and `macro: true`; `caller: true` by itself leaves `Range.Format()` empty. `macro: true` is rejected on `mode: "rtd-once"` (same as `caller: true` — the handler runs off the calc thread on a topic connect).
 2.  **Synchronous Functions** (`mode: "sync"`):
     *   Format: `[ReturnTypeChar][ArgTypeChars]$`
     *   Example: `QJJ$` (Returns `LPXLOPER12`, takes two `long` integers).
@@ -262,7 +294,7 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
     *   `any`/`range`/`grid` -> `U` (LPXLOPER12, reference allowed; argument position only)
 *   **Mismatches**: Ensure the C++ function signature matches these types (e.g., `int32_t` for `J`, `double` for `B`). A mismatch will cause stack corruption or Excel crashes.
 
-### 19.3 Execution-Mode Guidance (sync / async / rtd)
+### 19.3 Execution-Mode Guidance (sync / async / rtd / rtd-once)
 
 `mode: "async"` does **not** keep the sheet responsive: Excel holds the
 calculation transaction open until all pending `xlAsyncReturn` results arrive,
@@ -276,8 +308,103 @@ for its async support. Full decision matrix + RTD caveats (2s default
 throttle — explicitly configurable via `rtd.throttle_interval`, which is
 registry-persisted per user; placeholder propagation to dependents; no F9
 re-run while the topic is connected; topic-string argument limits): README
-"Choosing an Execution Mode". A generated one-shot wrapper
-(`mode: "rtd-once"`) is a backlog design item.
+"Choosing an Execution Mode".
+
+Plain `mode: "rtd"` is **scalar-topic only**: arguments must be scalar
+(`int`/`float`/`string`/`bool`) and the return must be scalar or `any`.
+Composite (`range`/`grid`/`numgrid`) and `any` ARGUMENTS are rejected at
+config time (`internal/config/config.go`) — the C++ wrapper can only serialize
+them into the RTD topic as the literal `"[Complex]"`, so their contents never
+reach the Go handler AND every distinct value collides on the same topic (wrong
+result sharing between cells). Composite RETURNS are likewise rejected — the
+RTD push path (`pkg/rtd` → `fbany.MapGo`) carries scalars and `any` only and
+would otherwise `fmt.Sprintf`-stringify a composite. Composite support is
+deferred to the content-hash payload path (IMPROVEMENT_BACKLOG.md §7).
+
+#### `mode: "rtd-once"` — one-shot RTD wrapper
+
+`rtd-once` lets a user write a **normal sync-shaped handler** (`func(ctx,
+args...) (T, error)`) for a long one-shot computation; the generator wraps it
+in an RTD topic lifecycle so the cell returns immediately with `#GETTING_DATA`
+and later receives the value. Requires `rtd.enabled: true`. **Scope:** scalar
+args + scalar/`any` return only (the result rides `RtdUpdate`'s `Any` union).
+Composite args (`range`/`grid`/`numgrid`/`any`) and composite returns are
+rejected at config time (`internal/config/config.go`) — composite-arg support
+needs the deferred content-hash payload path (IMPROVEMENT_BACKLOG.md §7).
+caller-aware (`caller: true`) is also rejected (the handler runs on a topic
+connect, not in the calling cell's calc). A per-function `memoize: bool` flag
+and a per-function `memoize_ttl: "<duration>"` flag are valid **only** with
+rtd-once and are rejected on other modes; `memoize_ttl` is mutually exclusive
+with `memoize: true` (it is the intermediate "cache for the TTL, then
+recompute" option) and must parse to a positive Go duration.
+
+**Co-change cluster** (all must move together — same discipline as §18.7):
+* `internal/config/config.go` — mode accepted in the mode switch; rtd-once
+  return/arg/caller/memoize/memoize_ttl validation; `Function.Memoize` and
+  `Function.MemoizeTTL` fields.
+* `internal/generator/funcmap.go` — `isRtdLike` (rtd OR rtd-once, shares the
+  C++ wrapper shape + the server-side handler-glue skip), `anyRtdOnce`
+  (gates the C++ rtd-once machinery), and `durationMillis` (computes the
+  memoize_ttl milliseconds embedded in the `SetFunctionNames` call).
+* `internal/templates/server.go.tmpl` — rtd-once connect dispatch calls
+  `rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx) (interface{}, error) {
+  return handler.<Name>(ctx, <parsed scalar args>) })`; the sync/async
+  `handle<Name>` and user-message dispatch case are skipped for rtd-once
+  (gated by `not (isRtdLike .Mode)`).
+* `internal/templates/interface.go.tmpl` — rtd-once falls into the normal
+  (non-`_RTD`) signature branch, so the user implements an ordinary handler.
+* `pkg/rtd/runonce.go` — `RunOnce` runs the handler once and pushes the
+  result (or, on error, the error string) via `SendUpdate`. Unit-testable in
+  isolation (`pkg/rtd/runonce_test.go`).
+* `internal/templates/xll_main.cpp.tmpl` — rtd-once registers like rtd
+  (`Q<args>$`, returns `LPXLOPER12`); a distinct wrapper body (below);
+  `RtdOnceRegistry::SetFunctionNames({names}, {memoizeNames}, {ttlPairs})` at
+  xlAutoOpen (the third arg is name→ttl-ms pairs for memoize_ttl functions).
+* `internal/assets/files/include/xll_rtd_once.h` — `RtdOnceRegistry` (the
+  once-results map + topic bookkeeping) and `RtdOnceResultToXLOPER12`.
+* `internal/assets/files/src/xll_rtd.cpp` — `ConnectData` registers the
+  topicID→key map for rtd-once topics and returns `#GETTING_DATA` (VT_ERROR
+  2043) instead of "Connecting…"; `ProcessRtdUpdate` caches the value under
+  the topic's key; `DisconnectData` drops the topicID→key map.
+* `internal/assets/files/src/xll_events.cpp` — `HandleCalculationEnded` calls
+  `RtdOnceRegistry::ClearNonMemoized()` (gated by `XLL_RTD_ENABLED`).
+
+**Once/memoize_ttl/memoize lifecycle mechanism (as implemented):**
+1.  The wrapper builds the same topic strings as plain rtd (`t0`=function
+    name, `t1..`=stringified scalar args) and a key = those strings joined by
+    `\x1f` (`xll::MakeRtdOnceKey`).
+2.  On call, the wrapper checks `RtdOnceRegistry::TryGetResult(key)`. **Hit →
+    return the cached value directly, WITHOUT calling `xlfRtd`.** The cell then
+    holds no RTD reference, so Excel calls `DisconnectData` at end of calc and
+    the topic is torn down (Go unsubscribed via the existing path).
+3.  **Miss → `xlfRtd`.** Excel calls `ConnectData(topicID, strings)`. Because
+    `strings[0]` is in the rtd-once function-name set, ConnectData records
+    `topicID → key` and returns `#GETTING_DATA`. The Go server runs the
+    handler once (`rtd.RunOnce`) and pushes one `RtdUpdate`.
+4.  `ProcessRtdUpdate` looks up `topicID → key`; for rtd-once topics it stores
+    the VARIANT under the key, then does the normal `UpdateTopic` +
+    `NotifyUpdate` so Excel recalcs the cell → step 2 hits the cache.
+5.  **once (default):** `HandleCalculationEnded` calls `ClearNonMemoized()`,
+    which drops completed entries — but **only for keys with no live topic**
+    (no `topicID → key` mapping left). The liveness guard closes a race: a
+    CalculationEnded firing between `StoreResult` and the NotifyUpdate-driven
+    recalc would otherwise erase the value before the wrapper reads it; the
+    wrapper would re-issue `xlfRtd` against the still-connected topic, Excel
+    would replay `#GETTING_DATA`, and (the one-shot handler having already
+    run) the cell would be stuck. With the guard, an entry is reclaimed on the
+    first CalculationEnded **after** DisconnectData — the next user-initiated
+    recalc (F9) then recomputes fresh. **memoize:true:** the function name is
+    in the memoize subset, so `ClearNonMemoized` always skips it; the entry
+    persists until process teardown. The registry dtor is deliberately trivial
+    (§20.2 "leak, don't crash" — no `VariantClear`/`SysFreeString` from static
+    destructors on a forced unload).
+
+**Thread-safety:** the wrapper runs on calc threads, `ProcessRtdUpdate` on the
+IPC thread, calc-end/xlAutoClose on the STA thread — all `RtdOnceRegistry`
+access goes through one mutex. The `#GETTING_DATA` scode (2043) is kept
+byte-identical to `rtd/server.h`'s RefreshData placeholder (§22); do not
+diverge. Unload-safety idioms (`g_isUnloading`, ConnectData drain) are
+unchanged — rtd-once adds no new detached threads.
 
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
 
@@ -365,7 +492,8 @@ A focused C++ audit on 2026-05-16 produced 3 HIGH + 7 MED + 5 LOW findings. The 
 * **DONE — HIGH/MED:** `types/src/mem.cpp` `xlAutoFree12` lacked `__declspec(dllexport)`. When `types` is linked as a static library into the XLL, Excel cannot resolve the symbol by name and every `xlbitDLLFree`-marked `XLOPER12` leaks. Fixed by introducing a `TYPES_EXCEL_CALLBACK` macro (`extern "C" __declspec(dllexport) void __stdcall` on `_WIN32`, callback-only `extern "C" void __stdcall` elsewhere) in `types/include/types/mem.h` and applying it to the declaration and definition.
 * **DONE — MED:** `internal/assets/files/src/xll_embed.cpp` had `extern HMODULE g_hModule;` while `xll_lifecycle.h` / `xll_lifecycle.cpp` define `HINSTANCE g_hModule`. Both alias `void*` on Windows so it linked, but it was ODR-divergent. Replaced the local `extern` with `#include "xll_lifecycle.h"` so there is one source of truth for the declaration.
 * **DONE — MED:** `internal/assets/files/src/xll_lifecycle.cpp` `DllMain` forced-unload branch reordered so `SetEvent(g_procInfo.hShutdownEvent)` runs **before** `ForceTerminateWorker()` and `g_monitorThread.detach()`. This gives the threads a brief chance to observe shutdown before being orphaned, while still honoring §20.2 ("leak, don't crash") — no new work is added in `DLL_PROCESS_DETACH`, only existing steps reordered.
-* **DONE — HIGH (memory-safety-auditor A4, 2026-05-16; integration completed 2026-05-17):** `internal/assets/files/src/xll_rtd.cpp` `RtdServer::ConnectData` spawns a detached `std::thread` whose lambda accesses `g_host`. On forced unload (per §20) or graceful close (`OnAutoClose` deletes `g_phost`), the lambda could touch freed memory. Patched in-file: the lambda now checks `xll::g_isUnloading` at every yield point (top, before `g_host.GetZeroCopySlot()`, before `slot.Send`); a file-static `g_rtdConnectInFlight` counter is incremented/decremented via an RAII guard; `WaitForRtdConnectDrain(timeoutMs)` is declared in `xll_rtd.h` and defined in `xll_rtd.cpp`. The integration is now wired in: `xll_lifecycle.cpp::OnAutoClose` (under `#ifdef XLL_RTD_ENABLED`) calls `WaitForRtdConnectDrain(2000)` immediately **before** `delete g_phost`. A 2-second timeout is logged as a warning but does not block teardown — the residual race (a Connect thread blocked >2s on SHM) is narrower than the unpatched window. Validated end-to-end by `internal/smoketest` (sync + async + RTD round-trip without segfault).
+* **DONE — HIGH (memory-safety-auditor A4, 2026-05-16; integration completed 2026-05-17):** `internal/assets/files/src/xll_rtd.cpp` `RtdServer::ConnectData` spawns a detached `std::thread` whose lambda accesses `g_host`. On forced unload (per §20) or graceful close (`OnAutoClose` deletes `g_phost`), the lambda could touch freed memory. Patched in-file: the lambda now checks `xll::g_isUnloading` at every yield point (top, before `g_host.GetZeroCopySlot()`, before `slot.Send`); a file-static `g_rtdConnectInFlight` counter is incremented/decremented via an RAII guard; `WaitForRtdConnectDrain(timeoutMs)` is declared in `xll_rtd.h` and defined in `xll_rtd.cpp`. The integration is now wired in: `xll_lifecycle.cpp::OnAutoClose` (under `#ifdef XLL_RTD_ENABLED`) calls `WaitForRtdConnectDrain(2000)` immediately **before** `delete g_phost`. Validated end-to-end by `internal/smoketest` (sync + async + RTD round-trip without segfault).
+* **DONE — MED (drain-cap gap closed 2026-06-12, formerly an "accepted residual"):** the A4 fix above wired in a 2000 ms drain cap, but `ConnectData`'s detached thread sent via a SINGLE `slot.Send(..., MSG_RTD_CONNECT, 5000)` — a single Send could block in SHM up to 5000 ms. A Connect blocked >2 s outlived the drain, so `OnAutoClose` reached `delete g_phost` while that Send was still touching the slot — a narrow use-after-free. **Closed** by replacing the single 5000 ms Send with a bounded retry loop (`kMaxAttempts = 20`, `kAttemptTimeoutMs = 250`) that re-checks `xll::g_isUnloading` between attempts and before every slot acquire/Send, re-acquiring a FRESH `ZeroCopySlot` each attempt (shm `DirectHost.h` `ZeroCopySlot::Send` disowns its slot on timeout — `slotIdx = -1` — so a slot object cannot be reused). With <=250 ms per-attempt + unload re-checks, an in-flight Connect thread returns within ~250 ms of `g_isUnloading` being set, so the existing 2000 ms drain cap is sufficient with margin — no UAF window. Total retry budget (20 × 250 ms = 5000 ms) keeps slow-but-alive-host behavior identical to the old single 5000 ms Send. Mirrors `ribbon_addin.cpp::SendCommandInvoke` (same structural problem, §18.11 first-click-delivery contract). **Duplication-on-retry, verified benign:** a timed-out `Send` does NOT mean the guest never consumed the request — `DirectHost::WaitResponse` publishes `SLOT_REQ_READY` first, then waits for the guest to flip to `SLOT_RESP_READY`; a timeout means "no response in budget", so a retry can deliver `MSG_RTD_CONNECT` twice. This is safe: `RtdManager.Subscribe` (`pkg/rtd/manager.go`) is idempotent on `(topicID, key)` (a repeat early-returns), so the subscription map is unchanged; the user's `OnRtdConnect` may run twice (panic-recovered goroutine), exactly as the ribbon CommandInvoke path may double-fire — no dedup added. `DisconnectData` (synchronous on the STA thread, not drain-covered) keeps its single 500 ms Send (already < the 2000 ms cap) but gains the `g_isUnloading` re-check + `g_phost` null-check to guard the forced-unload race. Asset regression: `internal/generator/gen_rtd_connect_test.go::TestRtdConnectDrainCapAlignment` pins the retry loop + unload re-check markers and asserts the old single 5000 ms Send is gone.
 
 Open items from the same audit (remaining MED + all LOW) live in the lower §23.x subsections (where applicable) and in `types/AGENTS.md`'s backlog; the C++ reviewer agent should re-confirm on the next pass.
 
@@ -394,6 +522,18 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
   * `MaxChunkBufferBytes` is currently only mutable through code (`ChunkManager` field or `NewChunkManagerWithMax`). Plumb it through `xll.yaml` → `internal/config` so deployments can tune it without rebuilds. Co-change cluster: pairs with the §23.2 cleanup-tick/TTL promotion.
   * **DONE (2026-05-17, xll-gen v0.3.8 / shm v0.6.0):** local `MsgSystemError` sentinel in `pkg/server/types.go` removed; `pkg/server/handlers.go` and `pkg/server/manager_test.go` now use `shm.MsgTypeSystemError` directly. shm exported the constant in v0.6.0 alongside the streaming API.
   * Wire `Chunk` schema (in `types/`) does not carry an explicit `total_chunks` field; dedup is keyed on offset (unique per chunk on first transmission) which is sufficient given chunk size is sender-controlled and offsets do not overlap. If a future change introduces variable-sized chunks within a transfer, revisit and key on `(offset, length)` or add an explicit chunk-index field.
+
+### 23.3.1 Real-Excel verification (2026-06-12, smoke + spill + rtd-once pass)
+
+A full real-Excel run (Excel 2021 / C2R 16.0.19127 x64, MinGW UCRT x86_64) of the
+smoke harness plus first-ever real-Excel runs of the spill and rtd-once features
+surfaced two real product bugs, both fixed in runtime C++ assets with marker-based
+regression tests in `internal/generator/`.
+
+* **DONE — RTD ConnectData detached-thread did not compile under MinGW (build break, HIGH).** The drain-cap retry loop added 2026-06-12 (§23.0) declared `constexpr int kMaxAttempts`/`constexpr unsigned int kAttemptTimeoutMs` in the scope ENCLOSING the detached-thread lambda, but the lambda (`[TopicID, strings, newVal]`, no capture-default) odr-uses `kAttemptTimeoutMs` (passed by value to `std::chrono::milliseconds` and `slot.Send`). MSVC silently accepts an uncaptured odr-use of a constexpr; **MinGW/GCC rejects it** (`'kAttemptTimeoutMs' is not captured`), so any RTD-enabled project failed to build under the supported MinGW toolchain — the smoke test could not even compile. Fix: move both `constexpr` declarations INSIDE the lambda body (where `ribbon_addin.cpp::SendCommandInvoke` already correctly puts its equivalents). File: `internal/assets/files/src/xll_rtd.cpp`. Regression: `internal/generator/gen_rtd_connect_test.go::TestRtdConnectDrainCapAlignment` extended to assert the constexpr declaration sites come AFTER the `std::thread([...])` opener (fails on the parent form, passes after the move).
+* **DONE — async grid/numgrid return corrupted Excel's heap (HIGH, crash).** `=MyAsyncGrid()` (async function returning a spilling `[][]any`/`[][]float64`) crashed Excel on every recalc with `STATUS_HEAP_CORRUPTION` (`0xc0000374`, faulting module `ntdll`). Sync `grid`/`numgrid` spilled fine; only the async path crashed, deterministically. Root cause: `ProcessAsyncBatchResponse` (`internal/assets/files/src/xll_async.cpp`) assumed `xlAsyncReturn` deep-copies the ENTIRE result XLOPER12 synchronously, then freed it immediately via `xlAutoFree12(pxResult)`. True for scalars (value copied inline — which is why `AsyncAdd` worked), but FALSE for `xltypeMulti`: Excel retains the `lparray` pointer to populate the spill range AFTER the calc transaction, so the synchronous `delete[]` of `lparray` was a use-after-free. Fix: a result carrying `xlbitDLLFree` is owned by Excel after the handoff — Excel invokes the exported `xlAutoFree12` callback (deferred) when done; the asset must NOT free it itself and only returns borrowed pool nodes (no `xlbitDLLFree`) via `ReleaseXLOPER12`. This mirrors the always-working SYNC return path (which relies on Excel's deferred `xlAutoFree12`). The ownership bit is captured BEFORE `xlAsyncReturn` so it is never read off an XLOPER12 Excel may already be processing. Regression: `internal/generator/gen_async_grid_test.go::TestAsyncResultDeferredFreeForDLLOwned` (fails on the parent form — the synchronous `xlAutoFree12(pxResult)` — passes after the fix). Verified end-to-end in real Excel: async grid now spills to its full range with `HasSpill=true`, no crash. **Note:** the async grid converter (`AnyToXLOPER12` → `GridToXLOPER12`) and `xlAutoFree12` live in `github.com/xll-gen/types` and were already correct; the bug was purely the asset's premature free, so no `types` change was needed.
+
+  Both C++ asset changes touch the runtime path (not `DllMain`); they should be confirmed by `xll-cpp-reviewer` on the next pass.
 
 ### 23.4 Dependencies
 * **DONE (2026-05-17):** `go.mod` — `golang.org/x/sys` bumped from `v0.1.0` (Jan 2022) to `v0.33.0`. We held back from `v0.34+` because those releases force the Go directive up to 1.25; `v0.33.0` is the newest line still compatible with our `go 1.24.3` floor. Revisit when the project itself is ready to require Go 1.25.

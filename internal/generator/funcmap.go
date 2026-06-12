@@ -174,5 +174,36 @@ func GetCommonFuncMap() template.FuncMap {
 		"MsgUserStart": func() int {
 			return server.MsgUserStart
 		},
+		// isRtdLike reports whether a mode routes through the RTD topic
+		// lifecycle (xlfRtd wrapper, RTD push results). Both "rtd" and
+		// "rtd-once" share the C++ wrapper shape and the server-side skip of
+		// the sync/async handler glue.
+		"isRtdLike": func(mode string) bool {
+			return mode == "rtd" || mode == "rtd-once"
+		},
+		// anyRtdOnce reports whether the project declares at least one
+		// rtd-once function. Used to gate emission of the C++ RtdOnceResults
+		// machinery and the once-set initializer.
+		"anyRtdOnce": func(fns []config.Function) bool {
+			for _, fn := range fns {
+				if fn.Mode == "rtd-once" {
+					return true
+				}
+			}
+			return false
+		},
+		// durationMillis parses a Go duration string and returns its whole
+		// milliseconds as a string, for embedding a memoize_ttl into the
+		// generated C++ SetFunctionNames(...) call. Config validation has
+		// already guaranteed the string parses to a positive duration; if it
+		// somehow does not, fall back to "0" (treated as no TTL by the C++
+		// registry, which only stores TTLs > 0).
+		"durationMillis": func(s string) string {
+			d, err := time.ParseDuration(s)
+			if err != nil || d <= 0 {
+				return "0"
+			}
+			return strconv.FormatInt(d.Milliseconds(), 10)
+		},
 	}
 }

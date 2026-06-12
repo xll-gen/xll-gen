@@ -27,9 +27,18 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update);
  * the connect request to g_host. To avoid a use-after-free on g_phost during
  * OnAutoClose, the lifecycle owner must call this drain BEFORE `delete g_phost`.
  *
+ * The drain cap (2000 ms at the call site in xll_lifecycle.cpp) is now strictly
+ * larger than the in-flight Send's worst-case responsiveness: the ConnectData
+ * thread sends via a bounded retry loop of <=250 ms per-attempt timeouts and
+ * re-checks g_isUnloading between attempts, so it returns within ~350 ms worst
+ * case of the unload flag being set (one in-flight attempt: timeout + one
+ * ~100 ms WaitEvent quantum + spin) — well inside the 2000 ms cap. The single-5000 ms-Send
+ * UAF window documented in AGENTS.md §23.0 is therefore closed; a drain timeout
+ * is now a should-never-happen warning rather than an accepted residual race.
+ *
  * @param timeoutMs Maximum time to wait (in milliseconds).
- * @return true if drained within the timeout, false on timeout (a leak/UAF
- *         race window remains in the timeout case — caller should log).
+ * @return true if drained within the timeout, false on timeout (logged by the
+ *         caller; with the bounded-retry ConnectData this should not occur).
  */
 bool WaitForRtdConnectDrain(unsigned int timeoutMs);
 

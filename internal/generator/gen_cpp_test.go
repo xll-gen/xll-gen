@@ -2,6 +2,8 @@ package generator
 
 import (
 	"fmt"
+	"github.com/xll-gen/xll-gen/internal/config"
+	"github.com/xll-gen/xll-gen/pkg/server"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"github.com/xll-gen/xll-gen/internal/config"
-	"github.com/xll-gen/xll-gen/pkg/server"
 )
 
 // writeTestPNG writes a 16x16 PNG (with partial alpha) and returns its path.
@@ -125,33 +125,33 @@ func TestGenCpp_ComplexReturnTypes(t *testing.T) {
 	cfg := &config.Config{
 		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
 		Functions: []config.Function{
-            {
+			{
 				Name:   "TestAny",
 				Return: "any",
 				Args:   []config.Arg{},
 			},
-            {
+			{
 				Name:   "TestGrid",
 				Return: "grid",
 				Args:   []config.Arg{},
 			},
-            {
+			{
 				Name:   "TestNumGrid",
 				Return: "numgrid",
 				Args:   []config.Arg{},
 			},
-            {
+			{
 				Name:   "TestRange",
 				Return: "range",
 				Args:   []config.Arg{},
 			},
 		},
-        Server: config.ServerConfig{
-            Timeout: "2s",
-            Launch: &config.LaunchConfig{Enabled: new(bool)}, // Default false is fine, just needs to be non-nil
-        },
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)}, // Default false is fine, just needs to be non-nil
+		},
 	}
-    *cfg.Server.Launch.Enabled = true
+	*cfg.Server.Launch.Enabled = true
 
 	// Generate xll_main.cpp
 	if err := generateCppMain(cfg, tmpDir, false); err != nil {
@@ -166,21 +166,21 @@ func TestGenCpp_ComplexReturnTypes(t *testing.T) {
 	content := string(contentBytes)
 
 	// Verify converters are used
-    checks := []struct {
-        name string
-        want string
-    }{
-        {"TestAny", "return AnyToXLOPER12(resp->result());"},
-        {"TestGrid", "return GridToXLOPER12(resp->result());"},
-        {"TestNumGrid", "return NumGridToFP12(resp->result());"},
-        {"TestRange", "return RangeToXLOPER12(resp->result());"},
-    }
+	checks := []struct {
+		name string
+		want string
+	}{
+		{"TestAny", "return AnyToXLOPER12(resp->result());"},
+		{"TestGrid", "return GridToXLOPER12(resp->result());"},
+		{"TestNumGrid", "return NumGridToFP12(resp->result());"},
+		{"TestRange", "return RangeToXLOPER12(resp->result());"},
+	}
 
-    for _, c := range checks {
-        if !strings.Contains(content, c.want) {
-            t.Errorf("Function %s: expected '%s', not found", c.name, c.want)
-        }
-    }
+	for _, c := range checks {
+		if !strings.Contains(content, c.want) {
+			t.Errorf("Function %s: expected '%s', not found", c.name, c.want)
+		}
+	}
 }
 
 // renderCppMain runs generateCppMain into a temp dir and returns the rendered
@@ -312,12 +312,14 @@ func TestGenCpp_NoCommands(t *testing.T) {
 }
 
 // TestGenCpp_ArgMarshalling pins the request-building marshalling call shape for
-// composite ARG types and the caller-aware (caller:true) path. Regression guard
-// for the codegen bug where the template emitted undeclared GridToFlatBuffer /
+// composite ARG types and the caller+macro path. Regression guard for the
+// codegen bug where the template emitted undeclared GridToFlatBuffer /
 // NumGridToFlatBuffer / RangeToFlatBuffer with swapped (builder, op) args (real
 // API is ConvertGrid/ConvertNumGrid/ConvertRange(op, builder)), and the caller
 // path passed ScopedXLOPER12* (&xCaller/&xFormat) plus operator-> that
 // ScopedXLOPER12 lacks. Both made the generated xll_main.cpp fail to compile.
+// WhoAmI is caller+macro here so the xlfGetCell number-format fetch is emitted
+// (caller:true alone no longer fetches the format — see the split below).
 func TestGenCpp_ArgMarshalling(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
@@ -327,7 +329,7 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 			{Name: "SumNumGrid", Return: "float", Args: []config.Arg{{Name: "ng", Type: "numgrid"}}},
 			{Name: "RangeAddr", Return: "string", Args: []config.Arg{{Name: "r", Type: "range"}}},
 			{Name: "EchoAny", Return: "any", Args: []config.Arg{{Name: "v", Type: "any"}}},
-			{Name: "WhoAmI", Return: "string", Args: []config.Arg{}, Caller: true},
+			{Name: "WhoAmI", Return: "string", Args: []config.Arg{}, Caller: true, Macro: true},
 		},
 		Server: config.ServerConfig{
 			Timeout: "2s",
@@ -366,17 +368,122 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 		t.Errorf("caller path passes ScopedXLOPER12* (&xFormat); must pass the scoped object directly")
 	}
 	if !strings.Contains(content, "xFormat.get()->") {
-		t.Errorf("caller path must dereference via xFormat.get()-> (ScopedXLOPER12 has no operator->)")
+		t.Errorf("caller+macro path must dereference via xFormat.get()-> (ScopedXLOPER12 has no operator->)")
 	}
 	if !strings.Contains(content, "ConvertRange(xCaller.get(), builder, callerFormat)") {
 		t.Errorf("caller path must call ConvertRange(xCaller.get(), builder, callerFormat)")
 	}
 	// xlfGetCell returns an Excel-allocated xltypeStr; only the Result wrapper
 	// releases it (xlFree in its destructor, types >= v0.2.9). Plain
-	// ScopedXLOPER12 leaked the format string on every caller-aware call.
+	// ScopedXLOPER12 leaked the format string on every macro caller-aware call.
 	if !strings.Contains(content, "ScopedXLOPER12Result xFormat;") {
-		t.Errorf("caller path must hold the xlfGetCell result in ScopedXLOPER12Result")
+		t.Errorf("caller+macro path must hold the xlfGetCell result in ScopedXLOPER12Result")
 	}
+}
+
+// TestGenCpp_CallerMacroSplit pins the v0.5.0 caller/macro registration split:
+//   - caller:true alone is POSITION-ONLY and thread-safe: type string carries
+//     '$' and no '#', the wrapper emits xlfCaller + ConvertRange with an empty
+//     format, and it does NOT emit the macro-only xlfGetCell fetch.
+//   - macro:true alone registers the function as a macro-sheet equivalent: type
+//     string carries '#' and no '$'. Without caller:true there is no xlfCaller
+//     block.
+//   - caller+macro is the legacy full behavior: '#', no '$', and the wrapper
+//     fetches the caller number format via xlfGetCell(7).
+func TestGenCpp_CallerMacroSplit(t *testing.T) {
+	t.Parallel()
+
+	mk := func(fn config.Function) string {
+		cfg := &config.Config{
+			Project:   config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+			Functions: []config.Function{fn},
+			Server: config.ServerConfig{
+				Timeout: "2s",
+				Launch:  &config.LaunchConfig{Enabled: new(bool)},
+			},
+		}
+		return renderCppMain(t, cfg)
+	}
+
+	// regBlock returns the registration { ... } block for the named function so
+	// type-string assertions are not confused by other functions' blocks.
+	regBlock := func(content, name string) string {
+		// Match the comment line head only (template line endings may be CRLF).
+		marker := "// Register " + name
+		i := strings.Index(content, marker)
+		if i < 0 {
+			t.Fatalf("registration block for %q not found", name)
+		}
+		rest := content[i+len(marker):]
+		// The next function's registration block (or the commands section)
+		// starts at the next "// Register " marker; bound the slice there.
+		if j := strings.Index(rest, "// Register "); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+
+	// The registration-block comment mentions xlfCaller/xlfGetCell by name to
+	// explain the split, so assert on the actual emitted CALLS
+	// (CallExcel(xlf..., ...)) rather than the bare tokens.
+	t.Run("caller only: thread-safe, position-only, no xlfGetCell", func(t *testing.T) {
+		content := mk(config.Function{Name: "WhoAmI", Return: "string", Caller: true})
+		blk := regBlock(content, "WhoAmI")
+		// Type string: Q (string return) + '$', no '#'.
+		if !strings.Contains(blk, `std::wstring typeStr = L"Q$"`) {
+			t.Errorf("caller-only type string must be Q$ (thread-safe, no '#'); block:\n%s", blk)
+		}
+		// Wrapper keeps the xlfCaller call + empty-format ConvertRange.
+		if !strings.Contains(content, "CallExcel(xlfCaller") {
+			t.Errorf("caller-only must still call xlfCaller")
+		}
+		if !strings.Contains(content, "ConvertRange(xCaller.get(), builder, callerFormat)") {
+			t.Errorf("caller-only must call ConvertRange(xCaller.get(), builder, callerFormat)")
+		}
+		// callerFormat is declared and stays "" — no xlfGetCell fetch.
+		if !strings.Contains(content, `std::string callerFormat = "";`) {
+			t.Errorf("caller-only must declare an empty callerFormat")
+		}
+		if strings.Contains(content, "CallExcel(xlfGetCell") {
+			t.Errorf("caller-only must NOT emit the macro-only xlfGetCell fetch")
+		}
+		if strings.Contains(content, "ScopedXLOPER12Result xFormat;") {
+			t.Errorf("caller-only must NOT declare the xlfGetCell result holder")
+		}
+	})
+
+	t.Run("macro only: macro-sheet, no thread-safe, no caller block", func(t *testing.T) {
+		content := mk(config.Function{Name: "MacroFn", Return: "string", Macro: true})
+		blk := regBlock(content, "MacroFn")
+		// Type string: Q (string return) + '#', no '$'.
+		if !strings.Contains(blk, `std::wstring typeStr = L"Q#"`) {
+			t.Errorf("macro-only type string must be Q# (macro-sheet, no '$'); block:\n%s", blk)
+		}
+		// No caller:true → no xlfCaller wrapper block at all.
+		if strings.Contains(content, "CallExcel(xlfCaller") {
+			t.Errorf("macro-only (no caller) must NOT emit an xlfCaller block")
+		}
+	})
+
+	t.Run("caller+macro: macro-sheet + xlfGetCell format fetch", func(t *testing.T) {
+		content := mk(config.Function{Name: "WhoAmIFmt", Return: "string", Caller: true, Macro: true})
+		blk := regBlock(content, "WhoAmIFmt")
+		if !strings.Contains(blk, `std::wstring typeStr = L"Q#"`) {
+			t.Errorf("caller+macro type string must be Q# (macro-sheet, no '$'); block:\n%s", blk)
+		}
+		if !strings.Contains(content, "CallExcel(xlfCaller") {
+			t.Errorf("caller+macro must call xlfCaller")
+		}
+		if !strings.Contains(content, "CallExcel(xlfGetCell") {
+			t.Errorf("caller+macro must fetch the number format via xlfGetCell")
+		}
+		if !strings.Contains(content, "ScopedXLOPER12Result xFormat;") {
+			t.Errorf("caller+macro must hold the xlfGetCell result in ScopedXLOPER12Result")
+		}
+		if !strings.Contains(content, "ConvertRange(xCaller.get(), builder, callerFormat)") {
+			t.Errorf("caller+macro must call ConvertRange(xCaller.get(), builder, callerFormat)")
+		}
+	})
 }
 
 // TestXllMainRibbonImageWiring pins the Task-5 template wiring: the ribbon image
@@ -461,18 +568,18 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 				Return: "string",
 				Args:   []config.Arg{},
 			},
-            {
+			{
 				Name:   "TestInt",
 				Return: "int",
 				Args:   []config.Arg{},
 			},
 		},
-        Server: config.ServerConfig{
-            Timeout: "2s",
-            Launch: &config.LaunchConfig{Enabled: new(bool)},
-        },
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
 	}
-    *cfg.Server.Launch.Enabled = true
+	*cfg.Server.Launch.Enabled = true
 
 	// Generate xll_main.cpp
 	if err := generateCppMain(cfg, tmpDir, false); err != nil {
@@ -486,37 +593,37 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	}
 	content := string(contentBytes)
 
-    // Verify TestStr / TestInt slot.Send call site uses MsgUserStart + index.
-    // Deriving from server.MsgUserStart avoids the silent rot the prior
-    // hardcoded 133 introduced when MsgUserStart bumped to 140.
-    strID := fmt.Sprintf("slot.Send(-((int)builder.GetSize()), (shm::MsgType)%d", server.MsgUserStart+0)
-    intID := fmt.Sprintf("slot.Send(-((int)builder.GetSize()), (shm::MsgType)%d", server.MsgUserStart+1)
-    if !strings.Contains(content, strID) {
-         t.Fatalf("Could not find expected slot.Send call for TestStr (MsgId %d)", server.MsgUserStart+0)
-    }
-    if !strings.Contains(content, intID) {
-         t.Fatalf("Could not find expected slot.Send call for TestInt (MsgId %d)", server.MsgUserStart+1)
-    }
+	// Verify TestStr / TestInt slot.Send call site uses MsgUserStart + index.
+	// Deriving from server.MsgUserStart avoids the silent rot the prior
+	// hardcoded 133 introduced when MsgUserStart bumped to 140.
+	strID := fmt.Sprintf("slot.Send(-((int)builder.GetSize()), (shm::MsgType)%d", server.MsgUserStart+0)
+	intID := fmt.Sprintf("slot.Send(-((int)builder.GetSize()), (shm::MsgType)%d", server.MsgUserStart+1)
+	if !strings.Contains(content, strID) {
+		t.Fatalf("Could not find expected slot.Send call for TestStr (MsgId %d)", server.MsgUserStart+0)
+	}
+	if !strings.Contains(content, intID) {
+		t.Fatalf("Could not find expected slot.Send call for TestInt (MsgId %d)", server.MsgUserStart+1)
+	}
 
-    // Expect: if (res.HasError())
-    if !strings.Contains(content, "if (res.HasError())") {
-         t.Fatal("Could not find expected HasError check")
-    }
+	// Expect: if (res.HasError())
+	if !strings.Contains(content, "if (res.HasError())") {
+		t.Fatal("Could not find expected HasError check")
+	}
 
-    // Check that HasError is used at least twice (once for each function)
-    if strings.Count(content, "if (res.HasError())") < 2 {
-         t.Fatal("Expected at least 2 occurrences of 'if (res.HasError())'")
-    }
+	// Check that HasError is used at least twice (once for each function)
+	if strings.Count(content, "if (res.HasError())") < 2 {
+		t.Fatal("Expected at least 2 occurrences of 'if (res.HasError())'")
+	}
 
-    // Check for negative size calculation
-    if !strings.Contains(content, "-((int)builder.GetSize())") {
-        t.Fatal("Expected negative size calculation for zero-copy")
-    }
+	// Check for negative size calculation
+	if !strings.Contains(content, "-((int)builder.GetSize())") {
+		t.Fatal("Expected negative size calculation for zero-copy")
+	}
 
-    // Ensure memmove is GONE
-    if strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
-        t.Fatal("Expected NO memmove for zero-copy optimization")
-    }
+	// Ensure memmove is GONE
+	if strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
+		t.Fatal("Expected NO memmove for zero-copy optimization")
+	}
 }
 
 // TestGenCpp_DescriptionEscaping is the regression for free-text config

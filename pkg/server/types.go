@@ -6,6 +6,7 @@ import (
 
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/pkg/algo"
+	"github.com/xll-gen/xll-gen/pkg/msgid"
 )
 
 // AnyValue aliases protocol.AnyValue so consumers in pkg/server can speak in
@@ -25,28 +26,34 @@ type ScalarValue struct {
 	Err  int16
 }
 
+// The message-ID constants live in pkg/msgid (a leaf package with no
+// dependency on pkg/server or pkg/rtd, which lets pkg/rtd drop its shadow
+// copy of MsgRtdUpdate). They are re-exported here as aliases so all existing
+// references through server.Msg* — including generated code — keep compiling
+// unchanged. The C++ mirror in internal/assets/files/include/xll_ipc.h and
+// the §18.6 mirror discipline are unchanged; pkg/msgid is the Go-side source.
 const (
-	MsgAck = 2
+	MsgAck = msgid.MsgAck
 	// System error signals are sourced from shm directly — see
 	// shm.MsgTypeSystemError (value 127). The local mirror that used to
 	// live here was removed in xll-gen v0.3.8 / shm v0.6.0+.
-	MsgBatchAsyncResponse  = 128
-	MsgChunk               = 129
-	MsgSetRefCache         = 130
-	MsgCalculationEnded    = 131
-	MsgCalculationCanceled = 132
+	MsgBatchAsyncResponse  = msgid.MsgBatchAsyncResponse
+	MsgChunk               = msgid.MsgChunk
+	MsgSetRefCache         = msgid.MsgSetRefCache
+	MsgCalculationEnded    = msgid.MsgCalculationEnded
+	MsgCalculationCanceled = msgid.MsgCalculationCanceled
 	// RTD Messages (133-136)
-	MsgRtdConnect    = 133
-	MsgRtdDisconnect = 134
-	MsgRtdUpdate     = 135
-	MsgRtdHeartbeat  = 136
+	MsgRtdConnect    = msgid.MsgRtdConnect
+	MsgRtdDisconnect = msgid.MsgRtdDisconnect
+	MsgRtdUpdate     = msgid.MsgRtdUpdate
+	MsgRtdHeartbeat  = msgid.MsgRtdHeartbeat
 
 	// Command (ribbon/macro) invocation — must stay in sync with
 	// MSG_COMMAND_INVOKE in internal/assets/files/include/xll_ipc.h.
-	MsgCommandInvoke = 137
+	MsgCommandInvoke = msgid.MsgCommandInvoke
 
 	// User Messages Start
-	MsgUserStart = 140
+	MsgUserStart = msgid.MsgUserStart
 )
 
 // DefaultChunkSize is the per-chunk payload byte budget for chunked

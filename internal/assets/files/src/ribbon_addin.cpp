@@ -59,27 +59,73 @@ namespace xll { namespace ribbon {
         std::thread([commandNameUtf8, controlIdUtf8]() {
             CommandInFlightGuard inflight;
 
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
-            if (!g_phost) return;
+            // First-click race: a ribbon click can land in the window between
+            // the server process being launched (xlAutoOpen) and the Go guest
+            // actually attaching its receive workers to the host slots. In that
+            // window a host-initiated Send has no reader and times out, and —
+            // because this path is fire-and-forget — the command is silently
+            // dropped. The user sees "nothing happens on the first click; it
+            // works after clicking another button" (the second click lands
+            // after the guest has connected). The mock host solves the same
+            // race with an explicit first-request retry (internal/regtest
+            // testdata/mock_host.cpp). We do the same here: bounded retry with
+            // a short per-attempt timeout. This runs OFF the STA thread, so the
+            // retry never blocks Excel. The guest, once connected, stays
+            // connected, so steady-state clicks send on the first attempt.
+            //
+            // Each attempt re-acquires a fresh ZeroCopySlot and rebuilds the
+            // request: ZeroCopySlot::Send disowns its slot (slotIdx = -1) on a
+            // timeout, so a slot object cannot be reused across attempts.
+            // Each failing attempt blocks kAttemptTimeoutMs inside Send waiting
+            // for a reader, so the worst-case total wait is
+            // kMaxAttempts * kAttemptTimeoutMs (~10s) before the command is
+            // declared undeliverable — generous cover for a slow guest cold
+            // start, while each attempt's short timeout keeps the unload path
+            // responsive: the g_isUnloading re-check runs between attempts, so
+            // the thread exits within ~one attempt of the flag being set
+            // (<~350 ms worst case incl. shm's WaitEvent quantum).
+            constexpr int kMaxAttempts = 50;
+            constexpr unsigned int kAttemptTimeoutMs = 200;
+            for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+                if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (!g_phost) return;
 
-            auto slot = g_phost->GetZeroCopySlot();
+                auto slot = g_phost->GetZeroCopySlot();
 
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (!slot.IsValid()) {
+                    // All host slots momentarily busy; yield and retry.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(kAttemptTimeoutMs));
+                    continue;
+                }
 
-            SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
-            flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
-            auto nameOff = builder.CreateString(commandNameUtf8);
-            auto ctrlOff = builder.CreateString(controlIdUtf8);
-            auto req = protocol::CreateCommandInvokeRequest(builder, nameOff, ctrlOff);
-            builder.Finish(req);
+                SHMAllocator allocator(slot.GetReqBuffer(), slot.GetMaxReqSize());
+                flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
+                auto nameOff = builder.CreateString(commandNameUtf8);
+                auto ctrlOff = builder.CreateString(controlIdUtf8);
+                auto req = protocol::CreateCommandInvokeRequest(builder, nameOff, ctrlOff);
+                builder.Finish(req);
 
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
 
-            slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_COMMAND_INVOKE, 5000);
+                auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_COMMAND_INVOKE, kAttemptTimeoutMs);
 
-            // After Send returns (success or timeout) we touch nothing on
-            // g_phost; mirrors xll_rtd.cpp ConnectData. The ZeroCopySlot
-            // destructor only touches its own slot header.
+                // After Send returns we touch nothing on g_phost; mirrors
+                // xll_rtd.cpp ConnectData. The ZeroCopySlot destructor only
+                // touches its own slot header.
+                if (!res.HasError()) {
+                    return; // delivered (ack received)
+                }
+                // HasError() covers BOTH a transport timeout AND a delivered-
+                // but-SYSTEM_ERROR response — both retry, so delivery is
+                // at-least-once (AGENTS.md §18.11 "Delivery contract": command
+                // handlers must tolerate duplicates). No extra sleep — the
+                // Send already blocked kAttemptTimeoutMs waiting for a reader.
+            }
+
+            if (!xll::g_isUnloading.load(std::memory_order_acquire)) {
+                xll::LogWarn("CommandInvoke dropped (server not reachable after retries): " + commandNameUtf8);
+            }
         }).detach();
     }
 

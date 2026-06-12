@@ -7,6 +7,9 @@
 #include "types/protocol_generated.h"
 #include <vector>
 #include <mutex>
+#ifdef XLL_RTD_ENABLED
+#include "xll_rtd_once.h"
+#endif
 
 namespace xll {
     void HandleCalculationEnded() {
@@ -16,6 +19,14 @@ namespace xll {
             g_sentRefCache.clear();
         }
         CacheManager::Instance().ClearRefCache();
+
+#ifdef XLL_RTD_ENABLED
+        // rtd-once: drop completed one-shot results for non-memoize functions
+        // so the next user-initiated recalc recomputes (F9 semantics). Same
+        // per-calc-cycle lifecycle as the RefCache clear above. No-op when no
+        // rtd-once results are pending. memoize:true results survive.
+        xll::RtdOnceRegistry::Instance().ClearNonMemoized();
+#endif
 
         std::vector<uint8_t> respBuf;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);

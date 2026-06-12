@@ -195,17 +195,108 @@ func TestAsyncAnyBuild_ByteIdenticalToLegacy(t *testing.T) {
 	}
 }
 
-// TestAsyncAnyBuild_UnknownTagYieldsNoneNotCorruptUnion verifies the new
+// TestBuildGridFromGo_RoundTrip verifies the sync-path wrapper round-trips a
+// [][]any through protocol.Grid (the per-function Response carries a Grid
+// directly, NOT wrapped in Any), preserving dims, row-major order, and cell
+// types.
+func TestBuildGridFromGo_RoundTrip(t *testing.T) {
+	in := [][]any{
+		{int32(10), "hi"},
+		{false, 2.5},
+	}
+	b := flatbuffers.NewBuilder(1024)
+	off, err := BuildGridFromGo(b, in)
+	if err != nil {
+		t.Fatalf("BuildGridFromGo: %v", err)
+	}
+	b.Finish(off)
+	g := protocol.GetRootAsGrid(b.FinishedBytes(), 0)
+	if g.Rows() != 2 || g.Cols() != 2 || g.DataLength() != 4 {
+		t.Fatalf("grid = %dx%d len=%d, want 2x2 len=4", g.Rows(), g.Cols(), g.DataLength())
+	}
+
+	var c0 protocol.Scalar
+	g.Data(&c0, 0)
+	if c0.ValType() != protocol.ScalarValueInt {
+		t.Errorf("cell0 tag = %v, want Int", c0.ValType())
+	}
+	var c3 protocol.Scalar
+	g.Data(&c3, 3)
+	if c3.ValType() != protocol.ScalarValueNum {
+		t.Errorf("cell3 tag = %v, want Num", c3.ValType())
+	}
+}
+
+// TestBuildNumGridFromGo_RoundTrip verifies the numeric sync-path wrapper.
+func TestBuildNumGridFromGo_RoundTrip(t *testing.T) {
+	in := [][]float64{{1, 2}, {3, 4}, {5, 6}}
+	b := flatbuffers.NewBuilder(1024)
+	off, err := BuildNumGridFromGo(b, in)
+	if err != nil {
+		t.Fatalf("BuildNumGridFromGo: %v", err)
+	}
+	b.Finish(off)
+	g := protocol.GetRootAsNumGrid(b.FinishedBytes(), 0)
+	if g.Rows() != 3 || g.Cols() != 2 {
+		t.Fatalf("numgrid = %dx%d, want 3x2", g.Rows(), g.Cols())
+	}
+	for i, w := range []float64{1, 2, 3, 4, 5, 6} {
+		if g.Data(i) != w {
+			t.Errorf("data[%d] = %v, want %v", i, g.Data(i), w)
+		}
+	}
+}
+
+// TestGridValidators verifies ValidateGrid / ValidateNumGrid (the async
+// queue-time guard) accept rectangular non-empty grids and reject empty/jagged.
+func TestGridValidators(t *testing.T) {
+	if err := ValidateGrid([][]any{{1, 2}, {3, 4}}); err != nil {
+		t.Errorf("ValidateGrid rectangular: unexpected error %v", err)
+	}
+	if err := ValidateGrid([][]any{{1}, {2, 3}}); err == nil {
+		t.Error("ValidateGrid jagged: want error")
+	}
+	if err := ValidateGrid(nil); err == nil {
+		t.Error("ValidateGrid nil: want error")
+	}
+	if err := ValidateNumGrid([][]float64{{1}, {2}}); err != nil {
+		t.Errorf("ValidateNumGrid rectangular: unexpected error %v", err)
+	}
+	if err := ValidateNumGrid([][]float64{{1, 2}, {3}}); err == nil {
+		t.Error("ValidateNumGrid jagged: want error")
+	}
+}
+
+// TestBuildGridFromGo_ErrorOnMalformed confirms the sync wrapper surfaces a
+// build error (so the generated server routes it to the cell's error text)
+// instead of silently emitting a zero-size grid.
+func TestBuildGridFromGo_ErrorOnMalformed(t *testing.T) {
+	if _, err := BuildGridFromGo(flatbuffers.NewBuilder(64), [][]any{{1}, {2, 3}}); err == nil {
+		t.Error("BuildGridFromGo jagged: want error")
+	}
+	if _, err := BuildNumGridFromGo(flatbuffers.NewBuilder(64), [][]float64{}); err == nil {
+		t.Error("BuildNumGridFromGo empty: want error")
+	}
+}
+
+// TestAsyncAnyBuild_UnknownTagYieldsNoneNotCorruptUnion verifies the
 // default branch in fbany.Build (IMPROVEMENT_BACKLOG.md §2/§3): an unhandled
 // tag must NOT serialize a union advertising a kind with no backing table
 // (the pre-fix behavior, which the C++ reader would dereference). Instead it
 // must produce a well-formed Any with val_type == NONE and an empty member.
+//
+// Grid/NumGrid are now HANDLED tags (val [][]any / [][]float64), but passing a
+// nil/wrong-typed val for them must still yield NONE — not a corrupt union and
+// not a panic — via the comma-ok type-assertion guard in fbany.Build. (The
+// generated server never queues a Grid/NumGrid tag with a nil val; it
+// validates first and queues an error result instead. This is the
+// belt-and-suspenders path.)
 func TestAsyncAnyBuild_UnknownTagYieldsNoneNotCorruptUnion(t *testing.T) {
 	unhandled := []protocol.AnyValue{
 		protocol.AnyValueNONE,
-		protocol.AnyValueGrid,
-		protocol.AnyValueNumGrid,
-		protocol.AnyValue(250), // wholly out-of-range tag
+		protocol.AnyValueGrid,    // nil val (not [][]any) → NONE via comma-ok guard
+		protocol.AnyValueNumGrid, // nil val (not [][]float64) → NONE
+		protocol.AnyValue(250),   // wholly out-of-range tag
 	}
 	for _, tag := range unhandled {
 		raw := finishedAny(t, func(b *flatbuffers.Builder) flatbuffers.UOffsetT {

@@ -35,7 +35,7 @@ func (s *MyService) Greet(ctx context.Context, name string) (string, error) {
 	return fmt.Sprintf("Hello, %s!", name), nil
 }
 
-func (s *MyService) IsEven(ctx context.Context, val int32) (bool, error) {
+func (s *MyService) IsEvenInt(ctx context.Context, val int32) (bool, error) {
 	return val%2 == 0, nil
 }
 
