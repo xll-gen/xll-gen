@@ -223,6 +223,9 @@ else()
     $<$<CONFIG:Release>:-flto>
   )
   target_link_options(${PROJECT_NAME} PRIVATE
+    # -static covers winpthread too; -static-libgcc/-static-libstdc++ alone
+    # leave a libwinpthread-1.dll import that breaks machines without MinGW.
+    -static
     -static-libgcc
     -static-libstdc++
     $<$<CONFIG:Release>:-flto>
