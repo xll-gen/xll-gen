@@ -260,6 +260,22 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
     *   `any`/`range`/`grid` -> `U` (LPXLOPER12, reference allowed; argument position only)
 *   **Mismatches**: Ensure the C++ function signature matches these types (e.g., `int32_t` for `J`, `double` for `B`). A mismatch will cause stack corruption or Excel crashes.
 
+### 19.3 Execution-Mode Guidance (sync / async / rtd)
+
+`mode: "async"` does **not** keep the sheet responsive: Excel holds the
+calculation transaction open until all pending `xlAsyncReturn` results arrive,
+so no new recalculation (volatile ticks, RTD-triggered recalcs) runs in the
+meantime — a single long async call feels identical to sync. Async buys
+**concurrency** (N calls in one calculation overlap) and the guarantee that
+dependents only see the final value. For multi-second work where interactive
+feel matters, the RTD pattern is the right tool (cell returns a placeholder
+immediately; result arrives via RTD push) — the same approach Excel-DNA uses
+for its async support. Full decision matrix + RTD caveats (2s default
+throttle, placeholder propagation to dependents, no F9 re-run while the topic
+is connected, topic-string argument limits): README "Choosing an Execution
+Mode". A generated one-shot wrapper (`mode: "rtd-once"`) is a backlog design
+item.
+
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
 
 Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry points, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for actual use. This also applies when an Add-in is disabled or forcefully unloaded while background threads are running.

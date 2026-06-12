@@ -226,6 +226,43 @@ The `server.launch` section supports the following variables in `command` and `c
 
 > **Note**: Nullable scalar types (`int?`, `float?`, `bool?`, `string?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
+### Choosing an Execution Mode (sync vs async vs rtd)
+
+A common surprise: **`mode: "async"` does not keep the sheet responsive.**
+Excel holds the calculation transaction open until every pending async
+result has been delivered via `xlAsyncReturn` — no new recalculation
+(volatile functions, RTD-triggered recalcs) starts in the meantime, so a
+single long async call *feels* exactly like a blocking sync call. What
+async actually buys you is **concurrency**: N async calls in the same
+calculation overlap (e.g. 3 × 1.5s calls complete in ~1.5s wall clock,
+not 4.5s), and dependents only ever see the final value.
+
+The RTD pattern is the opposite trade: the cell returns immediately
+(placeholder), the calculation completes, the sheet stays live, and the
+result arrives via an RTD push that recalculates just that topic. This is
+the same reason Excel-DNA implements its async support on top of RTD.
+
+| Handler duration | Recommended mode | Rationale |
+| :--- | :--- | :--- |
+| Up to a few hundred ms | `sync` (default) | Lowest overhead; no perceptible stall. |
+| Hundreds of ms – a few s, downstream formulas must only see the final value | `async` | Calls overlap; dependents never compute against a placeholder. |
+| Multiple seconds, interactive feel matters | `rtd` | Sheet keeps updating while the work runs. |
+
+RTD caveats to keep in mind when using it for one-shot computations:
+
+*   **Throttle**: Excel batches RTD updates on `Application.RTD.ThrottleInterval`
+    (default **2000ms**), so short results can appear *later* than async would
+    deliver them. The setting is per-user and registry-persisted — an add-in
+    should not silently lower it.
+*   **Placeholder propagation**: the cell completes once with `#N/A` (or an
+    initial value) before the real result arrives, and dependent formulas
+    compute against that placeholder once.
+*   **F9 semantics**: while a topic stays connected, recalculation does not
+    re-run the handler (implicit memoization). Disconnect the topic after
+    completion if you want recalc-reruns.
+*   **Arguments** are serialized into RTD topic strings — unsuitable for
+    `grid`/`range`-sized inputs.
+
 ### Custom FlatBuffers Includes
 
 The code generator runs `flatc` with the `--no-includes` flag. This means:
