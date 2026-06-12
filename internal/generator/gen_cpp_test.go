@@ -373,6 +373,70 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	}
 }
 
+// TestXllMainRibbonImageWiring pins the Task-5 template wiring: the ribbon image
+// table is installed at bootstrap, the GDI+ engine is torn down in xlAutoClose,
+// the generated header is included, and CMake links gdiplus. Also a negative
+// case: a ribbon-DISABLED render must not reference SetRibbonImages.
+func TestXllMainRibbonImageWiring(t *testing.T) {
+	t.Parallel()
+	ribbonCfg := &config.Config{
+		Project:  config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Commands: []config.Command{{Name: "RunReport", Handler: "RunReport"}},
+		Ribbon: config.RibbonConfig{Tab: "T", Groups: []config.RibbonGroup{{
+			Label: "G", Buttons: []config.RibbonButton{{Label: "B", Command: "RunReport", Image: "icon.png"}},
+		}}},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	mainSrc := renderCppMain(t, ribbonCfg)
+	for _, want := range []string{
+		`#include "ribbon_images.h"`,
+		"xll::ribbon::SetRibbonImages(GetXllRibbonImages());",
+		"xll::ribbon::ShutdownRibbonImageEngine();",
+	} {
+		if !strings.Contains(mainSrc, want) {
+			t.Errorf("xll_main.cpp missing %q", want)
+		}
+	}
+
+	// CMakeLists.txt must link gdiplus for the ribbon image decoder TU.
+	cmakeDir, err := os.MkdirTemp("", "gencpp_cmake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(cmakeDir) })
+	if err := generateCMake(ribbonCfg, cmakeDir); err != nil {
+		t.Fatalf("generateCMake failed: %v", err)
+	}
+	cmakeBytes, err := os.ReadFile(filepath.Join(cmakeDir, "CMakeLists.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cmakeBytes), "gdiplus") {
+		t.Errorf("CMakeLists.txt ribbon block must link gdiplus")
+	}
+
+	// Negative: a ribbon-disabled render gates SetRibbonImages behind
+	// {{if .Ribbon.Enabled}}, so it must be absent.
+	noRibbonCfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "Sum", Return: "int", Args: []config.Arg{{Name: "a", Type: "int"}}},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+	noRibbonSrc := renderCppMain(t, noRibbonCfg)
+	if strings.Contains(noRibbonSrc, "SetRibbonImages") {
+		t.Errorf("ribbon-disabled render must not reference SetRibbonImages")
+	}
+}
+
 func TestGenCpp_StringErrorReturn(t *testing.T) {
 	t.Parallel()
 	// Setup temp dir
