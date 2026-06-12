@@ -859,10 +859,8 @@ func TestXllMainRibbonImageWiring(t *testing.T) {
 		}
 	}
 	cmake := renderCMakeForRibbonConfig(t) // same adaptation note
-	for _, want := range []string{"gdiplus", "shlwapi"} {
-		if !strings.Contains(cmake, want) {
-			t.Errorf("CMakeLists.txt missing link lib %q", want)
-		}
+	if !strings.Contains(cmake, "gdiplus") {
+		t.Error("CMakeLists.txt missing link lib gdiplus")
 	}
 }
 ```
@@ -909,11 +907,14 @@ Bootstrap (~line 533), directly after `xll::ribbon::SetRibbonXml(kXllRibbonXml);
         uuid
         oleacc
         gdiplus
-        shlwapi
     )
 ```
 
-(gdiplus/shlwapi: ribbon_image.cpp decoder. Only the ribbon-enabled block needs them — the decoder TU compiles empty without `XLL_RIBBON_ENABLED`.)
+(gdiplus: ribbon_image.cpp decoder. Review amendment 2026-06-12: the decoder
+uses `CreateStreamOnHGlobal` (ole32) instead of `SHCreateMemStream`, so
+shlwapi is NOT needed. Only the ribbon-enabled block needs gdiplus — the
+decoder TU compiles empty without `XLL_RIBBON_ENABLED`. The decoder also
+`#undef NOGDI` locally because line 198 defines it globally.)
 
 - [ ] **Step 4: Run, verify pass**
 
@@ -1021,7 +1022,7 @@ target_include_directories(mock_host PRIVATE
     ../generated/cpp/include
 )
 target_link_libraries(mock_host PRIVATE shm xll-gen-types flatbuffers
-    gdiplus shlwapi ole32 oleaut32 uuid)
+    gdiplus ole32 oleaut32 uuid)
 ```
 
 - [ ] **Step 3: Add mock_host Test 15**
