@@ -15,3 +15,6 @@ var ServerGo string
 
 //go:embed testdata/CMakeLists.txt
 var CMakeLists string
+
+//go:embed testdata/icon.png
+var IconPng []byte
