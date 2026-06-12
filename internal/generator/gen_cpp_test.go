@@ -340,8 +340,14 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	content := renderCppMain(t, cfg)
 
 	// Composite arg converters: correct names + (op, builder) order.
+	// NOTE: a `grid` arg is registered `U`, so Excel passes a REFERENCE for
+	// range input (A1:B2). The sync/async path MUST coerce it to values via
+	// xll::ConvertGridArg (plain ConvertGrid only handles xltypeMulti and would
+	// yield a degenerate 1x1 Nil grid → SumGrid==0). numgrid/range/any are
+	// unaffected (range/any ship coordinates by design; FP12 numgrid is not a
+	// reference type at the wrapper boundary).
 	for _, want := range []string{
-		"ConvertGrid(g, builder)",
+		"xll::ConvertGridArg(g, builder, &gridCoerceOk0)",
 		"ConvertNumGrid(ng, builder)",
 		"ConvertRange(r, builder)",
 		"ConvertAny(v, builder)",
@@ -349,6 +355,16 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("expected marshalling call %q, not found", want)
 		}
+	}
+
+	// The sync `grid` arg path MUST NOT regress to plain ConvertGrid-on-ref
+	// (the empty-grid bug). Assert the coercing converter is the one wired in
+	// for the grid arg and that a coerce-failure guard is emitted.
+	if strings.Contains(content, "ConvertGrid(g, builder)") {
+		t.Errorf("sync grid arg regressed to plain ConvertGrid(g, builder); a `U`-registered ref yields an empty 1x1 grid — must use xll::ConvertGridArg")
+	}
+	if !strings.Contains(content, "if (!gridCoerceOk0)") {
+		t.Errorf("sync grid arg must emit a coerce-failure guard (if (!gridCoerceOk0)) returning the error sentinel, not a silent degenerate grid")
 	}
 
 	// Must NOT regress to the old undeclared helper names.
@@ -378,6 +394,49 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	// ScopedXLOPER12 leaked the format string on every macro caller-aware call.
 	if !strings.Contains(content, "ScopedXLOPER12Result xFormat;") {
 		t.Errorf("caller+macro path must hold the xlfGetCell result in ScopedXLOPER12Result")
+	}
+}
+
+// TestGenCpp_AsyncGridArgCoerces pins that an ASYNC function with a `grid` arg
+// marshals through the ref-coercing xll::ConvertGridArg (same bug as the sync
+// path: a `U`-registered grid arg arrives as a reference for range input, and
+// plain ConvertGrid yields a degenerate 1x1 Nil grid). The async coerce-failure
+// branch must signal Excel via xlAsyncReturn (an error XLOPER) and return —
+// NOT return &g_xlErrValue (the async wrapper returns void).
+func TestGenCpp_AsyncGridArgCoerces(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "AsyncSumGrid", Return: "float", Mode: "async", Args: []config.Arg{{Name: "g", Type: "grid"}}},
+		},
+		Server: config.ServerConfig{
+			Timeout:         "2s",
+			AsyncAckTimeout: "2s",
+			Launch:          &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	content := renderCppMain(t, cfg)
+
+	if !strings.Contains(content, "xll::ConvertGridArg(g, builder, &gridCoerceOk0)") {
+		t.Errorf("async grid arg must marshal through xll::ConvertGridArg (ref-coercing), not plain ConvertGrid")
+	}
+	if strings.Contains(content, "ConvertGrid(g, builder)") {
+		t.Errorf("async grid arg regressed to plain ConvertGrid(g, builder) — empty-grid bug")
+	}
+	// Async coerce-failure path: signal via xlAsyncReturn, then return (void).
+	idx := strings.Index(content, "if (!gridCoerceOk0)")
+	if idx < 0 {
+		t.Fatalf("async grid arg missing coerce-failure guard (if (!gridCoerceOk0))")
+	}
+	// Examine the guard body window.
+	window := content[idx:min(len(content), idx+900)]
+	if !strings.Contains(window, "xlAsyncReturn") {
+		t.Errorf("async grid coerce-failure must report the error via xlAsyncReturn")
+	}
+	if strings.Contains(window, "&g_xlErrValue") {
+		t.Errorf("async grid coerce-failure must NOT return &g_xlErrValue (async wrapper returns void)")
 	}
 }
 

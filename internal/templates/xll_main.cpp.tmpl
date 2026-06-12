@@ -1221,7 +1221,33 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
     {{if eq .Type "string"}}
     auto arg{{$j}} = builder.CreateString(({{.Name}}->xltype == xltypeStr) ? ConvertExcelString({{.Name}}->val.str) : "");
     {{else if eq .Type "grid"}}
-    auto arg{{$j}} = ConvertGrid({{.Name}}, builder);
+    // A `grid` arg is registered `U` (§19.2), so Excel passes a REFERENCE
+    // (xltypeRef/SRef) for a range like A1:B2 — NOT an xltypeMulti. Plain
+    // ConvertGrid only understands xltypeMulti and would coin a degenerate 1x1
+    // Nil grid for a reference (the Go handler then reads an empty grid →
+    // SumGrid==0). Route through xll::ConvertGridArg, which xlCoerce's the ref
+    // to its cell VALUES first (mirrors the rtd/rtd-once content-hash path).
+    // An array LITERAL ({1,2;3,4}) already arrives as xltypeMulti and passes
+    // through unchanged.
+    bool gridCoerceOk{{$j}} = true;
+    auto arg{{$j}} = xll::ConvertGridArg({{.Name}}, builder, &gridCoerceOk{{$j}});
+    if (!gridCoerceOk{{$j}}) {
+        // xlCoerce failed (xlretUncalced mid-calc, cross-sheet restriction, …).
+        // Do NOT ship a degenerate 1x1 Nil grid — surface the same error the
+        // SHM-failure path below returns so the cell shows #VALUE! and Excel
+        // re-drives the UDF on the next recalc pass (precedents calc first for
+        // a `$`-registered function, so this is genuinely exceptional).
+        SAFE_LOG_WARN("{{$fn.Name}}: grid arg {{.Name}} coerce failed; returning error sentinel");
+        {{if eq $fn.Mode "async"}}
+        XLOPER12 xErr{}; // zero-init: Excel reads only val.err for xltypeErr; keeps padding deterministic
+        xErr.xltype = xltypeErr;
+        xErr.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErr);
+        return;
+        {{else}}
+        return &g_xlErrValue;
+        {{end}}
+    }
     {{else if eq .Type "numgrid"}}
     auto arg{{$j}} = ConvertNumGrid({{.Name}}, builder);
     {{else if eq .Type "range"}}

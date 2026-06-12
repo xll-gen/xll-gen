@@ -794,6 +794,204 @@ func pollNumericExpect(t *testing.T, app *excelApp, sheet *ole.IDispatch, addr s
 	}
 }
 
+// ===================== Task 5: SYNC GRID-ARG (ref vs literal) ===============
+//
+// Regression for the empty-grid bug (IMPROVEMENT_BACKLOG MEDIUM xll-gen): a
+// `grid` arg is registered `U`, so Excel passes a REFERENCE for range input
+// (E4:F5). The sync/async marshalling path used plain ConvertGrid, which only
+// understands xltypeMulti → a degenerate 1x1 Nil grid → the Go handler summed
+// an empty grid → 0. Fixed by routing the sync/async grid arg through
+// xll::ConvertGridArg (xlCoerce ref→multi), the same coercion the rtd path uses.
+//
+// This test proves BOTH:
+//   - =SumGrid(A1:B2)   (a REFERENCE)      => 10   (was 0 before the fix)
+//   - =SumGrid({1,2;3,4}) (an array LITERAL)=> 10   (always worked → why tests missed it)
+// plus a SyncStatsGrid (count) and an ASYNC grid-arg variant, exercising both
+// marshalling paths that shared the bug.
+//
+//	go test -tags=xll_spill -run TestSyncGridArg ./internal/smoketest/...
+
+const syncGridArgYaml = `
+project:
+  name: "xll_smoke"
+  version: "0.1.0"
+gen:
+  go:
+    package: "generated"
+  disable_pid_suffix: true
+logging:
+  level: "debug"
+  dir: "TEMP_DIR"
+server:
+  workers: 2
+  timeout: "10s"
+  async_ack_timeout: "2s"
+functions:
+  - name: "SumGrid"
+    description: "Sums the numeric cells of a grid arg (sync)."
+    args: [{name: "g", type: "grid"}]
+    return: "float"
+  - name: "StatsGrid"
+    description: "Counts the numeric cells of a grid arg (sync)."
+    args: [{name: "g", type: "grid"}]
+    return: "float"
+  - name: "AsyncSumGrid"
+    description: "Sums the numeric cells of a grid arg (async)."
+    mode: "async"
+    args: [{name: "g", type: "grid"}]
+    return: "float"
+`
+
+const syncGridArgMain = `package main
+
+import (
+	"context"
+
+	"xll_smoke/generated"
+
+	flatbuffers "github.com/google/flatbuffers/go"
+	protocol "github.com/xll-gen/types/go/protocol"
+)
+
+type Service struct{}
+
+func sumGrid(g *protocol.Grid) float64 {
+	if g == nil {
+		return -1
+	}
+	var sum float64
+	n := g.DataLength()
+	for i := 0; i < n; i++ {
+		var sc protocol.Scalar
+		if !g.Data(&sc, i) {
+			continue
+		}
+		switch sc.ValType() {
+		case protocol.ScalarValueNum:
+			var t flatbuffers.Table
+			if sc.Val(&t) {
+				var num protocol.Num
+				num.Init(t.Bytes, t.Pos)
+				sum += num.Val()
+			}
+		case protocol.ScalarValueInt:
+			var t flatbuffers.Table
+			if sc.Val(&t) {
+				var iv protocol.Int
+				iv.Init(t.Bytes, t.Pos)
+				sum += float64(iv.Val())
+			}
+		}
+	}
+	return sum
+}
+
+func countNums(g *protocol.Grid) float64 {
+	if g == nil {
+		return -1
+	}
+	var n float64
+	for i := 0; i < g.DataLength(); i++ {
+		var sc protocol.Scalar
+		if !g.Data(&sc, i) {
+			continue
+		}
+		if sc.ValType() == protocol.ScalarValueNum || sc.ValType() == protocol.ScalarValueInt {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Service) SumGrid(ctx context.Context, g *protocol.Grid) (float64, error) {
+	return sumGrid(g), nil
+}
+
+func (s *Service) StatsGrid(ctx context.Context, g *protocol.Grid) (float64, error) {
+	return countNums(g), nil
+}
+
+func (s *Service) AsyncSumGrid(ctx context.Context, g *protocol.Grid) (float64, error) {
+	return sumGrid(g), nil
+}
+
+func (s *Service) OnCalculationEnded(ctx context.Context) error    { return nil }
+func (s *Service) OnCalculationCanceled(ctx context.Context) error { return nil }
+
+func main() { generated.Serve(&Service{}) }
+`
+
+func TestSyncGridArg_Excel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	root := repoRootOrFatal(t)
+	workDir := os.Getenv("XLL_SYNCGRID_DIR")
+	if workDir == "" {
+		var err error
+		workDir, err = os.MkdirTemp("", "xll-syncgrid-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(workDir) })
+	}
+	projectDir := filepath.Join(workDir, "xll_smoke")
+	if _, err := os.Stat(filepath.Join(projectDir, "xll.yaml")); err != nil {
+		writeProject(t, projectDir, syncGridArgYaml, syncGridArgMain, root)
+	}
+	t.Logf("project dir: %s", projectDir)
+	xllPath := buildProject(t, projectDir)
+	t.Logf("xll: %s", xllPath)
+
+	runExcel(t, xllPath, func(app *excelApp, sheet *ole.IDispatch) {
+		// Input grid A1:B2 = [[1,2],[3,4]] (sum=10, count=4).
+		_ = SetCellFormula(sheet, "A1", "1")
+		_ = SetCellFormula(sheet, "B1", "2")
+		_ = SetCellFormula(sheet, "A2", "3")
+		_ = SetCellFormula(sheet, "B2", "4")
+
+		// THE BUG: =SumGrid(A1:B2) is a REFERENCE. Before the fix the handler
+		// received an empty 1x1 grid → 0. After the fix → 10.
+		mustFormula(t, sheet, "D1", "=SumGrid(A1:B2)")
+		// CONTRAST: an array LITERAL arrives as xltypeMulti and always worked.
+		mustFormula(t, sheet, "D2", "=SumGrid({1,2;3,4})")
+		// StatsGrid with a reference → count of numeric cells = 4.
+		mustFormula(t, sheet, "D3", "=StatsGrid(A1:B2)")
+		// Async grid-arg path (shared the bug) with a reference → 10.
+		mustFormula(t, sheet, "D4", "=AsyncSumGrid(A1:B2)")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatal(err)
+		}
+
+		ref, _ := pollNumeric(t, app, sheet, "D1", 20*time.Second)
+		lit, _ := pollNumeric(t, app, sheet, "D2", 20*time.Second)
+		cnt, _ := pollNumeric(t, app, sheet, "D3", 20*time.Second)
+		asy, _ := pollNumeric(t, app, sheet, "D4", 30*time.Second)
+		t.Logf("SumGrid(A1:B2)=%v  SumGrid({lit})=%v  StatsGrid(A1:B2)=%v  AsyncSumGrid(A1:B2)=%v", ref, lit, cnt, asy)
+
+		assertEqf(t, "SumGrid(A1:B2) REFERENCE (the bug → was 0)", ref, 10)
+		assertEqf(t, "SumGrid({1,2;3,4}) LITERAL (always worked)", lit, 10)
+		assertEqf(t, "StatsGrid(A1:B2) numeric-cell count", cnt, 4)
+		assertEqf(t, "AsyncSumGrid(A1:B2) REFERENCE (async path)", asy, 10)
+
+		// Edit a precedent cell → the ref-coerced grid must reflect the new value.
+		t.Logf("=== edit B2 4->14, expect SumGrid recompute 10->20 ===")
+		_ = SetCellFormula(sheet, "B2", "14")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatal(err)
+		}
+		ev, _ := pollNumericExpect(t, app, sheet, "D1", 20, 20*time.Second)
+		assertEqf(t, "SumGrid recompute after precedent edit", ev, 20)
+
+		// graceful: clear formulas before quit.
+		for _, a := range []string{"D1", "D2", "D3", "D4"} {
+			_ = SetCellFormula(sheet, a, "")
+		}
+		_ = app.CalculateFull()
+		time.Sleep(300 * time.Millisecond)
+	})
+}
+
 // ---- shared Excel session driver + assertions ------------------------------
 
 func runExcel(t *testing.T, xllPath string, body func(*excelApp, *ole.IDispatch)) {
