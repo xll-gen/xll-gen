@@ -29,7 +29,7 @@
 - Modify: `internal/config/config.go` (RibbonButton doc at line 224; Validate ribbon loop at ~line 458)
 - Test: `internal/config/config_test.go`
 
-- [ ] **Step 1: Write the failing tests** (append to `config_test.go`; match the file's existing test style)
+- [x] **Step 1: Write the failing tests** (append to `config_test.go`; match the file's existing test style)
 
 ```go
 func TestClassifyRibbonImage(t *testing.T) {
@@ -81,12 +81,12 @@ func TestValidateRibbonImageBadExtension(t *testing.T) {
 
 NOTE: if `config_test.go` is in package `config` (internal test), drop the `config.` qualifier. Check the existing ribbon Validate tests in that file and reuse their config-construction helper if one exists.
 
-- [ ] **Step 2: Run, verify failure**
+- [x] **Step 2: Run, verify failure**
 
 Run: `go test ./internal/config/ -run TestClassifyRibbonImage -v` (in `xll-gen/`)
 Expected: FAIL — `undefined: ClassifyRibbonImage`
 
-- [ ] **Step 3: Implement** in `config.go`:
+- [x] **Step 3: Implement** in `config.go`:
 
 Add near the `RibbonButton` type:
 
@@ -142,12 +142,12 @@ In `Validate`'s ribbon button loop (after the unknown-command check at ~line 463
 				}
 ```
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/config/ -v`
 Expected: PASS (all, including pre-existing tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go
@@ -163,7 +163,7 @@ git commit -m "feat(config): classify ribbon image values as file path or imageM
 - Modify: all `GenerateXML` callers (`internal/generator/gen_cpp.go:25`, existing tests)
 - Test: `internal/ribbon/ribbon_test.go`
 
-- [ ] **Step 1: Write the failing tests** (append to `ribbon_test.go`; the test helper below writes a real PNG with stdlib so no binary fixture is needed)
+- [x] **Step 1: Write the failing tests** (append to `ribbon_test.go`; the test helper below writes a real PNG with stdlib so no binary fixture is needed)
 
 ```go
 // writeTestPNG writes a 16x16 PNG (with partial alpha) and returns its path.
@@ -293,12 +293,12 @@ func TestGenerateXMLNoFileImagesOmitsLoadImage(t *testing.T) {
 
 (New test imports: `image`, `image/color`, `image/png`, `os`, `path/filepath`, `strings`.)
 
-- [ ] **Step 2: Run, verify failure**
+- [x] **Step 2: Run, verify failure**
 
 Run: `go test ./internal/ribbon/ -v`
 Expected: FAIL — `undefined: Images`; signature mismatch on `GenerateXML`.
 
-- [ ] **Step 3: Implement** in `ribbon.go`:
+- [x] **Step 3: Implement** in `ribbon.go`:
 
 Add (new imports: `os` is present; add `path/filepath`):
 
@@ -393,12 +393,12 @@ Replace the button image emission (lines 69-71):
 
 Update the `GenerateXML` doc comment to mention the map. Fix every existing caller: in existing `ribbon_test.go` tests pass `nil`; `gen_cpp.go` is rewritten in Task 3 (for now make it compile by passing `nil` — Task 3 finishes the wiring).
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/ribbon/ ./internal/generator/ ./internal/config/ -v` and `go build ./...`
 Expected: PASS / clean build
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ribbon/ribbon.go internal/ribbon/ribbon_test.go internal/generator/gen_cpp.go
@@ -414,7 +414,7 @@ git commit -m "feat(ribbon): load/dedupe image files and emit image= + loadImage
 - Modify: `internal/generator/generator.go:176-181` (success message)
 - Test: `internal/generator/gen_cpp_test.go`
 
-- [ ] **Step 1: Write the failing test** (append to `gen_cpp_test.go`; reuse its existing config/tempdir patterns and the `writeTestPNG` idea from Task 2 — duplicate the helper here if there is no shared test util):
+- [x] **Step 1: Write the failing test** (append to `gen_cpp_test.go`; reuse its existing config/tempdir patterns and the `writeTestPNG` idea from Task 2 — duplicate the helper here if there is no shared test util):
 
 ```go
 func TestGenerateRibbonImagesHeader(t *testing.T) {
@@ -486,12 +486,12 @@ func TestGenerateRibbonImagesHeaderEmptyWhenNoFileImages(t *testing.T) {
 
 NOTE: adjust `config.ProjectConfig` field/type names to whatever `config.go` actually uses (check `Project` struct) — copy from existing tests in the file.
 
-- [ ] **Step 2: Run, verify failure**
+- [x] **Step 2: Run, verify failure**
 
 Run: `go test ./internal/generator/ -run TestGenerateRibbonImages -v`
 Expected: FAIL — `undefined: generateRibbonHeaders`
 
-- [ ] **Step 3: Implement** in `gen_cpp.go` — rename/rework `generateRibbonXmlHeader` (new import: `strings`):
+- [x] **Step 3: Implement** in `gen_cpp.go` — rename/rework `generateRibbonXmlHeader` (new import: `strings`):
 
 ```go
 // generateRibbonHeaders writes ribbon_xml.h (embedded customUI XML) and
@@ -568,12 +568,12 @@ func writeRibbonImagesHeader(imgs []ribbon.Image, dir string) error {
 	}
 ```
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/... -count=1` and `go build ./...`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/generator/gen_cpp.go internal/generator/gen_cpp_test.go internal/generator/generator.go
@@ -591,7 +591,7 @@ git commit -m "feat(generator): emit ribbon_images.h with embedded icon bytes"
 
 No local C++ test harness exists; this task is compile-verified in Task 6 (regtest builds and **runs** this TU). Keep `ribbon_image.cpp` free of SHM/xll_log/lifecycle includes — that standalone-ness is what makes the regtest possible.
 
-- [ ] **Step 1: Create `include/com/ribbon_image.h`**
+- [x] **Step 1: Create `include/com/ribbon_image.h`**
 
 ```cpp
 #pragma once
@@ -634,7 +634,7 @@ namespace xll { namespace ribbon {
 }} // namespace xll::ribbon
 ```
 
-- [ ] **Step 2: Create `src/ribbon_image.cpp`**
+- [x] **Step 2: Create `src/ribbon_image.cpp`**
 
 ```cpp
 // Standalone GDI+ ribbon image decoder. Deliberately free of SHM / logging /
@@ -763,7 +763,7 @@ namespace xll { namespace ribbon {
 #endif // XLL_RIBBON_ENABLED
 ```
 
-- [ ] **Step 3: Wire the `LoadRibbonImage` callback into `src/ribbon_addin.cpp`**
+- [x] **Step 3: Wire the `LoadRibbonImage` callback into `src/ribbon_addin.cpp`**
 
 Inside the `#ifdef XLL_RIBBON_ENABLED` region (after line 88), add the include and dispid:
 
@@ -820,12 +820,12 @@ In `Invoke` (line 153): name the 6th parameter `pVarResult` (currently anonymous
 
 VERIFY: the exact warn-level log function name in `include/xll_log.h` (`xll::LogWarn` assumed — `ribbon_addin.cpp` already uses `xll::LogDebug`; adjust if the header spells it differently). `WideToUtf8` is already used at line 174.
 
-- [ ] **Step 4: Verify Go side still builds** (C++ compiles in Task 6)
+- [x] **Step 4: Verify Go side still builds** (C++ compiles in Task 6)
 
 Run: `go test ./internal/... -count=1`
 Expected: PASS (assets are go:embed'd; no Go code change here)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/assets/files/include/com/ribbon_image.h internal/assets/files/src/ribbon_image.cpp internal/assets/files/src/ribbon_addin.cpp
@@ -841,7 +841,7 @@ git commit -m "feat(assets): GDI+ ribbon image decoder + LoadRibbonImage callbac
 - Modify: `internal/templates/CMakeLists.txt.tmpl` (lines 171-183)
 - Test: `internal/generator/gen_cpp_test.go`
 
-- [ ] **Step 1: Write the failing test** (append to `gen_cpp_test.go`, following its existing generateCppMain/generateCMake test patterns — find how existing tests render templates and assert on output):
+- [x] **Step 1: Write the failing test** (append to `gen_cpp_test.go`, following its existing generateCppMain/generateCMake test patterns — find how existing tests render templates and assert on output):
 
 ```go
 func TestXllMainRibbonImageWiring(t *testing.T) {
@@ -867,12 +867,12 @@ func TestXllMainRibbonImageWiring(t *testing.T) {
 
 NOTE: this file already has template-rendering tests for the ribbon feature (it was in the v0.4.0 task list) — copy their exact setup instead of inventing helpers.
 
-- [ ] **Step 2: Run, verify failure**
+- [x] **Step 2: Run, verify failure**
 
 Run: `go test ./internal/generator/ -run TestXllMainRibbonImageWiring -v`
 Expected: FAIL (missing strings)
 
-- [ ] **Step 3: Implement template edits**
+- [x] **Step 3: Implement template edits**
 
 `xll_main.cpp.tmpl` — include block (~line 54):
 
@@ -916,12 +916,12 @@ shlwapi is NOT needed. Only the ribbon-enabled block needs gdiplus — the
 decoder TU compiles empty without `XLL_RIBBON_ENABLED`. The decoder also
 `#undef NOGDI` locally because line 198 defines it globally.)
 
-- [ ] **Step 4: Run, verify pass**
+- [x] **Step 4: Run, verify pass**
 
 Run: `go test ./internal/generator/ -count=1 -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/templates/xll_main.cpp.tmpl internal/templates/CMakeLists.txt.tmpl internal/generator/gen_cpp_test.go
@@ -940,7 +940,7 @@ git commit -m "feat(templates): wire ribbon image table, GDI+ shutdown, and link
 - Modify: `internal/regtest/testdata/mock_host.cpp` (Test 15)
 - Modify: `cmd/regression_test.go` (write icon.png into temp project)
 
-- [ ] **Step 1: Create the PNG fixture**
+- [x] **Step 1: Create the PNG fixture**
 
 Write this throwaway program as `gen_icon.go` in the repo root, run it, delete it:
 
@@ -977,7 +977,7 @@ func main() {
 Run: `go run gen_icon.go` then `Remove-Item gen_icon.go`
 Expected: `internal/regtest/testdata/icon.png` exists (a few hundred bytes).
 
-- [ ] **Step 2: Wire fixtures**
+- [x] **Step 2: Wire fixtures**
 
 `internal/regtest/testdata/xll.yaml` — add after the `commands:` block:
 
@@ -1025,7 +1025,7 @@ target_link_libraries(mock_host PRIVATE shm xll-gen-types flatbuffers
     gdiplus ole32 oleaut32 uuid)
 ```
 
-- [ ] **Step 3: Add mock_host Test 15**
+- [x] **Step 3: Add mock_host Test 15**
 
 In `internal/regtest/testdata/mock_host.cpp`, add includes near the top with the other includes:
 
@@ -1077,17 +1077,17 @@ Insert before `cout << "PASSED" << endl;` (line 611):
     }
 ```
 
-- [ ] **Step 4: Run the full regression test** (Windows, needs cmake; ~minutes on a cold FetchContent cache)
+- [x] **Step 4: Run the full regression test** (Windows, needs cmake; ~minutes on a cold FetchContent cache)
 
 Run, in `xll-gen/`: `go test ./cmd -run TestRegression -count=1 -v -timeout 30m`
 Expected: PASS with `[MOCK] PASSED` in output. If the mock host build fails, fix the C++ from Task 4 (this is the task where it first compiles). Process-cleanup note: the harness force-kills mock host and server in defers — do not weaken that.
 
-- [ ] **Step 5: Run everything else**
+- [x] **Step 5: Run everything else**
 
 Run: `go test ./... -count=1 -short` then `go vet ./...`
 Expected: PASS / clean
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/regtest/testdata internal/regtest/assets.go cmd/regression_test.go
@@ -1103,7 +1103,7 @@ git commit -m "test(regtest): compile and run the ribbon image decode path (test
 - Modify: `docs/ribbon-e2e.md` (manual checklist)
 - Modify: `../IMPROVEMENT_BACKLOG.md` (workspace root, NOT inside xll-gen)
 
-- [ ] **Step 1: README** — in the ribbon section where `image:` is documented, replace/extend the imageMso text:
+- [x] **Step 1: README** — in the ribbon section where `image:` is documented, replace/extend the imageMso text:
 
 ```markdown
 `image:` accepts either a built-in Office icon name (`imageMso`, e.g.
@@ -1126,7 +1126,7 @@ buttons:
 
 Adapt the snippet to the README's actual ribbon example so it stays consistent.
 
-- [ ] **Step 2: ribbon-e2e.md** — append a checklist item:
+- [x] **Step 2: ribbon-e2e.md** — append a checklist item:
 
 ```markdown
 - [ ] **PNG file icon**: declare a button with `image: ./icons/<file>.png`
@@ -1136,7 +1136,7 @@ Adapt the snippet to the README's actual ribbon example so it stays consistent.
   file-not-found error naming the button.
 ```
 
-- [ ] **Step 3: Backlog** — append to `../IMPROVEMENT_BACKLOG.md` under xll-gen's section, following the file's existing item format:
+- [x] **Step 3: Backlog** — append to `../IMPROVEMENT_BACKLOG.md` under xll-gen's section, following the file's existing item format:
 
 ```markdown
 - ☐ ribbon: raw-XML mode image support — `ribbon.images: {name: path}` map
@@ -1146,7 +1146,7 @@ Adapt the snippet to the README's actual ribbon example so it stays consistent.
   (exercises ribbon_images.h in a real Excel E2E).
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md docs/ribbon-e2e.md
