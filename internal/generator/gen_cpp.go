@@ -22,7 +22,7 @@ func generateRibbonXmlHeader(cfg *config.Config, dir string, baseDir string) err
 	if cfg.Ribbon.XML != "" {
 		xmlStr, err = ribbon.ValidateRawXML(filepath.Join(baseDir, cfg.Ribbon.XML), cfg.Commands)
 	} else {
-		xmlStr, err = ribbon.GenerateXML(cfg)
+		xmlStr, err = ribbon.GenerateXML(cfg, nil)
 	}
 	if err != nil {
 		return err

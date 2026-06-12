@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/xll-gen/xll-gen/internal/config"
@@ -40,10 +41,75 @@ func escape(s string) string {
 	return b.String()
 }
 
+// Image is one deduplicated ribbon image file scheduled for embedding into
+// the generated ribbon_images.h.
+type Image struct {
+	Name string // deterministic id referenced from customUI XML (xllgen_img_<i>)
+	Path string // baseDir-joined cleaned path, for error messages
+	Data []byte
+}
+
+// maxImageBytes caps each embedded ribbon icon; the bytes are compiled into
+// the XLL, and ribbon icons are 16x16/32x32.
+const maxImageBytes = 1 << 20
+
+// Images loads and dedupes (by cleaned path) every file-image button in
+// structured mode. The second return value maps each raw yaml image value to
+// its embedded image name, for GenerateXML.
+func Images(cfg *config.Config, baseDir string) ([]Image, map[string]string, error) {
+	var imgs []Image
+	byPath := map[string]int{}
+	nameByValue := map[string]string{}
+	for _, g := range cfg.Ribbon.Groups {
+		for _, btn := range g.Buttons {
+			if btn.Image == "" {
+				continue
+			}
+			isFile, err := config.ClassifyRibbonImage(btn.Image)
+			if err != nil {
+				return nil, nil, fmt.Errorf("ribbon button '%s': %w", btn.Label, err)
+			}
+			if !isFile {
+				continue
+			}
+			if _, seen := nameByValue[btn.Image]; seen {
+				continue
+			}
+			p := filepath.Clean(filepath.Join(baseDir, filepath.FromSlash(btn.Image)))
+			if i, ok := byPath[p]; ok {
+				nameByValue[btn.Image] = imgs[i].Name
+				continue
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return nil, nil, fmt.Errorf("ribbon button '%s': image file: %w", btn.Label, err)
+			}
+			if len(data) == 0 {
+				return nil, nil, fmt.Errorf("ribbon button '%s': image file %s is empty", btn.Label, p)
+			}
+			if len(data) > maxImageBytes {
+				return nil, nil, fmt.Errorf("ribbon button '%s': image file %s is %d bytes (max %d); ribbon icons should be 16x16 or 32x32", btn.Label, p, len(data), maxImageBytes)
+			}
+			img := Image{Name: fmt.Sprintf("xllgen_img_%d", len(imgs)), Path: p, Data: data}
+			byPath[p] = len(imgs)
+			imgs = append(imgs, img)
+			nameByValue[btn.Image] = img.Name
+		}
+	}
+	return imgs, nameByValue, nil
+}
+
 // GenerateXML renders structured-mode ribbon config into customUI XML.
 // Control ids are deterministic (xllgen_btn_<group>_<button>) and flow back
 // to Go handlers as CommandContext.ControlID.
-func GenerateXML(cfg *config.Config) (string, error) {
+//
+// imageNames maps each raw yaml image value to the embedded image name
+// produced by Images (e.g. "icons/a.png" -> "xllgen_img_0"). A button whose
+// Image value is present in the map emits image="<name>"; any other non-empty
+// Image value is treated as an imageMso id. When imageNames is nil or empty
+// there are no file images, so the loadImage="LoadRibbonImage" attribute is
+// omitted from the customUI root element.
+func GenerateXML(cfg *config.Config, imageNames map[string]string) (string, error) {
 	r := cfg.Ribbon
 	if r.XML != "" {
 		return "", fmt.Errorf("GenerateXML called in raw-xml mode")
@@ -53,8 +119,12 @@ func GenerateXML(cfg *config.Config) (string, error) {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, `<customUI xmlns="%s"><ribbon><tabs><tab id="xllgen_tab" label="%s">`,
-		CustomUINamespace, escape(r.Tab))
+	loadImageAttr := ""
+	if len(imageNames) > 0 {
+		loadImageAttr = ` loadImage="LoadRibbonImage"`
+	}
+	fmt.Fprintf(&b, `<customUI xmlns="%s"%s><ribbon><tabs><tab id="xllgen_tab" label="%s">`,
+		CustomUINamespace, loadImageAttr, escape(r.Tab))
 	for gi, g := range r.Groups {
 		fmt.Fprintf(&b, `<group id="xllgen_grp_%d" label="%s">`, gi, escape(g.Label))
 		for bi, btn := range g.Buttons {
@@ -67,7 +137,11 @@ func GenerateXML(cfg *config.Config) (string, error) {
 			fmt.Fprintf(&b, `<button id="xllgen_btn_%d_%d" label="%s" size="%s" onAction="%s"`,
 				gi, bi, escape(btn.Label), escape(size), escape(btn.Command))
 			if btn.Image != "" {
-				fmt.Fprintf(&b, ` imageMso="%s"`, escape(btn.Image))
+				if name, ok := imageNames[btn.Image]; ok {
+					fmt.Fprintf(&b, ` image="%s"`, escape(name))
+				} else {
+					fmt.Fprintf(&b, ` imageMso="%s"`, escape(btn.Image))
+				}
 			}
 			b.WriteString(`/>`)
 		}
