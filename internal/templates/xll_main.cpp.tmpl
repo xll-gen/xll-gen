@@ -166,16 +166,23 @@ extern "C" {
 {{end}}
 
 {{if .Ribbon.Enabled}}
-// Forward declaration: xlAutoClose (below) disconnects the ribbon add-in, but
-// SetRibbonConnected is defined after xlAutoOpen further down this file.
-static bool SetRibbonConnected(bool connected);
+// Forward declarations: xlAutoClose (below) disconnects the ribbon add-in and
+// stops the STA retry timer, but both are defined after xlAutoOpen further
+// down this file.
+static bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr);
+static void StopRibbonConnectTimer();
 {{end}}
 
 extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     {{if .Ribbon.Enabled}}
     XLL_SAFE_BLOCK_BEGIN
         // Teardown order (com/ribbon_addin.h contract + Excel-DNA practice):
-        // (0) explicitly disconnect so Excel releases its RibbonAddIn
+        // (0a) stop the STA retry timer FIRST so no WM_TIMER can re-enter
+        //      TryConnectRibbon (CoRegisterClassObject / Connect) during
+        //      teardown. KillTimer here runs on the same STA thread as the
+        //      TimerProc, so no callback can be in flight after it returns.
+        StopRibbonConnectTimer();
+        // (0b) explicitly disconnect so Excel releases its RibbonAddIn
         //     reference while this DLL is still mapped (prevents quit crash),
         // (1) revoke/unregister so nothing new can resolve the class,
         if (!SetRibbonConnected(false)) {
@@ -319,9 +326,18 @@ static void TryApplyRtdThrottle(const char* phase) {
 // holds; without an explicit Connect=false Excel can keep a vtable pointer
 // into this DLL past FreeLibrary and crash on quit (Excel-DNA does the same
 // explicit disconnect for its helper add-in).
-static bool SetRibbonConnected(bool connected) {
+//
+// pNoApp (optional, out): set to true when the failure is solely because the
+// in-process Application object is not reachable yet (no workbook window -> no
+// EXCEL7 child). Callers use this to avoid burning the give-up budget on the
+// no-workbook-yet case (the user may open a workbook minutes later).
+static bool SetRibbonConnected(bool connected, bool* pNoApp) {
+    if (pNoApp) *pNoApp = false;
     IDispatch* pApp = GetExcelApplication();
-    if (!pApp) return false;
+    if (!pApp) {
+        if (pNoApp) *pNoApp = true;
+        return false;
+    }
 
     bool ok = false;
     {
@@ -353,14 +369,31 @@ static bool SetRibbonConnected(bool connected) {
 // workbook open (add-in auto-loaded at Excel startup), that child window does
 // not exist yet, so GetExcelApplication() returns nullptr and the connect
 // fails — leaving the ribbon tab permanently absent even after the user opens
-// a workbook. The fix mirrors TryApplyRtdThrottle: run once at xlAutoOpen and
-// re-attempt from the calc-end callback (which fires on the STA thread once a
-// workbook exists). State is a single atomic: 0=pending, 1=connected, 2=gave
-// up after bounded attempts. Registry/class-object steps (1-3) are themselves
-// idempotent, but we only redo the cheap, workbook-dependent connect (step 4)
-// on retry once the one-time registration has succeeded.
+// a workbook.
+//
+// Retry triggers (belt-and-braces, both run on Excel's main STA thread):
+//   1. A Win32 thread timer (SetTimer with hwnd=NULL + a TimerProc) armed from
+//      xlAutoOpen when the first connect defers. Excel pumps WM_TIMER even when
+//      fully idle with NO workbook, so this fires the connect the instant a
+//      workbook window appears — including the user's exact flow (load with no
+//      workbook, then File>New). This is the PRIMARY trigger: a brand-new
+//      EMPTY workbook runs no calculation, so the calc-end hook never fires.
+//   2. The calc-end callback (kept as a secondary trigger for the workbook-
+//      already-open and active-recalc cases).
+// State is a single atomic: 0=pending, 1=connected, 2=gave up after bounded
+// attempts. Registry/class-object steps (1-3) are themselves idempotent, but
+// we only redo the cheap, workbook-dependent connect (step 4) on retry once
+// the one-time registration has succeeded.
 static std::atomic<int> g_ribbonConnectState{0}; // 0=pending, 1=connected, 2=gave up
 static std::atomic<bool> g_ribbonRegistered{false};
+// STA-thread WM_TIMER id (0 = not armed). STA-thread-only; intentionally
+// NON-atomic — the same-thread access invariant is load-bearing (KillTimer for
+// a SetTimer(NULL,...) thread timer only works from the owning thread), and
+// making this atomic would falsely suggest cross-thread access is OK.
+static UINT_PTR g_ribbonConnectTimer = 0;
+static const UINT_PTR kRibbonConnectTimerId = 0x521BB04; // arbitrary, unique within this TU
+static const UINT kRibbonConnectTimerMs = 750;          // retry cadence while pending
+
 static bool TryConnectRibbon(const char* phase) {
     if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return true;
     if (g_isUnloading.load(std::memory_order_acquire)) return false;
@@ -399,21 +432,78 @@ static bool TryConnectRibbon(const char* phase) {
     }
 
     // 4. Connect through Application.COMAddIns (synchronous; Excel calls
-    //    GetCustomUI during this call). Needs the EXCEL7 window -> retry from
-    //    calc-end until a workbook exists. Bounded so a pathological automation
-    //    host (no UI window ever) doesn't walk the window chain forever.
-    if (SetRibbonConnected(true)) {
+    //    GetCustomUI during this call). Needs the EXCEL7 window.
+    bool noApp = false;
+    if (SetRibbonConnected(true, &noApp)) {
         g_ribbonConnectState.store(1, std::memory_order_release);
         SAFE_LOG_INFO(std::string("Ribbon: COM add-in connected (") + phase + ").");
         return true;
     }
 
+    // No workbook window yet (no Application object): the user simply hasn't
+    // opened a workbook. Do NOT consume the give-up budget — keep retrying via
+    // the timer until a workbook appears (which may be minutes later). Teardown
+    // (KillTimer in xlAutoClose) is what bounds this in practice.
+    if (noApp) return false;
+
+    // Real connect failure (Application reachable but Connect rejected): bound
+    // it so a pathological host doesn't retry forever.
     static std::atomic<int> s_attempts{0};
     if (s_attempts.fetch_add(1) + 1 >= 60) {
         g_ribbonConnectState.store(2, std::memory_order_release);
-        SAFE_LOG_WARN("Ribbon: COMAddIns connect failed after 60 attempts (no workbook window?); ribbon UI disabled.");
+        SAFE_LOG_WARN("Ribbon: COMAddIns connect failed after 60 attempts; ribbon UI disabled.");
     }
     return false;
+}
+
+// WM_TIMER callback (TimerProc form, hwnd=NULL). Dispatched on whichever thread
+// armed the timer and pumps messages — here Excel's main STA thread, which
+// pumps even when idle with no workbook. Retries the connect; self-kills once
+// the connect resolves (connected OR gave up) or the DLL is unloading.
+static VOID CALLBACK RibbonConnectTimerProc(HWND, UINT, UINT_PTR idEvent, DWORD) {
+    if (g_isUnloading.load(std::memory_order_acquire)) {
+        // Teardown also calls KillTimer; this is the belt to that suspenders.
+        if (g_ribbonConnectTimer != 0) { KillTimer(NULL, g_ribbonConnectTimer); g_ribbonConnectTimer = 0; }
+        return;
+    }
+    TryConnectRibbon("timer");
+    if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) {
+        // Resolved (connected or gave up after a real-failure budget): stop.
+        if (g_ribbonConnectTimer != 0) { KillTimer(NULL, g_ribbonConnectTimer); g_ribbonConnectTimer = 0; }
+        return;
+    }
+    // Still pending (typically: no workbook yet, so noApp attempts consume no
+    // budget and the timer runs until teardown). Leave a periodic breadcrumb so
+    // a stuck-deferring state is diagnosable in the field without log spam.
+    static unsigned s_pendingTicks = 0;
+    if (++s_pendingTicks % 80 == 0) { // ~once a minute at 750 ms cadence
+        SAFE_LOG_DEBUG("Ribbon: connect still deferred (waiting for a workbook); retry timer active.");
+    }
+}
+
+// Arms the STA-thread retry timer if the connect is still pending. Idempotent:
+// a no-op once armed or once the connect has resolved. MUST be called from the
+// STA thread (xlAutoOpen) so SetTimer binds the WM_TIMER to Excel's pump.
+static void ArmRibbonConnectTimer() {
+    if (g_isUnloading.load(std::memory_order_acquire)) return;
+    if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return; // already resolved
+    if (g_ribbonConnectTimer != 0) return;                                 // already armed
+    g_ribbonConnectTimer = SetTimer(NULL, kRibbonConnectTimerId, kRibbonConnectTimerMs, RibbonConnectTimerProc);
+    if (g_ribbonConnectTimer == 0) {
+        SAFE_LOG_WARN("Ribbon: SetTimer failed; falling back to the calc-end retry only.");
+    } else {
+        SAFE_LOG_INFO("Ribbon: connect deferred (no workbook yet); armed STA retry timer.");
+    }
+}
+
+// Stops the retry timer. Called from xlAutoClose BEFORE CoRevokeClassObject so
+// no WM_TIMER can re-enter TryConnectRibbon during teardown. Safe to call when
+// the timer was never armed.
+static void StopRibbonConnectTimer() {
+    if (g_ribbonConnectTimer != 0) {
+        KillTimer(NULL, g_ribbonConnectTimer);
+        g_ribbonConnectTimer = 0;
+    }
 }
 {{end}}
 
@@ -701,7 +791,14 @@ start_worker:
     // attempt idempotent + retryable; the calc-end handler retries it once a
     // workbook exists (same one-shot-with-retry idiom as TryApplyRtdThrottle).
     XLL_SAFE_BLOCK_BEGIN
-        TryConnectRibbon("xlAutoOpen");
+        // First attempt on the STA thread. When no workbook is open (Excel
+        // started with the add-in but no document) this defers — arm the STA
+        // retry timer so the connect fires the moment a workbook window
+        // appears, WITHOUT requiring any calculation (a brand-new EMPTY
+        // workbook runs no calc, so the calc-end hook alone never fires).
+        if (!TryConnectRibbon("xlAutoOpen")) {
+            ArmRibbonConnectTimer();
+        }
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
@@ -808,7 +905,54 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
             t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
         }
         {{else}}
-        t{{add $j 1}} = L"[Complex]";
+        // Composite arg (grid/numgrid/range/any): content-hash payload path
+        // (AGENTS.md §19.3). The topic carries only the content-hash token; the
+        // serialized payload travels once per calc cycle over MSG_SETREFCACHE
+        // and the Go dispatch resolves token -> payload from its RefCache.
+        {{if eq .Type "numgrid"}}
+        std::string tok{{add $j 1}} = xll::ContentHashTokenFP12({{.Name}});
+        {{else if eq .Type "grid"}}
+        std::string tok{{add $j 1}} = xll::ContentHashToken('g', {{.Name}});
+        {{else if eq .Type "range"}}
+        std::string tok{{add $j 1}} = xll::ContentHashToken('r', {{.Name}});
+        {{else}}
+        std::string tok{{add $j 1}} = xll::ContentHashToken('a', {{.Name}});
+        {{end}}
+        {
+            // Build a SetRefCacheRequest{ key=token, val=Any(payload) } and
+            // ship it ONCE per cycle (SendRefCachePayloadOnce dedups on the
+            // token) BEFORE xlfRtd so the server has the payload cached before
+            // ConnectData fires the handler.
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(tok{{add $j 1}});
+            bool rcOk = true;
+            {{if eq .Type "grid"}}
+            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
+            {{else if eq .Type "numgrid"}}
+            auto rcInner = ConvertNumGrid({{.Name}}, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
+            {{else if eq .Type "range"}}
+            auto rcInner = ConvertRange({{.Name}}, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
+            {{else}}
+            // any: ConvertAny already produces an Offset<protocol::Any>.
+            auto rcAny = ConvertAny({{.Name}}, rcb);
+            {{end}}
+            if (!rcOk) {
+                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
+                // ship a degenerate payload under this token; the Go dispatch
+                // will miss and push an explicit error to the topic.
+                SAFE_LOG_WARN("RTD {{$fn.Name}}: composite arg coerce failed; skipping payload ship for token " + tok{{add $j 1}});
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                if (!xll::SendRefCachePayloadOnce(tok{{add $j 1}}, rcb.GetBufferPointer(), rcb.GetSize())) {
+                    SAFE_LOG_WARN("RTD {{$fn.Name}}: failed to ship composite arg payload for token " + tok{{add $j 1}});
+                }
+            }
+        }
+        t{{add $j 1}} = StringToWString(tok{{add $j 1}});
         {{end}}
     }
     {{end}}
@@ -860,6 +1004,12 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
 
     {{range $j, $arg := .Args}}
     std::wstring t{{add $j 1}};
+    {{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string")}}
+    // Composite-arg payloads, built now (for the content hash that goes into
+    // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
+    std::vector<uint8_t> refPayload{{add $j 1}};
+    std::string refTok{{add $j 1}};
+    {{end}}
     {
         {{if eq .Type "int"}}
         t{{add $j 1}} = std::to_wstring({{.Name}});
@@ -871,6 +1021,49 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
         if ({{.Name}}->xltype == xltypeStr) {
             t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
         }
+        {{else}}
+        // Composite arg (grid/numgrid/range/any): content-hash payload path.
+        // The token is content-addressed, so it flows into the once-key below
+        // (MakeRtdOnceKey) and makes memoization content-addressed for free:
+        // the same input grid hits the cache; an edited grid yields a new
+        // token -> new key -> fresh compute (AGENTS.md §19.3).
+        {{if eq .Type "numgrid"}}
+        refTok{{add $j 1}} = xll::ContentHashTokenFP12({{.Name}});
+        {{else if eq .Type "grid"}}
+        refTok{{add $j 1}} = xll::ContentHashToken('g', {{.Name}});
+        {{else if eq .Type "range"}}
+        refTok{{add $j 1}} = xll::ContentHashToken('r', {{.Name}});
+        {{else}}
+        refTok{{add $j 1}} = xll::ContentHashToken('a', {{.Name}});
+        {{end}}
+        {
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(refTok{{add $j 1}});
+            bool rcOk = true;
+            {{if eq .Type "grid"}}
+            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
+            {{else if eq .Type "numgrid"}}
+            auto rcInner = ConvertNumGrid({{.Name}}, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
+            {{else if eq .Type "range"}}
+            auto rcInner = ConvertRange({{.Name}}, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
+            {{else}}
+            auto rcAny = ConvertAny({{.Name}}, rcb);
+            {{end}}
+            if (!rcOk) {
+                // Coerce failed: leave refPayload empty — the ship step below
+                // skips empty payloads and the Go dispatch surfaces an explicit
+                // miss error instead of a silent degenerate grid.
+                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: composite arg coerce failed; skipping payload for token " + refTok{{add $j 1}});
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                refPayload{{add $j 1}}.assign(rcb.GetBufferPointer(), rcb.GetBufferPointer() + rcb.GetSize());
+            }
+        }
+        t{{add $j 1}} = StringToWString(refTok{{add $j 1}});
         {{end}}
     }
     {{end}}
@@ -890,9 +1083,18 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
         VariantClear(&cached);
     }
 
-    // 2. Cache miss: issue xlfRtd. ConnectData returns #GETTING_DATA for this
-    //    rtd-once topic (it recognizes the function name and substitutes the
-    //    placeholder for the plain-rtd "Connecting..." BSTR).
+    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
+    //    server has them cached BEFORE ConnectData fires the handler, then
+    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    //    topic (it recognizes the function name and substitutes the placeholder
+    //    for the plain-rtd "Connecting..." BSTR).
+    {{range $j, $arg := .Args}}{{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string")}}
+    if (!refPayload{{add $j 1}}.empty()) {
+        if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, refPayload{{add $j 1}}.data(), refPayload{{add $j 1}}.size())) {
+            SAFE_LOG_WARN("rtd-once {{$fn.Name}}: failed to ship composite arg payload for token " + refTok{{add $j 1}});
+        }
+    }
+    {{end}}{{end}}
     {
         static thread_local XLOPER12 xRes;
         static std::wstring wProgID = L"{{$.Rtd.ProgID}}";

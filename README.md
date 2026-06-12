@@ -345,10 +345,13 @@ is released. The cell shows **`#GETTING_DATA`** while waiting (not the textual
 "Connecting…" used by plain `rtd`). On a handler error, the error string is
 pushed so the cell stops waiting.
 
-* **Scope (current):** scalar args (`int`/`float`/`string`/`bool`) and a
-  scalar or `any` return only. Composite args (`range`/`grid`/`numgrid`/`any`)
-  are rejected at config time — use plain `mode: "rtd"` for those (a
-  content-hash payload path for composite args is a planned follow-up).
+* **Scope (current):** scalar (`int`/`float`/`string`/`bool`) **or** composite
+  (`range`/`grid`/`numgrid`/`any`) args, and a scalar or `any` return.
+  Composite args travel the **content-hash payload path** (see below) — and
+  because the content hash flows into the once-key, memoization is
+  content-addressed: the same input grid hits the cached result, while an
+  edited grid recomputes. Composite *returns* are still rejected (the RTD push
+  result can carry only scalars / `any`).
 * **Result lifecycle — the once / `memoize_ttl` / `memoize` triad** (keyed by
   function name + args; at most one of `memoize_ttl` / `memoize` may be set):
   * **once (default, neither flag set):** the completed result is cleared at
@@ -378,8 +381,15 @@ RTD caveats to keep in mind when using it for one-shot computations:
 *   **F9 semantics**: while a topic stays connected, recalculation does not
     re-run the handler (implicit memoization). Disconnect the topic after
     completion if you want recalc-reruns.
-*   **Arguments** are serialized into RTD topic strings — unsuitable for
-    `grid`/`range`-sized inputs.
+*   **Arguments**: scalar arguments are serialized directly into RTD topic
+    strings. Composite arguments (`grid`/`range`/`numgrid`/`any`) use the
+    **content-hash payload path** — the topic carries only a content hash of
+    the argument, while the payload itself travels once per calc cycle over the
+    normal shared-memory path and is cached hash→payload on the Go side. Topic
+    identity therefore tracks the argument's *content*: the same grid maps to
+    the same topic (so two cells with the same input share the work), and
+    editing a cell in the input yields a new hash → a new topic → a fresh
+    compute. This applies to both `mode: "rtd"` and `mode: "rtd-once"`.
 
 ### Custom FlatBuffers Includes
 

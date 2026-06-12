@@ -372,21 +372,6 @@ var validEventTypes = map[string]bool{
 	"CalculationCanceled": true,
 }
 
-// compositeArgOnlyTypes are the composite table types. They are always valid
-// as ARGUMENTS (passed by reference to the C++ wrapper). Whether they are
-// valid as RETURNS depends on the execution mode:
-//   - sync/async: grid/numgrid spill (see validReturnTypes); range is rejected.
-//   - rtd/rtd-once: all three are rejected (the push path carries scalars/any).
-//
-// This set is used to emit a targeted error explaining the asymmetry rather
-// than a generic "not supported", and to reject composite ARGUMENTS for the
-// scalar-topic-only RTD modes.
-var compositeArgOnlyTypes = map[string]bool{
-	"range":   true,
-	"grid":    true,
-	"numgrid": true,
-}
-
 // rtdCompositeReturnTypes are composite return types rejected for the RTD
 // modes (rtd / rtd-once). Unlike sync/async, grid/numgrid cannot ride the RTD
 // push path (RtdUpdate's Any union would stringify them), so they are rejected
@@ -437,25 +422,21 @@ func Validate(config *Config) error {
 	}
 
 	for _, fn := range config.Functions {
-		// Plain mode:"rtd" is SCALAR-TOPIC ONLY. The C++ wrapper serializes
-		// each argument into an RTD topic string; for composite ("range"/
-		// "grid"/"numgrid") and "any" args it can only emit the literal
-		// L"[Complex]" (xll_main.cpp.tmpl), so (a) the argument CONTENTS never
-		// reach the Go handler and (b) every distinct composite value collapses
-		// onto the SAME topic string — a topic-identity collision that makes
-		// unrelated cells share a result. On the return side the RTD push path
-		// (pkg/rtd → fbany.MapGo) carries scalars and "any" only; a composite
-		// is stringified via fmt.Sprintf("%v"). So plain rtd accepts scalar/any
-		// args and scalar/any returns. Composite support is deferred to the
-		// content-hash payload path (see IMPROVEMENT_BACKLOG.md §7).
+		// Plain mode:"rtd" and mode:"rtd-once" accept BOTH scalar and composite
+		// (range/grid/numgrid/any) arguments. Scalar args are stringified into
+		// the RTD topic; composite args travel the content-hash payload path
+		// (AGENTS.md §19.3): the C++ wrapper computes a deterministic content
+		// hash, sends the serialized payload once per calc cycle over the
+		// normal SHM SetRefCache path, and embeds only the hash token ("h:<hex>")
+		// in the topic string. Topic identity then tracks CONTENT — same grid →
+		// same topic, edited grid → new hash → fresh compute — which both
+		// delivers the contents to the Go handler AND fixes the old
+		// "[Complex]" topic-identity collision.
+		//
+		// The RETURN side is unchanged: the push path (pkg/rtd → fbany.MapGo /
+		// RtdUpdate's Any union) carries scalars and "any" only, so composite
+		// RETURNS stay rejected for both RTD modes.
 		isRtd := strings.EqualFold(fn.Mode, "rtd")
-		// rtd-once wraps a normal (sync-shaped) handler in an RTD topic
-		// lifecycle: the result travels back through RtdUpdate's Any union, so
-		// the return must be a scalar or "any" (NOT a composite table type —
-		// the Any union cannot carry grid/numgrid/range). And because the
-		// arguments are serialized into the RTD topic strings, only scalar
-		// args are supported in this first cut; composite args need the
-		// content-hash payload path (deferred — see IMPROVEMENT_BACKLOG.md §7).
 		isRtdOnce := strings.EqualFold(fn.Mode, "rtd-once")
 		if isRtd {
 			// Return: scalar or "any" only (the RTD push path carries scalars
@@ -463,20 +444,13 @@ func Validate(config *Config) error {
 			// numgrid are sync/async-spillable returns but NOT valid here, so
 			// reject them explicitly (they are now in validReturnTypes).
 			if rtdCompositeReturnTypes[fn.Return] {
-				return fmt.Errorf("function '%s': mode:\"rtd\" cannot return composite type '%s' (the RTD push path carries scalars and \"any\" only — a composite return would be stringified via fmt.Sprintf); return a scalar or \"any\", or use sync/async for spilling grid/numgrid returns, or see IMPROVEMENT_BACKLOG.md §7 for the deferred content-hash payload path", fn.Name, fn.Return)
+				return fmt.Errorf("function '%s': mode:\"rtd\" cannot return composite type '%s' (the RTD push path carries scalars and \"any\" only — a composite return would be stringified via fmt.Sprintf); return a scalar or \"any\", or use sync/async for spilling grid/numgrid returns", fn.Name, fn.Return)
 			}
 			if !validReturnTypes[fn.Return] {
 				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 			}
-			// Args: scalar only. Composite/"any" args collapse onto the literal
-			// L"[Complex]" RTD topic string (topic-identity collision → wrong
-			// result sharing between cells) and their contents never reach the
-			// Go handler.
-			for _, arg := range fn.Args {
-				if compositeArgOnlyTypes[arg.Type] || arg.Type == "any" {
-					return fmt.Errorf("function '%s' argument '%s': mode:\"rtd\" supports scalar arguments only (int/float/string/bool); composite/any argument '%s' is not supported because the C++ wrapper serializes it into the RTD topic as the literal \"[Complex]\" — the contents never reach the Go handler AND every distinct value collides on the same topic, so unrelated cells share a result; the content-hash payload path is a deferred follow-up (see IMPROVEMENT_BACKLOG.md §7)", fn.Name, arg.Name, arg.Type)
-				}
-			}
+			// Composite/any ARGS are now supported via the content-hash payload
+			// path (no per-arg rejection here).
 		} else if isRtdOnce {
 			// Scalar/any return only (RtdUpdate Any union). grid/numgrid are
 			// sync/async-spillable returns but NOT valid here — reject them
@@ -487,12 +461,8 @@ func Validate(config *Config) error {
 			if !validReturnTypes[fn.Return] {
 				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 			}
-			// Scalar args only.
-			for _, arg := range fn.Args {
-				if compositeArgOnlyTypes[arg.Type] || arg.Type == "any" {
-					return fmt.Errorf("function '%s' argument '%s': mode:\"rtd-once\" supports scalar arguments only (int/float/string/bool); composite/any argument '%s' is not yet supported because args are serialized into the RTD topic string — use plain mode:\"rtd\" for composite-arg streaming (content-hash payload path is a deferred follow-up, see IMPROVEMENT_BACKLOG.md §7)", fn.Name, arg.Name, arg.Type)
-				}
-			}
+			// Composite/any ARGS are now supported via the content-hash payload
+			// path (no per-arg rejection here).
 		} else if !validReturnTypes[fn.Return] {
 			// grid/numgrid are now valid sync/async returns (they spill). Only
 			// "range" remains arg-only: a value-position range return is

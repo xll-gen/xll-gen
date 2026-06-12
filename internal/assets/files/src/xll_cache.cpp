@@ -150,6 +150,19 @@ static uint64_t Fnv1a(const void* data, size_t len) {
     return hash;
 }
 
+// Streaming FNV-1a continuation: feeds more bytes through an existing digest.
+// Use this (NOT xor-combining independent digests) when hashing multiple
+// fields into one token — xor-combining is order-insensitive and cancels the
+// basis, strictly weakening collision resistance (reviewer MED, 2026-06-12).
+static uint64_t Fnv1aUpdate(uint64_t hash, const void* data, size_t len) {
+    const unsigned char* p = (const unsigned char*)data;
+    for (size_t i = 0; i < len; ++i) {
+        hash ^= p[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 std::string SerializeXLOPER(const XLOPER12* px) {
     if (!px) return "null";
     std::stringstream ss;
@@ -195,7 +208,26 @@ std::string SerializeXLOPER(const XLOPER12* px) {
                      }
                      xll::CallExcel(xlFree, nullptr, &xVal);
                  } else {
-                     ss << "RefError";
+                     // Coerce failed (xlretUncalced mid-calc, cross-sheet
+                     // restriction, ...). Include the REFERENCE IDENTITY so two
+                     // DISTINCT failing refs hash apart — a constant marker
+                     // collapsed them onto one RTD topic + one RefCache entry
+                     // (reviewer HIGH, 2026-06-12).
+                     ss << "RefError:";
+                     DWORD ty = px->xltype & ~(xlbitXLFree | xlbitDLLFree);
+                     if (ty == xltypeRef && px->val.mref.lpmref) {
+                         ss << (unsigned long long)px->val.mref.idSheet;
+                         const XLMREF12* m = px->val.mref.lpmref;
+                         for (WORD ri = 0; ri < m->count; ++ri) {
+                             const XLREF12& r = m->reftbl[ri];
+                             ss << ":" << r.rwFirst << "," << r.colFirst
+                                << "-" << r.rwLast << "," << r.colLast;
+                         }
+                     } else if (ty == xltypeSRef) {
+                         const XLREF12& r = px->val.sref.ref;
+                         ss << "S:" << r.rwFirst << "," << r.colFirst
+                            << "-" << r.rwLast << "," << r.colLast;
+                     }
                  }
              }
              break;
@@ -215,6 +247,67 @@ std::string SerializeXLOPER(const XLOPER12* px) {
     return ss.str();
 }
 
+
+// Formats a 64-bit FNV-1a hash as the content-addressed RTD topic token
+// "h:<typeTag><hex>". The "h:" prefix is collision-proof against any token a
+// plain (scalar) string argument could legitimately produce, so the Go side
+// could branch on it if needed — but in practice it decodes composite
+// positions by the generator-known arg type, not by sniffing the prefix. The
+// typeTag namespaces the hash by wire-payload shape (see header).
+static std::string FormatHashToken(char typeTag, uint64_t h) {
+    std::stringstream ss;
+    ss << "h:" << typeTag << std::hex << std::setw(16) << std::setfill('0') << h;
+    return ss.str();
+}
+
+std::string ContentHashToken(char typeTag, const XLOPER12* px) {
+    // SerializeXLOPER coerces xltypeRef/xltypeSRef to the underlying cell
+    // values (xlCoerce → xltypeMulti) before serializing, so the hash tracks
+    // CONTENT, not reference coordinates: editing a cell inside a range arg
+    // changes the serialization → changes the token → a fresh RTD topic.
+    std::string s = SerializeXLOPER(px);
+    return FormatHashToken(typeTag, Fnv1a(s));
+}
+
+std::string ContentHashTokenFP12(const FP12* fp) {
+    if (!fp) return FormatHashToken('n', Fnv1a("FP12:null", 9));
+    // Hash geometry then payload through ONE continuous FNV-1a stream so the
+    // result has full avalanche and is order-sensitive (a 1x4 and a 2x2 with
+    // identical bytes differ). Raw double bytes keep NaN/-0.0 bit-stable
+    // across recalcs of identical content.
+    uint64_t h = 14695981039346656037ULL;
+    int32_t dims[2] = { fp->rows, fp->columns };
+    h = Fnv1aUpdate(h, dims, sizeof(dims));
+    const size_t count = static_cast<size_t>(fp->rows) * static_cast<size_t>(fp->columns);
+    h = Fnv1aUpdate(h, fp->array, count * sizeof(double));
+    return FormatHashToken('n', h);
+}
+
+flatbuffers::Offset<protocol::Grid> ConvertGridArg(const XLOPER12* op, flatbuffers::FlatBufferBuilder& builder, bool* coerceOk) {
+    if (coerceOk) *coerceOk = true;
+    if (!op) return ConvertGrid(const_cast<LPXLOPER12>(op), builder);
+
+    // A grid arg passed as a range reference must be coerced to its cell
+    // VALUES before ConvertGrid (which only understands xltypeMulti). Mirrors
+    // SerializeXLOPER's ref handling above.
+    if (op->xltype & (xltypeRef | xltypeSRef)) {
+        XLOPER12 xVal;
+        XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = xltypeMulti;
+        if (xll::CallExcel(xlCoerce, &xVal, op, &xType) == xlretSuccess) {
+            auto off = ConvertGrid(&xVal, builder);
+            xll::CallExcel(xlFree, nullptr, &xVal);
+            return off;
+        }
+        // Coerce failed (xlretUncalced etc.): signal the caller so the wrapper
+        // SKIPS shipping a payload entirely — the Go dispatch then misses the
+        // token and pushes an explicit error to the topic, instead of the
+        // handler silently receiving a degenerate 1x1 grid (reviewer MED,
+        // 2026-06-12). The fall-through below still returns a valid offset so
+        // legacy callers without the out-param keep compiling/working.
+        if (coerceOk) *coerceOk = false;
+    }
+    return ConvertGrid(const_cast<LPXLOPER12>(op), builder);
+}
 
 std::string MakeCacheKey(const std::string& funcName, const std::vector<LPXLOPER12>& args) {
     std::stringstream ss;

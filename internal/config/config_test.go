@@ -179,27 +179,19 @@ func TestValidate_CompositeReturnTypes(t *testing.T) {
 		})
 	}
 
-	// Composite/any ARGS are now REJECTED for RTD: they collapse onto the
-	// literal "[Complex]" topic string (topic-identity collision). The message
-	// must explain the collision.
+	// Composite/any ARGS are now ACCEPTED for RTD: they travel the content-hash
+	// payload path (the C++ wrapper hashes the content, ships the payload once
+	// per cycle over SetRefCache, and embeds only the hash token in the topic).
 	for _, typ := range composite {
-		t.Run("reject "+typ+" arg for rtd", func(t *testing.T) {
+		t.Run("allow "+typ+" arg for rtd", func(t *testing.T) {
 			cfg := &Config{
 				Project: ProjectConfig{Name: "TestProject"},
 				Functions: []Function{
 					{Name: "TestFunc", Mode: "rtd", Args: []Arg{{Name: "a", Type: typ}}, Return: "any"},
 				},
 			}
-			err := Validate(cfg)
-			if err == nil {
-				t.Fatalf("Validate() expected error for rtd composite/any arg %q, got nil", typ)
-			}
-			msg := err.Error()
-			if !strings.Contains(msg, "[Complex]") {
-				t.Errorf("Validate() error = %v, want explanation about the [Complex] topic collision", err)
-			}
-			if !strings.Contains(msg, typ) {
-				t.Errorf("Validate() error = %v, want mention of type %q", err, typ)
+			if err := Validate(cfg); err != nil {
+				t.Errorf("Validate() unexpected error for rtd composite/any arg %q: %v", typ, err)
 			}
 		})
 	}
@@ -693,8 +685,8 @@ func TestValidate_RtdThrottleInterval(t *testing.T) {
 }
 
 // TestValidate_RtdOnce pins the mode:"rtd-once" rules:
-//   - accepted with scalar/any return + scalar args (rtd.enabled required)
-//   - composite arg rejected with a message pointing at plain rtd mode
+//   - accepted with scalar/any return + scalar OR composite args (rtd.enabled required)
+//   - composite args accepted (content-hash payload path)
 //   - non-scalar (composite) return rejected
 //   - memoize accepted only with rtd-once
 //   - caller-aware rejected with rtd-once
@@ -737,21 +729,20 @@ func TestValidate_RtdOnce(t *testing.T) {
 		})
 	}
 
-	// Composite/any args rejected, message points at plain rtd mode.
+	// Composite/any args are now ACCEPTED for rtd-once: they travel the
+	// content-hash payload path (the hash token also flows into the once-key,
+	// making memoization content-addressed — same grid → cached result,
+	// changed grid → fresh compute).
 	for _, at := range []string{"range", "grid", "numgrid", "any"} {
-		t.Run("reject arg "+at, func(t *testing.T) {
+		t.Run("allow arg "+at, func(t *testing.T) {
 			cfg := mk(Function{
 				Name:   "Compute",
 				Mode:   "rtd-once",
 				Return: "float",
 				Args:   []Arg{{Name: "x", Type: at}},
 			})
-			err := Validate(cfg)
-			if err == nil {
-				t.Fatalf("rtd-once with composite/any arg %q must be rejected", at)
-			}
-			if !strings.Contains(err.Error(), "scalar arguments only") || !strings.Contains(err.Error(), `mode:"rtd"`) {
-				t.Errorf("composite-arg error should say scalar-only + point to rtd mode, got %v", err)
+			if err := Validate(cfg); err != nil {
+				t.Errorf("rtd-once with composite/any arg %q must be valid, got %v", at, err)
 			}
 		})
 	}

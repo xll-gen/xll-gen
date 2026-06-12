@@ -7,6 +7,9 @@
 #include <mutex>
 #include <functional>
 #include "types/xlcall.h"
+// converters.h pulls in flatbuffers + protocol_generated.h, giving us
+// flatbuffers::Offset<protocol::Grid> and ConvertGrid for ConvertGridArg below.
+#include "types/converters.h"
 
 // Parallel Hashmap
 // We use the parallel_flat_hash_map for thread-safe concurrent access.
@@ -92,5 +95,42 @@ std::string MakeCacheKey(const std::string& funcName, const std::vector<LPXLOPER
 
 // Helper to serialize an XLOPER12 to a string (for caching)
 std::string SerializeXLOPER(const XLOPER12* px);
+
+// ContentHashToken computes a deterministic, content-addressed RTD topic token
+// for a composite argument (grid / range / any XLOPER12). The XLOPER12's value
+// is serialized (refs are coerced to their cell values via SerializeXLOPER) and
+// FNV-1a hashed; the result is "h:<typeTag><hex>". Identical content always
+// produces the same token (so the same grid maps to the same RTD topic and
+// edited content produces a fresh token → fresh compute). Used by the rtd /
+// rtd-once wrappers for the content-hash payload path (AGENTS.md §19.3).
+//
+// typeTag namespaces the hash by the WIRE PAYLOAD shape ('g' grid, 'r' range,
+// 'a' any, 'n' numgrid). The SAME range A1:B2 serialized as a grid (values) vs
+// a range (coordinates) is a DIFFERENT payload; without the tag both would map
+// to the same token and one cell's payload would satisfy the other's lookup
+// with the wrong union type. The tag keeps each (content, target-type) pair on
+// its own topic and its own RefCache entry.
+std::string ContentHashToken(char typeTag, const XLOPER12* px);
+
+// ContentHashTokenFP12 is the FP12* (numgrid) overload of ContentHashToken: it
+// hashes the rows/cols + raw double payload of the floating-point grid under
+// the 'n' type tag.
+std::string ContentHashTokenFP12(const FP12* fp);
+
+// ConvertGridArg serializes a `grid`-typed RTD argument into a protocol::Grid.
+// A grid arg is registered `U`, so Excel passes a REFERENCE (xltypeRef/SRef)
+// for a range like A1:B2; types' ConvertGrid only handles xltypeMulti and would
+// otherwise emit a 1x1 Nil grid. This helper coerces a reference to its cell
+// VALUES (xlCoerce → xltypeMulti) first, then defers to ConvertGrid, so the Go
+// handler receives the populated grid. A non-reference (already a value array)
+// is passed through unchanged. Declared here (not in types) so the coercion
+// lives with the wrapper that needs it, without a types release.
+//
+// coerceOk (optional): set to false when a reference arg's xlCoerce FAILED
+// (xlretUncalced etc.) — the returned offset is then a degenerate 1x1 grid and
+// the caller must NOT ship it as the token's payload (skip the send; the Go
+// dispatch surfaces an explicit miss error instead of silently delivering a
+// wrong-shaped grid).
+flatbuffers::Offset<protocol::Grid> ConvertGridArg(const XLOPER12* op, flatbuffers::FlatBufferBuilder& builder, bool* coerceOk = nullptr);
 
 } // namespace xll

@@ -34,15 +34,25 @@ func ribbonConnectCfg() *config.Config {
 // appears even after the user opens a workbook.
 //
 // The fix routes the connect through TryConnectRibbon (idempotent + retryable)
-// and retries it from the calc-end callback, which fires on the STA thread once
-// a workbook exists. This test pins:
-//   - xlAutoOpen calls TryConnectRibbon (not the old inline one-shot connect);
-//   - the calc-end handler retries it;
-//   - the CalculationEnded event is registered whenever the ribbon is enabled
-//     (so the retry hook actually fires).
+// and drives retries from TWO STA-thread triggers:
+//   - a Win32 thread timer (SetTimer hwnd=NULL + TimerProc) armed at xlAutoOpen
+//     when the first connect defers — this is the PRIMARY trigger because a
+//     brand-new EMPTY workbook runs no calculation, so the calc-end hook alone
+//     never fires (the v0.5.0 bug: ribbon never appears for load-then-File>New);
+//   - the calc-end callback (kept as a secondary/belt-and-braces trigger).
+//
+// This test pins:
+//   - xlAutoOpen calls TryConnectRibbon (not the old inline one-shot connect)
+//     and arms the timer when it defers;
+//   - the timer TimerProc retries the connect and is guarded by g_isUnloading;
+//   - the timer is killed at xlAutoClose BEFORE CoRevokeClassObject;
+//   - the calc-end handler also retries it;
+//   - the CalculationEnded event is registered whenever the ribbon is enabled;
+//   - the no-workbook-yet ("noApp") case does NOT consume the give-up budget.
 //
 // Before the fix the rendered xll_main.cpp connected inline in xlAutoOpen with
-// no retry path, so none of these substrings were present.
+// no retry path, and (post v0.5.0) retried ONLY from calc-end — which never
+// fires for an empty workbook. So the timer substrings below were all absent.
 func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	t.Parallel()
 	src := renderCppMain(t, ribbonConnectCfg())
@@ -51,7 +61,21 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		// The retryable connect helper exists.
 		"static bool TryConnectRibbon(const char* phase)",
 		// xlAutoOpen drives the connect through it (not an inline SetRibbonConnected(true)).
-		`TryConnectRibbon("xlAutoOpen");`,
+		`TryConnectRibbon("xlAutoOpen")`,
+		// xlAutoOpen arms the STA retry timer when the first connect defers.
+		"ArmRibbonConnectTimer();",
+		// The timer machinery exists: a TimerProc retry hook on the STA thread.
+		"RibbonConnectTimerProc",
+		`TryConnectRibbon("timer");`,
+		"SetTimer(NULL, kRibbonConnectTimerId",
+		// The TimerProc honors the unload self-abort contract.
+		"g_isUnloading.load(std::memory_order_acquire)",
+		// Teardown stops the timer before revoking the class object.
+		"StopRibbonConnectTimer();",
+		"KillTimer(NULL, g_ribbonConnectTimer);",
+		// The no-workbook-yet case is detected and does NOT burn the give-up budget.
+		"bool noApp = false;",
+		"if (noApp) return false;",
 		// Calc-end retries the connect on the STA thread once a workbook exists.
 		`TryConnectRibbon("calc end");`,
 		// The connect state is a single atomic guard (pending/connected/gave-up).
@@ -63,6 +87,22 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("xll_main.cpp (ribbon) missing %q\n---\n%s", want, src)
 		}
+	}
+
+	// Win32 trap lock: with hwnd=NULL, SetTimer IGNORES the passed id and
+	// returns a fresh system-assigned one — KillTimer with the CONSTANT id
+	// kills nothing and leaves the TimerProc armed (unmap crash on forced
+	// unload). KillTimer must always use the STORED returned id.
+	if strings.Contains(src, "KillTimer(NULL, kRibbonConnectTimerId") {
+		t.Errorf("KillTimer must use the stored returned id g_ribbonConnectTimer, not the constant kRibbonConnectTimerId (hwnd=NULL timers ignore the id param)")
+	}
+
+	// Teardown ordering: StopRibbonConnectTimer() must precede CoRevokeClassObject
+	// so no WM_TIMER can re-enter the COM registration during teardown.
+	stopIdx := strings.Index(src, "StopRibbonConnectTimer();")
+	revokeIdx := strings.Index(src, "CoRevokeClassObject(g_ribbonCookie)")
+	if stopIdx < 0 || revokeIdx < 0 || stopIdx > revokeIdx {
+		t.Errorf("StopRibbonConnectTimer() must be called before CoRevokeClassObject in xlAutoClose (stop=%d revoke=%d)", stopIdx, revokeIdx)
 	}
 
 	// The connect must NOT be wired as a single inline best-effort call in
@@ -90,6 +130,9 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	}
 	if strings.Contains(noRibbonSrc, "needRibbonRetry") {
 		t.Errorf("ribbon-disabled render must not emit the needRibbonRetry hook")
+	}
+	if strings.Contains(noRibbonSrc, "RibbonConnectTimerProc") || strings.Contains(noRibbonSrc, "ArmRibbonConnectTimer") {
+		t.Errorf("ribbon-disabled render must not emit the ribbon connect timer machinery")
 	}
 }
 

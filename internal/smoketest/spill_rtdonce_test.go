@@ -555,6 +555,245 @@ func assertStaysValue(t *testing.T, app *excelApp, sheet *ole.IDispatch, addr st
 	}
 }
 
+// ===================== Task 4: RTD COMPOSITE ARGS ===========================
+//
+// Content-hash payload path (AGENTS.md §19.3): rtd / rtd-once functions taking
+// composite (grid/range) ARGUMENTS. The C++ wrapper hashes the content, ships
+// the payload once per cycle over MSG_SETREFCACHE, and the topic carries only
+// the hash token; the Go dispatch resolves token -> payload from the per-cycle
+// RefCache and passes the typed view to the handler.
+//
+//	go test -tags=xll_spill -run TestRtdComposite ./internal/smoketest/...
+
+const compositeYaml = `
+project:
+  name: "xll_smoke"
+  version: "0.1.0"
+gen:
+  go:
+    package: "generated"
+  disable_pid_suffix: true
+logging:
+  level: "debug"
+  dir: "TEMP_DIR"
+server:
+  workers: 2
+  timeout: "10s"
+rtd:
+  enabled: true
+  prog_id: "XllSmoke.Rtd"
+  description: "xll-gen composite-arg harness RTD"
+  throttle_interval: "250ms"
+functions:
+  - name: "SumGridOnce"
+    description: "Sleeps ~1s then returns the sum of the grid (rtd-once, grid arg)."
+    mode: "rtd-once"
+    args: [{name: "g", type: "grid"}]
+    return: "float"
+  - name: "SumRangeTick"
+    description: "Returns the sum of a range arg (plain rtd, range arg)."
+    mode: "rtd"
+    args: [{name: "r", type: "range"}]
+    return: "float"
+`
+
+const compositeMain = `package main
+
+import (
+	"context"
+	"sync/atomic"
+	"time"
+
+	"xll_smoke/generated"
+
+	flatbuffers "github.com/google/flatbuffers/go"
+	protocol "github.com/xll-gen/types/go/protocol"
+)
+
+type Service struct{}
+
+var gridOnceCalls int64
+
+// sumGrid sums the numeric scalars of a protocol.Grid (Num/Int).
+func sumGrid(g *protocol.Grid) float64 {
+	if g == nil {
+		return -1
+	}
+	var sum float64
+	n := g.DataLength()
+	for i := 0; i < n; i++ {
+		var sc protocol.Scalar
+		if !g.Data(&sc, i) {
+			continue
+		}
+		switch sc.ValType() {
+		case protocol.ScalarValueNum:
+			var t flatbuffers.Table
+			if sc.Val(&t) {
+				var num protocol.Num
+				num.Init(t.Bytes, t.Pos)
+				sum += num.Val()
+			}
+		case protocol.ScalarValueInt:
+			var t flatbuffers.Table
+			if sc.Val(&t) {
+				var iv protocol.Int
+				iv.Init(t.Bytes, t.Pos)
+				sum += float64(iv.Val())
+			}
+		}
+	}
+	return sum
+}
+
+func (s *Service) SumGridOnce(ctx context.Context, g *protocol.Grid) (float64, error) {
+	atomic.AddInt64(&gridOnceCalls, 1)
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-time.After(1 * time.Second):
+	}
+	return sumGrid(g), nil
+}
+
+func (s *Service) SumRangeTick_RTD(ctx context.Context, topicID int32, r *protocol.Range) error {
+	// The range arg arrives as a *protocol.Range view (sheet + rects). Its
+	// VALUES are not in the Range view — but the content hash that selected
+	// this topic already encodes the values, so we report the rect count as a
+	// simple, deterministic signal that the typed view was delivered.
+	var n float64
+	if r != nil {
+		n = float64(r.RefsLength())
+	}
+	return generated.PushRtdUpdate(topicID, n)
+}
+
+func (s *Service) OnCalculationEnded(ctx context.Context) error    { return nil }
+func (s *Service) OnCalculationCanceled(ctx context.Context) error { return nil }
+func (s *Service) OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error {
+	return nil
+}
+func (s *Service) OnRtdDisconnect(ctx context.Context, topicID int32) error { return nil }
+
+func main() { generated.Serve(&Service{}) }
+`
+
+func TestRtdComposite_Excel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	root := repoRootOrFatal(t)
+	workDir := os.Getenv("XLL_COMPOSITE_DIR")
+	if workDir == "" {
+		var err error
+		workDir, err = os.MkdirTemp("", "xll-composite-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(workDir) })
+	}
+	projectDir := filepath.Join(workDir, "xll_smoke")
+	if _, err := os.Stat(filepath.Join(projectDir, "xll.yaml")); err != nil {
+		writeProject(t, projectDir, compositeYaml, compositeMain, root)
+	}
+	t.Logf("project dir: %s", projectDir)
+	xllPath := buildProject(t, projectDir)
+	t.Logf("xll: %s", xllPath)
+
+	runExcel(t, xllPath, func(app *excelApp, sheet *ole.IDispatch) {
+		app.SetRtdThrottle(250)
+
+		// Input grid A1:B2 = [[1,2],[3,4]] (sum=10).
+		_ = SetCellFormula(sheet, "A1", "1")
+		_ = SetCellFormula(sheet, "B1", "2")
+		_ = SetCellFormula(sheet, "A2", "3")
+		_ = SetCellFormula(sheet, "B2", "4")
+
+		// =SumGridOnce(A1:B2): #GETTING_DATA → 10 (rtd-once grid arg).
+		mustFormula(t, sheet, "D1", "=SumGridOnce(A1:B2)")
+		// Two cells with the SAME range → shared/duplicate topic (per Excel) —
+		// both must resolve to the same value.
+		mustFormula(t, sheet, "D2", "=SumGridOnce(A1:B2)")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatal(err)
+		}
+
+		gd := rawCell(t, sheet, "D1")
+		t.Logf("D1 initial = %v (%T)", gd, gd)
+		if !isPending(gd) {
+			t.Logf("NOTE: D1 not observed pending (handler may have completed fast)")
+		}
+
+		v1, _ := pollNumeric(t, app, sheet, "D1", 25*time.Second)
+		v2, _ := pollNumeric(t, app, sheet, "D2", 25*time.Second)
+		t.Logf("resolved: D1=%v D2=%v", v1, v2)
+		assertEqf(t, "SumGridOnce(A1:B2) D1", v1, 10)
+		assertEqf(t, "SumGridOnce(A1:B2) D2 (same range, shared topic)", v2, 10)
+
+		// ---- content-addressed identity: EDIT a cell in A1:B2 -> new content
+		//      hash -> new topic -> fresh compute with the NEW sum. ----
+		t.Logf("=== edit B2 4->14, expect recompute to 20 ===")
+		_ = SetCellFormula(sheet, "B2", "14") // new sum = 1+2+3+14 = 20
+		if err := app.CalculateFull(); err != nil {
+			t.Fatal(err)
+		}
+		// The edited grid yields a new hash token -> new RtdOnce key -> the cell
+		// must recompute to 20 (NOT stay at the cached 10).
+		ev, _ := pollNumericExpect(t, app, sheet, "D1", 20, 25*time.Second)
+		t.Logf("D1 after edit = %v", ev)
+		assertEqf(t, "SumGridOnce recompute after grid edit", ev, 20)
+
+		// ---- plain rtd with a range arg: =SumRangeTick(A1:B2) -> 1 rect. ----
+		mustFormula(t, sheet, "F1", "=SumRangeTick(A1:B2)")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatal(err)
+		}
+		rv, _ := pollNumeric(t, app, sheet, "F1", 25*time.Second)
+		t.Logf("SumRangeTick(A1:B2) F1 = %v", rv)
+		assertEqf(t, "SumRangeTick rect count", rv, 1)
+
+		// ---- calc-end clears the per-cycle sent-set: a fresh calc re-sends the
+		//      payload without error. Edit back to the original and recompute. ----
+		t.Logf("=== second calc cycle re-sends payload ===")
+		_ = SetCellFormula(sheet, "B2", "4") // back to sum=10
+		if err := app.CalculateFull(); err != nil {
+			t.Fatal(err)
+		}
+		bv, _ := pollNumericExpect(t, app, sheet, "D1", 10, 25*time.Second)
+		assertEqf(t, "SumGridOnce recompute back to 10", bv, 10)
+
+		// graceful: clear RTD formulas before quit.
+		for _, a := range []string{"D1", "D2", "F1"} {
+			_ = SetCellFormula(sheet, a, "")
+		}
+		_ = app.CalculateFull()
+		time.Sleep(500 * time.Millisecond)
+	})
+}
+
+// pollNumericExpect waits until a cell holds the EXACT expected numeric value
+// (tolerating the intervening #GETTING_DATA / stale-value window). Used for the
+// edit→recompute proof where the cell transitions old → pending → new.
+func pollNumericExpect(t *testing.T, app *excelApp, sheet *ole.IDispatch, addr string, want float64, timeout time.Duration) (float64, any) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last any
+	for {
+		v := rawCell(t, sheet, addr)
+		last = v
+		if !isErrCode(v) {
+			if f, ok := asFloat(v); ok && f == want {
+				return f, v
+			}
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("cell %s did not reach %v within %s (last=%v %T)", addr, want, timeout, last, last)
+		}
+		time.Sleep(150 * time.Millisecond)
+		_ = app
+	}
+}
+
 // ---- shared Excel session driver + assertions ------------------------------
 
 func runExcel(t *testing.T, xllPath string, body func(*excelApp, *ole.IDispatch)) {

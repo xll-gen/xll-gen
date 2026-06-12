@@ -42,4 +42,19 @@ std::string SHMErrorToString(shm::Error err);
 namespace xll {
     void StartWorker();
     void StopWorker();
+
+    // SendRefCachePayloadOnce ships a composite RTD argument's serialized
+    // payload to the Go server exactly once per calc cycle, keyed by its
+    // content-hash token (see ContentHashToken / AGENTS.md §19.3).
+    //
+    // `payload` is a FINISHED protocol::SetRefCacheRequest FlatBuffer (key =
+    // token, val = the Any-wrapped grid/range/numgrid/any). If `token` has
+    // already been sent this cycle (tracked in g_sentRefCache, cleared on
+    // CalculationEnded) this is a no-op. Otherwise it sends MSG_SETREFCACHE
+    // and, on a successful ack, records the token as sent.
+    //
+    // MUST be called BEFORE xlfRtd for that argument so the server has the
+    // payload cached before ConnectData triggers the handler dispatch. Returns
+    // true if the payload is known-delivered (already-sent OR sent-and-acked).
+    bool SendRefCachePayloadOnce(const std::string& token, const uint8_t* payload, size_t size);
 }

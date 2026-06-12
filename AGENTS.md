@@ -252,7 +252,14 @@ Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort 
 
 **Delivery contract (at-least-once):** the first-click retry makes command delivery **at-least-once, not exactly-once**. A timed-out SHM `Send` does NOT prove the guest never consumed the request (the slot stays `SLOT_REQ_READY`; a guest attaching late can still read it), and a delivered-but-`SYSTEM_ERROR` response also retries (`res.HasError()` does not distinguish the two cases). The same applies to RTD `ConnectData`'s retry (§23.0): `RtdManager.Subscribe` is idempotent, but the **user's** command handler / `OnRtdConnect` / rtd-once handler may RUN TWICE under a slow cold start. Write command and connect handlers to be idempotent or side-effect-tolerant.
 
-**deferred-connect contract (LOAD-BEARING — fixed 2026-06-12):** the COMAddIns connect (`Application.COMAddIns.Item(progId).Connect = true`) needs the in-process `Application` object, reachable only through the `XLMAIN → XLDESK → EXCEL7` child-window chain. When the add-in loads with **no workbook open** (auto-loaded at Excel startup), the `EXCEL7` window does not exist, `GetExcelApplication()` returns `nullptr`, and a one-shot connect at `xlAutoOpen` fails permanently — the ribbon tab never appears even after the user opens a workbook. The connect therefore runs through `TryConnectRibbon(phase)` (idempotent, single-atomic state guard `g_ribbonConnectState`: 0=pending / 1=connected / 2=gave-up after ~60 bounded attempts) and is **retried from the calc-end callback**, which fires on the STA thread once a workbook exists — the SAME one-shot-with-retry idiom as `TryApplyRtdThrottle`. Consequence: ribbon-enabled builds register `CalculationEnded` unconditionally (it is the retry hook). NEVER collapse this back to a single inline `SetRibbonConnected(true)` in `xlAutoOpen`.
+**deferred-connect contract (LOAD-BEARING — fixed 2026-06-12, timer added 2026-06-12):** the COMAddIns connect (`Application.COMAddIns.Item(progId).Connect = true`) needs the in-process `Application` object, reachable only through the `XLMAIN → XLDESK → EXCEL7` child-window chain. When the add-in loads with **no workbook open** (auto-loaded at Excel startup), the `EXCEL7` window does not exist, `GetExcelApplication()` returns `nullptr`, and a one-shot connect at `xlAutoOpen` fails permanently — the ribbon tab never appears even after the user opens a workbook. The connect therefore runs through `TryConnectRibbon(phase)` (idempotent, single-atomic state guard `g_ribbonConnectState`: 0=pending / 1=connected / 2=gave-up). It is driven by **TWO STA-thread retry triggers**:
+
+1. **PRIMARY — a Win32 thread timer.** `ArmRibbonConnectTimer()` (called from `xlAutoOpen` when the first connect defers) arms `SetTimer(NULL, kRibbonConnectTimerId, 750ms, RibbonConnectTimerProc)`. `hwnd=NULL` binds the `WM_TIMER` to the arming thread's message pump — Excel's main STA thread, which pumps even when **fully idle with no workbook**. This is what fixes the v0.5.0 regression: a brand-new **EMPTY** workbook (`Workbooks.Add` / File>New) runs **no calculation**, so the calc-end hook never fires — only the timer does. The `TimerProc` retries `TryConnectRibbon("timer")` and self-`KillTimer`s once the connect resolves or `g_isUnloading` is set.
+2. **SECONDARY — the calc-end callback** (`CalculationEnded` / a user `CalculationEnded` handler), kept as belt-and-braces for the workbook-already-open and active-recalc cases. Consequence: ribbon-enabled builds still register `CalculationEnded` unconditionally.
+
+**Give-up budget semantics:** `SetRibbonConnected(connected, &noApp)` sets `noApp=true` when the *only* reason the connect failed is that no `Application` object is reachable yet (no workbook window). `TryConnectRibbon` returns early on `noApp` **without** consuming the 60-attempt give-up budget — otherwise a 750 ms timer on an idle no-workbook Excel would exhaust the budget (state→2, gave-up) in ~45 s, BEFORE a user who opens a workbook minutes later. The budget now only counts *real* connect rejections (Application reachable but `Connect` failed). The timer is bounded in practice by **teardown**, not the budget.
+
+**Teardown ordering:** `StopRibbonConnectTimer()` (KillTimer) runs in `xlAutoClose` FIRST — before `SetRibbonConnected(false)` and `CoRevokeClassObject` — so no `WM_TIMER` can re-enter `TryConnectRibbon` (CoRegisterClassObject / Connect) mid-teardown. `KillTimer` runs on the same STA thread as the `TimerProc`, so no callback can be in flight after it returns; the `TimerProc` also self-guards on `g_isUnloading`. NEVER collapse this back to a single inline `SetRibbonConnected(true)` in `xlAutoOpen`, and NEVER remove the timer trigger (the calc-end hook alone does not cover the empty-workbook flow).
 
 **first-click delivery contract (LOAD-BEARING — fixed 2026-06-12):** `SendCommandInvoke` (ribbon onAction AND `Cmd_*` shortcut/Alt+F8 procs) is fire-and-forget on a detached thread, but a click can land in the window between the server process launch (`xlAutoOpen`) and the Go guest attaching its receive workers to the host slots. In that window a host-initiated `slot.Send` has no reader and times out; with the result discarded the command is silently dropped (observed as "the button does nothing on the first click, then works after another click"). The detached thread therefore **inspects `res.HasError()` and retries with a bounded budget + short per-attempt timeout** (re-acquiring a fresh `ZeroCopySlot` each attempt — `Send` disowns its slot on timeout). This is the same first-request retry the regtest mock host uses deliberately (`internal/regtest/testdata/mock_host.cpp`). The retry runs OFF the STA thread, so it never blocks Excel; the per-attempt timeout is kept short so the `WaitForCommandDrain` teardown path is not stalled. NEVER revert to a single discard-the-result `slot.Send(..., 5000)`.
 
@@ -310,16 +317,70 @@ registry-persisted per user; placeholder propagation to dependents; no F9
 re-run while the topic is connected; topic-string argument limits): README
 "Choosing an Execution Mode".
 
-Plain `mode: "rtd"` is **scalar-topic only**: arguments must be scalar
-(`int`/`float`/`string`/`bool`) and the return must be scalar or `any`.
-Composite (`range`/`grid`/`numgrid`) and `any` ARGUMENTS are rejected at
-config time (`internal/config/config.go`) — the C++ wrapper can only serialize
-them into the RTD topic as the literal `"[Complex]"`, so their contents never
-reach the Go handler AND every distinct value collides on the same topic (wrong
-result sharing between cells). Composite RETURNS are likewise rejected — the
-RTD push path (`pkg/rtd` → `fbany.MapGo`) carries scalars and `any` only and
-would otherwise `fmt.Sprintf`-stringify a composite. Composite support is
-deferred to the content-hash payload path (IMPROVEMENT_BACKLOG.md §7).
+Plain `mode: "rtd"` accepts scalar (`int`/`float`/`string`/`bool`) AND
+composite (`range`/`grid`/`numgrid`/`any`) ARGUMENTS; the return must be scalar
+or `any`. Scalar args are stringified into the RTD topic; composite args travel
+the **content-hash payload path** (below). Composite RETURNS stay rejected at
+config time (`internal/config/config.go`) — the RTD push path (`pkg/rtd` →
+`fbany.MapGo` / `RtdUpdate`'s `Any` union) carries scalars and `any` only and
+would otherwise `fmt.Sprintf`-stringify a composite.
+
+##### Content-hash payload path (composite RTD arguments)
+
+The RTD topic string is value-identity for a topic, but a composite argument
+(grid/range/numgrid/any) cannot be stringified into it without (a) losing its
+contents and (b) colliding distinct values onto one topic (the old
+`"[Complex]"` bug). The fix: the topic carries only a **content hash** of the
+argument; the payload travels once per calc cycle over the normal SHM
+`SetRefCache` path, cached hash→payload on the Go side. Topic identity then
+tracks CONTENT — same grid → same topic, edited grid → new hash → new topic →
+fresh compute — which is exactly correct RTD semantics. The mechanism reuses
+the per-cycle ref-cache infrastructure end to end:
+
+1. **C++ wrapper** (`xll_main.cpp.tmpl`, rtd + rtd-once). For each composite
+   arg it computes `xll::ContentHashToken(typeTag, px)` (FNV-1a over
+   `SerializeXLOPER`, which coerces refs to their cell VALUES) — or
+   `ContentHashTokenFP12(fp)` for `numgrid` (geometry + raw double bytes). Both
+   yield an `"h:<typeTag><hex>"` token (`internal/assets/files/src/xll_cache.cpp`).
+   The `typeTag` (`g`/`r`/`n`/`a`) namespaces the hash by WIRE-PAYLOAD shape:
+   the same `A1:B2` serialized as a grid (values) vs a range (coordinates) is a
+   different payload, so the tag keeps each (content, target-type) pair on its
+   own topic and RefCache entry — without it a grid arg's payload could satisfy
+   a range arg's lookup with the wrong union type. For `grid` args the wrapper
+   uses `xll::ConvertGridArg` (coerces the `U`-passed reference to cell values
+   before `ConvertGrid`, which only understands `xltypeMulti`). It then builds a
+   `protocol::SetRefCacheRequest{ key=token, val=Any(payload) }` via the
+   existing `ConvertGrid`/`ConvertNumGrid`/`ConvertRange`/`ConvertAny`
+   converters and ships it through `xll::SendRefCachePayloadOnce`
+   (`xll_ipc.cpp`) — which dedups on the token via the per-cycle
+   `g_sentRefCache` set (cleared on `CalculationEnded` alongside the RefCache,
+   `xll_events.cpp`) and sends `MSG_SETREFCACHE` **before** `xlfRtd` so the
+   server has the payload cached before `ConnectData` fires the handler. The
+   topic string for that arg is the token.
+2. **Token scheme.** The `"h:"` prefix is collision-proof against any token a
+   scalar string arg could legitimately produce, but the Go dispatch does NOT
+   sniff it — it decodes composite positions by the (generator-known) argument
+   type. The prefix is for debuggability and so the once-key (below) is
+   visibly content-addressed.
+3. **Go dispatch** (`server.go.tmpl`, rtd/rtd-once connect). For composite-arg
+   positions it calls `server.ResolveGridArg` / `ResolveNumGridArg` /
+   `ResolveRangeArg` / `ResolveAnyArg` (`pkg/server/refarg.go`), which look the
+   token up in the per-cycle `RefCache`, deserialize the cached
+   `SetRefCacheRequest`'s `Any`, and return the typed read view — the SAME
+   `*protocol.Grid`/`*protocol.Range`/… views sync handlers receive. **Copy
+   safety vs the calc-end Clear:** `RefCache.Get` returns an INDEPENDENT COPY of
+   the bytes, so the returned view aliases that copy, not the cache map — a
+   concurrent `Clear()` (calc-end) cannot invalidate a value already resolved.
+   The only failure mode is a MISS (payload cleared before this connect ran,
+   e.g. server restart mid-cycle), surfaced as an error so the dispatch pushes a
+   clear value to the topic (`rtd.GlobalRtd.SendUpdate(topicID, err.Error())`)
+   instead of hanging at `#GETTING_DATA`.
+4. **rtd-once content-addressed memoization.** The hash token flows naturally
+   into `MakeRtdOnceKey` (the once-key is the topic strings joined by `\x1f`),
+   so memoization/TTL become content-addressed for free: the same input grid
+   hits the cached result; an edited grid yields a new token → new key → fresh
+   compute. The liveness-guard/TTL machinery is unchanged — keys are still
+   opaque strings.
 
 #### `mode: "rtd-once"` — one-shot RTD wrapper
 
@@ -327,12 +388,14 @@ deferred to the content-hash payload path (IMPROVEMENT_BACKLOG.md §7).
 args...) (T, error)`) for a long one-shot computation; the generator wraps it
 in an RTD topic lifecycle so the cell returns immediately with `#GETTING_DATA`
 and later receives the value. Requires `rtd.enabled: true`. **Scope:** scalar
-args + scalar/`any` return only (the result rides `RtdUpdate`'s `Any` union).
-Composite args (`range`/`grid`/`numgrid`/`any`) and composite returns are
-rejected at config time (`internal/config/config.go`) — composite-arg support
-needs the deferred content-hash payload path (IMPROVEMENT_BACKLOG.md §7).
-caller-aware (`caller: true`) is also rejected (the handler runs on a topic
-connect, not in the calling cell's calc). A per-function `memoize: bool` flag
+OR composite (`range`/`grid`/`numgrid`/`any`) args + scalar/`any` return only
+(the result rides `RtdUpdate`'s `Any` union). Composite args travel the
+content-hash payload path (above) — the hash token flows into the once-key, so
+memoization is content-addressed (same input grid → cached result; edited grid
+→ fresh compute). Composite RETURNS stay rejected at config time
+(`internal/config/config.go`) — the `Any` union cannot carry grid/numgrid/range
+as a push result. caller-aware (`caller: true`) is also rejected (the handler
+runs on a topic connect, not in the calling cell's calc). A per-function `memoize: bool` flag
 and a per-function `memoize_ttl: "<duration>"` flag are valid **only** with
 rtd-once and are rejected on other modes; `memoize_ttl` is mutually exclusive
 with `memoize: true` (it is the intermediate "cache for the TTL, then
@@ -424,6 +487,27 @@ To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
 3.  **Precedent**: This strategy is also observed in other advanced Excel frameworks like [xlOil](https://github.com/cunnane/xloil), which implements a `detachPlugins` mechanism to handle similar lifecycle challenges.
 
 **Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp` (`DllMain`).
+
+**Known residual — the ribbon STA retry timer (documented 2026-06-12, reviewer-confirmed):**
+"leak, don't crash" does NOT transfer to a Win32 thread timer. A leaked thread keeps
+running harmlessly; a leaked `TimerProc` is a raw code pointer INTO the DLL that the
+OS dispatches on the next `WM_TIMER` — after a forced unmap that is a guaranteed
+0xC0000005, and the `g_isUnloading` guard inside the proc cannot help (the guard
+itself is unmapped code). The ribbon connect-retry timer (`xll_main.cpp.tmpl`,
+`ArmRibbonConnectTimer`/`RibbonConnectTimerProc`) is therefore disarmed ONLY via
+`xlAutoClose` → `StopRibbonConnectTimer()`. A DllMain disarm is impossible twice
+over: the timer handle is private to the xll_main TU (cross-TU), and `KillTimer`
+for a `SetTimer(NULL,…)` thread timer only works from the owning STA thread while
+`DLL_PROCESS_DETACH` may run on the FreeLibrary caller's thread (cross-thread).
+Every alternative that runs DLL retry code on idle (TimerProc, message-only-window
+WndProc) has the identical unmap hazard. Accepted residual: a forced
+FreeLibrary-WITHOUT-xlAutoClose while the connect is still pending (add-in loaded,
+no workbook ever opened, timer armed) can crash on the next pump. Mitigations in
+place: the timer is armed only after `xlAutoOpen` (so the §20.2 startup probe-unload
+never sees it), it self-kills the instant the connect resolves, and all known
+Excel unload paths (quit, UI add-in disable) DO run `xlAutoClose`. Do not
+"fix" this by adding a KillTimer to DllMain — it silently does nothing cross-thread
+and would hide the residual instead of documenting it.
 
 ## 21. C++ Name Mangling & Export Rules
 

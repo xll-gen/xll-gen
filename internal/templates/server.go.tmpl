@@ -131,26 +131,68 @@ func Serve(handler XllService) {
                     }
                     funcName := args[0]
                     switch funcName {
-                    {{range .Functions}}{{if eq .Mode "rtd"}}
+                    {{range $fn := .Functions}}{{if eq .Mode "rtd"}}
                     case "{{.Name}}":
                         if len(args) < {{add (len .Args) 1}} {
                              return fmt.Errorf("insufficient arguments for RTD function {{.Name}}")
                         }
-                        return handler.{{.Name}}_RTD(ctx, topicID {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else}}args[{{add $i 1}}]{{end}}{{end}})
+                        {{/* Composite args (grid/numgrid/range/any) carry only a
+                             content-hash token in the topic string; resolve the
+                             token to its typed payload view from the per-cycle
+                             RefCache. A miss (payload cleared before this
+                             connect) returns an error so RunOnce/OnRtdConnect
+                             pushes a clear value instead of hanging at
+                             #GETTING_DATA. */}}
+                        {{range $i, $arg := .Args}}{{if eq .Type "grid"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveGridArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "numgrid"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveNumGridArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "range"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveRangeArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "any"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{end}}{{end}}
+                        return handler.{{.Name}}_RTD(ctx, topicID {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else if or (eq .Type "grid") (eq .Type "numgrid") (eq .Type "range") (eq .Type "any")}}rarg_{{.Name}}{{else}}args[{{add $i 1}}]{{end}}{{end}})
                     {{end}}{{end}}
                     {{range $fn := .Functions}}{{if eq .Mode "rtd-once" }}
                     case "{{.Name}}":
                         // rtd-once: the user writes {{.Name}} as a NORMAL
                         // (sync-shaped) handler. We parse the scalar args out
-                        // of the RTD topic strings, then rtd.RunOnce runs the
-                        // handler exactly once and pushes the single result
-                        // back to this topic. The C++ wrapper tears the topic
-                        // down after the value lands (see AGENTS.md §19.3).
+                        // of the RTD topic strings (and resolve composite args
+                        // from the per-cycle RefCache via their content-hash
+                        // token), then rtd.RunOnce runs the handler exactly once
+                        // and pushes the single result back to this topic. The
+                        // C++ wrapper tears the topic down after the value lands
+                        // (see AGENTS.md §19.3).
                         if len(args) < {{add (len .Args) 1}} {
                              return fmt.Errorf("insufficient arguments for rtd-once function {{.Name}}")
                         }
+                        {{/* Resolve composite-arg tokens SYNCHRONOUSLY here,
+                             before rtd.RunOnce spawns nothing of its own but is
+                             itself called from HandleRtdConnect's detached
+                             goroutine. server.Resolve* returns views backed by a
+                             fresh copy of the cached bytes, so they survive the
+                             calc-end RefCache.Clear; a miss is surfaced as a
+                             pushed error value. */}}
+                        {{range $i, $arg := .Args}}{{if eq .Type "grid"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveGridArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "numgrid"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveNumGridArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "range"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveRangeArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "any"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{end}}{{end}}
                         return rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx context.Context) (interface{}, error) {
-                            return handler.{{.Name}}(ctx {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else}}args[{{add $i 1}}]{{end}}{{end}})
+                            return handler.{{.Name}}(ctx {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else if or (eq .Type "grid") (eq .Type "numgrid") (eq .Type "range") (eq .Type "any")}}rarg_{{.Name}}{{else}}args[{{add $i 1}}]{{end}}{{end}})
                         })
                     {{end}}{{end}}
                     default:
