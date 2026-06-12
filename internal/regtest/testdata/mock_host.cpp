@@ -620,7 +620,14 @@ int main(int argc, char* argv[]) {
             cerr << "FAIL: CoInitialize for ribbon image test" << endl;
             return 1;
         }
-        xll::ribbon::SetRibbonImages(GetXllRibbonImages());
+        // Assert the embed table itself first so a generation regression
+        // (empty table) reports as an embed bug, not a decode bug.
+        auto embedded = GetXllRibbonImages();
+        if (embedded.empty()) {
+            cerr << "FAIL: GetXllRibbonImages() table is empty (icon.png not embedded?)" << endl;
+            return 1;
+        }
+        xll::ribbon::SetRibbonImages(std::move(embedded));
 
         IPictureDisp* pic = xll::ribbon::CreateRibbonPicture(L"xllgen_img_0");
         if (!pic) {
