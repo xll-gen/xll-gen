@@ -468,8 +468,12 @@ start_worker:
 {{range $i, $fn := .Functions}}
     {
         // Register {{.Name}}
+        // Caller-aware functions are macro-sheet equivalents ('#', required by
+        // the xlfGetCell call in the wrapper) and therefore must NOT carry the
+        // thread-safe marker '$' — Excel rejects the '#$' combination (the
+        // xlfRegister return is xltypeErr and the worksheet name yields #NAME?).
         ScopedXLOPER12Result xRegId;
-        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}$";
+        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if eq .Mode "rtd"}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Caller}}#{{end}}{{if .Volatile}}!{{end}}{{if not .Caller}}${{end}}";
 
         int regRes = xll::RegisterFunction(
             *xDLL,

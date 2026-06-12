@@ -47,19 +47,24 @@ var typeRegistry = map[string]TypeInfo{
 		ArgCppType:      "short",
 		XllType:         "Q",
 		ArgXllType:      "A",	},
+	// XllType (return position) is always "Q": wrappers return value XLOPER12s
+	// (xltypeMulti/xltypeStr/...), never live range references. "U" is only
+	// meaningful in argument position (pass-by-reference); as a return code it
+	// breaks the registration — Excel accepts the xlfRegister call but the
+	// worksheet name resolves to #NAME?. See AGENTS.md §19.2.
 	"range": {
 		SchemaType:      "protocol.Range",
 		GoType:          "*protocol.Range",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
-		XllType:         "U",
+		XllType:         "Q",
 		ArgXllType:      "U",	},
 	"grid": {
 		SchemaType:      "protocol.Grid",
 		GoType:          "*protocol.Grid",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
-		XllType:         "U",
+		XllType:         "Q",
 		ArgXllType:      "U",	},
 	"numgrid": {
 		SchemaType:      "protocol.NumGrid",
@@ -74,7 +79,7 @@ var typeRegistry = map[string]TypeInfo{
 		RetGoType:       "any",
 		CppType:         "LPXLOPER12",
 		ArgCppType:      "LPXLOPER12",
-		XllType:         "U",
+		XllType:         "Q",
 		ArgXllType:      "U",	},
 }
 

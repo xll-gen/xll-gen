@@ -238,7 +238,7 @@ Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort 
 When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow these strict rules to avoid Excel registration failures or immediate unloads.
 
 ### 19.1 Type String Format
-1.  **Thread Safety**: Always append `$` to the end of the type string to mark the function as thread-safe.
+1.  **Thread Safety**: Append `$` to the end of the type string to mark the function as thread-safe — **except** for caller-aware functions. Caller-aware functions are registered as macro-sheet equivalents (`#`, required so the wrapper can call `xlfGetCell` for the caller's number format), and Excel rejects `#` combined with `$`: `xlfRegister` returns `xlretSuccess` but the register ID is `xltypeErr` and the worksheet name resolves to `#NAME?`. So: caller-aware → `...#` (no `$`), everything else → `...$`.
 2.  **Synchronous Functions** (`mode: "sync"`):
     *   Format: `[ReturnTypeChar][ArgTypeChars]$`
     *   Example: `QJJ$` (Returns `LPXLOPER12`, takes two `long` integers).
@@ -251,12 +251,13 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
     *   Format: `Q$` (Always returns `LPXLOPER12` via `xlfRtd`).
 
 ### 19.2 Argument Mapping
-*   **Return Types**: Use `lookupXllType` (usually returns `Q` for `LPXLOPER12`).
+*   **Return Types**: Use `lookupXllType`. The return code is **always `Q`** for `LPXLOPER12` returns (and `K%` for `numgrid`). `U` is never valid in return position — wrappers return value XLOPER12s, not range references, and a `U` return breaks the registration (worksheet name → `#NAME?`).
 *   **Argument Types**: Use `lookupArgXllType`.
     *   `int` -> `J` (long)
     *   `float` -> `B` (double)
     *   `bool` -> `A` (bool)
-    *   `string`/`any`/`range` -> `Q`/`U` (LPXLOPER12)
+    *   `string` -> `Q` (LPXLOPER12, value)
+    *   `any`/`range`/`grid` -> `U` (LPXLOPER12, reference allowed; argument position only)
 *   **Mismatches**: Ensure the C++ function signature matches these types (e.g., `int32_t` for `J`, `double` for `B`). A mismatch will cause stack corruption or Excel crashes.
 
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
