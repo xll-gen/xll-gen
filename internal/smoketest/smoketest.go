@@ -219,6 +219,23 @@ func driveExcel(xllPath string, calcTimeout time.Duration) ([]Case, error) {
 		cases[i].Err = err
 	}
 
+	// Command-dispatch case: invoke the registered command and assert the Go
+	// handler ran. This is the end-to-end command path (Cmd_/onAction ->
+	// SendCommandInvoke -> Go handler) that the function cases never exercise —
+	// the blind spot that hid the GetApplicationByPID attach bug. The handler
+	// writes a sentinel file next to the colocated server exe; we poll for it.
+	cmdCase := Case{Label: "command", Want: 1}
+	sentinel := filepath.Join(filepath.Dir(xllPath), "smoke_command.sentinel")
+	_ = os.Remove(sentinel) // clear any prior run
+	start := time.Now()
+	if err := app.RunCommand("SmokeCommand"); err != nil {
+		cmdCase.Err = err
+	} else {
+		cmdCase.Got, cmdCase.Err = waitForSentinel(sentinel, calcTimeout)
+	}
+	cmdCase.Duration = time.Since(start)
+	cases = append(cases, cmdCase)
+
 	// Disconnect any RTD topics cleanly: clear the formula so Excel calls
 	// DisconnectData on our RtdServer BEFORE Quit. Without this, Quit may
 	// hit ServerTerminate while ConnectData threads are still in flight,
@@ -229,6 +246,22 @@ func driveExcel(xllPath string, calcTimeout time.Duration) ([]Case, error) {
 	_ = app.CalculateFull()
 
 	return cases, nil
+}
+
+// waitForSentinel polls for the command handler's sentinel file (written
+// fire-and-forget off Excel's STA thread, so it lands slightly after
+// Application.Run returns). Returns int32(1) once it appears.
+func waitForSentinel(path string, timeout time.Duration) (any, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return int32(1), nil
+		}
+		if !time.Now().Before(deadline) {
+			return int32(0), fmt.Errorf("command sentinel %s not written within %s", path, timeout)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
 }
 
 func setupWorkDir(provided string) (string, func(), error) {

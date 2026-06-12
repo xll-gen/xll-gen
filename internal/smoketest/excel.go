@@ -162,6 +162,19 @@ func processAlive(pid uint32, timeout time.Duration) bool {
 	}
 }
 
+// RunCommand invokes a registered XLL command by name via Application.Run —
+// the macro dispatch path (Cmd_<name> proc -> SendCommandInvoke). This is the
+// headless-reproducible half of the command path; the ribbon-UI onAction path
+// (IDispatch::GetIDsOfNames/Invoke on the COM add-in) shares the same
+// SendCommandInvoke tail and is covered by the UIA proof in the showcase.
+// Returns the error Excel reports, if any.
+func (a *excelApp) RunCommand(name string) error {
+	if _, err := oleutil.CallMethod(a.disp, "Run", name); err != nil {
+		return fmt.Errorf("Application.Run(%q): %w", name, err)
+	}
+	return nil
+}
+
 // RegisterXLL invokes `Application.RegisterXLL(Filename)`. Returns the
 // boolean Excel reports (true = registered successfully).
 func (a *excelApp) RegisterXLL(absPath string) (bool, error) {

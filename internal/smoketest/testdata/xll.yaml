@@ -25,6 +25,24 @@ rtd:
   prog_id: "XllSmoke.Rtd"
   description: "xll-gen smoke harness RTD"
 
+# A single command + structured ribbon so the smoke harness can exercise the
+# REAL ribbon click dispatch path (ribbon onAction -> COM add-in
+# IDispatch::GetIDsOfNames/Invoke -> SendCommandInvoke -> Go handler), which the
+# function-only cases never touch. The handler writes a sentinel file carrying
+# the invoking Excel PID, proving both delivery and CommandContext.ExcelPID
+# propagation end to end.
+commands:
+  - name: "SmokeCommand"
+    description: "Writes a sentinel file proving the ribbon-dispatch path works."
+
+ribbon:
+  tab: "xll-gen Smoke"
+  prog_id: "XllSmoke.Ribbon"
+  groups:
+    - label: "Smoke"
+      buttons:
+        - {label: "Smoke Command", command: "SmokeCommand", size: "large"}
+
 functions:
   - name: "Add"
     description: "Returns a + b (sync)."

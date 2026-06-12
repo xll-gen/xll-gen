@@ -194,3 +194,54 @@ func TestRibbonAddinFirstClickRetry(t *testing.T) {
 		t.Errorf("SendCommandInvoke still uses the old single-shot 5000ms blocking Send (no retry)")
 	}
 }
+
+// TestRibbonAddinDispatchMapping pins the ribbon-CLICK dispatch contract: the
+// path a real ribbon button click takes — Excel calls the COM add-in's
+// IDispatch::GetIDsOfNames(<onAction name>) then Invoke(DISPID). This layer was
+// NEVER exercised by the Application.Run / Cmd_* macro E2E (which calls
+// SendCommandInvoke directly), so a break here is invisible to those tests —
+// exactly the blind spot that let "ribbon tab appears but clicks do nothing"
+// ship. The contract is a symmetric base+index mapping over the SAME
+// g_commandNames slice that SetCommands fills (in cfg.Commands order):
+//
+//	GetIDsOfNames(name) : g_commandNames[i] == name  ->  DISPID = kDispIdBase + i
+//	Invoke(dispId)      : idx = dispId - kDispIdBase  ->  g_commandNames[idx]
+//
+// If either side drifts (different base, different slice, wrong direction) the
+// onAction name resolves to the wrong command or none, and clicks silently
+// no-op. We pin the embedded asset so a refactor cannot break the round-trip.
+func TestRibbonAddinDispatchMapping(t *testing.T) {
+	t.Parallel()
+	m, err := assets.Assets()
+	if err != nil {
+		t.Fatalf("assets.Assets(): %v", err)
+	}
+	src, ok := m["src/ribbon_addin.cpp"]
+	if !ok {
+		t.Fatalf("embedded asset src/ribbon_addin.cpp not found")
+	}
+
+	for _, want := range []string{
+		// GetIDsOfNames matches the onAction name (case-insensitively) against
+		// g_commandNames and returns kDispIdBase + index.
+		"_wcsicmp(rgszNames[0], g_commandNames[i].c_str()) == 0",
+		"rgDispId[0] = kDispIdBase + static_cast<DISPID>(i);",
+		// Invoke recovers the SAME index by subtracting the SAME base and
+		// dispatches g_commandNames[idx].
+		"size_t idx = static_cast<size_t>(dispIdMember - kDispIdBase);",
+		"SendCommandInvoke(WideToUtf8(g_commandNames[idx]), controlId);",
+		// Out-of-range / below-base DISPIDs are rejected, not misrouted.
+		"if (dispIdMember < kDispIdBase || idx >= g_commandNames.size()) return DISP_E_MEMBERNOTFOUND;",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("ribbon_addin.cpp dispatch mapping missing %q\n---\n%s", want, src)
+		}
+	}
+
+	// The command DISPID base must be distinct from (above) the extensibility
+	// and loadImage DISPIDs, or onAction names would collide with the
+	// IDTExtensibility2 members and clicks would hit a no-op S_OK stub.
+	if !strings.Contains(src, "kDispIdBase") || !strings.Contains(src, "kDispIdExtBase") {
+		t.Fatalf("ribbon_addin.cpp missing the kDispIdBase / kDispIdExtBase DISPID partition")
+	}
+}
