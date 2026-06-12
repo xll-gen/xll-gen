@@ -86,6 +86,7 @@ namespace xll { namespace ribbon {
 }} // namespace xll::ribbon
 
 #ifdef XLL_RIBBON_ENABLED
+#include "com/ribbon_image.h"
 
 namespace {
     // Some hosts late-bind _IDTExtensibility2 members through IDispatch
@@ -97,6 +98,10 @@ namespace {
         L"OnConnection", L"OnDisconnection", L"OnAddInsUpdate",
         L"OnStartupComplete", L"OnBeginShutdown",
     };
+
+    // loadImage="LoadRibbonImage" callback. Commands start at kDispIdBase
+    // (1000), extensibility ids are negative — 999 cannot collide.
+    constexpr DISPID kDispIdLoadImage = 999;
 }
 
 // --- RibbonAddIn ---
@@ -140,6 +145,10 @@ HRESULT __stdcall RibbonAddIn::GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT c
             return S_OK;
         }
     }
+    if (_wcsicmp(rgszNames[0], L"LoadRibbonImage") == 0) {
+        rgDispId[0] = kDispIdLoadImage;
+        return S_OK;
+    }
     for (size_t i = 0; i < g_commandNames.size(); ++i) {
         if (_wcsicmp(rgszNames[0], g_commandNames[i].c_str()) == 0) {
             rgDispId[0] = kDispIdBase + static_cast<DISPID>(i);
@@ -151,9 +160,35 @@ HRESULT __stdcall RibbonAddIn::GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT c
 }
 
 HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, DISPPARAMS* pDispParams,
-                                      VARIANT*, EXCEPINFO*, UINT*) {
+                                      VARIANT* pVarResult, EXCEPINFO*, UINT*) {
     // Late-bound extensibility members (see kExtNames): all no-ops returning S_OK.
     if (dispIdMember >= kDispIdExtBase && dispIdMember < kDispIdExtBase + 5) return S_OK;
+
+    if (dispIdMember == kDispIdLoadImage) {
+        // loadImage(imageId As String) As IPictureDisp — imageId arrives as
+        // VT_BSTR (args reversed); the picture goes back via pVarResult and
+        // Office takes ownership of the reference.
+        if (!pDispParams || pDispParams->cArgs < 1 || !pVarResult) return E_INVALIDARG;
+        VARIANT& v = pDispParams->rgvarg[pDispParams->cArgs - 1];
+        BSTR name = nullptr;
+        if (v.vt == VT_BSTR) {
+            name = v.bstrVal;
+        } else if (v.vt == (VT_BSTR | VT_BYREF) && v.pbstrVal) {
+            name = *v.pbstrVal;
+        }
+        if (!name) return E_INVALIDARG;
+        IPictureDisp* pic = xll::ribbon::CreateRibbonPicture(name);
+        if (!pic) {
+            // Office shows a blank icon on E_FAIL; never popup, never crash.
+            xll::LogWarn("Ribbon: loadImage failed for " +
+                         WideToUtf8(std::wstring(name, SysStringLen(name))));
+            return E_FAIL;
+        }
+        VariantInit(pVarResult);
+        pVarResult->vt = VT_DISPATCH;
+        pVarResult->pdispVal = pic;
+        return S_OK;
+    }
 
     size_t idx = static_cast<size_t>(dispIdMember - kDispIdBase);
     if (dispIdMember < kDispIdBase || idx >= g_commandNames.size()) return DISP_E_MEMBERNOTFOUND;
