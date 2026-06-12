@@ -49,11 +49,16 @@
 {{end}}
 {{if .Commands}}
 #include "com/ribbon_addin.h"
+{{end}}
+{{if or .Commands (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
 #include "com/dispatch_helpers.h"
 {{end}}
 {{if .Ribbon.Enabled}}
 #include "ribbon_xml.h"
 #include "ribbon_images.h"
+{{end}}
+{{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
+// AccessibleObjectFromWindow (GetExcelApplication's OBJID_NATIVEOM route).
 #include <oleacc.h>
 {{end}}
 
@@ -207,11 +212,11 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     return xll::OnAutoClose();
 }
 
-{{if .Ribbon.Enabled}}
-// Finds the hosting Excel's Application IDispatch and connects our COM
-// add-in: Application.COMAddIns.Item(progId).Connect = true. Uses the
-// in-process accessibility route: XLMAIN -> XLDESK -> EXCEL7 child window
-// -> AccessibleObjectFromWindow(OBJID_NATIVEOM).
+{{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
+// Finds the hosting Excel's Application IDispatch using the in-process
+// accessibility route: XLMAIN -> XLDESK -> EXCEL7 child window ->
+// AccessibleObjectFromWindow(OBJID_NATIVEOM) -> Window.Application.
+// Must run on Excel's main STA thread (xlAutoOpen/xlAutoClose qualify).
 static BOOL CALLBACK FindExcel7Proc(HWND hwnd, LPARAM lParam) {
     wchar_t cls[16] = {};
     GetClassNameW(hwnd, cls, 15);
@@ -232,16 +237,13 @@ static BOOL CALLBACK FindXlMainProc(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-// Sets Application.COMAddIns.Item(progId).Connect = <connected>. Used both
-// to connect at xlAutoOpen and — critically — to DISCONNECT at xlAutoClose:
-// revoking the class object does not release the live add-in instance Excel
-// holds; without an explicit Connect=false Excel can keep a vtable pointer
-// into this DLL past FreeLibrary and crash on quit (Excel-DNA does the same
-// explicit disconnect for its helper add-in).
-static bool SetRibbonConnected(bool connected) {
+// Returns the hosting Excel's Application IDispatch (AddRef'd; caller
+// releases), or nullptr if the window chain / native object model is not
+// available yet (early startup probe loads).
+static IDispatch* GetExcelApplication() {
     HWND frame = nullptr;
     EnumThreadWindows(GetCurrentThreadId(), FindXlMainProc, reinterpret_cast<LPARAM>(&frame));
-    if (!frame) return false;
+    if (!frame) return nullptr;
 
     HWND excel7 = nullptr;
     HWND xldesk = FindWindowExW(frame, nullptr, L"XLDESK", nullptr);
@@ -249,17 +251,79 @@ static bool SetRibbonConnected(bool connected) {
     if (!excel7) {
         EnumChildWindows(frame, FindExcel7Proc, reinterpret_cast<LPARAM>(&excel7));
     }
-    if (!excel7) return false;
+    if (!excel7) return nullptr;
 
     IDispatch* pWindow = nullptr;
     if (FAILED(AccessibleObjectFromWindow(excel7, OBJID_NATIVEOM, IID_IDispatch, reinterpret_cast<void**>(&pWindow))) || !pWindow)
-        return false;
+        return nullptr;
 
-    bool ok = false;
+    IDispatch* pApp = nullptr;
     VARIANT vApp; VariantInit(&vApp);
     if (SUCCEEDED(xll::com::GetProperty(pWindow, L"Application", &vApp)) && vApp.vt == VT_DISPATCH && vApp.pdispVal) {
+        pApp = vApp.pdispVal;
+        pApp->AddRef();
+    }
+    VariantClear(&vApp);
+    pWindow->Release();
+    return pApp;
+}
+{{end}}
+
+{{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
+// Applies rtd.throttle_interval from xll.yaml: Application.RTD.ThrottleInterval
+// = <ms>. NOTE: this is a per-user, registry-persisted Excel setting — it is
+// only touched because the config explicitly opted in.
+static bool SetRtdThrottleInterval(long ms) {
+    IDispatch* pApp = GetExcelApplication();
+    if (!pApp) return false;
+
+    bool ok = false;
+    VARIANT vRtd; VariantInit(&vRtd);
+    if (SUCCEEDED(xll::com::GetProperty(pApp, L"RTD", &vRtd)) && vRtd.vt == VT_DISPATCH && vRtd.pdispVal) {
+        VARIANT vMs; VariantInit(&vMs);
+        vMs.vt = VT_I4;
+        vMs.lVal = ms;
+        ok = SUCCEEDED(xll::com::Invoke(vRtd.pdispVal, L"ThrottleInterval", DISPATCH_PROPERTYPUT, { vMs }, nullptr));
+    }
+    VariantClear(&vRtd);
+    pApp->Release();
+    return ok;
+}
+
+// One-shot apply with bounded retries. At xlAutoOpen the native object model
+// is often not reachable yet (no workbook -> no EXCEL7 child window: early
+// startup loads AND automation hosts hit this), so the calc-end callbacks —
+// which run on the main STA thread once a workbook exists — retry until it
+// sticks. Bounded so a pathological host doesn't pay the window walk forever.
+static std::atomic<int> g_rtdThrottleState{0}; // 0=pending, 1=applied, 2=gave up
+static void TryApplyRtdThrottle(const char* phase) {
+    if (g_rtdThrottleState.load(std::memory_order_acquire) != 0) return;
+    static std::atomic<int> s_attempts{0};
+    if (SetRtdThrottleInterval({{parseTimeout .Rtd.ThrottleInterval 2000}})) {
+        g_rtdThrottleState.store(1, std::memory_order_release);
+        SAFE_LOG_INFO(std::string("RTD: ThrottleInterval set to {{parseTimeout .Rtd.ThrottleInterval 2000}}ms (") + phase + ").");
+    } else if (s_attempts.fetch_add(1) + 1 >= 10) {
+        g_rtdThrottleState.store(2, std::memory_order_release);
+        SAFE_LOG_WARN("RTD: could not set ThrottleInterval (Application object unreachable after 10 attempts); keeping the current Excel setting.");
+    }
+}
+{{end}}
+
+{{if .Ribbon.Enabled}}
+// Sets Application.COMAddIns.Item(progId).Connect = <connected>. Used both
+// to connect at xlAutoOpen and — critically — to DISCONNECT at xlAutoClose:
+// revoking the class object does not release the live add-in instance Excel
+// holds; without an explicit Connect=false Excel can keep a vtable pointer
+// into this DLL past FreeLibrary and crash on quit (Excel-DNA does the same
+// explicit disconnect for its helper add-in).
+static bool SetRibbonConnected(bool connected) {
+    IDispatch* pApp = GetExcelApplication();
+    if (!pApp) return false;
+
+    bool ok = false;
+    {
         VARIANT vAddins; VariantInit(&vAddins);
-        if (SUCCEEDED(xll::com::GetProperty(vApp.pdispVal, L"COMAddIns", &vAddins)) && vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
+        if (SUCCEEDED(xll::com::GetProperty(pApp, L"COMAddIns", &vAddins)) && vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
             VARIANT vProg; VariantInit(&vProg);
             vProg.vt = VT_BSTR;
             vProg.bstrVal = SysAllocString(g_szRibbonProgID);
@@ -276,8 +340,7 @@ static bool SetRibbonConnected(bool connected) {
         }
         VariantClear(&vAddins);
     }
-    VariantClear(&vApp);
-    pWindow->Release();
+    pApp->Release();
     return ok;
 }
 {{end}}
@@ -482,12 +545,12 @@ start_worker:
             L"{{.Name}}", // FunctionText
             L"{{range $j, $arg := .Args}}{{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}},{{end}}{{end}}", // ArgumentText
             1, // MacroType
-            L"{{if .Category}}{{.Category}}{{else}}{{$.ProjectName}}{{end}}", // Category
+            L"{{if .Category}}{{escapeCppString .Category}}{{else}}{{$.ProjectName}}{{end}}", // Category
             L"{{.Shortcut}}", // Shortcut
-            L"{{.HelpTopic}}", // HelpTopic
-            L"{{.Description}}", // FunctionHelp
+            L"{{escapeCppString .HelpTopic}}", // HelpTopic
+            L"{{escapeCppString .Description}}", // FunctionHelp
             { // ArgumentHelp
-                {{range .Args}}L"{{.Description}}",{{end}}
+                {{range .Args}}L"{{escapeCppString .Description}}",{{end}}
             },
             *xRegId // Output ID
         );
@@ -521,7 +584,7 @@ start_worker:
             L"", // Category (unused for commands)
             L"{{.Shortcut}}", // Shortcut letter -> Ctrl+Shift+<letter>
             L"", // HelpTopic
-            L"{{.Description}}", // FunctionHelp
+            L"{{escapeCppString .Description}}", // FunctionHelp
             {}, // ArgumentHelp
             *xRegId // Output ID
         );
@@ -579,6 +642,16 @@ start_worker:
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
+    {{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
+    XLL_SAFE_BLOCK_BEGIN
+        // rtd.throttle_interval (xll.yaml): explicit opt-in to lower/raise
+        // Application.RTD.ThrottleInterval (registry-persisted, per-user;
+        // Excel default is 2000ms). Often fails here (no workbook yet) —
+        // the calc-end callbacks below retry until a workbook exists.
+        TryApplyRtdThrottle("xlAutoOpen");
+    XLL_SAFE_BLOCK_END_CONTINUE
+    {{end}}
+
         SAFE_LOG_INFO("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
     XLL_SAFE_BLOCK_END(0)
@@ -587,6 +660,11 @@ start_worker:
 // Event Handlers
 {{range .Events}}
 extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
+    {{if and $.Rtd.Enabled $.Rtd.ThrottleInterval}}
+    // Calc-end runs on the main STA thread with a workbook open — the
+    // reliable moment to apply rtd.throttle_interval (one-shot, see above).
+    TryApplyRtdThrottle("calc event");
+    {{end}}
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
@@ -598,6 +676,9 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
 // User defined handler exists
 {{else}}
 extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
+    {{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
+    TryApplyRtdThrottle("calc end");
+    {{end}}
     HandleCalculationEnded();
 }
 {{end}}
@@ -807,7 +888,11 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if eq .Mod
         if (xll::CallExcel(xlfCaller, xCaller) == xlretSuccess) {
             std::string callerFormat = "";
             XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
-            ScopedXLOPER12 xFormat;
+            // ScopedXLOPER12Result (not ScopedXLOPER12): xlfGetCell returns an
+            // Excel-allocated xltypeStr that must be released with xlFree —
+            // the Result destructor does that; plain ScopedXLOPER12 leaked it
+            // on every caller-aware call.
+            ScopedXLOPER12Result xFormat;
             if (xll::CallExcel(xlfGetCell, xFormat, &xType, xCaller) == xlretSuccess) {
                 if (xFormat.get()->xltype == xltypeStr) {
                         callerFormat = ConvertExcelString(xFormat.get()->val.str);

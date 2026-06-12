@@ -166,6 +166,10 @@ server:
 rtd:
   enabled: true
   prog_id: "MyProject.RTD"
+  # throttle_interval: "250ms"  # optional — sets Application.RTD.ThrottleInterval
+  #   at xlAutoOpen (Excel default: 2s). CAUTION: per-user, registry-persisted
+  #   Excel setting; it stays changed after the add-in unloads. Only set when
+  #   your RTD feeds need sub-2s pushes.
 
 functions:
   - name: "StockQuote"
@@ -252,8 +256,9 @@ RTD caveats to keep in mind when using it for one-shot computations:
 
 *   **Throttle**: Excel batches RTD updates on `Application.RTD.ThrottleInterval`
     (default **2000ms**), so short results can appear *later* than async would
-    deliver them. The setting is per-user and registry-persisted — an add-in
-    should not silently lower it.
+    deliver them. Configure `rtd.throttle_interval` in `xll.yaml` to have the
+    XLL set it explicitly at load — but note the setting is per-user and
+    registry-persisted, so it outlives the add-in.
 *   **Placeholder propagation**: the cell completes once with `#N/A` (or an
     initial value) before the real result arrives, and dependent formulas
     compute against that placeholder once.

@@ -498,3 +498,116 @@ func TestRibbonImageUnsupportedExtension(t *testing.T) {
 		t.Fatalf("expected error for unsupported ribbon image extension, got nil")
 	}
 }
+
+// TestValidate_EventTypes locks in the supported-event whitelist: only the
+// two calculation events are wired end-to-end (C++ lookupEventCode and server
+// lookupEventId both map anything else to 0), so unknown types must be
+// rejected at config time instead of generating broken registrations.
+func TestValidate_EventTypes(t *testing.T) {
+	valid := &Config{
+		Project: ProjectConfig{Name: "TestProject"},
+		Events: []Event{
+			{Type: "CalculationEnded", Handler: "OnRecalc"},
+			{Type: "CalculationCanceled"},
+		},
+	}
+	if err := Validate(valid); err != nil {
+		t.Errorf("Validate() unexpected error for builtin events: %v", err)
+	}
+
+	invalid := &Config{
+		Project: ProjectConfig{Name: "TestProject"},
+		Events:  []Event{{Type: "SheetActivated", Handler: "OnSheetActivated"}},
+	}
+	err := Validate(invalid)
+	if err == nil {
+		t.Fatal("Validate() expected error for unsupported event type, got nil")
+	}
+	if !strings.Contains(err.Error(), "event type 'SheetActivated' is not supported") {
+		t.Errorf("Validate() error = %v, want unsupported-event message", err)
+	}
+}
+
+// TestApplyDefaults_EventHandler verifies an event without an explicit
+// handler defaults to On<Type>, mirroring the Commands handler default.
+func TestApplyDefaults_EventHandler(t *testing.T) {
+	cfg := &Config{
+		Project: ProjectConfig{Name: "TestProject"},
+		Events: []Event{
+			{Type: "CalculationEnded"},
+			{Type: "CalculationCanceled", Handler: "OnCancel"},
+		},
+	}
+	ApplyDefaults(cfg)
+	if got := cfg.Events[0].Handler; got != "OnCalculationEnded" {
+		t.Errorf("Events[0].Handler = %q, want OnCalculationEnded", got)
+	}
+	if got := cfg.Events[1].Handler; got != "OnCancel" {
+		t.Errorf("Events[1].Handler = %q, want OnCancel (explicit value must win)", got)
+	}
+}
+
+// TestValidate_ExcelNameCollisions locks in the function/command name guard
+// against (a) XLM macro keywords, which Excel rejects in worksheet formulas
+// outright (showcase "Echo" bug), and (b) built-in worksheet functions, which
+// silently shadow the XLL registration (showcase "IsEven" bug).
+func TestValidate_ExcelNameCollisions(t *testing.T) {
+	mk := func(fnName string) *Config {
+		return &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Functions: []Function{{Name: fnName, Return: "int"}},
+		}
+	}
+
+	if err := Validate(mk("Echo")); err == nil || !strings.Contains(err.Error(), "XLM") {
+		t.Errorf("Echo (XLM keyword) must be rejected, got %v", err)
+	}
+	if err := Validate(mk("IsEven")); err == nil || !strings.Contains(err.Error(), "built-in") {
+		t.Errorf("IsEven (built-in) must be rejected, got %v", err)
+	}
+	// Case-insensitive: Excel name resolution ignores case.
+	if err := Validate(mk("xlookup")); err == nil {
+		t.Error("xlookup (built-in, lowercase) must be rejected")
+	}
+	// Renamed showcase functions stay valid.
+	for _, ok := range []string{"EchoAny", "IsEvenInt", "WhoAmI"} {
+		if err := Validate(mk(ok)); err != nil {
+			t.Errorf("%s must be valid, got %v", ok, err)
+		}
+	}
+
+	// Commands share the guard.
+	cmdCfg := &Config{
+		Project:  ProjectConfig{Name: "TestProject"},
+		Commands: []Command{{Name: "Beep"}},
+	}
+	if err := Validate(cmdCfg); err == nil || !strings.Contains(err.Error(), "XLM") {
+		t.Errorf("command Beep (XLM keyword) must be rejected, got %v", err)
+	}
+}
+
+// TestValidate_RtdThrottleInterval pins rtd.throttle_interval validation:
+// requires rtd.enabled, must parse as a non-negative duration.
+func TestValidate_RtdThrottleInterval(t *testing.T) {
+	mk := func(enabled bool, throttle string) *Config {
+		cfg := &Config{Project: ProjectConfig{Name: "TestProject"}}
+		cfg.Rtd = RtdConfig{Enabled: enabled, ProgID: "P.Rtd", ThrottleInterval: throttle}
+		return cfg
+	}
+
+	if err := Validate(mk(true, "250ms")); err != nil {
+		t.Errorf("valid throttle rejected: %v", err)
+	}
+	if err := Validate(mk(true, "0s")); err != nil {
+		t.Errorf("zero throttle must be allowed (Excel accepts 0): %v", err)
+	}
+	if err := Validate(mk(false, "250ms")); err == nil || !strings.Contains(err.Error(), "requires rtd.enabled") {
+		t.Errorf("throttle without rtd.enabled must be rejected, got %v", err)
+	}
+	if err := Validate(mk(true, "fast")); err == nil {
+		t.Error("unparseable throttle must be rejected")
+	}
+	if err := Validate(mk(true, "-1s")); err == nil {
+		t.Error("negative throttle must be rejected")
+	}
+}

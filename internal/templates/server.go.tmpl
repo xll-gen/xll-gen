@@ -172,12 +172,12 @@ func Serve(handler XllService) {
                 ctx := context.Background()
                 select {
                 case jobQueue <- func() {
-                    if err := handler.{{.Name}}(ctx); err != nil {
-                        log.Error("Event handler {{.Name}} failed", "error", err)
+                    if err := handler.{{.Handler}}(ctx); err != nil {
+                        log.Error("Event handler {{.Handler}} failed", "error", err)
                     }
                 }:
                 default:
-                    log.Warn("Event dropped due to server load", "event", "{{.Name}}")
+                    log.Warn("Event dropped due to server load", "event", "{{.Type}}")
                 }
                 return 0, 0
              {{end}}

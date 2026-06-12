@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"path"
 	"strings"
 	"time"
@@ -46,6 +47,12 @@ type RtdConfig struct {
 	Clsid       string `yaml:"clsid"`
 	// Description is the description of the RTD server.
 	Description string `yaml:"description"`
+	// ThrottleInterval, when set (duration string, e.g. "250ms"), makes the
+	// XLL set Application.RTD.ThrottleInterval at xlAutoOpen. Excel's default
+	// is 2s, which batches RTD pushes. CAUTION: this is a per-user,
+	// registry-persisted Excel setting — it stays changed after the add-in
+	// unloads, which is why it is opt-in and never touched when empty.
+	ThrottleInterval string `yaml:"throttle_interval"`
 }
 
 // CacheConfig configures the global caching behavior.
@@ -315,6 +322,15 @@ var validReturnTypes = map[string]bool{
 	"any":    true,
 }
 
+// validEventTypes is the set of Excel event types wired end-to-end (C++
+// registration via lookupEventCode AND server dispatch via lookupEventId).
+// Growing this set requires touching both funcmap lookups and the
+// non-builtin dispatch block in server.go.tmpl.
+var validEventTypes = map[string]bool{
+	"CalculationEnded":    true,
+	"CalculationCanceled": true,
+}
+
 // compositeArgOnlyTypes are types valid as arguments but not yet supported as
 // return types (the Go server cannot serialize them as returns). Used to emit a
 // targeted error explaining the asymmetry rather than a generic "not supported".
@@ -354,6 +370,13 @@ func Validate(config *Config) error {
 			return fmt.Errorf("duplicate event type: %s", evt.Type)
 		}
 		seenEvents[evt.Type] = true
+		// Only the two calculation events are wired end-to-end: the C++ side
+		// (lookupEventCode) and the server dispatch (lookupEventId) both map
+		// unknown types to 0, which would register nothing and generate an
+		// unreachable `case 0:` — reject at config time instead.
+		if !validEventTypes[evt.Type] {
+			return fmt.Errorf("event type '%s' is not supported (allowed: %s)", evt.Type, allowedTypesList(validEventTypes))
+		}
 	}
 
 	for _, fn := range config.Functions {
@@ -394,6 +417,9 @@ func Validate(config *Config) error {
 	}
 
 	for _, fn := range config.Functions {
+		if msg := checkExcelNameCollision(fn.Name); msg != "" {
+			return fmt.Errorf("function '%s': name %s", fn.Name, msg)
+		}
 		if fn.Mode != "" {
 			switch strings.ToLower(fn.Mode) {
 			case "sync", "async", "rtd":
@@ -422,6 +448,20 @@ func Validate(config *Config) error {
 
 	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
 		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
+	}
+	if config.Rtd.ThrottleInterval != "" {
+		if !config.Rtd.Enabled {
+			return fmt.Errorf("rtd.throttle_interval requires rtd.enabled: true")
+		}
+		d, err := parseDuration(config.Rtd.ThrottleInterval)
+		if err != nil {
+			return fmt.Errorf("rtd.throttle_interval: %w", err)
+		}
+		// Application.RTD.ThrottleInterval is a 32-bit millisecond count and
+		// negative values are rejected by Excel.
+		if d < 0 || d.Milliseconds() > math.MaxInt32 {
+			return fmt.Errorf("rtd.throttle_interval must be between 0 and %dms, got %s", math.MaxInt32, config.Rtd.ThrottleInterval)
+		}
 	}
 
 	if c := config.Server.Chunk; c != nil {
@@ -460,6 +500,9 @@ func Validate(config *Config) error {
 		}
 		if fnNames[cmd.Name] {
 			return fmt.Errorf("command '%s' collides with a function of the same name (xlfRegister namespace is shared)", cmd.Name)
+		}
+		if msg := checkExcelNameCollision(cmd.Name); msg != "" {
+			return fmt.Errorf("command '%s': name %s", cmd.Name, msg)
 		}
 		if cmdNames[cmd.Name] {
 			return fmt.Errorf("duplicate command name: %s", cmd.Name)
@@ -601,6 +644,15 @@ func ApplyDefaults(config *Config) {
 	for i := range config.Commands {
 		if config.Commands[i].Handler == "" {
 			config.Commands[i].Handler = config.Commands[i].Name
+		}
+	}
+
+	// Mirror the Commands default: an event without an explicit handler
+	// dispatches to On<Type> (e.g. CalculationEnded -> OnCalculationEnded),
+	// matching the template-side fallbacks in getEventHandler.
+	for i := range config.Events {
+		if config.Events[i].Handler == "" {
+			config.Events[i].Handler = "On" + config.Events[i].Type
 		}
 	}
 

@@ -30,6 +30,33 @@ func getEventHandler(eventType string, events []config.Event, defaultHandler str
 	return defaultHandler
 }
 
+// escapeCppString escapes a config-supplied free-text string for emission
+// inside a C++ (wide) string literal. Names/shortcuts are charset-validated
+// at config time, but descriptions, categories and help topics accept
+// arbitrary text — an interior quote, backslash or newline would otherwise
+// terminate or corrupt the generated literal.
+func escapeCppString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // Helper to parse duration string to milliseconds
 func parseDurationToMs(s string, defaultMs int) int {
 	if s == "" {
@@ -48,6 +75,7 @@ func GetCommonFuncMap() template.FuncMap {
 	return template.FuncMap{
 		"hasEvent":        hasEvent,
 		"getEventHandler": getEventHandler,
+		"escapeCppString": escapeCppString,
 		"derefBool": func(b *bool) bool {
 			if b == nil {
 				return false

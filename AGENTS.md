@@ -248,7 +248,9 @@ When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow the
     *   **CRITICAL**: Omit the return type character (e.g., `Q`). The `X` character (Async Handle) acts as the return parameter placeholder in the type string.
     *   Example: `>QX$` (Takes a string `Q`, uses async handle `X`).
 4.  **RTD Functions** (`mode: "rtd"`):
-    *   Format: `Q$` (Always returns `LPXLOPER12` via `xlfRtd`).
+    *   Format: `Q[ArgTypeChars]$` — always returns `LPXLOPER12` (the wrapper
+        routes through `xlfRtd`), and the declared args are registered like any
+        sync function (e.g. showcase `StockTick(symbol string)` → `QQ$`).
 
 ### 19.2 Argument Mapping
 *   **Return Types**: Use `lookupXllType`. The return code is **always `Q`** for `LPXLOPER12` returns (and `K%` for `numgrid`). `U` is never valid in return position — wrappers return value XLOPER12s, not range references, and a `U` return breaks the registration (worksheet name → `#NAME?`).
@@ -271,10 +273,11 @@ dependents only see the final value. For multi-second work where interactive
 feel matters, the RTD pattern is the right tool (cell returns a placeholder
 immediately; result arrives via RTD push) — the same approach Excel-DNA uses
 for its async support. Full decision matrix + RTD caveats (2s default
-throttle, placeholder propagation to dependents, no F9 re-run while the topic
-is connected, topic-string argument limits): README "Choosing an Execution
-Mode". A generated one-shot wrapper (`mode: "rtd-once"`) is a backlog design
-item.
+throttle — explicitly configurable via `rtd.throttle_interval`, which is
+registry-persisted per user; placeholder propagation to dependents; no F9
+re-run while the topic is connected; topic-string argument limits): README
+"Choosing an Execution Mode". A generated one-shot wrapper
+(`mode: "rtd-once"`) is a backlog design item.
 
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
 

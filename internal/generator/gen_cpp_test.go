@@ -371,6 +371,12 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	if !strings.Contains(content, "ConvertRange(xCaller.get(), builder, callerFormat)") {
 		t.Errorf("caller path must call ConvertRange(xCaller.get(), builder, callerFormat)")
 	}
+	// xlfGetCell returns an Excel-allocated xltypeStr; only the Result wrapper
+	// releases it (xlFree in its destructor, types >= v0.2.9). Plain
+	// ScopedXLOPER12 leaked the format string on every caller-aware call.
+	if !strings.Contains(content, "ScopedXLOPER12Result xFormat;") {
+		t.Errorf("caller path must hold the xlfGetCell result in ScopedXLOPER12Result")
+	}
 }
 
 // TestXllMainRibbonImageWiring pins the Task-5 template wiring: the ribbon image
@@ -511,4 +517,137 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
     if strings.Contains(content, "std::memmove(slot.GetReqBuffer(), builder.GetBufferPointer(), builder.GetSize());") {
         t.Fatal("Expected NO memmove for zero-copy optimization")
     }
+}
+
+// TestGenCpp_DescriptionEscaping is the regression for free-text config
+// fields (function/command/arg descriptions, category, help topic) being
+// emitted into C++ wide-string literals without escaping: a quote, backslash
+// or newline in a description broke (or injected code into) the generated
+// xll_main.cpp. All free-text emission must route through escapeCppString.
+func TestGenCpp_DescriptionEscaping(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{
+				Name:        "Tricky",
+				Return:      "int",
+				Description: "Says \"hi\" with a \\ backslash\nand a newline",
+				Category:    "Cat\"egory",
+				HelpTopic:   "https://example.com/?q=\"x\"",
+				Args: []config.Arg{
+					{Name: "a", Type: "int", Description: "arg \"desc\""},
+				},
+			},
+		},
+		Commands: []config.Command{
+			{Name: "Run", Description: "Cmd \"quoted\"", Handler: "Run"},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+
+	content := renderCppMain(t, cfg)
+
+	for _, want := range []string{
+		`L"Says \"hi\" with a \\ backslash\nand a newline", // FunctionHelp`,
+		`L"Cat\"egory", // Category`,
+		`L"https://example.com/?q=\"x\"", // HelpTopic`,
+		`L"arg \"desc\"",`,
+		`L"Cmd \"quoted\"", // FunctionHelp`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("expected escaped literal %q, not found", want)
+		}
+	}
+
+	// The raw (unescaped) forms must be gone: a bare interior quote would
+	// terminate the literal early.
+	for _, bad := range []string{
+		"L\"Says \"hi\"",
+		"L\"Cat\"egory\"",
+		"L\"Cmd \"quoted\"\"",
+	} {
+		if strings.Contains(content, bad) {
+			t.Errorf("found unescaped literal %q", bad)
+		}
+	}
+}
+
+// TestGenCpp_RtdThrottle pins the rtd.throttle_interval wiring: with the
+// field set, xlAutoOpen applies Application.RTD.ThrottleInterval through the
+// in-process Application route (GetExcelApplication), and the CMake render
+// links oleacc even when the ribbon is disabled. Without the field, none of
+// that machinery is emitted.
+func TestGenCpp_RtdThrottle(t *testing.T) {
+	t.Parallel()
+	base := func(throttle string) *config.Config {
+		return &config.Config{
+			Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+			Functions: []config.Function{
+				{Name: "Tick", Return: "any", Mode: "rtd"},
+			},
+			Rtd: config.RtdConfig{
+				Enabled:          true,
+				ProgID:           "TestProj.Rtd",
+				Clsid:            "{11111111-2222-3333-4444-555555555555}",
+				Description:      "t",
+				ThrottleInterval: throttle,
+			},
+			Server: config.ServerConfig{
+				Timeout: "2s",
+				Launch:  &config.LaunchConfig{Enabled: new(bool)},
+			},
+		}
+	}
+
+	withThrottle := renderCppMain(t, base("250ms"))
+	for _, want := range []string{
+		"static IDispatch* GetExcelApplication()",
+		"static bool SetRtdThrottleInterval(long ms)",
+		"SetRtdThrottleInterval(250)",
+		"#include <oleacc.h>",
+		`#include "com/dispatch_helpers.h"`,
+		// xlAutoOpen often runs before any workbook exists (no EXCEL7 child
+		// window -> Application unreachable), so the calc-end callback must
+		// carry the bounded one-shot retry.
+		`TryApplyRtdThrottle("xlAutoOpen")`,
+		`TryApplyRtdThrottle("calc end")`,
+	} {
+		if !strings.Contains(withThrottle, want) {
+			t.Errorf("throttle render missing %q", want)
+		}
+	}
+
+	without := renderCppMain(t, base(""))
+	for _, bad := range []string{"SetRtdThrottleInterval", "GetExcelApplication", "oleacc.h"} {
+		if strings.Contains(without, bad) {
+			t.Errorf("throttle-less render must not contain %q", bad)
+		}
+	}
+
+	// CMake: oleacc linked exactly when the throttle is configured (ribbon off).
+	cmakeFor := func(cfg *config.Config) string {
+		dir, err := os.MkdirTemp("", "gencpp_throttle")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		if err := generateCMake(cfg, dir); err != nil {
+			t.Fatalf("generateCMake failed: %v", err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "CMakeLists.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if !strings.Contains(cmakeFor(base("250ms")), "oleacc") {
+		t.Errorf("CMake with throttle must link oleacc")
+	}
+	if strings.Contains(cmakeFor(base("")), "oleacc") {
+		t.Errorf("CMake without throttle (ribbon off) must not link oleacc")
+	}
 }
