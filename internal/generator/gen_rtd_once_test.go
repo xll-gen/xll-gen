@@ -321,6 +321,74 @@ func TestGenCpp_RtdOnceGrid(t *testing.T) {
 	}
 }
 
+// TestGenCpp_RtdOnceNumGrid_ReturnConvention pins the return convention for the
+// rtd-once grid-spill feature, the gap the C++ reviewer flagged as a BLOCKER:
+// rtd-once numgrid MUST export FP12* / register K% (like SYNC numgrid), while
+// rtd-once grid keeps LPXLOPER12 / Q and scalar rtd-once keeps LPXLOPER12 / Q.
+// The earlier generator tests only checked registry gating, never the export
+// signature or registration char — so the FP12*-vs-LPXLOPER12 mismatch compiled
+// past them. These assertions fail on the pre-fix template.
+func TestGenCpp_RtdOnceNumGrid_ReturnConvention(t *testing.T) {
+	t.Parallel()
+	content := renderCppMain(t, rtdOnceGridCfg())
+
+	// --- Export signatures ---
+	// BDS (numgrid) must export FP12*, NOT LPXLOPER12.
+	if !strings.Contains(content, `dllexport) FP12* __stdcall BDS(`) {
+		t.Errorf("rtd-once numgrid BDS must export FP12* (got no `dllexport) FP12* __stdcall BDS(`)")
+	}
+	if strings.Contains(content, `dllexport) LPXLOPER12 __stdcall BDS(`) {
+		t.Errorf("rtd-once numgrid BDS must NOT export LPXLOPER12 (the BLOCKER)")
+	}
+	// BDH (grid) and SlowAdd (scalar) must still export LPXLOPER12.
+	if !strings.Contains(content, `dllexport) LPXLOPER12 __stdcall BDH(`) {
+		t.Errorf("rtd-once grid BDH must still export LPXLOPER12")
+	}
+	if !strings.Contains(content, `dllexport) LPXLOPER12 __stdcall SlowAdd(`) {
+		t.Errorf("scalar rtd-once SlowAdd must still export LPXLOPER12")
+	}
+
+	// --- Registration type strings ---
+	// Helper: extract the typeStr literal for a given function's register block.
+	regType := func(fnName string) string {
+		marker := "// Register " + fnName
+		i := strings.Index(content, marker)
+		if i < 0 {
+			t.Fatalf("could not find register block for %s", fnName)
+		}
+		seg := content[i:]
+		ts := strings.Index(seg, `std::wstring typeStr = L"`)
+		if ts < 0 {
+			t.Fatalf("no typeStr in register block for %s", fnName)
+		}
+		seg = seg[ts+len(`std::wstring typeStr = L"`):]
+		end := strings.Index(seg, `"`)
+		return seg[:end]
+	}
+
+	// BDS (numgrid) return code must be K% (FP12), arg is a string -> Q.
+	bdsType := regType("BDS")
+	if !strings.HasPrefix(bdsType, "K%") {
+		t.Errorf("rtd-once numgrid BDS typeStr must start with K%% (FP12); got %q", bdsType)
+	}
+	// BDH (grid) return code must stay Q (LPXLOPER12).
+	bdhType := regType("BDH")
+	if !strings.HasPrefix(bdhType, "Q") {
+		t.Errorf("rtd-once grid BDH typeStr must start with Q (LPXLOPER12); got %q", bdhType)
+	}
+	// SlowAdd (scalar) return code stays Q.
+	saType := regType("SlowAdd")
+	if !strings.HasPrefix(saType, "Q") {
+		t.Errorf("scalar rtd-once SlowAdd typeStr must start with Q; got %q", saType)
+	}
+
+	// --- numgrid error/placeholder conventions (no LPXLOPER12 sentinel) ---
+	// The numgrid cache-miss path must NOT return &xRes; it returns an empty FP12.
+	if !strings.Contains(content, "return NumGridToFP12(nullptr);") {
+		t.Errorf("rtd-once numgrid cache-miss must return NumGridToFP12(nullptr), not &xRes")
+	}
+}
+
 // rtdOnceTTLCfg builds a config with one rtd-once function declaring a
 // memoize_ttl, in the normalized shape ApplyDefaults produces.
 func rtdOnceTTLCfg(ttl string) *config.Config {

@@ -844,7 +844,7 @@ start_worker:
         // caller:true alone does NOT imply '#': xlfCaller is callable from any
         // XLL function, so a caller-without-macro function stays thread-safe.
         ScopedXLOPER12Result xRegId;
-        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if isRtdLike .Mode}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Macro}}#{{end}}{{if .Volatile}}!{{end}}{{if not .Macro}}${{end}}";
+        std::wstring typeStr = L"{{if eq .Mode "async"}}>{{end}}{{if and (isRtdLike .Mode) (eq .Return "numgrid")}}{{lookupXllType .Return}}{{else if isRtdLike .Mode}}Q{{else}}{{if ne .Mode "async"}}{{lookupXllType .Return}}{{end}}{{end}}{{range .Args}}{{lookupArgXllType .Type}}{{end}}{{if eq .Mode "async"}}X{{end}}{{if .Macro}}#{{end}}{{if .Volatile}}!{{end}}{{if not .Macro}}${{end}}";
 
         int regRes = xll::RegisterFunction(
             *xDLL,
@@ -981,7 +981,7 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
 
 // User Functions
 {{range $i, $fn := .Functions}}
-extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLike .Mode}}LPXLOPER12{{else}}{{lookupCppType .Return}}{{end}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if eq .Mode "async"}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
+extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (isRtdLike .Mode) (eq .Return "numgrid")}}{{lookupCppType .Return}}{{else if isRtdLike .Mode}}LPXLOPER12{{else}}{{lookupCppType .Return}}{{end}}{{end}} __stdcall {{.Name}}({{range $j, $arg := .Args}}{{lookupCppArgType $arg.Type}} {{$arg.Name}}{{if lt $j (sub (len $fn.Args) 1)}}, {{end}}{{end}}{{if eq .Mode "async"}}{{if .Args}}, {{end}}LPXLOPER12 asyncHandle{{end}}) {
     // Probe-unload guard: OnAutoClose frees and nulls g_phost (xll_ipc.h:
     // `#define g_host (*g_phost)`). A stale Excel calc thread can still enter
     // a registered UDF after probe-unload; dereferencing g_host (e.g.
@@ -993,14 +993,17 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
         return;
-        {{else if and (not (isRtdLike .Mode)) (eq .Return "numgrid")}}
+        {{else if eq .Return "numgrid"}}
         // FP12* (K%) functions cannot return an XLOPER12 sentinel; a null
         // FP12* is the established error convention (NumGridToFP12's own
-        // error paths return nullptr; Excel renders #NUM!).
+        // error paths return nullptr; Excel renders #NUM!). This covers BOTH
+        // sync numgrid AND rtd-once numgrid — both export FP12* (K%), so the
+        // &g_xlErrValue (LPXLOPER12) sentinel below would be a type mismatch.
         return nullptr;
         {{else}}
-        // Sync, RTD and rtd-once wrappers all return LPXLOPER12; surface the
-        // shared error sentinel, identical to the res.HasError() path below.
+        // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
+        // LPXLOPER12; surface the shared error sentinel, identical to the
+        // res.HasError() path below.
         return &g_xlErrValue;
         {{end}}
     }
@@ -1258,7 +1261,17 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
             xRes.xltype = xltypeErr;
             xRes.val.err = xlerrValue;
         }
+        {{if eq .Return "numgrid"}}
+        // numgrid exports FP12* (K%), so it cannot return the #GETTING_DATA
+        // XLOPER12 (&xRes) that scalar/grid rtd-once returns on a cache miss.
+        // Emit an empty 0x0 FP12 placeholder (NumGridToFP12(nullptr)) — the
+        // readiness push from RunOnceGrid recalcs the cell, which then hits
+        // the grid registry above and spills the real numgrid.
+        (void)xRes;
+        return NumGridToFP12(nullptr);
+        {{else}}
         return &xRes;
+        {{end}}
     }
 
     {{else}}
