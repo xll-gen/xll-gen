@@ -10,6 +10,19 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/server"
 )
 
+// anyRtdOnceGrid reports whether the project declares at least one rtd-once
+// function whose return is a grid/numgrid. Used to gate emission of the
+// rtd-once grid-spill C++/Go codegen (the once-result-to-array machinery),
+// mirroring how anyRtdOnce gates the scalar rtd-once machinery.
+func anyRtdOnceGrid(fns []config.Function) bool {
+	for _, f := range fns {
+		if f.Mode == "rtd-once" && (f.Return == "grid" || f.Return == "numgrid") {
+			return true
+		}
+	}
+	return false
+}
+
 // Helper to check if a specific event type is registered
 func hasEvent(eventType string, events []config.Event) bool {
 	for _, e := range events {
@@ -184,6 +197,7 @@ func GetCommonFuncMap() template.FuncMap {
 		// anyRtdOnce reports whether the project declares at least one
 		// rtd-once function. Used to gate emission of the C++ RtdOnceResults
 		// machinery and the once-set initializer.
+		"anyRtdOnceGrid": anyRtdOnceGrid,
 		"anyRtdOnce": func(fns []config.Function) bool {
 			for _, fn := range fns {
 				if fn.Mode == "rtd-once" {
