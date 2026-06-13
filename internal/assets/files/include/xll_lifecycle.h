@@ -84,7 +84,38 @@ void LogHandler(shm::LogLevel level, const std::string& msg);
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved);
 
 namespace xll {
+    // NON-DESTRUCTIVE xlAutoClose body: logs and returns 1. It must NOT tear
+    // anything down, because Excel calls xlAutoClose BEFORE the Save/Cancel
+    // prompt on quit, and a cancelled quit would otherwise leave the add-in a
+    // zombie. See AGENTS.md §20 and the cancel-quit teardown design.
     int OnAutoClose();
+
+    // The DESTRUCTIVE graceful teardown, guarded by an atomic CAS so it runs
+    // EXACTLY ONCE. Driven from the CONFIRMED-shutdown COM events
+    // (RibbonAddIn::OnBeginShutdown / OnDisconnection on both ext_dm_HostShutdown
+    // and ext_dm_UserClosed). Runs on the STA thread (safe — NOT the loader
+    // lock): sets g_isUnloading, runs the registered COM teardown hook, signals
+    // the shutdown event, stops/joins the worker + monitor, runs the §23.0
+    // RTD/command drains, deletes g_phost, and closes the process/job/event
+    // handles. Idempotent: extra calls no-op (the CAS makes a second/re-entrant
+    // call a pure no-op — important because the hook PUMPS the STA loop and Excel
+    // may re-enter this on the same thread via OnDisconnection).
+    //
+    // DLL_PROCESS_DETACH MUST NOT call this. The joins it performs would run
+    // under the loader lock, where a joined thread that itself needs the loader
+    // lock deadlocks (§20.2). DETACH instead does only the loader-lock-safe
+    // minimum (SetEvent + always-close hJob + thread DETACH, no join, no
+    // g_phost delete); the graceful path here is reached ONLY from the STA COM
+    // events.
+    void GracefulTeardownOnce();
+
+    // Registers the COM/ribbon/RTD destructive-teardown hook that
+    // GracefulTeardownOnce() invokes (ribbon disconnect, CoRevokeClassObject,
+    // registry unregister, GDI+ down). Called once from the generated xlAutoOpen
+    // when a ribbon/command or RTD COM add-in exists; keeps this TU decoupled
+    // from the template/ribbon/RTD symbols. Pass nullptr (or never call it) for
+    // builds with no COM add-in.
+    void SetGracefulTeardownHook(void (*hook)());
 }
 
 // XLL Interface Functions

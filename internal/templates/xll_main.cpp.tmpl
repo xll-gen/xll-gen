@@ -177,7 +177,23 @@ extern "C" {
 static bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allowBounce = false);
 {{end}}
 
-extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
+{{if or .Ribbon.Enabled .Commands .Rtd.Enabled}}
+// COM/ribbon/RTD destructive-teardown hook, registered with the lifecycle layer
+// (xll::SetGracefulTeardownHook) at xlAutoOpen and invoked by
+// xll::GracefulTeardownOnce() — which runs EXACTLY ONCE, on a CONFIRMED shutdown
+// (RibbonAddIn::OnBeginShutdown / OnDisconnection), NEVER on a cancelled quit.
+//
+// These steps used to run eagerly inside xlAutoClose, which Excel calls BEFORE
+// the Save/Cancel prompt — so a cancelled quit disconnected the ribbon and
+// revoked the class object and the add-in could not recover. They now run only
+// here, on a real teardown. This hook runs on the STA thread (the COM event
+// thread), so ribbon loadImage callbacks (same thread) cannot be in flight.
+//
+// GracefulTeardownOnce() drains the command threads (WaitForCommandDrain) AFTER
+// this hook returns and AFTER it has set g_isUnloading, so the drain is the one
+// that closes the §23.0 UAF window; this hook only performs the COM disconnect /
+// revoke / unregister that must live in this template TU.
+static void GracefulComTeardownHook() {
     {{if .Ribbon.Enabled}}
     XLL_SAFE_BLOCK_BEGIN
         // Teardown order (com/ribbon_addin.h contract + Excel-DNA practice):
@@ -199,13 +215,18 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         xll::ribbon::ShutdownRibbonImageEngine();
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
-    {{if .Commands}}
-    XLL_SAFE_BLOCK_BEGIN
-        // (2) drain in-flight command sends BEFORE OnAutoClose deletes g_phost.
-        xll::ribbon::WaitForCommandDrain(2000);
-    XLL_SAFE_BLOCK_END_CONTINUE
-    {{end}}
     {{if .Rtd.Enabled}}
+    // RTD teardown is JUST the class-object revoke. We intentionally do NOT
+    // Release / delete the RtdServer instance here: that instance is EXCEL-OWNED
+    // (Excel holds the IRtdServer reference and releases it during its own
+    // shutdown via ServerTerminate); touching it from here would double-free.
+    // CoRevokeClassObject only stops NEW activations from resolving the factory.
+    //
+    // The thing that actually fences a post-delete g_phost touch from
+    // RtdServer::ProcessRtdUpdate is NOT this branch — it is the JoinWorker() in
+    // xll::GracefulTeardownOnce(), which runs AFTER this hook returns and joins
+    // the worker that drives ProcessRtdUpdate, so no RTD update can reach into
+    // g_phost after GracefulTeardownOnce deletes it. Keep this branch revoke-only.
     if (g_rtdCookie != 0) {
         XLL_SAFE_BLOCK_BEGIN
             HRESULT hr = CoRevokeClassObject(g_rtdCookie);
@@ -218,6 +239,29 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
         g_rtdCookie = 0;
     }
     {{end}}
+}
+{{end}}
+
+extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
+    // NON-DESTRUCTIVE. Excel calls xlAutoClose BEFORE the "Save changes? /
+    // Cancel" prompt on quit, and it is the ONLY callback that fires on a
+    // CANCELLED quit. Doing the ribbon disconnect / CoRevokeClassObject /
+    // registry unregister / drains / server kill HERE (as this template used to)
+    // turned a cancelled quit into a zombie add-in (every UDF -> #VALUE!, ribbon
+    // dead, server gone, no recovery). All of that destructive work now lives in
+    // xll::GracefulTeardownOnce(), driven from the CONFIRMED-shutdown COM events
+    // (RibbonAddIn::OnBeginShutdown / OnDisconnection) which never fire on a
+    // cancelled quit, with DLL_PROCESS_DETACH + the Job's KILL_ON_JOB_CLOSE as
+    // the universal backstop. The COM-specific destructive steps (disconnect /
+    // revoke / unregister / GDI+ down) are registered as the teardown hook in
+    // xlAutoOpen below (GracefulComTeardownHook). See AGENTS.md §20 and
+    // docs/superpowers/specs/2026-06-13-cancel-quit-teardown-design.md.
+    //
+    // EXPERIMENT-GATED FOLLOW-UP (design §5 / §8 decision 2): if a real-Excel
+    // experiment shows Excel UNREGISTERS this XLL's functions at xlAutoClose,
+    // the documented follow-up is to re-register (re-run the xlfRegister loop)
+    // from the first CalculationEnded after a cancelled xlAutoClose. NOT
+    // implemented here (gated on the unrun experiment).
     return xll::OnAutoClose();
 }
 
@@ -617,6 +661,14 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     SAFE_LOG_INFO("xlAutoOpen: Loading XLL...");
 
     xll::CallExcel(xlGetName, xDLL);
+
+    {{if or .Ribbon.Enabled .Commands .Rtd.Enabled}}
+    // Register the COM/ribbon/RTD destructive-teardown hook so that
+    // xll::GracefulTeardownOnce() — driven by the CONFIRMED-shutdown COM events
+    // (OnBeginShutdown / OnDisconnection), never by a cancelled quit — runs the
+    // ribbon disconnect / class-object revoke / registry unregister exactly once.
+    xll::SetGracefulTeardownHook(&GracefulComTeardownHook);
+    {{end}}
 
     {{if .Rtd.Enabled}}
     // Register RTD Server in Registry

@@ -14,16 +14,17 @@ namespace xll { namespace ribbon {
     // Returns immediately; never blocks Excel's STA thread on the handler.
     void SendCommandInvoke(const std::string& commandNameUtf8, const std::string& controlIdUtf8);
 
-    // Drains in-flight SendCommandInvoke threads. Called TWICE on a graceful
-    // close (AGENTS.md §18.11 teardown contract): (1) by the generated
-    // xlAutoClose right after COM add-in disconnect/revoke (no new Invoke can
-    // arrive, but g_isUnloading is NOT yet set, so a thread mid-retry has no
-    // abort signal during this first drain), and (2) by OnAutoClose AFTER it
-    // sets g_isUnloading=true and BEFORE `delete g_phost`. The second drain is
-    // the one that closes the UAF window: each command thread re-checks
-    // g_isUnloading between its <=200 ms per-attempt Sends, so it exits within
-    // ~one attempt (<~350 ms incl. the WaitEvent quantum), well inside the
-    // 2000 ms cap. Returns false on timeout (logged, non-fatal).
+    // Drains in-flight SendCommandInvoke threads on a graceful close (AGENTS.md
+    // §18.11 / §20.3 teardown contract). Called once, from
+    // xll::GracefulTeardownOnce() (xll_lifecycle.cpp) AFTER it sets
+    // g_isUnloading=true and BEFORE `delete g_phost`. That ordering is what
+    // closes the UAF window: each command thread re-checks g_isUnloading between
+    // its <=200 ms per-attempt Sends, so it exits within ~one attempt (<~350 ms
+    // incl. the WaitEvent quantum), well inside the 2000 ms cap. (Pre-2026-06-13
+    // this was also called eagerly from the generated xlAutoClose; that early
+    // drain was removed with the cancel-quit fix — xlAutoClose is now
+    // non-destructive, so there is no drain there to abort a mid-retry thread.)
+    // Returns false on timeout (logged, non-fatal).
     bool WaitForCommandDrain(unsigned int timeoutMs);
 }} // namespace xll::ribbon
 

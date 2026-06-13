@@ -241,12 +241,31 @@ Native ribbon buttons and XLL commands (macros) form one tightly-coupled cluster
 
 **Threading contract (LOAD-BEARING — do not "optimize" away):** `RibbonAddIn::Invoke` and the generated `Cmd_*` command procs are **fire-and-forget**. They send `CommandInvokeRequest` over SHM and return immediately; they MUST NEVER wait on the Go handler. A handler may re-enter Excel via COM (sugar), which marshals back to Excel's STA thread — a synchronous wait from the same STA thread **deadlocks Excel**. The `CommandInvokeResponse` is a *delivery ack only* (routing success/failure, logged), not handler completion. The Go side runs each handler in its own panic-recovered goroutine, exactly like `HandleRtdConnect` / `HandleCalculationCanceled` in `pkg/server/handlers.go`.
 
-**Teardown contract:** `xlAutoClose` ordering is:
-1.  `SetRibbonConnected(false)` — Excel must release the live COM ref while the DLL is still mapped.
-2.  `CoRevokeClassObject`.
-3.  Unregister the HKCU COM-addin keys (best-effort; idempotent on next load).
-4.  `WaitForCommandDrain(2000)` — bounded wait for in-flight command sends; 2 s timeout logged as a warning, does not block teardown. NOTE: this drain runs BEFORE `g_isUnloading` is set (that happens inside `OnAutoClose`), so a command thread mid-retry has no abort signal during it.
-5.  `OnAutoClose` — sets `g_isUnloading=true`, drains RTD Connects (`WaitForRtdConnectDrain(2000)`), then drains commands AGAIN (`xll::ribbon::WaitForCommandDrain(2000)`, post-flag — each command thread re-checks the flag between its ≤200 ms per-attempt Sends, so it exits within ~one attempt; this second drain is what actually closes the command-path UAF window), then deletes `g_phost`. `WaitForCommandDrain` is declared OUTSIDE `XLL_RIBBON_ENABLED` and `ribbon_addin.cpp` is always swept up by the CMake source glob, so the lifecycle call links in every project.
+**Teardown contract (REVISED 2026-06-13 — cancel-quit fix; see §20.3):**
+`xlAutoClose` is now **non-destructive** (it must be, because Excel calls it
+before the Save/Cancel prompt — a cancelled quit would otherwise zombie the
+add-in). The destructive teardown is consolidated into the single-shot
+`xll::GracefulTeardownOnce()` (`xll_lifecycle.cpp`), driven only by
+**confirmed-shutdown** COM events (`RibbonAddIn::OnBeginShutdown` and
+`OnDisconnection` on both `ext_dm_HostShutdown` and `ext_dm_UserClosed`), with
+`DLL_PROCESS_DETACH` + the Job's `KILL_ON_JOB_CLOSE` as the universal backstop.
+`GracefulTeardownOnce()` ordering (runs exactly once, CAS-guarded, on the STA
+thread — safe, not the loader lock):
+1.  Set `g_isUnloading=true`.
+2.  Invoke the COM teardown hook (`GracefulComTeardownHook`, registered from
+    `xlAutoOpen` via `SetGracefulTeardownHook`): `SetRibbonConnected(false)` →
+    `CoRevokeClassObject` → unregister HKCU COM-addin keys → `ShutdownRibbonImageEngine`.
+3.  `SetEvent(hShutdownEvent)`, `StopWorker`/`JoinWorker`/monitor join.
+4.  Drain RTD Connects (`WaitForRtdConnectDrain(2000)`) and commands
+    (`xll::ribbon::WaitForCommandDrain(2000)`). Both run AFTER `g_isUnloading=true`,
+    so each detached thread re-checks the flag between its ≤200 ms per-attempt
+    Sends and exits within ~one attempt — this is what closes the command/RTD-path
+    UAF window before `delete g_phost`.
+5.  `delete g_phost`, then close the process/job/event handles.
+`WaitForCommandDrain` is declared OUTSIDE `XLL_RIBBON_ENABLED` and `ribbon_addin.cpp`
+is always swept up by the CMake source glob, so the lifecycle call links in every
+project. The old eager drain in the generated `xlAutoClose` (which ran BEFORE
+`g_isUnloading` was set) is GONE with this fix.
 
 Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort contract as RTD `ConnectData` (§20.2 / §23.0): on forced unload each thread re-checks `g_isUnloading` at every yield point and aborts before touching `g_host`.
 
@@ -487,6 +506,110 @@ To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
 3.  **Precedent**: This strategy is also observed in other advanced Excel frameworks like [xlOil](https://github.com/cunnane/xloil), which implements a `detachPlugins` mechanism to handle similar lifecycle challenges.
 
 **Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp` (`DllMain`).
+
+### 20.3 Cancel-Quit Teardown Model (2026-06-13) — non-destructive `xlAutoClose` + reap on real exit
+
+Source of truth: `docs/superpowers/specs/2026-06-13-cancel-quit-teardown-design.md`.
+
+**The bug it fixes.** Excel calls `xlAutoClose` **before** the "Save changes? /
+Cancel" dialog when the user quits or closes the last dirty workbook (confirmed
+against Excel-DNA's "AutoClose and Excel shutdown" docs). `xlAutoClose` is the
+**only** callback that fires on a **cancelled** quit. The pre-fix
+`OnAutoClose()` (and the eager ribbon disconnect / `CoRevokeClassObject` /
+unregister / drains in the generated `xlAutoClose`) did **irreversible** teardown
+at that too-early point: latched `g_isUnloading=true`, `SetEvent(hShutdownEvent)`,
+stopped/joined the worker, `delete g_phost`, `CloseHandle(hJob)` (Job has
+`KILL_ON_JOB_CLOSE` → killed the Go server), disconnected the ribbon, revoked the
+class object. On a **cancelled** quit the DLL stayed loaded but the add-in became
+a **zombie**: every UDF hit the `g_phost==nullptr` guard and returned `#VALUE!`,
+RTD/commands/ribbon were dead, the server was gone, `g_isUnloading` was stuck
+true, and no second `xlAutoOpen` ever ran.
+
+**The model now.**
+
+1. **`xll::OnAutoClose()` (and the generated `xlAutoClose`) are NON-DESTRUCTIVE.**
+   They log and `return 1`. They do NOT set `g_isUnloading`, `SetEvent`, kill the
+   server, `CloseHandle(hJob)`, stop/join the worker, run the §23.0 drains, delete
+   `g_phost`, disconnect the ribbon, or revoke the class object. On a cancelled
+   quit everything stays alive and the registered UDFs keep working.
+
+2. **`xll::GracefulTeardownOnce()`** (`xll_lifecycle.cpp`, exported via
+   `xll_lifecycle.h`) holds the destructive graceful path, guarded by an
+   `std::atomic<bool> g_teardownDone` **CAS so it runs EXACTLY ONCE**. It sets
+   `g_isUnloading=true`, signals the shutdown event, invokes the registered COM
+   teardown hook (ribbon disconnect / `CoRevokeClassObject` / registry unregister
+   / GDI+ down — which live in the template TU and are plumbed in via
+   `SetGracefulTeardownHook`), `SetEvent(hShutdownEvent)`,
+   `StopWorker`/`JoinWorker`/monitor join, runs the §23.0 drains
+   (`WaitForRtdConnectDrain`, `WaitForCommandDrain`), `delete g_phost`, and closes
+   the process/job/event handles. It runs on the **STA thread** (COM event
+   delivery) — NOT the loader lock — so the joins/drains/`delete` are safe.
+
+   **STA re-entrancy (hardened 2026-06-13).** The teardown hook's
+   `SetRibbonConnected(false)` PUMPS the STA message loop, during which Excel can
+   deliver `OnDisconnection(ext_dm_HostShutdown)` and **re-enter
+   `GracefulTeardownOnce()` on the same thread**. The `g_teardownDone` CAS makes
+   that re-entrant call a **pure no-op** — it returns at the CAS and never reaches
+   the joins / drains / `delete g_phost` (which the winning outer call owns and may
+   be running further down the same stack). `g_isUnloading=true` and the first
+   `SetEvent(hShutdownEvent)` are done **before** the hook so anything pumped in
+   observes unloading and self-aborts. A dedicated `static std::atomic<bool>
+   s_inHook` re-entrancy guard (RAII-cleared on normal return and C++ exception
+   unwind; an async SEH fault under `/EHsc` may skip it, harmless because the
+   `g_teardownDone` CAS already prevents a second hook call) wraps the hook
+   invocation as defense-in-depth so the hook body itself is never run twice on
+   one stack. `DLL_PROCESS_ATTACH` resets BOTH `g_isUnloading=false` and
+   `g_teardownDone=false` (probe-unload-reuse symmetry).
+
+3. **Drivers — confirmed-shutdown signals only** (`RibbonAddIn`,
+   `ribbon_addin.cpp`, COM-add-in builds only):
+   * `OnBeginShutdown` → `GracefulTeardownOnce()` (fires only on a REAL quit,
+     after the cancel decision; never on a cancelled quit).
+   * `OnDisconnection` → `GracefulTeardownOnce()` on **both** `ext_dm_HostShutdown`
+     (host shutdown) and `ext_dm_UserClosed` (add-in disabled, session continues).
+   The CAS makes these idempotent with each other and with the DETACH backstop.
+
+4. **`DLL_PROCESS_DETACH` = universal backstop** (covers the non-ribbon path and
+   any case where `OnBeginShutdown` did not run; it NEVER fires on a cancelled
+   quit because the DLL stays loaded). It keeps the §20.2 loader-lock discipline.
+   **`CloseHandle(g_procInfo.hJob)` runs UNCONDITIONALLY** at the top of the
+   DETACH case — OUTSIDE the `!g_isUnloading` guard (null-checked + idempotent;
+   NULLs the field). Rationale (hardened 2026-06-13): `GracefulTeardownOnce()`
+   sets `g_isUnloading=true` EARLY but closes `hJob` near its end; if it aborted
+   mid-way (the hook's SEH/`XLL_SAFE_BLOCK` swallowed a fault before its own
+   `CloseHandle(hJob)`), a `!g_isUnloading`-gated close at DETACH would SKIP the
+   reap and **orphan the Go server** for the rest of the session on add-in-disable.
+   The always-close is a kernel call (loader-lock-safe) that reaps the server via
+   `KILL_ON_JOB_CLOSE`. The REST of the backstop stays under the `!g_isUnloading`
+   guard: set `g_isUnloading`, `SetEvent(hShutdownEvent)`, then DETACH (NOT join)
+   the worker/monitor threads. `hProcess` and `hShutdownEvent` are
+   **intentionally leaked** on this forced-unload path (one-session, §20.2-accepted;
+   OS reclaims on process exit) — only `hJob` is closed because its closure has the
+   side effect we need. DETACH deliberately does **NOT** call
+   `GracefulTeardownOnce()` / run the drains / `delete g_phost`: blocking on a
+   thread join or running C++/SHM destructors under the loader lock is unsafe per
+   §20.2. On a real process exit the OS reclaims the leaked `g_phost`.
+
+**§23.0 reconciliation.** The RTD/command drains moved from `OnAutoClose` into
+`GracefulTeardownOnce()` and now run on the STA thread (a *safer* context). The
+§23.0 UAF window actually **shrinks**: `g_phost` is only ever deleted inside the
+single-shot `GracefulTeardownOnce()` after the drains, and never at DETACH.
+
+**EXPERIMENT-GATED FOLLOW-UP (design §5 / §8 decision 2 — NOT implemented).** This
+model assumes that after `xlAutoClose` + Cancel, Excel keeps the XLL's functions
+**registered**. If a real-Excel experiment shows Excel **unregisters** the XLL at
+`xlAutoClose` (the cancelled `=Add(2,3)` recalc returns `#VALUE!`/`#NAME?` instead
+of the value), the documented follow-up is to **re-register** (re-run the
+`xlfRegister` loop) from the first `CalculationEnded` after a cancelled
+`xlAutoClose`. That re-registration is deliberately **not** coded yet — it is
+gated on running that experiment. Code comments in `OnAutoClose` and the generated
+`xlAutoClose` flag this.
+
+**Regression tests** (`internal/generator/gen_cancel_quit_test.go`): assert the
+embedded `OnAutoClose` is non-destructive, `GracefulTeardownOnce` holds the
+single-shot CAS + relocated teardown, DETACH closes `hJob` while preserving §20.2,
+the ribbon COM events drive the teardown, the generated `xlAutoClose` no longer
+disconnects/revokes/drains in the early path, and the non-COM build emits no hook.
 
 **Previously a residual, now RESOLVED — the ribbon STA retry timer (documented
 2026-06-12, fixed 2026-06-13):**

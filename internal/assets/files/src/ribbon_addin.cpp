@@ -263,10 +263,33 @@ HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, D
 }
 
 HRESULT __stdcall RibbonAddIn::OnConnection(IDispatch*, ext_ConnectMode, IDispatch*, SAFEARRAY**) { return S_OK; }
-HRESULT __stdcall RibbonAddIn::OnDisconnection(ext_DisconnectMode, SAFEARRAY**) { return S_OK; }
+
+HRESULT __stdcall RibbonAddIn::OnDisconnection(ext_DisconnectMode RemoveMode, SAFEARRAY**) {
+    // CONFIRMED-shutdown signal. Both modes mean a real teardown that does NOT
+    // happen on a cancelled quit (design §2 / §3): ext_dm_HostShutdown = Excel
+    // is closing (the cancel decision is already resolved by the time this
+    // fires), ext_dm_UserClosed = the add-in was disabled while the session
+    // continues. Either way the graceful teardown must run; the CAS in
+    // GracefulTeardownOnce() makes it idempotent with OnBeginShutdown and the
+    // DETACH backstop. Decoupled via the exported lifecycle hook.
+    (void)RemoveMode;
+    xll::GracefulTeardownOnce();
+    return S_OK;
+}
+
 HRESULT __stdcall RibbonAddIn::OnAddInsUpdate(SAFEARRAY**) { return S_OK; }
 HRESULT __stdcall RibbonAddIn::OnStartupComplete(SAFEARRAY**) { return S_OK; }
-HRESULT __stdcall RibbonAddIn::OnBeginShutdown(SAFEARRAY**) { return S_OK; }
+
+HRESULT __stdcall RibbonAddIn::OnBeginShutdown(SAFEARRAY**) {
+    // CONFIRMED-shutdown signal: fires only on a REAL quit, AFTER the Save/Cancel
+    // decision is resolved, and NEVER on a cancelled quit (design §3.4). This is
+    // the graceful pre-teardown moment — it runs on the STA thread (COM/C++-safe,
+    // not the loader lock), so the §23.0 drains and the clean server shutdown
+    // happen here rather than at DETACH. Idempotent via the GracefulTeardownOnce
+    // CAS. Decoupled via the exported lifecycle hook.
+    xll::GracefulTeardownOnce();
+    return S_OK;
+}
 
 HRESULT __stdcall RibbonAddIn::GetCustomUI(BSTR RibbonID, BSTR* RibbonXml) {
     (void)RibbonID; // only the workbook ribbon is supported
