@@ -7,9 +7,9 @@ require (
 	github.com/google/flatbuffers v25.9.23+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.2
-	github.com/xll-gen/shm v0.7.5
+	github.com/xll-gen/shm v0.7.7
 	github.com/xll-gen/sugar v0.7.1
-	github.com/xll-gen/types v0.2.11
+	github.com/xll-gen/types v0.2.12
 	gopkg.in/yaml.v3 v3.0.1
 )
 
