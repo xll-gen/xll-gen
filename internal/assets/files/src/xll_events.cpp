@@ -9,6 +9,7 @@
 #include <mutex>
 #ifdef XLL_RTD_ENABLED
 #include "xll_rtd_once.h"
+#include "xll_rtd_once_grid.h"
 #endif
 
 namespace xll {
@@ -26,6 +27,10 @@ namespace xll {
         // per-calc-cycle lifecycle as the RefCache clear above. No-op when no
         // rtd-once results are pending. memoize:true results survive.
         xll::RtdOnceRegistry::Instance().ClearNonMemoized();
+        // Same per-calc-cycle clear for the grid-once registry (byte-buffer
+        // twin): once-mode grid payloads with no live topic are dropped;
+        // memoize / unexpired-memoize_ttl payloads survive. See AGENTS.md §19.3.
+        xll::RtdOnceGridRegistry::Instance().ClearNonMemoized();
 #endif
 
         std::vector<uint8_t> respBuf;

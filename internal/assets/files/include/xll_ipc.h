@@ -32,6 +32,9 @@ extern std::mutex g_refCacheMutex;
 // Command (ribbon/macro) Messages (137)
 #define MSG_COMMAND_INVOKE 137
 
+// RTD-once grid result (guest->host one-shot grid/numgrid delivery) (138)
+#define MSG_RTD_ONCE_GRID 138
+
 // User Functions Start
 #define MSG_USER_START 140
 

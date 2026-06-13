@@ -20,6 +20,12 @@ extern class RtdServer* g_rtdServer;
 
 void ProcessRtdUpdate(const protocol::RtdUpdate* update);
 
+// Caches a guest->host one-shot grid result (MSG_RTD_ONCE_GRID) into
+// RtdOnceGridRegistry. `buf`/`len` is the full serialized
+// protocol::RtdOnceGridResult buffer; see xll_rtd.cpp for the byte contract
+// Task 6's wrapper must read it back with.
+void ProcessRtdOnceGrid(const uint8_t* buf, size_t len);
+
 /**
  * @brief Wait for in-flight RTD ConnectData detached threads to drain.
  *

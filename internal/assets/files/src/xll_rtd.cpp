@@ -2,6 +2,7 @@
 
 #include "xll_rtd.h"
 #include "xll_rtd_once.h"
+#include "xll_rtd_once_grid.h"
 #include "xll_log.h"
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
@@ -108,10 +109,25 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     // the topic down. Lookups/inserts are no-ops for plain rtd topics (the
     // topicID was never registered in the rtd-once registry). See AGENTS.md
     // §19.3.
+    //
+    // GRID-ONCE GATE: a grid-returning rtd-once topic is registered in
+    // RtdOnceGridRegistry (NOT RtdOnceRegistry); its grid payload arrives
+    // separately via MSG_RTD_ONCE_GRID, not through the RTD value. The RTD
+    // update here is only the readiness signal that triggers the cell recalc
+    // (the NotifyUpdate below). For such topics we MUST NOT also cache the
+    // scalar RTD value — doing so would make the wrapper return the readiness
+    // scalar instead of pulling the grid bytes. Detect grid-once topics by
+    // their presence in the grid registry's topic map and skip the scalar
+    // StoreResult; the NotifyUpdate path is unchanged for both.
     {
-        std::wstring onceKey;
-        if (xll::RtdOnceRegistry::Instance().KeyForTopic(topicID, onceKey)) {
-            xll::RtdOnceRegistry::Instance().StoreResult(onceKey, v);
+        std::wstring gridKey;
+        bool isGridOnce =
+            xll::RtdOnceGridRegistry::Instance().KeyForTopic(topicID, gridKey);
+        if (!isGridOnce) {
+            std::wstring onceKey;
+            if (xll::RtdOnceRegistry::Instance().KeyForTopic(topicID, onceKey)) {
+                xll::RtdOnceRegistry::Instance().StoreResult(onceKey, v);
+            }
         }
     }
 
@@ -125,6 +141,37 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         xll::LogDebug("RTD: Update notification skipped, Server is NULL");
     }
     VariantClear(&v);
+}
+
+// ProcessRtdOnceGrid caches a one-shot grid/numgrid result delivered guest->host
+// for a grid-returning rtd-once function. Called from the worker dispatch
+// (xll_worker.cpp) for MSG_RTD_ONCE_GRID, on either the single-slot or the
+// chunk-reassembled path.
+//
+// BYTE CONTRACT (Task 6 MUST match): we Store the WHOLE serialized
+// protocol::RtdOnceGridResult buffer (key + Any value), NOT a re-serialized
+// standalone Any. The future reader (wrapper, Task 6) therefore recovers the
+// grid with:
+//     auto* r = flatbuffers::GetRoot<protocol::RtdOnceGridResult>(stored.data());
+//     const protocol::Any* any = r->value();      // Grid or NumGrid carrier
+//     any->val_as_Grid() / any->val_as_NumGrid();
+// Storing the whole buffer (rather than extracting just the Any sub-table)
+// avoids a re-serialize step and keeps the stored bytes verifiable as a
+// self-contained FlatBuffer. The `key` is taken from the message, not from a
+// topicID, because the producer keys the result the same way MakeRtdOnceKey
+// builds the wrapper's lookup key.
+void ProcessRtdOnceGrid(const uint8_t* buf, size_t len) {
+    if (!buf || len == 0) return;
+    auto* result = flatbuffers::GetRoot<protocol::RtdOnceGridResult>(buf);
+    if (!result || !result->key()) {
+        xll::LogWarn("RTD once-grid: malformed RtdOnceGridResult (missing key)");
+        return;
+    }
+    std::wstring key = StringToWString(result->key()->str());
+    // Store the entire RtdOnceGridResult buffer (see BYTE CONTRACT above).
+    xll::RtdOnceGridRegistry::Instance().Store(key, buf, len);
+    xll::LogDebug("RTD once-grid: stored " + std::to_string(len) +
+                  " bytes for key");
 }
 
 // RtdServer Implementation
@@ -160,12 +207,23 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
     // and return the #GETTING_DATA placeholder (VT_ERROR 2043) below instead
     // of the plain-RTD "Connecting..." BSTR. Plain rtd topics skip all of
     // this — their initial value is unchanged. See AGENTS.md §19.3.
+    //
+    // A topic is EITHER scalar-once OR grid-once (the two function-name sets are
+    // disjoint by construction — a function is registered in exactly one
+    // registry at xlAutoOpen). Grid-once topics use RtdOnceGridRegistry: the
+    // readiness signal still rides RTD (so we register the topic and return the
+    // same #GETTING_DATA placeholder), but the grid payload itself arrives via
+    // MSG_RTD_ONCE_GRID into the grid registry rather than through the RTD
+    // value. See AGENTS.md §19.3.
     bool isRtdOnce = false;
     if (!strings.empty()) {
         std::vector<std::wstring> wTopics;
         wTopics.reserve(strings.size());
         for (const auto& s : strings) wTopics.push_back(StringToWString(s));
-        if (xll::RtdOnceRegistry::Instance().IsOnceFunction(wTopics[0])) {
+        if (xll::RtdOnceGridRegistry::Instance().IsOnceGridFunction(wTopics[0])) {
+            isRtdOnce = true;
+            xll::RtdOnceGridRegistry::Instance().RegisterTopic(TopicID, xll::MakeRtdOnceKey(wTopics));
+        } else if (xll::RtdOnceRegistry::Instance().IsOnceFunction(wTopics[0])) {
             isRtdOnce = true;
             xll::RtdOnceRegistry::Instance().RegisterTopic(TopicID, xll::MakeRtdOnceKey(wTopics));
         }
@@ -296,8 +354,12 @@ HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
     // rtd-once: drop the topicID->key mapping. The stored result (if any)
     // survives under its key — its lifetime is governed by the once/memoize
     // policy (CalculationEnded clears once-mode results; memoize keeps them),
-    // not by disconnect. A no-op for plain rtd topics.
+    // not by disconnect. Each registry's UnregisterTopic is a no-op for a
+    // topicID it never registered (map erase of a missing key), so calling
+    // both unconditionally correctly routes scalar-once vs grid-once without
+    // needing to re-derive the topic's kind here.
     xll::RtdOnceRegistry::Instance().UnregisterTopic(TopicID);
+    xll::RtdOnceGridRegistry::Instance().UnregisterTopic(TopicID);
 
     // 1. Notify Go Backend.
     //

@@ -24,6 +24,7 @@ func TestMessageIDValues(t *testing.T) {
 		{"MsgRtdUpdate", MsgRtdUpdate, 135},
 		{"MsgRtdHeartbeat", MsgRtdHeartbeat, 136},
 		{"MsgCommandInvoke", MsgCommandInvoke, 137},
+		{"MsgRtdOnceGrid", MsgRtdOnceGrid, 138},
 		{"MsgUserStart", MsgUserStart, 140},
 	}
 	for _, c := range cases {

@@ -52,6 +52,10 @@ const (
 	// MSG_COMMAND_INVOKE in internal/assets/files/include/xll_ipc.h.
 	MsgCommandInvoke = msgid.MsgCommandInvoke
 
+	// RTD-once grid result (guest->host one-shot grid delivery) — must stay in
+	// sync with MSG_RTD_ONCE_GRID in internal/assets/files/include/xll_ipc.h.
+	MsgRtdOnceGrid = msgid.MsgRtdOnceGrid
+
 	// User Messages Start
 	MsgUserStart = msgid.MsgUserStart
 )

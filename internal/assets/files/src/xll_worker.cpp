@@ -16,8 +16,12 @@
 
 #ifdef XLL_RTD_ENABLED
 #include "rtd/rtd.h" // Needed for IRTDUpdateEvent
-// External declaration
+// External declarations
 void ProcessRtdUpdate(const protocol::RtdUpdate* update);
+// Guest->host one-shot grid delivery: caches the result bytes in
+// RtdOnceGridRegistry. `buf`/`len` is the full serialized
+// protocol::RtdOnceGridResult buffer (see xll_rtd.cpp for the byte contract).
+void ProcessRtdOnceGrid(const uint8_t* buf, size_t len);
 #endif
 
 // External declaration
@@ -140,6 +144,11 @@ void HandleChunk(const protocol::Chunk* chunk) {
         } else if (type == (int32_t)MSG_RTD_UPDATE) {
              auto update = flatbuffers::GetRoot<protocol::RtdUpdate>(data);
              ProcessRtdUpdate(update);
+        } else if (type == (int32_t)MSG_RTD_ONCE_GRID) {
+             // One-shot grid result (possibly chunk-reassembled, since a Grid
+             // can be large). Hand the full RtdOnceGridResult buffer to the
+             // registry; ProcessRtdOnceGrid owns the parse + Store.
+             ProcessRtdOnceGrid(data, pm.totalSize);
 #endif
         }
 
@@ -190,6 +199,10 @@ void WorkerLoop() {
             } else if (msgType == (shm::MsgType)MSG_RTD_UPDATE) {
                 auto update = flatbuffers::GetRoot<protocol::RtdUpdate>(reqBuf);
                 ProcessRtdUpdate(update);
+                return 1;
+            } else if (msgType == (shm::MsgType)MSG_RTD_ONCE_GRID) {
+                // One-shot grid result delivered in a single slot (not chunked).
+                ProcessRtdOnceGrid(reqBuf, (size_t)reqSize);
                 return 1;
 #endif
             }

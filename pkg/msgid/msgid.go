@@ -46,6 +46,12 @@ const (
 	// sync with MSG_COMMAND_INVOKE in xll_ipc.h.
 	MsgCommandInvoke = 137
 
+	// MsgRtdOnceGrid delivers a one-shot grid/numgrid result for a grid-once
+	// rtd function guest->host, to be cached in RtdOnceGridRegistry (mirrors
+	// MSG_RTD_ONCE_GRID). It occupies the free slot between MsgCommandInvoke
+	// (137) and MsgUserStart (140).
+	MsgRtdOnceGrid = 138
+
 	// MsgUserStart is the first message ID allocated to user functions
 	// (mirrors MSG_USER_START). User function i gets MsgUserStart + i.
 	MsgUserStart = 140
