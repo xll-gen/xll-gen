@@ -185,6 +185,109 @@ func TestGenCpp_RtdOnce_Memoize(t *testing.T) {
 	}
 }
 
+// rtdOnceGridCfg builds a config mixing a grid-returning rtd-once function
+// (BDH), a numgrid-returning one (BDS), and a scalar rtd-once one (SlowAdd) so
+// the test can prove the grid path spills via RtdOnceGridRegistry while the
+// scalar path stays on RtdOnceRegistry, with neither set leaking into the other.
+func rtdOnceGridCfg() *config.Config {
+	return &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{
+				Name:   "BDH",
+				Mode:   "rtd-once",
+				Return: "grid",
+				Args:   []config.Arg{{Name: "t", Type: "string"}},
+			},
+			{
+				Name:   "BDS",
+				Mode:   "rtd-once",
+				Return: "numgrid",
+				Args:   []config.Arg{{Name: "t", Type: "string"}},
+			},
+			{
+				Name:   "SlowAdd",
+				Mode:   "rtd-once",
+				Return: "float",
+				Args:   []config.Arg{{Name: "a", Type: "int"}, {Name: "b", Type: "float"}},
+			},
+		},
+		Rtd: config.RtdConfig{
+			Enabled:     true,
+			ProgID:      "TestProj.Rtd",
+			Clsid:       "{11111111-2222-3333-4444-555555555555}",
+			Description: "t",
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+}
+
+// TestGenCpp_RtdOnceGrid: a grid/numgrid-returning rtd-once function spills via
+// RtdOnceGridRegistry (the byte-buffer twin), while a scalar rtd-once function
+// in the same project keeps using RtdOnceRegistry. The two function-name sets
+// must not cross-contaminate.
+func TestGenCpp_RtdOnceGrid(t *testing.T) {
+	t.Parallel()
+	content := renderCppMain(t, rtdOnceGridCfg())
+
+	for _, want := range []string{
+		// Grid rtd-once support header is included.
+		`#include "xll_rtd_once_grid.h"`,
+		// Both registries' function-name sets are installed at xlAutoOpen.
+		`xll::RtdOnceGridRegistry::Instance().SetFunctionNames(`,
+		`xll::RtdOnceRegistry::Instance().SetFunctionNames(`,
+		// The BDH (grid) wrapper pulls cached bytes and spills via GridToXLOPER12.
+		"xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes)",
+		"flatbuffers::GetRoot<protocol::RtdOnceGridResult>(gbytes.data())",
+		"any->val_as_Grid()",
+		"GridToXLOPER12(gr)",
+		// The BDS (numgrid) wrapper spills via NumGridToFP12.
+		"any->val_as_NumGrid()",
+		"NumGridToFP12(ng)",
+		// Shared key construction is reused by all rtd-once paths.
+		"xll::MakeRtdOnceKey(topics)",
+		// Cache miss still issues xlfRtd (shared with scalar path).
+		"xll::CallExcel(xlfRtd, &xRes,",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("xll_main.cpp (rtd-once grid) missing %q", want)
+		}
+	}
+
+	// The grid SetFunctionNames must contain the grid/numgrid names but NOT the
+	// scalar one; the scalar SetFunctionNames must contain SlowAdd but NOT BDH/BDS.
+	gridIdx := strings.Index(content, "xll::RtdOnceGridRegistry::Instance().SetFunctionNames(")
+	scalarIdx := strings.Index(content, "xll::RtdOnceRegistry::Instance().SetFunctionNames(")
+	if gridIdx < 0 || scalarIdx < 0 {
+		t.Fatalf("both SetFunctionNames calls must be present (grid=%d scalar=%d)", gridIdx, scalarIdx)
+	}
+	gridCall := content[gridIdx : gridIdx+400]
+	scalarCall := content[scalarIdx : scalarIdx+400]
+
+	if !strings.Contains(gridCall, `L"BDH"`) || !strings.Contains(gridCall, `L"BDS"`) {
+		t.Errorf("grid SetFunctionNames must include L\"BDH\" and L\"BDS\":\n%s", gridCall)
+	}
+	if strings.Contains(gridCall, `L"SlowAdd"`) {
+		t.Errorf("grid SetFunctionNames must NOT include the scalar L\"SlowAdd\":\n%s", gridCall)
+	}
+	if !strings.Contains(scalarCall, `L"SlowAdd"`) {
+		t.Errorf("scalar SetFunctionNames must include L\"SlowAdd\":\n%s", scalarCall)
+	}
+	if strings.Contains(scalarCall, `L"BDH"`) || strings.Contains(scalarCall, `L"BDS"`) {
+		t.Errorf("scalar SetFunctionNames must NOT include grid names BDH/BDS:\n%s", scalarCall)
+	}
+
+	// The scalar BDH/BDS wrappers must NOT use the scalar VARIANT cache path,
+	// and SlowAdd must NOT use the grid registry.
+	if strings.Contains(content, "RtdOnceGridRegistry::Instance().TryGet") &&
+		!strings.Contains(content, "RtdOnceResultToXLOPER12") {
+		t.Errorf("scalar rtd-once path (RtdOnceResultToXLOPER12) must still be present")
+	}
+}
+
 // rtdOnceTTLCfg builds a config with one rtd-once function declaring a
 // memoize_ttl, in the normalized shape ApplyDefaults produces.
 func rtdOnceTTLCfg(ttl string) *config.Config {

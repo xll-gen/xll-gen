@@ -37,6 +37,9 @@
 {{if anyRtdOnce .Functions}}
 #include "xll_rtd_once.h"
 {{end}}
+{{if anyRtdOnceGrid .Functions}}
+#include "xll_rtd_once_grid.h"
+{{end}}
 {{if or .Rtd.Enabled .Ribbon.Enabled}}
 #include "rtd/factory.h"
 #include "rtd/module.h"
@@ -809,9 +812,23 @@ start_worker:
     // return the #GETTING_DATA placeholder, and so CalculationEnded/read-time
     // expiry know which results to clear or age out.
     xll::RtdOnceRegistry::Instance().SetFunctionNames(
-        { {{range .Functions}}{{if eq .Mode "rtd-once"}}L"{{.Name}}", {{end}}{{end}} },
-        { {{range .Functions}}{{if and (eq .Mode "rtd-once") .Memoize}}L"{{.Name}}", {{end}}{{end}} },
-        { {{range .Functions}}{{if and (eq .Mode "rtd-once") .MemoizeTTL}}{ L"{{.Name}}", {{durationMillis .MemoizeTTL}}ULL }, {{end}}{{end}} }
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (ne .Return "grid") (ne .Return "numgrid"))}}L"{{.Name}}", {{end}}{{end}} },
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (ne .Return "grid") (and (ne .Return "numgrid") .Memoize))}}L"{{.Name}}", {{end}}{{end}} },
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (ne .Return "grid") (and (ne .Return "numgrid") .MemoizeTTL))}}{ L"{{.Name}}", {{durationMillis .MemoizeTTL}}ULL }, {{end}}{{end}} }
+    );
+    {{end}}
+
+    {{if anyRtdOnceGrid .Functions}}
+    // grid-once: the byte-buffer twin of the scalar registry above. Same three
+    // mutually-exclusive subsets (names / memoize / memoize_ttl), but filtered
+    // to rtd-once functions whose Return is grid/numgrid. Installed before any
+    // topic can connect so ConnectData can recognize a grid-once topic, the
+    // guest->host handler can Store the serialized grid under the right key, and
+    // read-time / calc-end expiry know which payloads to age out or clear.
+    xll::RtdOnceGridRegistry::Instance().SetFunctionNames(
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") (or (eq .Return "grid") (eq .Return "numgrid"))}}L"{{.Name}}", {{end}}{{end}} },
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (or (eq .Return "grid") (eq .Return "numgrid")) .Memoize)}}L"{{.Name}}", {{end}}{{end}} },
+        { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (or (eq .Return "grid") (eq .Return "numgrid")) .MemoizeTTL)}}{ L"{{.Name}}", {{durationMillis .MemoizeTTL}}ULL }, {{end}}{{end}} }
     );
     {{end}}
 
@@ -1180,6 +1197,28 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
         std::wstring onceKey = xll::MakeRtdOnceKey(topics);
 
         // 1. Cache hit: return the completed value directly (no xlfRtd).
+        {{if or (eq .Return "grid") (eq .Return "numgrid")}}
+        // grid-once cache hit: the host stored the WHOLE serialized
+        // protocol::RtdOnceGridResult buffer under this key (Task 4). Recover
+        // the grid from the Any union and spill it. The null-union guard mirrors
+        // the SYNC grid path: a null pointer flows straight into the converter,
+        // which yields the same error/empty result it produces for a null
+        // resp->result() (GridToXLOPER12 -> #VALUE!, NumGridToFP12 -> 0x0).
+        {
+            std::vector<uint8_t> gbytes;
+            if (xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes)) {
+                auto* r = flatbuffers::GetRoot<protocol::RtdOnceGridResult>(gbytes.data());
+                const protocol::Any* any = r ? r->value() : nullptr;
+                {{if eq .Return "numgrid"}}
+                const protocol::NumGrid* ng = any ? any->val_as_NumGrid() : nullptr;
+                return NumGridToFP12(ng);
+                {{else}}
+                const protocol::Grid* gr = any ? any->val_as_Grid() : nullptr;
+                return GridToXLOPER12(gr);
+                {{end}}
+            }
+        }
+        {{else}}
         VARIANT cached; VariantInit(&cached);
         if (xll::RtdOnceRegistry::Instance().TryGetResult(onceKey, &cached)) {
             LPXLOPER12 op = xll::RtdOnceResultToXLOPER12(cached);
@@ -1188,6 +1227,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if isRtdLi
             return &g_xlErrValue;
         }
         VariantClear(&cached);
+        {{end}}
     }
 
     // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
