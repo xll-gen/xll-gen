@@ -452,11 +452,14 @@ func Validate(config *Config) error {
 			// Composite/any ARGS are now supported via the content-hash payload
 			// path (no per-arg rejection here).
 		} else if isRtdOnce {
-			// Scalar/any return only (RtdUpdate Any union). grid/numgrid are
-			// sync/async-spillable returns but NOT valid here — reject them
-			// explicitly (they are now in validReturnTypes).
-			if rtdCompositeReturnTypes[fn.Return] {
-				return fmt.Errorf("function '%s': mode:\"rtd-once\" cannot return composite type '%s' (the result travels through RtdUpdate's Any union, which carries only scalars and \"any\"); use sync/async for spilling grid/numgrid returns, or mode:\"rtd\" for streaming", fn.Name, fn.Return)
+			// rtd-once may return scalar, "any", grid, or numgrid. grid/numgrid
+			// spill via the RtdOnceGridRegistry path (the readiness signal rides
+			// the RTD push; the array is returned through the normal calc path —
+			// see the rtd-once-grid-spill design). "range" stays unsupported as a
+			// return type: a value-position range return is meaningless and a
+			// `U`-coded return breaks Excel registration (AGENTS.md §19.2).
+			if fn.Return == "range" {
+				return fmt.Errorf("function '%s': mode:\"rtd-once\" cannot return \"range\" (range is not a return type; return grid/numgrid for a spilling array instead)", fn.Name)
 			}
 			if !validReturnTypes[fn.Return] {
 				return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))

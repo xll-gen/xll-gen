@@ -715,19 +715,24 @@ func TestValidate_RtdOnce(t *testing.T) {
 		})
 	}
 
-	// Composite return rejected, message points at plain rtd mode.
-	for _, ret := range []string{"range", "grid", "numgrid"} {
-		t.Run("reject return "+ret, func(t *testing.T) {
+	// grid/numgrid returns are now ACCEPTED for rtd-once: they spill via the
+	// RtdOnceGridRegistry path (see the rtd-once-grid-spill design). Only
+	// "range" stays rejected as a return type.
+	for _, ret := range []string{"grid", "numgrid"} {
+		t.Run("accept return "+ret, func(t *testing.T) {
 			cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: ret})
-			err := Validate(cfg)
-			if err == nil {
-				t.Fatalf("rtd-once with composite return %q must be rejected", ret)
-			}
-			if !strings.Contains(err.Error(), "Any union") || !strings.Contains(err.Error(), `mode:"rtd"`) {
-				t.Errorf("composite-return error should explain Any union + point to rtd mode, got %v", err)
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("rtd-once with return %q must be allowed, got %v", ret, err)
 			}
 		})
 	}
+	t.Run("reject return range", func(t *testing.T) {
+		cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "range"})
+		err := Validate(cfg)
+		if err == nil {
+			t.Fatal("rtd-once with return \"range\" must still be rejected")
+		}
+	})
 
 	// Composite/any args are now ACCEPTED for rtd-once: they travel the
 	// content-hash payload path (the hash token also flows into the once-key,
@@ -908,4 +913,42 @@ func TestValidate_CallerMacroSplit(t *testing.T) {
 			t.Fatalf("caller:true on rtd-once must be rejected, got %v", err)
 		}
 	})
+}
+
+// TestValidate_RtdOnce_AllowsGridReturn pins that grid/numgrid are now valid
+// rtd-once return types (they spill via the RtdOnceGridRegistry path; see the
+// rtd-once-grid-spill design).
+func TestValidate_RtdOnce_AllowsGridReturn(t *testing.T) {
+	for _, ret := range []string{"grid", "numgrid"} {
+		cfg := &Config{
+			Project: ProjectConfig{Name: "TestProject"},
+			Rtd:     RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+			Functions: []Function{{
+				Name:   "BDH",
+				Mode:   "rtd-once",
+				Return: ret,
+				Args:   []Arg{{Name: "t", Type: "string"}},
+			}},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("rtd-once return %q must be allowed, got: %v", ret, err)
+		}
+	}
+}
+
+// TestValidate_RtdOnce_StillRejectsRangeReturn pins that "range" remains
+// unsupported as a return type even after grid/numgrid were allowed.
+func TestValidate_RtdOnce_StillRejectsRangeReturn(t *testing.T) {
+	cfg := &Config{
+		Project: ProjectConfig{Name: "TestProject"},
+		Rtd:     RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+		Functions: []Function{{
+			Name:   "Bad",
+			Mode:   "rtd-once",
+			Return: "range",
+		}},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("rtd-once return \"range\" must still be rejected")
+	}
 }
