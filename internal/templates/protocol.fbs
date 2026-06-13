@@ -138,6 +138,15 @@ table BatchRtdUpdate {
   updates: [RtdUpdate];
 }
 
+// One-shot GRID result for an rtd-once function: the guest computes a
+// single grid (Grid or NumGrid carried in `value`) and pushes it to the
+// host, which stores it in a registry keyed by `key` and spills it from
+// the cell wrapper. Same guest->host direction as RtdUpdate.
+table RtdOnceGridResult {
+  key: string;
+  value: Any;
+}
+
 // Command (ribbon/macro) Messages
 
 table CommandInvokeRequest {
