@@ -76,6 +76,37 @@ push, because the grid message is a synchronous guest call (Go waits for the ACK
 and the readiness push is issued only after. So when the recalc re-enters the
 wrapper, the grid is already in the registry.
 
+## 2A. Prior art (Excel-DNA, xlOil) — this is the battle-tested pattern
+
+Our architecture is not novel; it is the established way both mature XLL frameworks
+do non-blocking spilling functions:
+
+- **Excel-DNA** (`ExcelAsyncUtil.Observe` / RxExcel). Govert Vandevoorde (author):
+  *"An RTD server topic cannot return an array, only a simple value."* The fix —
+  RTD delivers a scalar **key**; a wrapper UDF calls RTD, gets the key, looks the
+  array up in an internal dictionary, and returns it, which **spills via dynamic
+  arrays.** *"This is exactly how the `ExcelAsyncUtil.Observe` feature in
+  Excel-DNA is implemented."* Requires dynamic-array Excel; on pre-DA Excel the
+  array cannot spill. (GitHub issue [#446], Google Groups "Dynamic arrays and RTD
+  again…".) Our wrapper is structurally identical — it calls `xlfRtd` internally
+  and returns either `#GETTING_DATA` or the cached array. The one xll-gen-specific
+  addition is **cross-process delivery**: the array is computed in the Go server,
+  so it ships guest→host into the C++ registry, whereas Excel-DNA's dictionary is
+  in-process.
+
+- **xlOil**. Every `async def` is an RTD function; xlOil *"stores and compares all
+  the function arguments to figure out if Excel wants the result of a previous
+  calculation or to start a new calculation"* and lets you name the RTD topic
+  manually for performance. That argument-identity-as-topic model is exactly our
+  **content-hash once-key**, and the per-args memoization is our `memoize_ttl`.
+
+**Refinement learned from Excel-DNA's GUID approach:** the readiness value pushed
+on the topic should **change** between computes (Excel recalcs a cell when its RTD
+topic *value changes*). For the one-shot case a single `#GETTING_DATA → token`
+transition already changes the value, so a constant token works; but pushing a
+**monotonic/changing token** (e.g. the `storedTick`, mirroring Excel-DNA's GUID)
+is free insurance that the recalc always fires. The plan uses a changing token.
+
 ## 3. Components
 
 ### 3.1 config (`internal/config/config.go`)
@@ -141,20 +172,21 @@ Identical to scalar rtd-once, evaluated on the grid registry:
 Content-addressed memoization for composite args is free (the content-hash token
 flows into the once-key, exactly as for scalar rtd-once).
 
-## 5. Phase 0 — make-or-break spike (DO FIRST)
-Everything above hinges on ONE unverified Excel behavior:
+## 5. Phase 0 — confirmation spike (DO FIRST)
+The whole feature hinges on one Excel behavior:
 
 > Does a UDF that returns `#GETTING_DATA` on first calc and an `xltypeMulti`
 > (array) on a later **RTD-triggered re-run** actually **spill** cleanly — no
 > stale single-cell artifact, no `#SPILL!`?
 
-The spike: a minimal hand-written XLL function that (calc#1) returns
-`#GETTING_DATA` + `xlfRtd`, and on the RTD-update re-run returns a fixed 3×3
-`xltypeMulti`. Run in real Excel (2021/365). **Gate:** if it spills 3×3 → proceed
-to the full build. If it shows `#SPILL!` / a single stale cell / doesn't recalc →
-STOP; the feature is not achievable via rtd-once and we fall back (async spill, or
-the RTD-key handle pattern with an explicit second `=SPILL(key)` cell). The spike
-is the only part that needs real Excel; it de-risks the whole feature for ~an hour.
+Per §2A this is **proven in production by Excel-DNA's `ExcelAsyncUtil.Observe`**,
+so the spike is a *confirmation* of our specific `xlfRtd`-based wrapper variant on
+the target Excel build (2021/365), not a true unknown. We still run it before
+investing in the framework. The spike: a temporary showcase function that returns
+`#N/A` until an RTD topic ticks, then a fixed 3×3 array (see plan Task 0).
+**Gate:** spills 3×3 → proceed. `#SPILL!` / stale single cell / no recalc → STOP
+and fall back (async spill, or the explicit two-cell `=SPILL(key)` handle
+pattern). Only this needs real Excel; ~1 hour, de-risks the whole feature.
 
 ## 6. Consumer: the showcase finance functions (separate follow-up spec)
 Once the framework lands:
