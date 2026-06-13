@@ -6,4 +6,3 @@ namespace xll {
     void JoinWorker();
     void ForceTerminateWorker();
 }
-// Force modification for review
