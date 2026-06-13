@@ -14,7 +14,23 @@
 
 ---
 
-## PHASE 0 — Confirmation spike (GATE; needs real Excel)
+## PHASE 0 — Confirmation spike (GATE; needs real Excel) — ✅ PASSED 2026-06-13
+
+> **RESULT (2026-06-13, real Excel):** `=SpillProbeGrid(A1)` SPILLED the 3×3 after
+> the RTD-update recalc → the `#GETTING_DATA/error → array on RTD-triggered re-run
+> → spill` mechanism is CONFIRMED on the user's Excel build. Gate passed; framework
+> build proceeds. Spike reverted from the showcase.
+>
+> **Tracked risk surfaced by the spike:** the user saw a transient Excel "RTD server
+> connection lost" message. Logs show the Go server did NOT crash (ran throughout,
+> sync calls kept returning); the `SpillReady` topic disconnected→reconnected and
+> the native log shows recurring `RTD Server registered ↔ Revoked RTD Class Object`
+> churn when live topics drop to zero. rtd-once (scalar, shipped v0.5.0) uses the
+> SAME connect→run→disconnect lifecycle, so this is not grid-specific. **Carry as a
+> risk:** consider an Excel-DNA-style "keep the RTD server alive across zero-topic
+> windows" policy to avoid the teardown/re-register blip. Validate in Task 8
+> (smoketest watches for no spurious disconnect) and Task 9 (review) + the final
+> real-Excel E2E. Get the exact dialog text/timing from the user before Task 9.
 
 > Everything below Phase 0 is **gated**: do not start Phase 1 until the spike in Task 0 spills in real Excel. The pattern is proven in production by Excel-DNA's `ExcelAsyncUtil.Observe` (RTD scalar key + wrapper UDF returns the cached array → spills; see spec §2A), so this is a *confirmation* of our `xlfRtd`-based variant on the target Excel build, not a true unknown. If it nonetheless shows `#SPILL!`, a single stale cell, or never recalcs, STOP and report — fall back to async spill or an explicit `=SPILL(key)` second cell.
 
@@ -505,6 +521,7 @@ In `server.go.tmpl` rtd-once connect dispatch: for grid/numgrid functions, run t
 
 - [ ] **Step 1:** Run `xll-cpp-reviewer` (opus) on the C++ asset diffs (`xll_rtd_once_grid.h`, `xll_rtd.cpp`, `xll_events.cpp`, `xll_main.cpp.tmpl` output). Fix findings.
 - [ ] **Step 2:** Run `memory-safety-auditor` (opus) — focus: `RtdOnceGridRegistry` byte-buffer lifetime, `GridToXLOPER12`/`NumGridToFP12` DLL-free spill allocation, no XLOPER12 double-free on the spill path.
+- [ ] **Step 2b (RTD-liveness risk, from Phase 0):** Verify the connect→run→spill→disconnect cycle does not surface Excel's "RTD server connection lost" dialog. If the native log shows `Revoked RTD Class Object` churn on zero live topics, evaluate keeping the RTD COM server registered across zero-topic windows (Excel-DNA pattern) rather than revoking. Confirm against the user's reported dialog text/timing.
 - [ ] **Step 3:** Run `cross-repo-coordinator` before tagging — types message-ID parity, pin bumps (types → xll-gen → showcase).
 
 ### Task 10: AGENTS.md + release
