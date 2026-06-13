@@ -279,6 +279,102 @@ func TestBuildGridFromGo_ErrorOnMalformed(t *testing.T) {
 	}
 }
 
+// TestBuildRtdOnceGridResult_GridRoundTrip serializes a [][]any grid into an
+// RtdOnceGridResult buffer (the guest->host one-shot grid wire form) and reads
+// the key + Grid union back, asserting the Any union member is Grid and the
+// cells survive.
+func TestBuildRtdOnceGridResult_GridRoundTrip(t *testing.T) {
+	const wantKey = "BDH\x1f AAPL \x1f 30"
+	in := [][]any{
+		{int32(10), "hi"},
+		{false, 2.5},
+	}
+
+	buf, err := BuildRtdOnceGridResult(wantKey, in)
+	if err != nil {
+		t.Fatalf("BuildRtdOnceGridResult(grid): %v", err)
+	}
+
+	got := protocol.GetRootAsRtdOnceGridResult(buf, 0)
+	if string(got.Key()) != wantKey {
+		t.Fatalf("key = %q, want %q", string(got.Key()), wantKey)
+	}
+	any := new(protocol.Any)
+	if got.Value(any) == nil {
+		t.Fatal("Value() returned nil Any")
+	}
+	if any.ValType() != protocol.AnyValueGrid {
+		t.Fatalf("union tag = %d, want AnyValueGrid (%d)", any.ValType(), protocol.AnyValueGrid)
+	}
+	var gtbl flatbuffers.Table
+	if !any.Val(&gtbl) {
+		t.Fatal("failed to read Grid from Any union")
+	}
+	g := new(protocol.Grid)
+	g.Init(gtbl.Bytes, gtbl.Pos)
+	if g.Rows() != 2 || g.Cols() != 2 || g.DataLength() != 4 {
+		t.Fatalf("grid = %dx%d len=%d, want 2x2 len=4", g.Rows(), g.Cols(), g.DataLength())
+	}
+	var c0 protocol.Scalar
+	g.Data(&c0, 0)
+	if c0.ValType() != protocol.ScalarValueInt {
+		t.Errorf("cell0 tag = %v, want Int", c0.ValType())
+	}
+}
+
+// TestBuildRtdOnceGridResult_NumGridRoundTrip does the same for a [][]float64
+// numgrid: the Any union member must be NumGrid and the dense doubles survive.
+func TestBuildRtdOnceGridResult_NumGridRoundTrip(t *testing.T) {
+	const wantKey = "BDS\x1f IBM "
+	in := [][]float64{{1, 2}, {3, 4}, {5, 6}}
+
+	buf, err := BuildRtdOnceGridResult(wantKey, in)
+	if err != nil {
+		t.Fatalf("BuildRtdOnceGridResult(numgrid): %v", err)
+	}
+
+	got := protocol.GetRootAsRtdOnceGridResult(buf, 0)
+	if string(got.Key()) != wantKey {
+		t.Fatalf("key = %q, want %q", string(got.Key()), wantKey)
+	}
+	any := new(protocol.Any)
+	if got.Value(any) == nil {
+		t.Fatal("Value() returned nil Any")
+	}
+	if any.ValType() != protocol.AnyValueNumGrid {
+		t.Fatalf("union tag = %d, want AnyValueNumGrid (%d)", any.ValType(), protocol.AnyValueNumGrid)
+	}
+	var ngtbl flatbuffers.Table
+	if !any.Val(&ngtbl) {
+		t.Fatal("failed to read NumGrid from Any union")
+	}
+	ng := new(protocol.NumGrid)
+	ng.Init(ngtbl.Bytes, ngtbl.Pos)
+	if ng.Rows() != 3 || ng.Cols() != 2 {
+		t.Fatalf("numgrid = %dx%d, want 3x2", ng.Rows(), ng.Cols())
+	}
+	for i, w := range []float64{1, 2, 3, 4, 5, 6} {
+		if ng.Data(i) != w {
+			t.Errorf("data[%d] = %v, want %v", i, ng.Data(i), w)
+		}
+	}
+}
+
+// TestBuildRtdOnceGridResult_Errors: an unsupported type and a malformed grid
+// both surface an error (so RunOnceGrid routes to the cell's error text rather
+// than shipping a corrupt/empty spill).
+func TestBuildRtdOnceGridResult_Errors(t *testing.T) {
+	if _, err := BuildRtdOnceGridResult("k", "not a grid"); err == nil {
+		t.Error("unsupported type: want error")
+	}
+	if _, err := BuildRtdOnceGridResult("k", [][]any{{1}, {2, 3}}); err == nil {
+		t.Error("jagged grid: want error")
+	}
+	if _, err := BuildRtdOnceGridResult("k", [][]float64{}); err == nil {
+		t.Error("empty numgrid: want error")
+	}
+}
+
 // TestAsyncAnyBuild_UnknownTagYieldsNoneNotCorruptUnion verifies the
 // default branch in fbany.Build (IMPROVEMENT_BACKLOG.md §2/§3): an unhandled
 // tag must NOT serialize a union advertising a kind with no backing table

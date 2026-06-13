@@ -54,6 +54,149 @@ func (s *stubRtdClient) SendGuestCallWithTimeout(data []byte, msgType shm.MsgTyp
 	return nil, nil
 }
 
+// onceGridCall records one guest->host send made by SendOnceGrid (either a
+// single-slot MsgRtdOnceGrid or a MsgChunk frame).
+type onceGridCall struct {
+	data    []byte
+	msgType shm.MsgType
+}
+
+// stubOnceGridClient is a controllable client that implements BOTH rtdClient
+// (SendGuestCallWithTimeout) and chunkSender (SendGuestCall), recording every
+// send so SendOnceGrid's single-slot vs chunked routing can be asserted.
+type stubOnceGridClient struct {
+	mu       sync.Mutex
+	calls    []onceGridCall
+	sendErr  error // returned by every send when non-nil
+	chunkErr error // returned by SendGuestCall (chunk path) when non-nil
+}
+
+func (s *stubOnceGridClient) SendGuestCallWithTimeout(data []byte, msgType shm.MsgType, _ time.Duration) ([]byte, error) {
+	cp := append([]byte(nil), data...)
+	s.mu.Lock()
+	s.calls = append(s.calls, onceGridCall{data: cp, msgType: msgType})
+	s.mu.Unlock()
+	return nil, s.sendErr
+}
+
+func (s *stubOnceGridClient) SendGuestCall(data []byte, msgType shm.MsgType) ([]byte, error) {
+	cp := append([]byte(nil), data...)
+	s.mu.Lock()
+	s.calls = append(s.calls, onceGridCall{data: cp, msgType: msgType})
+	s.mu.Unlock()
+	if s.chunkErr != nil {
+		return nil, s.chunkErr
+	}
+	return nil, s.sendErr
+}
+
+func (s *stubOnceGridClient) snapshot() []onceGridCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]onceGridCall(nil), s.calls...)
+}
+
+// TestSendOnceGrid_SingleSlot: a payload at/below the single-slot budget is sent
+// as ONE MsgRtdOnceGrid message carrying the payload verbatim.
+func TestSendOnceGrid_SingleSlot(t *testing.T) {
+	stub := &stubOnceGridClient{}
+	m := NewRtdManager()
+	m.client = stub
+
+	payload := []byte("small-rtd-once-grid-result")
+	if err := m.SendOnceGrid("BDH\x1fAAPL", payload); err != nil {
+		t.Fatalf("SendOnceGrid: %v", err)
+	}
+
+	calls := stub.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("single-slot payload must be 1 send, got %d", len(calls))
+	}
+	if calls[0].msgType != msgid.MsgRtdOnceGrid {
+		t.Fatalf("msgType = %d, want MsgRtdOnceGrid (%d)", calls[0].msgType, msgid.MsgRtdOnceGrid)
+	}
+	if !bytes.Equal(calls[0].data, payload) {
+		t.Fatalf("single-slot payload not sent verbatim:\n got %x\nwant %x", calls[0].data, payload)
+	}
+}
+
+// TestSendOnceGrid_Chunked: a payload larger than the single-slot budget is
+// split into MsgChunk frames, each a protocol.Chunk carrying msg_type=
+// MsgRtdOnceGrid and a shared transfer id/total, whose data segments reassemble
+// to the original payload in offset order.
+func TestSendOnceGrid_Chunked(t *testing.T) {
+	stub := &stubOnceGridClient{}
+	m := NewRtdManager()
+	m.client = stub
+
+	// 2.5 chunks worth of data so we get 3 chunk frames.
+	payload := bytes.Repeat([]byte("X"), onceGridChunkSize*2+onceGridChunkSize/2)
+	if err := m.SendOnceGrid("BIG\x1fkey", payload); err != nil {
+		t.Fatalf("SendOnceGrid (chunked): %v", err)
+	}
+
+	calls := stub.snapshot()
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 chunk frames, got %d", len(calls))
+	}
+
+	var (
+		reassembled = make([]byte, len(payload))
+		wantTotal   = uint32(len(payload))
+		seenTotal   uint32
+		transferID  uint64
+		firstID     bool
+	)
+	for i, c := range calls {
+		if c.msgType != msgid.MsgChunk {
+			t.Fatalf("chunk %d msgType = %d, want MsgChunk (%d)", i, c.msgType, msgid.MsgChunk)
+		}
+		ch := protocol.GetRootAsChunk(c.data, 0)
+		if ch.MsgType() != uint32(msgid.MsgRtdOnceGrid) {
+			t.Fatalf("chunk %d msg_type = %d, want MsgRtdOnceGrid (%d)", i, ch.MsgType(), msgid.MsgRtdOnceGrid)
+		}
+		if ch.TotalSize() != wantTotal {
+			t.Fatalf("chunk %d total_size = %d, want %d", i, ch.TotalSize(), wantTotal)
+		}
+		if !firstID {
+			transferID = ch.Id()
+			firstID = true
+		} else if ch.Id() != transferID {
+			t.Fatalf("chunk %d id = %#x, want shared %#x", i, ch.Id(), transferID)
+		}
+		off := int(ch.Offset())
+		seg := ch.DataBytes()
+		copy(reassembled[off:off+len(seg)], seg)
+		seenTotal += uint32(len(seg))
+	}
+	if seenTotal != wantTotal {
+		t.Fatalf("reassembled byte count = %d, want %d", seenTotal, wantTotal)
+	}
+	if !bytes.Equal(reassembled, payload) {
+		t.Fatal("reassembled chunk payload does not match the original grid bytes")
+	}
+}
+
+// TestSendOnceGrid_NoClient: with no client, SendOnceGrid reports not-connected
+// and never panics.
+func TestSendOnceGrid_NoClient(t *testing.T) {
+	m := NewRtdManager()
+	if err := m.SendOnceGrid("k", []byte("x")); err == nil {
+		t.Fatal("expected error when client is not connected")
+	}
+}
+
+// TestSendOnceGrid_SingleSlotErrorPropagates: a send failure on the single-slot
+// path is returned so RunOnceGrid can surface it (and skip the readiness token).
+func TestSendOnceGrid_SingleSlotErrorPropagates(t *testing.T) {
+	stub := &stubOnceGridClient{sendErr: fmt.Errorf("host stalled")}
+	m := NewRtdManager()
+	m.client = stub
+	if err := m.SendOnceGrid("k", []byte("small")); err == nil {
+		t.Fatal("expected single-slot send error to propagate")
+	}
+}
+
 func (s *stubRtdClient) snapshotCalls() []stubCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()

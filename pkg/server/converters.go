@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"strconv"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -109,6 +110,60 @@ func BuildGridFromGo(b *flatbuffers.Builder, v [][]any) (flatbuffers.UOffsetT, e
 // output also spills in dynamic-array Excel.
 func BuildNumGridFromGo(b *flatbuffers.Builder, v [][]float64) (flatbuffers.UOffsetT, error) {
 	return fbany.BuildNumGrid(b, v)
+}
+
+// BuildRtdOnceGridResult serializes a grid-returning rtd-once handler result
+// into a complete, finished protocol.RtdOnceGridResult buffer ready to ship
+// guest->host (see rtd.RunOnceGrid / rtd.RtdManager.SendOnceGrid). The buffer
+// carries:
+//
+//   - key:   the host-side lookup key — the RTD topic strings joined with
+//     U+001F (\x1f), identical to the C++ wrapper's MakeRtdOnceKey(topics).
+//     The generated server passes strings.Join(args, "\x1f").
+//   - value: an Any whose union member is Grid (when v is a [][]any grid) or
+//     NumGrid (when v is a [][]float64 numgrid), matching the C++ wrapper's
+//     val_as_Grid()/val_as_NumGrid() spill paths.
+//
+// The grid-vs-numgrid choice is made by a type switch on the concrete return
+// value, so the generated server can call this helper uniformly without
+// branching on the declared return type. A nil/empty/malformed grid (or any
+// other type) returns an error so RunOnceGrid routes it through the error path
+// (the cell shows the message instead of a corrupt/empty spill).
+func BuildRtdOnceGridResult(key string, v any) ([]byte, error) {
+	b := flatbuffers.NewBuilder(1024)
+
+	var gridOff flatbuffers.UOffsetT
+	var tag protocol.AnyValue
+	var err error
+
+	switch g := v.(type) {
+	case [][]any:
+		gridOff, err = fbany.BuildGrid(b, g)
+		tag = protocol.AnyValueGrid
+	case [][]float64:
+		gridOff, err = fbany.BuildNumGrid(b, g)
+		tag = protocol.AnyValueNumGrid
+	default:
+		return nil, fmt.Errorf("server.BuildRtdOnceGridResult: unsupported result type %T (want [][]any or [][]float64)", v)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("server.BuildRtdOnceGridResult: %w", err)
+	}
+
+	protocol.AnyStart(b)
+	protocol.AnyAddValType(b, tag)
+	protocol.AnyAddVal(b, gridOff)
+	anyOff := protocol.AnyEnd(b)
+
+	keyOff := b.CreateString(key)
+
+	protocol.RtdOnceGridResultStart(b)
+	protocol.RtdOnceGridResultAddKey(b, keyOff)
+	protocol.RtdOnceGridResultAddValue(b, anyOff)
+	root := protocol.RtdOnceGridResultEnd(b)
+	b.Finish(root)
+
+	return b.FinishedBytes(), nil
 }
 
 // ValidateGrid reports whether v is a well-formed (rectangular, non-empty)

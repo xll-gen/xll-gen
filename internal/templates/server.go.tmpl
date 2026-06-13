@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 	"runtime"
 	"runtime/debug"
@@ -25,6 +26,7 @@ var _ = time.Now
 var _ = protocol.Bool{}
 var _ = rand.Int63
 var _ = flatbuffers.NewBuilder
+var _ = strings.Join
 {{if .Functions}}var _ = &ipc.{{(index .Functions 0).Name}}Request{}{{end}}
 
 var (
@@ -191,9 +193,28 @@ func Serve(handler XllService) {
                         rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
                         if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
                         {{end}}{{end}}
+                        {{if or (eq .Return "grid") (eq .Return "numgrid")}}
+                        // grid/numgrid rtd-once SPILLS: RTD can only carry a
+                        // scalar, so the handler runs once, its grid is shipped
+                        // guest->host (keyed by the onceKey = the topic strings
+                        // joined with \x1f, identical to the C++ wrapper's
+                        // MakeRtdOnceKey(topics)), and ONLY THEN a changing
+                        // readiness token is pushed so Excel recalcs and the
+                        // wrapper pulls the spilled grid back out. The
+                        // serialization (Grid vs NumGrid Any) lives in
+                        // server.BuildRtdOnceGridResult, keyed off the concrete
+                        // return type. See rtd.RunOnceGrid for the ordering.
+                        onceKey := strings.Join(args, "\x1f")
+                        return rtd.RunOnceGrid(ctx, rtd.GlobalRtd, topicID, onceKey, func(ctx context.Context) ([]byte, error) {
+                            v, err := handler.{{.Name}}(ctx {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else if or (eq .Type "grid") (eq .Type "numgrid") (eq .Type "range") (eq .Type "any")}}rarg_{{.Name}}{{else}}args[{{add $i 1}}]{{end}}{{end}})
+                            if err != nil { return nil, err }
+                            return server.BuildRtdOnceGridResult(onceKey, v)
+                        })
+                        {{else}}
                         return rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx context.Context) (interface{}, error) {
                             return handler.{{.Name}}(ctx {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else if or (eq .Type "grid") (eq .Type "numgrid") (eq .Type "range") (eq .Type "any")}}rarg_{{.Name}}{{else}}args[{{add $i 1}}]{{end}}{{end}})
                         })
+                        {{end}}
                     {{end}}{{end}}
                     default:
                         return handler.OnRtdConnect(ctx, topicID, args, newValues)

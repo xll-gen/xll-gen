@@ -3,6 +3,7 @@ package rtd
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -14,11 +15,36 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/pool"
 )
 
+// onceGridChunkSize is the per-chunk payload byte budget for a chunked
+// guest->host RtdOnceGrid transfer. It mirrors pkg/server.DefaultChunkSize
+// (950 KiB) — duplicated here rather than imported because pkg/server imports
+// pkg/rtd (NewSystemHandler takes rtd.GlobalRtd), so the dependency cannot run
+// the other way. A grid payload at or below this size goes in a single slot
+// tagged MsgRtdOnceGrid; a larger one is split into protocol.Chunk messages
+// (each tagged MsgChunk, carrying the real MsgRtdOnceGrid msg_type) that the
+// C++ host's HandleChunk reassembles before dispatching MSG_RTD_ONCE_GRID.
+const onceGridChunkSize = 950 * 1024
+
+// onceGridSendTimeout bounds each guest->host send for a one-shot grid. It is
+// generous relative to the RtdUpdate 1s timeout because a grid (especially when
+// chunked) carries far more bytes; the send must still complete synchronously
+// before RunOnceGrid signals readiness.
+const onceGridSendTimeout = 5 * time.Second
+
 // rtdClient is the subset of *shm.Client the RtdManager uses. It is an
 // interface so tests can inject slow/failing stubs without a real SHM
 // segment.
 type rtdClient interface {
 	SendGuestCallWithTimeout(data []byte, msgType shm.MsgType, timeout time.Duration) ([]byte, error)
+}
+
+// chunkSender is the extra surface SendOnceGrid needs when a one-shot grid
+// payload exceeds a single slot: it sends one already-framed protocol.Chunk
+// message (tagged MsgChunk) guest->host. *shm.Client satisfies it via
+// SendGuestCall. Kept separate from rtdClient so the byte-identity-focused
+// rtdClient stub used by the SendUpdate tests need not grow this method.
+type chunkSender interface {
+	SendGuestCall(data []byte, msgType shm.MsgType) ([]byte, error)
 }
 
 // RtdManager manages RTD topic subscriptions and broadcasts.
@@ -166,4 +192,82 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
 
 	_, err := client.SendGuestCallWithTimeout(data, msgid.MsgRtdUpdate, 1000*time.Millisecond)
 	return err
+}
+
+// SendOnceGrid ships a fully-serialized protocol.RtdOnceGridResult buffer
+// (key + Grid/NumGrid Any) to the host as a one-shot grid result, keyed inside
+// the payload by `key` (the RTD topic strings joined with \x1f). The host
+// stores it in RtdOnceGridRegistry under that key; the C++ wrapper later pulls
+// it back out when the readiness recalc re-enters.
+//
+// Transport mirrors the async-batch guest->host path (pkg/server.async_batcher):
+//   - payload <= onceGridChunkSize: one slot, tagged MsgRtdOnceGrid, which the
+//     host worker dispatches directly to ProcessRtdOnceGrid.
+//   - payload  > onceGridChunkSize: split into protocol.Chunk messages, each
+//     tagged MsgChunk and carrying msg_type=MsgRtdOnceGrid + the shared
+//     transfer id/total/offset, which the host's HandleChunk reassembles and
+//     then dispatches to ProcessRtdOnceGrid on completion.
+//
+// It is SYNCHRONOUS: every send waits for the host ACK, and (for the chunked
+// case) all chunks are sent in order before returning. RunOnceGrid relies on
+// this: it must not signal RTD readiness until the host actually holds the
+// grid (see RunOnceGrid's ordering note). Returns the first send error
+// (aborting the transfer), or nil once the whole payload is delivered+acked.
+func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
+	m.mu.RLock()
+	client := m.client
+	m.mu.RUnlock()
+
+	if client == nil {
+		return fmt.Errorf("server not connected")
+	}
+	if len(payload) == 0 {
+		return fmt.Errorf("rtd.SendOnceGrid: empty payload for key %q", key)
+	}
+
+	// Single-slot fast path: the whole RtdOnceGridResult fits in one request
+	// buffer. The host worker recognizes MsgRtdOnceGrid directly.
+	if len(payload) <= onceGridChunkSize {
+		_, err := client.SendGuestCallWithTimeout(payload, msgid.MsgRtdOnceGrid, onceGridSendTimeout)
+		return err
+	}
+
+	// Chunked path: the grid is too large for a single slot. Frame it into
+	// protocol.Chunk messages that carry the real MsgRtdOnceGrid msg_type, so
+	// the host reassembles them and dispatches MSG_RTD_ONCE_GRID once complete.
+	cs, ok := client.(chunkSender)
+	if !ok {
+		return fmt.Errorf("rtd.SendOnceGrid: payload of %d bytes exceeds single-slot budget %d but client does not support chunked send", len(payload), onceGridChunkSize)
+	}
+
+	transferID := uint64(rand.Int63())
+	total := len(payload)
+	b := pool.GetBuilder(nil)
+	defer pool.PutBuilder(b)
+
+	for offset := 0; offset < total; {
+		end := offset + onceGridChunkSize
+		if end > total {
+			end = total
+		}
+		chunk := payload[offset:end]
+
+		b.Reset()
+		dataOff := b.CreateByteVector(chunk)
+		protocol.ChunkStart(b)
+		protocol.ChunkAddId(b, transferID)
+		protocol.ChunkAddTotalSize(b, uint32(total))
+		protocol.ChunkAddOffset(b, uint32(offset))
+		protocol.ChunkAddData(b, dataOff)
+		protocol.ChunkAddMsgType(b, uint32(msgid.MsgRtdOnceGrid))
+		root := protocol.ChunkEnd(b)
+		b.FinishWithFileIdentifier(root, []byte("XCHN"))
+
+		if _, err := cs.SendGuestCall(b.FinishedBytes(), msgid.MsgChunk); err != nil {
+			return fmt.Errorf("rtd.SendOnceGrid: chunk at offset %d (id %#x): %w", offset, transferID, err)
+		}
+		offset = end
+	}
+
+	return nil
 }

@@ -225,6 +225,39 @@ func rtdOnceGridCfg() *config.Config {
 	}
 }
 
+// TestGenGo_RtdOnceGrid_Server: a grid/numgrid-returning rtd-once function
+// routes its connect dispatch through rtd.RunOnceGrid (building the onceKey via
+// strings.Join(args, "\x1f") and serializing with server.BuildRtdOnceGridResult),
+// while a scalar rtd-once function in the same project stays on rtd.RunOnce.
+func TestGenGo_RtdOnceGrid_Server(t *testing.T) {
+	t.Parallel()
+	srv := renderTemplate(t, "server.go.tmpl", serverDataFor(rtdOnceGridCfg()))
+	assertParses(t, "server.go", srv)
+
+	// The grid path uses RunOnceGrid with the \x1f-joined onceKey and the
+	// server-side serializer.
+	for _, want := range []string{
+		"rtd.RunOnceGrid(ctx, rtd.GlobalRtd, topicID, onceKey, func(ctx context.Context) ([]byte, error) {",
+		`onceKey := strings.Join(args, "\x1f")`,
+		"server.BuildRtdOnceGridResult(onceKey, v)",
+		`case "BDH":`,
+		`case "BDS":`,
+	} {
+		if !strings.Contains(srv, want) {
+			t.Errorf("server.go (rtd-once grid) missing %q:\n%s", want, srv)
+		}
+	}
+
+	// The scalar rtd-once function in the same project still uses RunOnce
+	// (unchanged), NOT RunOnceGrid.
+	if !strings.Contains(srv, "rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx context.Context) (interface{}, error) {") {
+		t.Errorf("server.go: scalar rtd-once must still generate RunOnce glue:\n%s", srv)
+	}
+	if !strings.Contains(srv, "return handler.SlowAdd(ctx , server.ParseInt(args[1]), server.ParseFloat(args[2]))") {
+		t.Errorf("server.go: scalar rtd-once RunOnce closure must call the normal handler with parsed scalar args:\n%s", srv)
+	}
+}
+
 // TestGenCpp_RtdOnceGrid: a grid/numgrid-returning rtd-once function spills via
 // RtdOnceGridRegistry (the byte-buffer twin), while a scalar rtd-once function
 // in the same project keeps using RtdOnceRegistry. The two function-name sets

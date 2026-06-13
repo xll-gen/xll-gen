@@ -127,6 +127,19 @@ functions:
     args: [{name: "g", type: "grid"}]
     return: "float"
 
+  # rtd-once returning grid — the spill path (RunOnceGrid + onceKey join +
+  # server.BuildRtdOnceGridResult([][]any))
+  - name: "GridOnce"
+    mode: "rtd-once"
+    args: [{name: "s", type: "string"}]
+    return: "grid"
+
+  # rtd-once returning numgrid — the spill path (BuildRtdOnceGridResult([][]float64))
+  - name: "NumGridOnce"
+    mode: "rtd-once"
+    args: [{name: "s", type: "string"}]
+    return: "numgrid"
+
   # caller-only (position)
   - name: "CallerOnly"
     caller: true
@@ -189,6 +202,14 @@ func (s *Service) RtdOnceTTL(ctx context.Context, n int32) (float64, error) { re
 
 func (s *Service) SumGridOnce(ctx context.Context, g *protocol.Grid) (float64, error) {
 	return float64(g.Rows() * g.Cols()), nil
+}
+
+func (s *Service) GridOnce(ctx context.Context, str string) ([][]any, error) {
+	return [][]any{{int32(1), str}, {2.0, true}}, nil
+}
+
+func (s *Service) NumGridOnce(ctx context.Context, str string) ([][]float64, error) {
+	return [][]float64{{1, 2}, {3, 4}}, nil
 }
 
 func (s *Service) CallerOnly(ctx context.Context, v int32, caller *protocol.Range) (string, error) {
@@ -272,6 +293,23 @@ func TestGeneratedServerCompiles(t *testing.T) {
 	editCmd.Dir = projectDir
 	if out, err := editCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go mod edit replace failed: %v\n%s", err, out)
+	}
+
+	// pkg/server (imported by the generated server) now references
+	// protocol.RtdOnceGridResult, added to the types module AFTER the pinned
+	// tag (the rtd-once grid-spill feature). A `replace` in the xll-gen module
+	// is NOT inherited once xll-gen is itself a replaced dependency (only the
+	// MAIN module's replaces apply), so the generated main module must carry
+	// the types replace too. Mirrors TestRegression: when XLLGEN_TYPES_SRC
+	// points at a local types checkout shipping the new symbols, replace the
+	// module; otherwise fall back to the pinned tag.
+	if typesSrc := os.Getenv("XLLGEN_TYPES_SRC"); typesSrc != "" {
+		typesEdit := exec.Command("go", "mod", "edit",
+			"-replace", "github.com/xll-gen/types="+typesSrc)
+		typesEdit.Dir = projectDir
+		if out, err := typesEdit.CombinedOutput(); err != nil {
+			t.Fatalf("go mod edit replace (types) failed: %v\n%s", err, out)
+		}
 	}
 
 	// Overwrite the scaffolded config + handler with the full-surface fixture.
