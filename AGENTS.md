@@ -407,13 +407,38 @@ the per-cycle ref-cache infrastructure end to end:
 args...) (T, error)`) for a long one-shot computation; the generator wraps it
 in an RTD topic lifecycle so the cell returns immediately with `#GETTING_DATA`
 and later receives the value. Requires `rtd.enabled: true`. **Scope:** scalar
-OR composite (`range`/`grid`/`numgrid`/`any`) args + scalar/`any` return only
-(the result rides `RtdUpdate`'s `Any` union). Composite args travel the
-content-hash payload path (above) — the hash token flows into the once-key, so
-memoization is content-addressed (same input grid → cached result; edited grid
-→ fresh compute). Composite RETURNS stay rejected at config time
-(`internal/config/config.go`) — the `Any` union cannot carry grid/numgrid/range
-as a push result. caller-aware (`caller: true`) is also rejected (the handler
+OR composite (`range`/`grid`/`numgrid`/`any`) args + scalar/`any`/`grid`/`numgrid`
+return (`range` return stays rejected — it is not a return type). Composite args
+travel the content-hash payload path (above) — the hash token flows into the
+once-key, so memoization is content-addressed (same input grid → cached result;
+edited grid → fresh compute).
+
+**Grid/numgrid return = non-blocking spilling function.** An RTD topic can only
+deliver a scalar (Excel limit; Microsoft KB 286258), so a grid result cannot ride
+the RTD push. Instead — the same pattern Excel-DNA's `ExcelAsyncUtil.Observe` uses —
+the RTD push carries only a **scalar readiness token** while the array travels a
+separate channel and is returned through the normal calc path (which spills):
+  1. The server runs the one-shot handler, serializes the `[][]any`/`[][]float64`
+     into a `protocol.RtdOnceGridResult{key, value:Any(Grid|NumGrid)}`, and ships it
+     **guest→host** as `MSG_RTD_ONCE_GRID` (= `msgid.MsgRtdOnceGrid` = 138; chunked
+     via the `MsgChunk`/`protocol.Chunk` path when it exceeds one slot). `key` is the
+     once-key (`MakeRtdOnceKey` = topic strings joined by `\x1f`; the Go side builds it
+     as `strings.Join(args, "\x1f")` — byte-identical, tokens already substituted).
+  2. The C++ host stores the payload bytes in `RtdOnceGridRegistry` (a twin of the
+     scalar `RtdOnceRegistry` in `xll_rtd_once_grid.h`: same memoize/`memoize_ttl`/
+     liveness-guard logic, byte-buffer entries, independent `m_topicToKey`). It then
+     pushes a changing readiness token on the topic.
+  3. The RTD update recalcs the cell; the generated wrapper re-enters, hits
+     `RtdOnceGridRegistry::TryGet(onceKey)`, and returns the grid as `xltypeMulti`
+     (`GridToXLOPER12`, registered `Q`/`LPXLOPER12`) or `FP12*` (`NumGridToFP12`,
+     registered `K%` — **numgrid keeps the FP12 ABI even under rtd-once**), which
+     **spills**. No `xlfRtd` on the hit → the topic disconnects; memoize/TTL govern
+     retention exactly as for scalar rtd-once. `ProcessRtdUpdate` skips the scalar
+     `StoreResult` for grid-once topics (detected via the grid registry's `KeyForTopic`);
+     `CalculationEnded` clears both registries.
+This gives non-blocking + memoize + spill — strictly better than `async` for slow
+work (async holds the calc transaction open). Scalar/`any` rtd-once is unchanged
+(value rides `RtdUpdate`'s `Any` union). caller-aware (`caller: true`) is rejected (the handler
 runs on a topic connect, not in the calling cell's calc). A per-function `memoize: bool` flag
 and a per-function `memoize_ttl: "<duration>"` flag are valid **only** with
 rtd-once and are rejected on other modes; `memoize_ttl` is mutually exclusive
