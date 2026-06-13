@@ -488,26 +488,59 @@ To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
 
 **Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp` (`DllMain`).
 
-**Known residual — the ribbon STA retry timer (documented 2026-06-12, reviewer-confirmed):**
-"leak, don't crash" does NOT transfer to a Win32 thread timer. A leaked thread keeps
-running harmlessly; a leaked `TimerProc` is a raw code pointer INTO the DLL that the
-OS dispatches on the next `WM_TIMER` — after a forced unmap that is a guaranteed
-0xC0000005, and the `g_isUnloading` guard inside the proc cannot help (the guard
-itself is unmapped code). The ribbon connect-retry timer (`xll_main.cpp.tmpl`,
-`ArmRibbonConnectTimer`/`RibbonConnectTimerProc`) is therefore disarmed ONLY via
-`xlAutoClose` → `StopRibbonConnectTimer()`. A DllMain disarm is impossible twice
-over: the timer handle is private to the xll_main TU (cross-TU), and `KillTimer`
-for a `SetTimer(NULL,…)` thread timer only works from the owning STA thread while
-`DLL_PROCESS_DETACH` may run on the FreeLibrary caller's thread (cross-thread).
-Every alternative that runs DLL retry code on idle (TimerProc, message-only-window
-WndProc) has the identical unmap hazard. Accepted residual: a forced
-FreeLibrary-WITHOUT-xlAutoClose while the connect is still pending (add-in loaded,
-no workbook ever opened, timer armed) can crash on the next pump. Mitigations in
-place: the timer is armed only after `xlAutoOpen` (so the §20.2 startup probe-unload
-never sees it), it self-kills the instant the connect resolves, and all known
-Excel unload paths (quit, UI add-in disable) DO run `xlAutoClose`. Do not
-"fix" this by adding a KillTimer to DllMain — it silently does nothing cross-thread
-and would hide the residual instead of documenting it.
+**Previously a residual, now RESOLVED — the ribbon STA retry timer (documented
+2026-06-12, fixed 2026-06-13):**
+The original problem: the ribbon COMAddIns connect needs the in-process
+`Application` object, reachable only via the `XLMAIN→XLDESK→EXCEL7` window walk.
+When the add-in auto-loads at Excel startup with NO workbook open there is no
+`EXCEL7` child window, so the connect deferred. The first fix retried on an idle
+`SetTimer(NULL,…)` STA thread timer (`ArmRibbonConnectTimer`/`RibbonConnectTimerProc`),
+which carried an unavoidable unmap hazard: "leak, don't crash" does NOT transfer
+to a Win32 thread timer. A leaked thread keeps running harmlessly; a leaked
+`TimerProc` is a raw code pointer INTO the DLL that the OS dispatches on the next
+`WM_TIMER` — after a forced `FreeLibrary` WITHOUT `xlAutoClose` that is a
+guaranteed 0xC0000005, and the `g_isUnloading` guard inside the proc cannot help
+(the guard itself is unmapped code). `KillTimer` could only run from the owning
+STA thread, so a DllMain disarm was impossible (`DLL_PROCESS_DETACH` may run on
+the FreeLibrary caller's thread). Every idle-callback alternative (TimerProc,
+message-only-window WndProc) had the identical hazard.
+
+**The fix** removes the timer entirely and replaces it with a **synchronous
+temporary-workbook bounce** at `xlAutoOpen`, adopting Excel-DNA's proven mechanism
+(`Source/ExcelDna.Integration/Excel.cs`, `GetApplicationFromNewWorkbook`). When
+`GetExcelApplication()` returns nullptr (no workbook), `GetExcelApplicationOrBounce()`
+(`xll_main.cpp.tmpl`) issues `xlcNew(5)` + `xlcWorkbookInsert(6)` to materialize a
+workbook (and the `EXCEL7` window), re-acquires the `Application`, then closes the
+scratch workbook with `xlcFileClose(false)` (no save) in a guaranteed cleanup path.
+The COMAddIns connection binds to the `Application`, not the workbook, so it
+**survives the temp workbook closing** — the ribbon tab appears normally when the
+user later opens a workbook. These `xlc*` command opcodes are callable only from a
+macro/command context; `xlAutoOpen` qualifies (the bounce is gated to the
+`xlAutoOpen` first-attempt path only via a `bool allowBounce` parameter — never on
+calc-end, never from worksheet-function/RTD contexts). The accepted cost is a
+brief startup flicker when Excel starts with no workbook. Because there is no
+longer any self-owned idle callback, the forced-unload crash residual is gone.
+
+**Caveat (data-loss boundary).** The bounce only runs when `GetExcelApplication()`
+returned null at `xlAutoOpen` entry — i.e. no `EXCEL7` window was reachable, which
+strongly implies no document was open — so the blast radius is bounded to the
+empty-startup case. As a hard guard, `xlcFileClose(false)` is now **close-by-identity**:
+the scratch book's name is captured via `GET.DOCUMENT(88)` (`xlfGetDocument`, selector
+88 = active workbook name) immediately after creation, re-read just before the close,
+and the close is issued ONLY if the active workbook is still that scratch book. If a
+real user document became active in between (e.g. `excel.exe somedoc.xlsx` with the
+add-in auto-loading, ordering not contractual), or if either name capture fails, the
+close is skipped and a warning logged — leaking a blank scratch book is strictly safer
+than discarding a user's unsaved document, so the bounce can never cause data loss.
+`TryConnectRibbon` is also guarded against STA re-entrancy (a `CalculationEnded`
+callback firing mid-bounce) via a function-static `std::atomic<bool> s_inConnect`, so a
+second `COMAddIns…Connect` cannot land while the bounce is in flight.
+
+The calc-end retry (`TryConnectRibbon("calc end")`, `allowBounce=false`) is KEPT as
+a hazard-free defensive fallback: it is an Excel-registered event callback (no unmap
+hazard) and only matters in the rare case the bounce itself fails (e.g. C API
+unavailable). Graceful degradation throughout: a failed bounce logs a warning and
+leaves functions/commands fully operational.
 
 ## 21. C++ Name Mangling & Export Rules
 

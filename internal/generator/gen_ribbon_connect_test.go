@@ -30,57 +30,65 @@ func ribbonConnectCfg() *config.Config {
 // connect needs the in-process Application object, which is reachable only via
 // the XLDESK -> EXCEL7 child window. When the XLL loads with NO workbook open,
 // that window does not exist, GetExcelApplication() returns nullptr, and the
-// one-shot connect at xlAutoOpen fails permanently — the ribbon tab never
-// appears even after the user opens a workbook.
+// connect cannot run — the ribbon tab never appears.
 //
-// The fix routes the connect through TryConnectRibbon (idempotent + retryable)
-// and drives retries from TWO STA-thread triggers:
-//   - a Win32 thread timer (SetTimer hwnd=NULL + TimerProc) armed at xlAutoOpen
-//     when the first connect defers — this is the PRIMARY trigger because a
-//     brand-new EMPTY workbook runs no calculation, so the calc-end hook alone
-//     never fires (the v0.5.0 bug: ribbon never appears for load-then-File>New);
-//   - the calc-end callback (kept as a secondary/belt-and-braces trigger).
+// The fix (2026-06-13) adopts Excel-DNA's synchronous temp-workbook bounce
+// (Source/ExcelDna.Integration/Excel.cs, GetApplicationFromNewWorkbook): at
+// xlAutoOpen, GetExcelApplicationOrBounce() creates a temporary workbook via the
+// XLM command API (xlcNew/xlcWorkbookInsert) to materialize the EXCEL7 window,
+// grabs the Application, then closes the scratch workbook (xlcFileClose). The
+// connection binds to the Application (not the workbook) so it survives the
+// temp workbook closing. This REPLACES the former STA WM_TIMER retry loop, which
+// was an accepted forced-unload crash residual (AGENTS.md §20.2).
 //
 // This test pins:
-//   - xlAutoOpen calls TryConnectRibbon (not the old inline one-shot connect)
-//     and arms the timer when it defers;
-//   - the timer TimerProc retries the connect and is guarded by g_isUnloading;
-//   - the timer is killed at xlAutoClose BEFORE CoRevokeClassObject;
-//   - the calc-end handler also retries it;
-//   - the CalculationEnded event is registered whenever the ribbon is enabled;
-//   - the no-workbook-yet ("noApp") case does NOT consume the give-up budget.
-//
-// Before the fix the rendered xll_main.cpp connected inline in xlAutoOpen with
-// no retry path, and (post v0.5.0) retried ONLY from calc-end — which never
-// fires for an empty workbook. So the timer substrings below were all absent.
+//   - the bounce helper GetExcelApplicationOrBounce exists and uses the verified
+//     xlc* opcodes through xll::CallExcel;
+//   - xlAutoOpen drives the connect through TryConnectRibbon with allowBounce=true;
+//   - the calc-end handler retries WITHOUT bouncing (defensive fallback);
+//   - the CalculationEnded event is still registered whenever the ribbon is enabled;
+//   - the no-workbook-yet ("noApp") case does NOT consume the give-up budget;
+//   - the removed STA timer machinery (SetTimer/TimerProc/Arm/Stop) is GONE.
 func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	t.Parallel()
 	src := renderCppMain(t, ribbonConnectCfg())
 
 	for _, want := range []string{
-		// The retryable connect helper exists.
-		"static bool TryConnectRibbon(const char* phase)",
-		// xlAutoOpen drives the connect through it (not an inline SetRibbonConnected(true)).
-		`TryConnectRibbon("xlAutoOpen")`,
-		// xlAutoOpen arms the STA retry timer when the first connect defers.
-		"ArmRibbonConnectTimer();",
-		// The timer machinery exists: a TimerProc retry hook on the STA thread.
-		"RibbonConnectTimerProc",
-		`TryConnectRibbon("timer");`,
-		"SetTimer(NULL, kRibbonConnectTimerId",
-		// The TimerProc honors the unload self-abort contract.
-		"g_isUnloading.load(std::memory_order_acquire)",
-		// Teardown stops the timer before revoking the class object.
-		"StopRibbonConnectTimer();",
-		"KillTimer(NULL, g_ribbonConnectTimer);",
+		// The retryable connect helper exists and threads allowBounce.
+		"static bool TryConnectRibbon(const char* phase, bool allowBounce = false)",
+		// The temp-workbook bounce helper exists.
+		"static IDispatch* GetExcelApplicationOrBounce()",
+		// It uses the verified xlc* command opcodes via xll::CallExcel.
+		"xll::CallExcel(xlcNew, nullptr, 5)",
+		"xll::CallExcel(xlcWorkbookInsert, nullptr, 6)",
+		"xll::CallExcel(xlcFileClose, nullptr, false)",
+		// HIGH (data-loss) hardening: the bounce captures the ACTIVE workbook
+		// name via GET.DOCUMENT(88) (xlfGetDocument, selector 88) and closes the
+		// scratch book BY IDENTITY — only when it is still the active one.
+		"static std::wstring GetActiveWorkbookName()",
+		"xll::CallExcel(xlfGetDocument, xName, 88)",
+		"PascalToWString(xName.get()->val.str)",
+		"std::wstring scratchName = GetActiveWorkbookName();",
+		"std::wstring activeNow = GetActiveWorkbookName();",
+		// The close is guarded by the identity comparison, never issued blindly.
+		"if (activeNow.empty() || activeNow != scratchName) {",
+		// MED hardening: TryConnectRibbon is non-re-entrant during the bounce.
+		"static std::atomic<bool> s_inConnect{false};",
+		"if (!s_inConnect.compare_exchange_strong(expected, true)) return false;",
+		// SetRibbonConnected routes through the bounce only when allowed.
+		"GetExcelApplicationOrBounce() : GetExcelApplication();",
+		// xlAutoOpen drives the connect through it WITH the bounce enabled.
+		`TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`,
+		// The bounce helper honors graceful degradation (warn, not crash).
+		"SAFE_LOG_WARN(",
 		// The no-workbook-yet case is detected and does NOT burn the give-up budget.
 		"bool noApp = false;",
 		"if (noApp) return false;",
-		// Calc-end retries the connect on the STA thread once a workbook exists.
+		// Calc-end retries the connect as a defensive fallback (no bounce).
 		`TryConnectRibbon("calc end");`,
 		// The connect state is a single atomic guard (pending/connected/gave-up).
 		"g_ribbonConnectState",
-		// CalculationEnded is registered as the retry hook for ribbon builds.
+		// CalculationEnded is registered as the fallback retry hook for ribbon builds.
 		"needRibbonRetry:",
 		`xll::CallExcel(xlEventRegister, nullptr, L"CalculationEnded", xleventCalculationEnded);`,
 	} {
@@ -89,20 +97,28 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		}
 	}
 
-	// Win32 trap lock: with hwnd=NULL, SetTimer IGNORES the passed id and
-	// returns a fresh system-assigned one — KillTimer with the CONSTANT id
-	// kills nothing and leaves the TimerProc armed (unmap crash on forced
-	// unload). KillTimer must always use the STORED returned id.
-	if strings.Contains(src, "KillTimer(NULL, kRibbonConnectTimerId") {
-		t.Errorf("KillTimer must use the stored returned id g_ribbonConnectTimer, not the constant kRibbonConnectTimerId (hwnd=NULL timers ignore the id param)")
+	// The STA WM_TIMER retry machinery (the removed crash residual) must be
+	// entirely absent from a ribbon-enabled render. A reintroduction of any of
+	// these symbols brings back the forced-unload 0xC0000005 (AGENTS.md §20.2).
+	for _, gone := range []string{
+		"ArmRibbonConnectTimer",
+		"StopRibbonConnectTimer",
+		"RibbonConnectTimerProc",
+		"g_ribbonConnectTimer",
+		"kRibbonConnectTimerId",
+		"kRibbonConnectTimerMs",
+		"SetTimer(",
+		"KillTimer(",
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("xll_main.cpp (ribbon) still contains removed STA timer symbol %q (the §20.2 unmap-crash residual must stay gone)", gone)
+		}
 	}
 
-	// Teardown ordering: StopRibbonConnectTimer() must precede CoRevokeClassObject
-	// so no WM_TIMER can re-enter the COM registration during teardown.
-	stopIdx := strings.Index(src, "StopRibbonConnectTimer();")
-	revokeIdx := strings.Index(src, "CoRevokeClassObject(g_ribbonCookie)")
-	if stopIdx < 0 || revokeIdx < 0 || stopIdx > revokeIdx {
-		t.Errorf("StopRibbonConnectTimer() must be called before CoRevokeClassObject in xlAutoClose (stop=%d revoke=%d)", stopIdx, revokeIdx)
+	// The calc-end fallback must NOT bounce (a workbook already exists there).
+	if strings.Contains(src, `TryConnectRibbon("calc end", true)`) ||
+		strings.Contains(src, `TryConnectRibbon("calc end", /*allowBounce=*/true)`) {
+		t.Errorf("calc-end retry must not enable the temp-workbook bounce (allowBounce must default to false there)")
 	}
 
 	// The connect must NOT be wired as a single inline best-effort call in
@@ -113,7 +129,7 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		t.Errorf("xll_main.cpp still contains the old one-shot connect failure path (no retry)")
 	}
 
-	// Negative: ribbon-disabled render must not reference the connect helper.
+	// Negative: ribbon-disabled render must not reference the connect helpers.
 	noRibbon := &config.Config{
 		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
 		Functions: []config.Function{
@@ -128,11 +144,11 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	if strings.Contains(noRibbonSrc, "TryConnectRibbon") {
 		t.Errorf("ribbon-disabled render must not reference TryConnectRibbon")
 	}
+	if strings.Contains(noRibbonSrc, "GetExcelApplicationOrBounce") {
+		t.Errorf("ribbon-disabled render must not reference the temp-workbook bounce helper")
+	}
 	if strings.Contains(noRibbonSrc, "needRibbonRetry") {
 		t.Errorf("ribbon-disabled render must not emit the needRibbonRetry hook")
-	}
-	if strings.Contains(noRibbonSrc, "RibbonConnectTimerProc") || strings.Contains(noRibbonSrc, "ArmRibbonConnectTimer") {
-		t.Errorf("ribbon-disabled render must not emit the ribbon connect timer machinery")
 	}
 }
 
