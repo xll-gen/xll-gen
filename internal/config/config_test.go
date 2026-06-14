@@ -850,6 +850,78 @@ func TestValidate_RtdOnce(t *testing.T) {
 			}
 		})
 	}
+
+	// loading_placeholder: per-function value accepted on rtd-once (any string),
+	// rejected on other modes. The global rtd.loading_placeholder is never
+	// validated here.
+	t.Run("loading_placeholder on rtd-once ok", func(t *testing.T) {
+		for _, ph := range []string{"getting_data", "na", "Loading...", "잠시만요"} {
+			cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", LoadingPlaceholder: ph})
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("loading_placeholder %q on rtd-once must be valid, got %v", ph, err)
+			}
+		}
+	})
+	for _, mode := range []string{"sync", "async", "rtd"} {
+		t.Run("loading_placeholder rejected on "+mode, func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "TestProject"},
+				Rtd:       RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+				Functions: []Function{{Name: "F", Mode: mode, Return: "int", LoadingPlaceholder: "na"}},
+			}
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), "loading_placeholder is only valid with mode:\"rtd-once\"") {
+				t.Fatalf("loading_placeholder on %q must be rejected with the placeholder message, got %v", mode, err)
+			}
+		})
+	}
+	t.Run("global loading_placeholder needs no rtd-once function", func(t *testing.T) {
+		cfg := &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Rtd:       RtdConfig{Enabled: true, ProgID: "P.Rtd", LoadingPlaceholder: "na"},
+			Functions: []Function{{Name: "F", Mode: "sync", Return: "int"}},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("global rtd.loading_placeholder must be a harmless no-op without rtd-once functions, got %v", err)
+		}
+	})
+}
+
+// TestResolveRtdPlaceholder pins the precedence (per-function over global over
+// the getting_data default) and the keyword-vs-verbatim classification.
+func TestResolveRtdPlaceholder(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		fnPH     string
+		globalPH string
+		wantKind RtdPlaceholderKind
+		wantText string
+	}{
+		{"both empty -> default getting_data", "", "", PlaceholderGettingData, ""},
+		{"global na inherited", "", "na", PlaceholderNA, ""},
+		{"global text inherited", "", "Loading...", PlaceholderText, "Loading..."},
+		{"per-fn overrides global", "getting_data", "na", PlaceholderGettingData, ""},
+		{"per-fn na overrides global text", "na", "Hold on", PlaceholderNA, ""},
+		{"keyword case-insensitive", "Getting_Data", "", PlaceholderGettingData, ""},
+		{"na case-insensitive", "NA", "", PlaceholderNA, ""},
+		{"whitespace trimmed then text", "  Working  ", "", PlaceholderText, "Working"},
+		{"verbatim text wins over global", "Custom", "na", PlaceholderText, "Custom"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveRtdPlaceholder(
+				Function{LoadingPlaceholder: tc.fnPH},
+				RtdConfig{LoadingPlaceholder: tc.globalPH},
+			)
+			if got.Kind != tc.wantKind {
+				t.Errorf("Kind = %v, want %v", got.Kind, tc.wantKind)
+			}
+			if got.Kind == PlaceholderText && got.Text != tc.wantText {
+				t.Errorf("Text = %q, want %q", got.Text, tc.wantText)
+			}
+		})
+	}
 }
 
 // TestValidate_CallerMacroSplit pins the v0.5.0 caller/macro split rules:

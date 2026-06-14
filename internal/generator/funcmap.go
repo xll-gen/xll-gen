@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"text/template"
@@ -9,6 +10,43 @@ import (
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/pkg/server"
 )
+
+// cppWideLiteral renders s as a C++ wide-string literal (L"...") that is safe
+// regardless of the generated file's source encoding or the compiler's wide
+// execution charset: every non-printable-ASCII rune is emitted as a universal
+// character name (\uXXXX / \UXXXXXXXX), and the C escapes are applied to quotes,
+// backslashes, and the common control characters.
+func cppWideLiteral(s string) string {
+	var b strings.Builder
+	b.WriteString(`L"`)
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			switch {
+			case r < 0x20 || r > 0x7e:
+				if r > 0xffff {
+					fmt.Fprintf(&b, `\U%08X`, r)
+				} else {
+					fmt.Fprintf(&b, `\u%04X`, r)
+				}
+			default:
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
 
 // anyRtdOnceGrid reports whether the project declares at least one rtd-once
 // function whose return is a grid/numgrid. Used to gate emission of the
@@ -218,6 +256,25 @@ func GetCommonFuncMap() template.FuncMap {
 				return "0"
 			}
 			return strconv.FormatInt(d.Milliseconds(), 10)
+		},
+		// rtdPlaceholderReturn emits the C++ `return ...;` statement for an
+		// rtd-once cell's first paint (cache miss) on the SCALAR/GRID path,
+		// honoring the resolved loading_placeholder (per-function override, then
+		// global, then the #GETTING_DATA default). It is never used on the
+		// numgrid path, which cannot carry an error or string and always returns
+		// an empty FP12. Custom text is shipped through NewExcelString (a
+		// DLL-owned xltypeStr that xlAutoFree12 reclaims); the two reserved
+		// keywords resolve to the static error sentinels.
+		"rtdPlaceholderReturn": func(fn config.Function, rtd config.RtdConfig) string {
+			ph := config.ResolveRtdPlaceholder(fn, rtd)
+			switch ph.Kind {
+			case config.PlaceholderNA:
+				return "return &g_xlErrNA;"
+			case config.PlaceholderText:
+				return "return NewExcelString(" + cppWideLiteral(ph.Text) + ");"
+			default:
+				return "return &g_xlErrGettingData;"
+			}
 		},
 	}
 }

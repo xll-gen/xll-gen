@@ -148,10 +148,18 @@ func TestGenCpp_RtdOnce(t *testing.T) {
 		"xll::MakeRtdOnceKey(topics)",
 		// Still calls xlfRtd on a miss.
 		"xll::CallExcel(xlfRtd, &xRes,",
+		// First paint on a cache miss is #GETTING_DATA, not xlfRtd's raw #N/A.
+		"return &g_xlErrGettingData;",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("xll_main.cpp (rtd-once) missing %q", want)
 		}
+	}
+
+	// The scalar cache-miss path must NOT return xlfRtd's raw synchronous result
+	// (xRes) — that is #N/A for a brand-new topic, the glyph this change replaces.
+	if strings.Contains(content, "return &xRes;") {
+		t.Errorf("scalar rtd-once cache-miss must return &g_xlErrGettingData, not &xRes (raw #N/A)")
 	}
 
 	// Registration type string must be Q (return) + arg chars + $, like rtd.
@@ -163,6 +171,48 @@ func TestGenCpp_RtdOnce(t *testing.T) {
 	// The rtd-once wrapper must NOT go through the sync slot.Send path.
 	if strings.Contains(content, "handleSlowAdd") {
 		t.Errorf("xll_main.cpp: rtd-once must not emit a sync send path")
+	}
+}
+
+// TestGenCpp_RtdOnce_LoadingPlaceholder pins the loading_placeholder resolution
+// in the generated C++: the global rtd.loading_placeholder is the default, a
+// per-function value overrides it, the two reserved keywords map to the static
+// error sentinels, and any other value becomes verbatim text via NewExcelString
+// (with non-ASCII escaped as a universal character name).
+func TestGenCpp_RtdOnce_LoadingPlaceholder(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			// Inherits the global "na".
+			{Name: "InheritNA", Mode: "rtd-once", Return: "float", Args: []config.Arg{{Name: "a", Type: "int"}}},
+			// Overrides global with the #GETTING_DATA keyword.
+			{Name: "OverrideGD", Mode: "rtd-once", Return: "float", LoadingPlaceholder: "getting_data", Args: []config.Arg{{Name: "a", Type: "int"}}},
+			// Verbatim text placeholder.
+			{Name: "CustomTxt", Mode: "rtd-once", Return: "float", LoadingPlaceholder: "Loading...", Args: []config.Arg{{Name: "a", Type: "int"}}},
+		},
+		Rtd: config.RtdConfig{
+			Enabled: true, ProgID: "TestProj.Rtd",
+			Clsid:              "{11111111-2222-3333-4444-555555555555}",
+			Description:        "t",
+			LoadingPlaceholder: "na",
+		},
+		Server: config.ServerConfig{Timeout: "2s", Launch: &config.LaunchConfig{Enabled: new(bool)}},
+	}
+	content := renderCppMain(t, cfg)
+
+	for _, want := range []string{
+		// InheritNA -> global "na" -> #N/A sentinel.
+		"return &g_xlErrNA;",
+		// OverrideGD -> per-function "getting_data" -> #GETTING_DATA sentinel.
+		"return &g_xlErrGettingData;",
+		// CustomTxt -> verbatim ASCII text via NewExcelString. (Non-ASCII
+		// escaping is unit-tested separately in TestCppWideLiteral.)
+		`return NewExcelString(L"Loading...");`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("xll_main.cpp (loading_placeholder) missing %q", want)
+		}
 	}
 }
 

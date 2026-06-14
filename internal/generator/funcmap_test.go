@@ -1,10 +1,38 @@
 package generator
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/xll-gen/xll-gen/internal/config"
 )
+
+// TestCppWideLiteral pins the wide-string-literal escaping used for custom
+// loading_placeholder text: quotes/backslashes/controls get C escapes, and
+// non-ASCII runes become universal character names so the literal compiles
+// independently of source encoding or wide execution charset.
+func TestCppWideLiteral(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"ascii", "Loading...", `L"Loading..."`},
+		{"quote_and_backslash", `a"b\c`, `L"a\"b\\c"`},
+		{"tab", "tab\there", `L"tab\there"`},
+		{"newline", "a\nb", `L"a\nb"`},
+		// Korean 로딩 (U+B85C, U+B529) -> 4-digit universal character names.
+		{"bmp_unicode", string([]rune{0xB85C, 0xB529}), fmt.Sprintf(`L"\u%04X\u%04X"`, 0xB85C, 0xB529)},
+		// Supplementary-plane rune (emoji) -> 8-digit \U form.
+		{"astral_unicode", string(rune(0x1F600)), fmt.Sprintf(`L"\U%08X"`, 0x1F600)},
+	}
+	for _, tc := range cases {
+		if got := cppWideLiteral(tc.in); got != tc.want {
+			t.Errorf("%s: cppWideLiteral(%q) = %s, want %s", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
 
 // TestAnyRtdOnceGrid covers the gating helper used by later template tasks to
 // decide whether to emit the rtd-once grid-spill C++/Go codegen. It is true

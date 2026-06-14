@@ -17,6 +17,12 @@ using namespace xll;
 HINSTANCE g_hModule = NULL;
 // Global Error Value
 XLOPER12 g_xlErrValue;
+// Global #GETTING_DATA sentinel (see xll_lifecycle.h). Initialized in DllMain
+// alongside g_xlErrValue.
+XLOPER12 g_xlErrGettingData;
+// Global #N/A sentinel (see xll_lifecycle.h). Initialized in DllMain alongside
+// g_xlErrValue.
+XLOPER12 g_xlErrNA;
 
 namespace xll {
     // Unloading Flag
@@ -137,6 +143,12 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
             // Initialize Global Error Value
             g_xlErrValue.xltype = xltypeErr;
             g_xlErrValue.val.err = xlerrValue;
+            // Initialize the #GETTING_DATA first-paint sentinel for rtd-once.
+            g_xlErrGettingData.xltype = xltypeErr;
+            g_xlErrGettingData.val.err = xlerrGettingData;
+            // Initialize the #N/A first-paint sentinel (loading_placeholder: "na").
+            g_xlErrNA.xltype = xltypeErr;
+            g_xlErrNA.val.err = xlerrNA;
             g_isUnloading = false;
             // Reset the single-shot teardown guard for symmetry with the
             // g_isUnloading reset above. Defense for the probe-unload-reuse

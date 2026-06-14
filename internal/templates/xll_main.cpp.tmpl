@@ -1258,19 +1258,35 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once {{.Name}}. Return code: " + std::to_string(xlRet));
-            xRes.xltype = xltypeErr;
-            xRes.val.err = xlerrValue;
+            {{if eq .Return "numgrid"}}
+            (void)xRes;
+            return NumGridToFP12(nullptr);
+            {{else}}
+            return &g_xlErrValue;
+            {{end}}
         }
         {{if eq .Return "numgrid"}}
-        // numgrid exports FP12* (K%), so it cannot return the #GETTING_DATA
-        // XLOPER12 (&xRes) that scalar/grid rtd-once returns on a cache miss.
-        // Emit an empty 0x0 FP12 placeholder (NumGridToFP12(nullptr)) — the
-        // readiness push from RunOnceGrid recalcs the cell, which then hits
-        // the grid registry above and spills the real numgrid.
+        // numgrid exports FP12* (K%), so it cannot carry a cell error and thus
+        // cannot use the #GETTING_DATA sentinel the scalar/grid paths return on a
+        // cache miss. Emit an empty 0x0 FP12 placeholder (NumGridToFP12(nullptr))
+        // instead — the readiness push from RunOnceGrid recalcs the cell, which
+        // then hits the grid registry above and spills the real numgrid.
         (void)xRes;
         return NumGridToFP12(nullptr);
         {{else}}
-        return &xRes;
+        // First paint on a cache miss: return the resolved loading placeholder,
+        // NOT xlfRtd's raw synchronous result (xRes) — for a brand-new topic that
+        // is #N/A, which is what the cell would otherwise flash before the result
+        // push arrives. The xlfRtd call above already wired the RTD subscription,
+        // so the eventual result push recalcs this cell; it then hits the
+        // RtdOnceRegistry cache short-circuit above and returns the real value.
+        // The placeholder is #GETTING_DATA by default (loading_placeholder:
+        // "getting_data"/""), #N/A ("na"), or verbatim text (any other value).
+        // The error sentinels are process-global (no xlbitDLLFree, mirror
+        // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
+        // xlAutoFree12).
+        (void)xRes;
+        {{rtdPlaceholderReturn . $.Rtd}}
         {{end}}
     }
 

@@ -74,6 +74,17 @@ namespace xll {
 extern HINSTANCE g_hModule;
 // Global Error Value
 extern XLOPER12 g_xlErrValue;
+// Global #GETTING_DATA sentinel — the first-paint placeholder rtd-once wrappers
+// return on a cache miss (after wiring the RTD subscription via xlfRtd) so the
+// cell reads as "fetching" instead of #N/A. Like g_xlErrValue it is a static
+// XLOPER12 with no xlbitDLLFree set; Excel therefore never hands it to
+// xlAutoFree12 (the SDK only invokes the free callback for DLL-owned results),
+// so the static is safe to return repeatedly without any reclamation.
+extern XLOPER12 g_xlErrGettingData;
+// Global #N/A sentinel — the rtd-once first-paint placeholder selected by
+// loading_placeholder: "na". Same static-XLOPER12 contract as g_xlErrValue and
+// g_xlErrGettingData (no xlbitDLLFree).
+extern XLOPER12 g_xlErrNA;
 
 // Log Handler for SHM
 #ifdef SHM_DEBUG

@@ -46,6 +46,11 @@ rtd:
   prog_id: "{{.ProjectName}}.RTD" # Restored original ProgID
   # clsid: "" # Optional: Specific CLSID. If empty, one will be generated.
   description: "Real-Time Data Server for {{.ProjectName}}" # Optional: Description of the RTD server.
+  # loading_placeholder: "getting_data" # Optional: what an rtd-once cell shows
+  #   on its first paint while the one-shot handler runs. "getting_data" (default)
+  #   -> #GETTING_DATA, "na" -> #N/A, any other string -> verbatim text (e.g.
+  #   "Loading..."). Override per function with loading_placeholder on the
+  #   function. (numgrid returns always show an empty placeholder.)
 
 # Function Definitions
 # Supported argument/return types: int, float, string, bool, range, grid, numgrid, any

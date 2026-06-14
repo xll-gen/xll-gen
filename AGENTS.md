@@ -445,14 +445,36 @@ rtd-once and are rejected on other modes; `memoize_ttl` is mutually exclusive
 with `memoize: true` (it is the intermediate "cache for the TTL, then
 recompute" option) and must parse to a positive Go duration.
 
+**First-paint placeholder (`loading_placeholder`).** On a cache miss the
+rtd-once wrapper does NOT return `xlfRtd`'s raw synchronous result — for a
+brand-new topic that is `#N/A` (the topic is not yet connected when the
+synchronous `xlfRtd` returns; `ConnectData`'s `#GETTING_DATA` only lands on a
+later refresh, usually after the result push has already arrived, so the cell
+flashes `#N/A` before the value). Instead the wrapper calls `xlfRtd` (to wire
+the subscription) and returns a deterministic placeholder. The placeholder is
+configurable: project-wide via `rtd.loading_placeholder` and per-function via a
+`loading_placeholder` override (valid **only** on rtd-once; rejected elsewhere).
+Recognized values (case-insensitive, per-function wins, then global, then the
+default): `""`/`getting_data` → `#GETTING_DATA` (`g_xlErrGettingData`), `na` →
+`#N/A` (`g_xlErrNA`), any other string → verbatim text via `NewExcelString`
+(e.g. `"Loading…"`). `numgrid` (FP12) cannot carry an error or string, so it
+keeps its empty 0×0 placeholder regardless. The error sentinels are static
+XLOPER12s (no `xlbitDLLFree`, like `g_xlErrValue`); custom text is DLL-owned and
+reclaimed by `xlAutoFree12`. This is the authoritative first paint — the wrapper
+ignores `xRes` on the success path, so `ConnectData`'s initial value never
+surfaces through the wrapper.
+
 **Co-change cluster** (all must move together — same discipline as §18.7):
 * `internal/config/config.go` — mode accepted in the mode switch; rtd-once
   return/arg/caller/memoize/memoize_ttl validation; `Function.Memoize` and
   `Function.MemoizeTTL` fields.
 * `internal/generator/funcmap.go` — `isRtdLike` (rtd OR rtd-once, shares the
   C++ wrapper shape + the server-side handler-glue skip), `anyRtdOnce`
-  (gates the C++ rtd-once machinery), and `durationMillis` (computes the
-  memoize_ttl milliseconds embedded in the `SetFunctionNames` call).
+  (gates the C++ rtd-once machinery), `durationMillis` (computes the
+  memoize_ttl milliseconds embedded in the `SetFunctionNames` call), and
+  `rtdPlaceholderReturn` (emits the first-paint `return …;` from the resolved
+  `loading_placeholder`, escaping custom text via `cppWideLiteral`). Resolution
+  itself lives in `config.ResolveRtdPlaceholder`.
 * `internal/templates/server.go.tmpl` — rtd-once connect dispatch calls
   `rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx) (interface{}, error) {
   return handler.<Name>(ctx, <parsed scalar args>) })`; the sync/async
@@ -475,6 +497,11 @@ recompute" option) and must parse to a positive Go duration.
   the topic's key; `DisconnectData` drops the topicID→key map.
 * `internal/assets/files/src/xll_events.cpp` — `HandleCalculationEnded` calls
   `RtdOnceRegistry::ClearNonMemoized()` (gated by `XLL_RTD_ENABLED`).
+* `internal/assets/files/{include/xll_lifecycle.h,src/xll_lifecycle.cpp}` —
+  `g_xlErrGettingData` / `g_xlErrNA` first-paint sentinels (defined
+  unconditionally, initialized in `DllMain` alongside `g_xlErrValue`); the
+  rtd-once wrapper returns one of these (or `NewExcelString` for custom text)
+  per `loading_placeholder`.
 
 **Once/memoize_ttl/memoize lifecycle mechanism (as implemented):**
 1.  The wrapper builds the same topic strings as plain rtd (`t0`=function
