@@ -851,18 +851,20 @@ func TestValidate_RtdOnce(t *testing.T) {
 		})
 	}
 
-	// loading_placeholder: per-function value accepted on rtd-once (any string),
-	// rejected on other modes. The global rtd.loading_placeholder is never
-	// validated here.
-	t.Run("loading_placeholder on rtd-once ok", func(t *testing.T) {
-		for _, ph := range []string{"getting_data", "na", "Loading...", "잠시만요"} {
-			cfg := mk(Function{Name: "Compute", Mode: "rtd-once", Return: "float", LoadingPlaceholder: ph})
-			if err := Validate(cfg); err != nil {
-				t.Fatalf("loading_placeholder %q on rtd-once must be valid, got %v", ph, err)
+	// loading_placeholder: per-function value accepted on the RTD-backed modes
+	// (rtd, rtd-once) for any string, rejected on the non-RTD modes. The global
+	// rtd.loading_placeholder is never validated here.
+	for _, mode := range []string{"rtd", "rtd-once"} {
+		t.Run("loading_placeholder on "+mode+" ok", func(t *testing.T) {
+			for _, ph := range []string{"getting_data", "na", "Loading...", "잠시만요"} {
+				cfg := mk(Function{Name: "Compute", Mode: mode, Return: "float", LoadingPlaceholder: ph})
+				if err := Validate(cfg); err != nil {
+					t.Fatalf("loading_placeholder %q on %s must be valid, got %v", ph, mode, err)
+				}
 			}
-		}
-	})
-	for _, mode := range []string{"sync", "async", "rtd"} {
+		})
+	}
+	for _, mode := range []string{"sync", "async"} {
 		t.Run("loading_placeholder rejected on "+mode, func(t *testing.T) {
 			cfg := &Config{
 				Project:   ProjectConfig{Name: "TestProject"},
@@ -870,7 +872,7 @@ func TestValidate_RtdOnce(t *testing.T) {
 				Functions: []Function{{Name: "F", Mode: mode, Return: "int", LoadingPlaceholder: "na"}},
 			}
 			err := Validate(cfg)
-			if err == nil || !strings.Contains(err.Error(), "loading_placeholder is only valid with mode:\"rtd-once\"") {
+			if err == nil || !strings.Contains(err.Error(), "loading_placeholder is only valid with mode:\"rtd\" or mode:\"rtd-once\"") {
 				t.Fatalf("loading_placeholder on %q must be rejected with the placeholder message, got %v", mode, err)
 			}
 		})

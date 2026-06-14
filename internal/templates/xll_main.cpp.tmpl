@@ -40,6 +40,9 @@
 {{if anyRtdOnceGrid .Functions}}
 #include "xll_rtd_once_grid.h"
 {{end}}
+{{if anyRtd .Functions}}
+#include "xll_rtd_placeholder.h"
+{{end}}
 {{if or .Rtd.Enabled .Ribbon.Enabled}}
 #include "rtd/factory.h"
 #include "rtd/module.h"
@@ -830,6 +833,17 @@ start_worker:
         { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (or (eq .Return "grid") (eq .Return "numgrid")) .Memoize)}}L"{{.Name}}", {{end}}{{end}} },
         { {{range .Functions}}{{if and (eq .Mode "rtd-once") (and (or (eq .Return "grid") (eq .Return "numgrid")) .MemoizeTTL)}}{ L"{{.Name}}", {{durationMillis .MemoizeTTL}}ULL }, {{end}}{{end}} }
     );
+    {{end}}
+
+    {{if anyRtd .Functions}}
+    // plain rtd: register each streaming rtd function's first-paint placeholder
+    // (resolved loading_placeholder, default #GETTING_DATA) BEFORE any topic can
+    // connect, so ConnectData surfaces it as the initial value instead of the
+    // legacy "Connecting..." text. The streaming wrapper still returns live
+    // values verbatim; only this connect-time initial value is governed here.
+    xll::RtdPlaceholderRegistry::Instance().Set({
+        {{range .Functions}}{{if eq .Mode "rtd"}}{{rtdPlaceholderEntry . $.Rtd}}, {{end}}{{end}}
+    });
     {{end}}
 
     // Register User Functions

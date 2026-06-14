@@ -216,6 +216,45 @@ func TestGenCpp_RtdOnce_LoadingPlaceholder(t *testing.T) {
 	}
 }
 
+// TestGenCpp_Rtd_LoadingPlaceholder pins the plain-rtd first-paint placeholder
+// path: ConnectData's initial value is governed by RtdPlaceholderRegistry, which
+// xlAutoOpen populates with one entry per rtd function (resolved per-function
+// override over the global default). The streaming wrapper itself is unchanged
+// (it still returns &xRes verbatim).
+func TestGenCpp_Rtd_LoadingPlaceholder(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			// Inherits the global default (getting_data).
+			{Name: "StreamA", Mode: "rtd", Return: "any", Args: []config.Arg{{Name: "s", Type: "string"}}},
+			// Per-function #N/A.
+			{Name: "StreamB", Mode: "rtd", Return: "any", LoadingPlaceholder: "na", Args: []config.Arg{{Name: "s", Type: "string"}}},
+			// Per-function verbatim text.
+			{Name: "StreamC", Mode: "rtd", Return: "any", LoadingPlaceholder: "Connecting", Args: []config.Arg{{Name: "s", Type: "string"}}},
+		},
+		Rtd: config.RtdConfig{
+			Enabled: true, ProgID: "TestProj.Rtd",
+			Clsid:       "{11111111-2222-3333-4444-555555555555}",
+			Description: "t",
+		},
+		Server: config.ServerConfig{Timeout: "2s", Launch: &config.LaunchConfig{Enabled: new(bool)}},
+	}
+	content := renderCppMain(t, cfg)
+
+	for _, want := range []string{
+		`#include "xll_rtd_placeholder.h"`,
+		"xll::RtdPlaceholderRegistry::Instance().Set({",
+		`{L"StreamA", {xll::RtdPlaceholderKind::GettingData, L""}}`,
+		`{L"StreamB", {xll::RtdPlaceholderKind::NA, L""}}`,
+		`{L"StreamC", {xll::RtdPlaceholderKind::Text, L"Connecting"}}`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("xll_main.cpp (rtd loading_placeholder) missing %q", want)
+		}
+	}
+}
+
 // TestGenCpp_RtdOnce_Memoize: with memoize:true, the function name appears in
 // the memoize subset passed to SetFunctionNames.
 func TestGenCpp_RtdOnce_Memoize(t *testing.T) {

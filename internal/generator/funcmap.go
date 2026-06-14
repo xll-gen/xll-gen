@@ -244,6 +244,18 @@ func GetCommonFuncMap() template.FuncMap {
 			}
 			return false
 		},
+		// anyRtd reports whether the project declares at least one plain
+		// (streaming) rtd function. Used to gate the RtdPlaceholderRegistry
+		// include + xlAutoOpen population (plain rtd's ConnectData initial-value
+		// placeholder lives in that registry).
+		"anyRtd": func(fns []config.Function) bool {
+			for _, fn := range fns {
+				if fn.Mode == "rtd" {
+					return true
+				}
+			}
+			return false
+		},
 		// durationMillis parses a Go duration string and returns its whole
 		// milliseconds as a string, for embedding a memoize_ttl into the
 		// generated C++ SetFunctionNames(...) call. Config validation has
@@ -275,6 +287,25 @@ func GetCommonFuncMap() template.FuncMap {
 			default:
 				return "return &g_xlErrGettingData;"
 			}
+		},
+		// rtdPlaceholderEntry emits one `{L"Name", {kind, L"text"}}` initializer
+		// for the RtdPlaceholderRegistry::Set call at xlAutoOpen — the plain-rtd
+		// ConnectData initial-value placeholder, resolved (per-function override
+		// over the global default). Unlike rtdPlaceholderReturn this targets a
+		// COM VARIANT path (ConnectData), so the keywords carry the kind and the
+		// verbatim text is escaped for the C++ wide literal.
+		"rtdPlaceholderEntry": func(fn config.Function, rtd config.RtdConfig) string {
+			ph := config.ResolveRtdPlaceholder(fn, rtd)
+			kind := "xll::RtdPlaceholderKind::GettingData"
+			text := `L""`
+			switch ph.Kind {
+			case config.PlaceholderNA:
+				kind = "xll::RtdPlaceholderKind::NA"
+			case config.PlaceholderText:
+				kind = "xll::RtdPlaceholderKind::Text"
+				text = cppWideLiteral(ph.Text)
+			}
+			return fmt.Sprintf(`{L"%s", {%s, %s}}`, fn.Name, kind, text)
 		},
 	}
 }

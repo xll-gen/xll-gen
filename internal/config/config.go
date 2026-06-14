@@ -53,17 +53,20 @@ type RtdConfig struct {
 	// registry-persisted Excel setting — it stays changed after the add-in
 	// unloads, which is why it is opt-in and never touched when empty.
 	ThrottleInterval string `yaml:"throttle_interval"`
-	// LoadingPlaceholder is the project-wide default for what an rtd-once cell
-	// displays on its first paint (cache miss), while the one-shot handler is
-	// still running. A per-function loading_placeholder overrides this. The
-	// recognized values are (case-insensitive):
+	// LoadingPlaceholder is the project-wide default for what an RTD-backed cell
+	// (mode:"rtd" or mode:"rtd-once") displays on its first paint, before the
+	// first value arrives. A per-function loading_placeholder overrides this.
+	// The recognized values are (case-insensitive):
 	//   ""             -> same as "getting_data" (the default)
 	//   "getting_data" -> #GETTING_DATA cell error
 	//   "na"           -> #N/A cell error
 	//   anything else  -> shown verbatim as text (e.g. "Loading...")
-	// Note: this controls only the SCALAR and GRID rtd-once paths. A numgrid
-	// (FP12) cell cannot carry an error or a string, so it always shows an empty
-	// 0x0 placeholder regardless of this setting.
+	// For rtd-once this is the wrapper's authoritative first paint (scalar/grid;
+	// a numgrid FP12 cell cannot carry an error/string so it shows an empty 0x0
+	// placeholder regardless). For plain rtd it is ConnectData's initial value
+	// (replacing the legacy "Connecting..."); the brief pre-connect #N/A is
+	// inherent to Excel's RTD and is not overridden, since the streaming wrapper
+	// must return live values verbatim.
 	LoadingPlaceholder string `yaml:"loading_placeholder"`
 }
 
@@ -265,11 +268,11 @@ type Function struct {
 	// call recomputes fresh. Mutually exclusive with Memoize (the TTL IS the
 	// intermediate option). Must parse to a positive duration.
 	MemoizeTTL string `yaml:"memoize_ttl"`
-	// LoadingPlaceholder is valid ONLY with mode:"rtd-once". It overrides the
-	// project-wide rtd.loading_placeholder for this one function, controlling
-	// what the cell shows on its first paint (cache miss) while the one-shot
-	// handler runs. See RtdConfig.LoadingPlaceholder for the recognized values
-	// and the numgrid caveat.
+	// LoadingPlaceholder is valid ONLY with an RTD-backed mode (rtd, rtd-once).
+	// It overrides the project-wide rtd.loading_placeholder for this one
+	// function, controlling what the cell shows on its first paint before the
+	// first value arrives. See RtdConfig.LoadingPlaceholder for the recognized
+	// values and the per-mode caveats.
 	LoadingPlaceholder string `yaml:"loading_placeholder"`
 	// Cache configures caching for this specific function.
 	Cache *FunctionCacheConfig `yaml:"cache"`
@@ -592,12 +595,12 @@ func Validate(config *Config) error {
 				return fmt.Errorf("function '%s': memoize_ttl must be a positive duration, got %s", fn.Name, fn.MemoizeTTL)
 			}
 		}
-		// loading_placeholder controls the rtd-once first-paint glyph, so it is
-		// meaningful only for rtd-once (the global rtd.loading_placeholder is a
-		// harmless no-op for projects without rtd-once functions and is not
-		// validated here).
-		if fn.LoadingPlaceholder != "" && !strings.EqualFold(fn.Mode, "rtd-once") {
-			return fmt.Errorf("function '%s': loading_placeholder is only valid with mode:\"rtd-once\" (it sets the first-paint glyph shown while the one-shot handler runs)", fn.Name)
+		// loading_placeholder sets the RTD first-paint glyph, so it is meaningful
+		// only for the RTD-backed modes (rtd, rtd-once). The global
+		// rtd.loading_placeholder is a harmless no-op for projects with no
+		// RTD-backed functions and is not validated here.
+		if fn.LoadingPlaceholder != "" && !strings.EqualFold(fn.Mode, "rtd-once") && !strings.EqualFold(fn.Mode, "rtd") {
+			return fmt.Errorf("function '%s': loading_placeholder is only valid with mode:\"rtd\" or mode:\"rtd-once\" (it sets the first-paint glyph shown before the first value arrives)", fn.Name)
 		}
 		// caller-aware is incompatible with rtd-once: the RTD wrapper routes
 		// through xlfRtd (no xlfCaller/xlfGetCell call), and the handler runs

@@ -453,16 +453,31 @@ later refresh, usually after the result push has already arrived, so the cell
 flashes `#N/A` before the value). Instead the wrapper calls `xlfRtd` (to wire
 the subscription) and returns a deterministic placeholder. The placeholder is
 configurable: project-wide via `rtd.loading_placeholder` and per-function via a
-`loading_placeholder` override (valid **only** on rtd-once; rejected elsewhere).
-Recognized values (case-insensitive, per-function wins, then global, then the
-default): `""`/`getting_data` → `#GETTING_DATA` (`g_xlErrGettingData`), `na` →
-`#N/A` (`g_xlErrNA`), any other string → verbatim text via `NewExcelString`
-(e.g. `"Loading…"`). `numgrid` (FP12) cannot carry an error or string, so it
-keeps its empty 0×0 placeholder regardless. The error sentinels are static
-XLOPER12s (no `xlbitDLLFree`, like `g_xlErrValue`); custom text is DLL-owned and
-reclaimed by `xlAutoFree12`. This is the authoritative first paint — the wrapper
-ignores `xRes` on the success path, so `ConnectData`'s initial value never
-surfaces through the wrapper.
+`loading_placeholder` override (valid on the RTD-backed modes — `rtd` and
+`rtd-once`; rejected on `sync`/`async`). Recognized values (case-insensitive,
+per-function wins, then global, then the default): `""`/`getting_data` →
+`#GETTING_DATA`, `na` → `#N/A`, any other string → verbatim text (e.g.
+`"Loading…"`).
+
+For **rtd-once** this is the wrapper's authoritative first paint: the wrapper
+returns the placeholder directly (`g_xlErrGettingData` / `g_xlErrNA` static
+sentinels — no `xlbitDLLFree`, like `g_xlErrValue` — or `NewExcelString` for
+custom text, which is DLL-owned and reclaimed by `xlAutoFree12`), ignoring `xRes`
+on the success path, so `ConnectData`'s initial value never surfaces. `numgrid`
+(FP12) cannot carry an error/string, so it keeps its empty 0×0 placeholder.
+
+For **plain rtd** the same setting governs `ConnectData`'s initial value (the
+value shown from connect until the first stream push), replacing the legacy
+`"Connecting…"` text. The streaming wrapper CANNOT substitute a placeholder for
+its return — it must return `xlfRtd`'s live value verbatim, else the stream would
+never display (and substituting `#GETTING_DATA` for `#N/A` would mask a value the
+stream genuinely pushed). So the brief pre-connect `#N/A` micro-flash is inherent
+and intentionally left. The mechanism is `RtdPlaceholderRegistry`
+(`xll_rtd_placeholder.h`): xlAutoOpen populates a function-name → placeholder map
+(resolved at generation time), and the shared, non-generated `ConnectData` looks
+it up to build the initial VARIANT (`#GETTING_DATA`=scode 2043, `#N/A`=2042, or a
+`SysAllocString`'d BSTR Excel then owns). An unregistered topic falls back to
+`#GETTING_DATA`.
 
 **Co-change cluster** (all must move together — same discipline as §18.7):
 * `internal/config/config.go` — mode accepted in the mode switch; rtd-once
@@ -472,9 +487,13 @@ surfaces through the wrapper.
   C++ wrapper shape + the server-side handler-glue skip), `anyRtdOnce`
   (gates the C++ rtd-once machinery), `durationMillis` (computes the
   memoize_ttl milliseconds embedded in the `SetFunctionNames` call), and
-  `rtdPlaceholderReturn` (emits the first-paint `return …;` from the resolved
-  `loading_placeholder`, escaping custom text via `cppWideLiteral`). Resolution
-  itself lives in `config.ResolveRtdPlaceholder`.
+  `rtdPlaceholderReturn` (emits the rtd-once first-paint `return …;` from the
+  resolved `loading_placeholder`, escaping custom text via `cppWideLiteral`),
+  `anyRtd` (gates the plain-rtd `RtdPlaceholderRegistry` include + population),
+  and `rtdPlaceholderEntry` (emits one plain-rtd `{L"Name",{kind,L"text"}}`
+  registry initializer). Resolution itself lives in
+  `config.ResolveRtdPlaceholder` (shared by both rtd and rtd-once;
+  `loading_placeholder` is validated only for those two modes).
 * `internal/templates/server.go.tmpl` — rtd-once connect dispatch calls
   `rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx) (interface{}, error) {
   return handler.<Name>(ctx, <parsed scalar args>) })`; the sync/async
@@ -492,9 +511,14 @@ surfaces through the wrapper.
 * `internal/assets/files/include/xll_rtd_once.h` — `RtdOnceRegistry` (the
   once-results map + topic bookkeeping) and `RtdOnceResultToXLOPER12`.
 * `internal/assets/files/src/xll_rtd.cpp` — `ConnectData` registers the
-  topicID→key map for rtd-once topics and returns `#GETTING_DATA` (VT_ERROR
-  2043) instead of "Connecting…"; `ProcessRtdUpdate` caches the value under
-  the topic's key; `DisconnectData` drops the topicID→key map.
+  topicID→key map for rtd-once topics and returns `#GETTING_DATA` for them; for
+  plain-rtd topics it returns `RtdPlaceholderRegistry::MakeInitial(funcName)`
+  (the configured initial value, default `#GETTING_DATA`) instead of the legacy
+  "Connecting…"; `ProcessRtdUpdate` caches the value under the topic's key;
+  `DisconnectData` drops the topicID→key map.
+* `internal/assets/files/include/xll_rtd_placeholder.h` — `RtdPlaceholderRegistry`
+  (plain-rtd function-name → first-paint placeholder map + `MakeInitial` VARIANT
+  builder); populated at xlAutoOpen, read by `ConnectData`.
 * `internal/assets/files/src/xll_events.cpp` — `HandleCalculationEnded` calls
   `RtdOnceRegistry::ClearNonMemoized()` (gated by `XLL_RTD_ENABLED`).
 * `internal/assets/files/{include/xll_lifecycle.h,src/xll_lifecycle.cpp}` —

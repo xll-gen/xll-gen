@@ -3,6 +3,7 @@
 #include "xll_rtd.h"
 #include "xll_rtd_once.h"
 #include "xll_rtd_once_grid.h"
+#include "xll_rtd_placeholder.h"
 #include "xll_log.h"
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
@@ -336,13 +337,16 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
         VariantInit(pvarOut);
         if (isRtdOnce) {
             // rtd-once: surface #GETTING_DATA (VT_ERROR 2043) as the initial
-            // value so the cell reads as "pending" rather than the textual
-            // "Connecting..." used by plain rtd topics. Plain rtd's initial
-            // value is intentionally left unchanged.
+            // value. (For rtd-once the wrapper's own return is the authoritative
+            // first paint; this initial value is rarely seen but kept consistent.)
             *pvarOut = xll::MakeGettingDataVariant();
         } else {
-            pvarOut->vt = VT_BSTR;
-            pvarOut->bstrVal = SysAllocString(L"Connecting...");
+            // plain rtd: surface the configured first-paint placeholder (default
+            // #GETTING_DATA, optionally #N/A or verbatim text via
+            // loading_placeholder) instead of the legacy "Connecting..." text.
+            // An unregistered topic falls back to #GETTING_DATA. See §19.3.
+            std::wstring fn0 = strings.empty() ? std::wstring() : StringToWString(strings[0]);
+            *pvarOut = xll::RtdPlaceholderRegistry::Instance().MakeInitial(fn0);
         }
     }
 
