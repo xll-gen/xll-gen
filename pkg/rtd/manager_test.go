@@ -12,6 +12,7 @@ import (
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/pkg/msgid"
+	"github.com/xll-gen/xll-gen/pkg/xldate"
 )
 
 // stubCall records one SendGuestCallWithTimeout invocation.
@@ -273,12 +274,13 @@ func legacyRtdUpdateBytes(topicID int32, value interface{}) []byte {
 		protocol.AnyAddVal(b, valOff)
 		anyOff = protocol.AnyEnd(b)
 	case time.Time:
-		sOff := b.CreateString(v.Format(time.RFC3339))
-		protocol.StrStart(b)
-		protocol.StrAddVal(b, sOff)
-		valOff := protocol.StrEnd(b)
+		// time.Time now serializes as a Date (Excel serial, wall-clock),
+		// not an RFC3339 string — mirror fbany.Build's AnyValueDate case.
+		protocol.DateStart(b)
+		protocol.DateAddSerial(b, xldate.ToSerial(v))
+		valOff := protocol.DateEnd(b)
 		protocol.AnyStart(b)
-		protocol.AnyAddValType(b, protocol.AnyValueStr)
+		protocol.AnyAddValType(b, protocol.AnyValueDate)
 		protocol.AnyAddVal(b, valOff)
 		anyOff = protocol.AnyEnd(b)
 	default:
