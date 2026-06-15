@@ -3,12 +3,20 @@ package server
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/internal/fbany"
 	"github.com/xll-gen/xll-gen/pkg/log"
+	"github.com/xll-gen/xll-gen/pkg/xldate"
 )
+
+// SerialToTime converts an Excel date serial (wall-clock) to a time.Time. Used
+// by generated code to decode `type: date` arguments.
+func SerialToTime(serial float64) time.Time {
+	return xldate.FromSerial(serial)
+}
 
 func ToScalar(v *protocol.Any) (ScalarValue, bool) {
 	if v == nil {
@@ -40,6 +48,10 @@ func ToScalar(v *protocol.Any) (ScalarValue, bool) {
 		var t protocol.Err
 		t.Init(tbl.Bytes, tbl.Pos)
 		return ScalarValue{Type: protocol.AnyValueErr, Err: int16(t.Val())}, true
+	case protocol.AnyValueDate:
+		var t protocol.Date
+		t.Init(tbl.Bytes, tbl.Pos)
+		return ScalarValue{Type: protocol.AnyValueNum, Num: t.Serial()}, true
 	}
 	return ScalarValue{}, false
 }

@@ -3,11 +3,37 @@ package server
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/internal/fbany"
 )
+
+func TestSerialToTime(t *testing.T) {
+	got := SerialToTime(46188) // 2026-06-15
+	want := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("SerialToTime(46188) = %v, want %v", got, want)
+	}
+}
+
+func TestToScalar_Date(t *testing.T) {
+	b := flatbuffers.NewBuilder(0)
+	protocol.DateStart(b)
+	protocol.DateAddSerial(b, 46188.5)
+	dOff := protocol.DateEnd(b)
+	protocol.AnyStart(b)
+	protocol.AnyAddValType(b, protocol.AnyValueDate)
+	protocol.AnyAddVal(b, dOff)
+	b.Finish(protocol.AnyEnd(b))
+	a := protocol.GetRootAsAny(b.FinishedBytes(), 0)
+
+	sv, ok := ToScalar(a)
+	if !ok || sv.Type != protocol.AnyValueNum || sv.Num != 46188.5 {
+		t.Fatalf("ToScalar(Date) = %+v ok=%v, want Num 46188.5", sv, ok)
+	}
+}
 
 // legacyCreateScalarAny reproduces, verbatim, the pre-refactor
 // CreateScalarAny so the fbany-based version can be checked for byte
