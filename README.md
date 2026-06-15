@@ -418,6 +418,8 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
 }
 ```
 
+> ⚠️ **Event handlers must NOT drive Excel synchronously over COM.** A `CalculationEnded` handler runs while Excel's main (STA) thread is **blocked** inside a synchronous round-trip: at calc-end the XLL calls the handler and waits for it to return so it can apply any scheduled commands in the same cycle. If the handler tries to manipulate Excel via COM — e.g. attaching with `sugar` and reading/writing cells (`UsedRange().Find(...)`, `Range(...).SetValue(...)`) — those calls need the very STA thread that is blocked, so they **deadlock until a ~2-second timeout fires on every recalc**, freezing Excel and making typing nearly impossible. To change cells or formatting from an event handler, use `generated.ScheduleSet` / `generated.ScheduleFormat` (see [Command Scheduling](#command-scheduling)): these enqueue deferred commands the XLL applies on the STA thread *after* the handler returns. Note this restriction applies to **event handlers only** — **command** handlers (ribbon/macro) run when the STA thread is free, so synchronous `sugar` COM automation is fine there.
+
 Supported event types map onto Excel's `xlEvent*` constants — `CalculationEnded`, `CalculationCanceled`. If your handler is omitted but the event is needed internally (e.g. `any`-typed args or `cache.enabled`), `xll-gen` registers a built-in `CalculationEnded` handler automatically.
 
 ## Commands & Ribbon

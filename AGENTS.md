@@ -157,6 +157,8 @@ When adding a new Excel event (e.g., `SheetActivate`):
 3.  **Upstream**: Ensure `github.com/xll-gen/types` contains the `xlEvent` constant.
 4.  **Schema**: Update `internal/templates/protocol.fbs` if the event requires a specific payload structure.
 
+**⚠️ Event handlers must never perform synchronous Excel COM.** `CalculationEnded` (and any event) is delivered via a SYNCHRONOUS calc-end round-trip: the XLL fires `MSG_CALCULATION_ENDED` and BLOCKS Excel's STA thread inside `g_host.Send(..., 2000)` until the Go handler returns (it must block to fold scheduled commands into the same response — see `pkg/server/handlers.go::HandleCalculationEnded` and `internal/assets/files/src/xll_events.cpp`). If a handler drives Excel over COM (e.g. `sugar` `attachExcel` + `UsedRange().Find` / `Range().SetValue`), those calls need the STA thread that is blocked → hard deadlock until the 2000ms timeout, on EVERY recalc (`g_host.Send` does a non-pumping wait). Symptom: Excel freezes ~2s per recalc, typing becomes impossible. Event handlers must mutate Excel ONLY via `generated.ScheduleSet` / `generated.ScheduleFormat` (deferred commands, applied by the XLL on the STA thread AFTER the handler returns). COM is fine in COMMAND handlers (they run when the STA is free), NOT in event handlers. This footgun is also why a `CalculationEnded` handler cannot dynamically locate a target cell via COM (`Find`) — pass it a known address instead. (Observed 2026-06-15 in xll-gen-showcase `OnRecalc`; fixed there + documented in `README.md` Events.)
+
 ### 18.4 Type System Extensions
 When adding or modifying a data type (e.g., adding `date` support):
 1.  **Configuration**: Update `internal/config/config.go` (`validArgTypes`, `validReturnTypes`).
