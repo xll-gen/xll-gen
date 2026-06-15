@@ -26,7 +26,7 @@ func TestMapGo(t *testing.T) {
 		{"float64", 3.14159, protocol.AnyValueNum, 3.14159},
 		{"float32", float32(2.5), protocol.AnyValueNum, float64(2.5)},
 		{"bool", true, protocol.AnyValueBool, true},
-		{"time", ts, protocol.AnyValueStr, "2026-06-11T09:30:00Z"},
+		{"time", ts, protocol.AnyValueDate, ts},
 		{"default_fmt", struct{ X int }{X: 7}, protocol.AnyValueStr, "{7}"},
 	}
 
@@ -40,6 +40,52 @@ func TestMapGo(t *testing.T) {
 				t.Fatalf("payload = %#v, want %#v", payload, tc.wantPayload)
 			}
 		})
+	}
+}
+
+func TestMapGo_TimeIsDate(t *testing.T) {
+	tag, payload := MapGo(time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC))
+	if tag != protocol.AnyValueDate {
+		t.Fatalf("tag = %v, want Date", tag)
+	}
+	if _, ok := payload.(time.Time); !ok {
+		t.Fatalf("payload = %T, want time.Time", payload)
+	}
+}
+
+func TestBuildGo_DateSerial(t *testing.T) {
+	b := flatbuffers.NewBuilder(0)
+	off := BuildGo(b, time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC))
+	b.Finish(off)
+	a := protocol.GetRootAsAny(b.FinishedBytes(), 0)
+	if a.ValType() != protocol.AnyValueDate {
+		t.Fatalf("val_type = %v, want Date", a.ValType())
+	}
+	// The generated Go protocol API exposes union members via Val(*Table) +
+	// Init, not a ValAs<Type>() helper, so read the Date that way.
+	var tbl flatbuffers.Table
+	if !a.Val(&tbl) {
+		t.Fatal("union member missing")
+	}
+	var d protocol.Date
+	d.Init(tbl.Bytes, tbl.Pos)
+	if d.Serial() != 46188 {
+		t.Fatalf("serial = %v, want 46188", d.Serial())
+	}
+}
+
+func TestBuildGrid_TimeCellIsDate(t *testing.T) {
+	b := flatbuffers.NewBuilder(0)
+	off, err := BuildGrid(b, [][]any{{time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), 1.5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Finish(off)
+	g := protocol.GetRootAsGrid(b.FinishedBytes(), 0)
+	var c0 protocol.Scalar
+	g.Data(&c0, 0)
+	if c0.ValType() != protocol.ScalarValueDate {
+		t.Fatalf("cell0 val_type = %v, want Date", c0.ValType())
 	}
 }
 

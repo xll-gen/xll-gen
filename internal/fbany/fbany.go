@@ -16,6 +16,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/xll-gen/types/go/protocol"
+	"github.com/xll-gen/xll-gen/pkg/xldate"
 )
 
 // Build constructs the union member table selected by tag from val and wraps
@@ -96,6 +97,15 @@ func Build(b *flatbuffers.Builder, tag protocol.AnyValue, val any) flatbuffers.U
 			break
 		}
 		uOff = off
+	case protocol.AnyValueDate:
+		t, ok := val.(time.Time)
+		if !ok {
+			tag = protocol.AnyValueNONE
+			break
+		}
+		protocol.DateStart(b)
+		protocol.DateAddSerial(b, xldate.ToSerial(t))
+		uOff = protocol.DateEnd(b)
 	default:
 		// Unknown/unhandled tag (including AnyValueNONE). We deliberately do
 		// NOT attempt to build a union member for an unrecognized tag — doing
@@ -127,7 +137,7 @@ func Build(b *flatbuffers.Builder, tag protocol.AnyValue, val any) flatbuffers.U
 //	int, int64   → AnyValueNum  (Go ints can exceed 32 bits; double keeps 53)
 //	float64/32   → AnyValueNum
 //	bool         → AnyValueBool
-//	time.Time    → AnyValueStr  (RFC3339)
+//	time.Time    → AnyValueDate (Excel serial, wall-clock)
 //	anything else → AnyValueStr via fmt.Sprintf("%v", v)
 func MapGo(value any) (protocol.AnyValue, any) {
 	switch v := value.(type) {
@@ -150,7 +160,7 @@ func MapGo(value any) (protocol.AnyValue, any) {
 	case bool:
 		return protocol.AnyValueBool, v
 	case time.Time:
-		return protocol.AnyValueStr, v.Format(time.RFC3339)
+		return protocol.AnyValueDate, v
 	default:
 		return protocol.AnyValueStr, fmt.Sprintf("%v", v)
 	}
@@ -265,6 +275,11 @@ func buildScalarCell(b *flatbuffers.Builder, c any) flatbuffers.UOffsetT {
 	case float64:
 		uOff = buildNumCell(b, v)
 		valType = protocol.ScalarValueNum
+	case time.Time:
+		protocol.DateStart(b)
+		protocol.DateAddSerial(b, xldate.ToSerial(v))
+		uOff = protocol.DateEnd(b)
+		valType = protocol.ScalarValueDate
 	default:
 		sOff := b.CreateString(fmt.Sprintf("%v", v))
 		protocol.StrStart(b)
