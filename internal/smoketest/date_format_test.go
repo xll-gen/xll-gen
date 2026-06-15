@@ -411,17 +411,24 @@ func TestDateFormat_Excel(t *testing.T) {
 		}
 
 		// ---------------------------------------------------------------
-		// 4) Idempotency / conditional-skip: pre-format A1 to a DIFFERENT
-		//    date format. DrainAndApplyDateFormats sees an existing date-like
-		//    format (IsDateLikeFormat true) and SKIPS it, leaving it untouched.
+		// 4) Once-per-cell: A1 was auto-formatted on the FIRST drain (sub-case
+		//    1) and is now in the process-global formatted set. The
+		//    xlfGetCell/IsDateLikeFormat conditional-skip is GONE; instead the
+		//    set guarantees the drain NEVER touches A1 again. We PROVE the set
+		//    skipped A1 by hand-changing its format to a NON-date format
+		//    ("0.00") AFTER the first touch, recalc, and asserting the drain
+		//    does NOT revert it back to the auto date format. (Under the deleted
+		//    xlfGetCell-guard behavior the drain would have re-read the
+		//    now-non-date "0.00" format and RE-APPLIED yyyy-mm-dd; the formatted
+		//    set means it does nothing.)
 		// ---------------------------------------------------------------
-		t.Logf("--- idempotency (A1 pre-set dd/mm/yyyy) ---")
-		const preFmt = "dd/mm/yyyy"
-		if err := SetCellNumberFormat(sheet, "A1", preFmt); err != nil {
-			t.Fatalf("SetCellNumberFormat(A1, %q): %v", preFmt, err)
+		t.Logf("--- once-per-cell (A1 hand-set to 0.00 after first touch, must NOT be re-formatted) ---")
+		const nonDateFmt = "0.00"
+		if err := SetCellNumberFormat(sheet, "A1", nonDateFmt); err != nil {
+			t.Fatalf("SetCellNumberFormat(A1, %q): %v", nonDateFmt, err)
 		}
 		if err := app.CalculateFull(); err != nil {
-			t.Fatalf("CalculateFull (idempotency): %v", err)
+			t.Fatalf("CalculateFull (once-per-cell): %v", err)
 		}
 		// Give the calc-end drain a window to (not) touch A1.
 		time.Sleep(1500 * time.Millisecond)
@@ -429,9 +436,12 @@ func TestDateFormat_Excel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetCellNumberFormat(A1) after re-calc: %v", err)
 		}
-		t.Logf("A1 NumberFormat after re-calc = %q (pre-set %q)", fmtA1after, preFmt)
-		if fmtA1after != preFmt {
-			t.Errorf("idempotency: A1 format changed from %q to %q (conditional-skip should leave an existing date format untouched)", preFmt, fmtA1after)
+		t.Logf("A1 NumberFormat after re-calc = %q (hand-set %q)", fmtA1after, nonDateFmt)
+		if fmtA1after != nonDateFmt {
+			t.Errorf("once-per-cell: A1 format changed from %q to %q — the drain re-touched a cell already in the formatted set (set guard failed)", nonDateFmt, fmtA1after)
+		}
+		if isDateLikeFmt(fmtA1after) {
+			t.Errorf("once-per-cell: A1 was re-formatted to a date-like format %q after first touch (formatted set should have skipped it)", fmtA1after)
 		}
 
 		// ---------------------------------------------------------------

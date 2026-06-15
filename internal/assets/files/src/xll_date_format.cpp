@@ -1,6 +1,5 @@
 #include "xll_date_format.h"
 #include "xll_excel.h"          // xll::CallExcel
-#include "types/utility.h"      // IsDateLikeFormat, PascalToWString
 #include "types/ScopedXLOPER12.h"
 
 namespace xll {
@@ -21,6 +20,16 @@ std::vector<PendingFormat> PendingDateFormats::Drain() {
     std::vector<PendingFormat> out;
     out.swap(m_pending);
     return out;
+}
+
+bool PendingDateFormats::AlreadyFormatted(IDSHEET idSheet, int row, int col) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_formatted.count(std::make_tuple(idSheet, row, col)) != 0;
+}
+
+void PendingDateFormats::MarkFormatted(IDSHEET idSheet, int row, int col) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_formatted.insert(std::make_tuple(idSheet, row, col));
 }
 
 // Shared back half of the producer: given date cells already collected on the
@@ -49,8 +58,12 @@ static void EnqueueDateFormatsForCaller(const std::vector<DateCell>& cells) {
                 ((xSheetId.get()->xltype & ~(xlbitDLLFree | xlbitXLFree)) & xltypeRef)) {
                 idSheet = xSheetId.get()->val.mref.idSheet;
             }
-            // If resolution fails, idSheet stays 0 and the per-item drain catch
-            // degrades to "no format" rather than formatting the wrong sheet.
+            // If resolution fails, idSheet stays 0: the item is still enqueued
+            // with key (0,row,col), but xlcSelect on an idSheet==0 xltypeRef is
+            // not a valid sheet handle, so the drain's select fails -> the cell
+            // is NOT marked -> it self-heals on the next recalc rather than
+            // formatting the wrong sheet. (xlSheetId failing on a live calc
+            // thread is near-impossible, so this path is effectively dead.)
         } else if ((t & xltypeRef) && xCaller.get()->val.mref.lpmref &&
                    xCaller.get()->val.mref.lpmref->count > 0) {
             idSheet = xCaller.get()->val.mref.idSheet;
@@ -62,10 +75,16 @@ static void EnqueueDateFormatsForCaller(const std::vector<DateCell>& cells) {
         std::vector<PendingFormat> items;
         items.reserve(cells.size());
         for (const auto& c : cells) {
+            const int row = anchor.rwFirst + c.rowOff;
+            const int col = anchor.colFirst + c.colOff;
+            // Once-per-cell: never re-enqueue a cell the drain has already
+            // formatted, so the pending vector stays tiny across recalcs.
+            if (PendingDateFormats::Instance().AlreadyFormatted(idSheet, row, col))
+                continue;
             PendingFormat pf;
             pf.idSheet = idSheet;
-            pf.ref.rwFirst = pf.ref.rwLast = anchor.rwFirst + c.rowOff;
-            pf.ref.colFirst = pf.ref.colLast = anchor.colFirst + c.colOff;
+            pf.ref.rwFirst = pf.ref.rwLast = row;
+            pf.ref.colFirst = pf.ref.colLast = col;
             pf.format = c.format;
             items.push_back(std::move(pf));
         }
@@ -104,25 +123,29 @@ static void MakeCellRef(const PendingFormat& pf, XLOPER12& out, XLMREF12& mref) 
 }
 
 void DrainAndApplyDateFormats() {
-    auto items = PendingDateFormats::Instance().Drain();
+    auto& inst = PendingDateFormats::Instance();
+    auto items = inst.Drain();
     for (const auto& pf : items) {
+        const int row = pf.ref.rwFirst;
+        const int col = pf.ref.colFirst;
+        // Once-per-cell: a cell already in the formatted set costs ZERO COM
+        // work — this is the hot path on every keystroke recalc. (The producer
+        // already filters, but a cell could be enqueued twice within one cycle,
+        // or marked by a prior drain, so re-check here too.)
+        if (inst.AlreadyFormatted(pf.idSheet, row, col)) continue;
         try {
             XLOPER12 ref; XLMREF12 mref;
             MakeCellRef(pf, ref, mref);
 
-            // Skip when the cell already carries a date/time number format —
-            // mirrors the FormatCommand "already formatted" guard in
-            // src/xll_commands.cpp (xlfGetCell type 7 -> current format string).
-            XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = 7;
-            ScopedXLOPER12Result xFmt;
-            if (xll::CallExcel(xlfGetCell, xFmt, &xType, &ref) == xlretSuccess &&
-                xFmt->xltype == xltypeStr) {
-                std::wstring cur = PascalToWString(xFmt->val.str);
-                if (IsDateLikeFormat(cur)) continue;
+            // First touch: apply the auto-format UNCONDITIONALLY (no xlfGetCell
+            // read, no IsDateLikeFormat check). Value-driven formatting wins:
+            // this overrides any pre-existing user format exactly once. On
+            // success mark the cell so all later recalcs skip it; on failure do
+            // NOT mark, so the cell is retried next cycle.
+            if (xll::CallExcel(xlcSelect, nullptr, &ref) == xlretSuccess &&
+                xll::CallExcel(xlcFormatNumber, nullptr, pf.format) == xlretSuccess) {
+                inst.MarkFormatted(pf.idSheet, row, col);
             }
-
-            xll::CallExcel(xlcSelect, nullptr, &ref);
-            xll::CallExcel(xlcFormatNumber, nullptr, pf.format);
         } catch (...) { /* skip this cell; never break calc-end */ }
     }
 }
