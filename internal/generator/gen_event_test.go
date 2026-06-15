@@ -48,6 +48,66 @@ func TestGenServer_BuiltinEventHandlerName(t *testing.T) {
 	}
 }
 
+// TestGenCpp_UserCalculationEndedDrainsSystemWork is the regression for the
+// showcase YDH "raw serials instead of dates" bug.
+//
+// When a project declares a user CalculationEnded event handler (e.g. renamed
+// to OnRecalc), the generator emitted ONLY a named-event stub that logged
+// "Event CalculationEnded triggered" and did NOT call HandleCalculationEnded().
+// The built-in CalculationEnded() macro that DOES call HandleCalculationEnded()
+// is suppressed (`{{if hasEvent "CalculationEnded"}}`) whenever a user handler
+// exists. Net effect: the date auto-format drain (DrainAndApplyDateFormats),
+// the RefCache clear, the rtd-once ClearNonMemoized, AND the MSG_CALCULATION_ENDED
+// round-trip that invokes the user's Go handler all silently stop running.
+// That is exactly why the minimal smoketest (NO user CalculationEnded event)
+// formats dates correctly while the full showcase (HAS one) leaves raw serials.
+//
+// The fix: the named-event handler, when its type is CalculationEnded, must
+// route through HandleCalculationEnded() like the built-in macro does.
+func TestGenCpp_UserCalculationEndedDrainsSystemWork(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "MakeDateGrid", Return: "grid", Args: []config.Arg{}},
+		},
+		Events: []config.Event{
+			{Type: "CalculationEnded", Handler: "OnRecalc"},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+	cpp := renderCppMain(t, cfg)
+
+	// The user-renamed handler must be the registered CalculationEnded callback.
+	if !strings.Contains(cpp, `xll::CallExcel(xlEventRegister, nullptr, L"OnRecalc", xleventCalculationEnded);`) {
+		t.Errorf("render must register the user handler OnRecalc as the CalculationEnded callback:\n%s", cpp)
+	}
+	// And that handler MUST call HandleCalculationEnded() — otherwise the
+	// date-format drain (and all other calc-end work) never runs.
+	if !strings.Contains(cpp, "HandleCalculationEnded();") {
+		t.Errorf("user CalculationEnded handler (OnRecalc) must call HandleCalculationEnded() so the date-format drain runs:\n%s", cpp)
+	}
+	// Belt-and-suspenders: the named-event stub must NOT be a log-only no-op for
+	// the CalculationEnded type. Find the OnRecalc handler body and assert it
+	// contains the drain call rather than only the placeholder log.
+	const sig = "void __stdcall OnRecalc()"
+	start := strings.Index(cpp, sig)
+	if start < 0 {
+		t.Fatalf("OnRecalc handler not emitted:\n%s", cpp)
+	}
+	body := cpp[start:]
+	if end := strings.Index(body, "\n}"); end >= 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "HandleCalculationEnded();") {
+		t.Errorf("OnRecalc body must call HandleCalculationEnded(), got:\n%s", body)
+	}
+}
+
 // TestGenServer_NonBuiltinEventUsesHandlerField is the regression for the
 // template referencing `handler.{{.Name}}` in the non-builtin event dispatch
 // block: config.Event has no Name field (only Type/Handler), so rendering a

@@ -978,10 +978,23 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     // (allowBounce defaults false): a workbook exists by the time calc runs.
     TryConnectRibbon("calc event");
     {{end}}
+    {{if eq .Type "CalculationEnded"}}
+    // A user-renamed CalculationEnded handler still owns ALL system-side
+    // calc-end work: RefCache clear, rtd-once ClearNonMemoized, the date
+    // auto-format drain (DrainAndApplyDateFormats), AND the MSG_CALCULATION_ENDED
+    // round-trip that ultimately invokes the user's Go handler ({{.Handler}}).
+    // HandleCalculationEnded() does all of this. Without this call the drain
+    // never runs — dates returned by UDFs stay as raw serials and the user's
+    // own Go handler never fires. (Regression fixed: previously this named-event
+    // stub only logged, and the built-in CalculationEnded() macro that calls
+    // HandleCalculationEnded was suppressed whenever a user handler existed.)
+    HandleCalculationEnded();
+    {{else}}
     std::vector<uint8_t> respBuf;
     // Construct Request (Event)
     // Currently not fully implemented for named events
     SAFE_LOG_INFO("Event {{.Type}} triggered");
+    {{end}}
 }
 {{end}}
 

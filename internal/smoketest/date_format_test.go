@@ -129,6 +129,72 @@ func (s *Service) OnRtdDisconnect(ctx context.Context, topicID int32) error { re
 func main() { generated.Serve(&Service{}) }
 `
 
+// dateEventYaml is the regression fixture for the showcase YDH bug: a project
+// that DECLARES a user CalculationEnded event handler (OnRecalc). Pre-fix, the
+// generated named-event stub only logged and the built-in CalculationEnded()
+// macro (which runs DrainAndApplyDateFormats) was suppressed whenever a user
+// handler existed — so the date column stayed raw serials (General). The fix
+// routes the user handler through HandleCalculationEnded(). SYNC grid, no RTD:
+// the bug is in the calc-end handler suppression and hits every mode equally,
+// so a sync grid is the fastest faithful repro.
+const dateEventYaml = `
+project:
+  name: "xll_smoke"
+  version: "0.1.0"
+gen:
+  go:
+    package: "generated"
+  disable_pid_suffix: true
+logging:
+  level: "debug"
+  dir: "TEMP_DIR"
+server:
+  workers: 2
+  timeout: "10s"
+events:
+  - type: "CalculationEnded"
+    handler: "OnRecalc"
+functions:
+  - name: "DateGridEv"
+    description: "Sync [date,number] grid; only the date column auto-formats. Project declares a user CalculationEnded handler."
+    return: "grid"
+`
+
+const dateEventMain = `package main
+
+import (
+	"context"
+	"time"
+
+	"xll_smoke/generated"
+)
+
+type Service struct{}
+
+// DateGridEv returns a BDH-shaped grid: a string header row, then 2 data rows
+// whose column 0 is a midnight time.Time (expected yyyy-mm-dd) and column 1 is
+// a plain number (must NOT auto-format). Sync grid (return:grid, default mode).
+func (s *Service) DateGridEv(ctx context.Context) ([][]any, error) {
+	return [][]any{
+		{"Date", "Px"},
+		{time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC), 1.5},
+		{time.Date(2026, 6, 16, 0, 0, 0, 0, time.UTC), 2.5},
+	}, nil
+}
+
+// OnRecalc is the user-declared CalculationEnded handler. The generated XLL
+// must route this through HandleCalculationEnded() so the date-format drain
+// still runs. A no-op returning nil is enough to exercise the suppression bug.
+func (s *Service) OnRecalc(ctx context.Context) error { return nil }
+
+// OnCalculationCanceled is still required by the generated interface (only the
+// CalculationEnded event is declared, so OnCalculationEnded is replaced by
+// OnRecalc but CalculationCanceled keeps its default handler name).
+func (s *Service) OnCalculationCanceled(ctx context.Context) error { return nil }
+
+func main() { generated.Serve(&Service{}) }
+`
+
 // isDateLikeFmt mirrors types::IsDateLikeFormat: a format is date-like if it
 // contains a y/m/d/h/s field token OUTSIDE quotes/brackets (so a literal
 // "day" string or [Red] color section doesn't count). The default formats we
@@ -473,6 +539,100 @@ func TestDateFormat_Excel(t *testing.T) {
 		for _, a := range []string{"A1", "A3", "D1", "G1", "J1"} {
 			_ = SetCellFormula(sheet, a, "")
 		}
+		_ = app.CalculateFull()
+		time.Sleep(500 * time.Millisecond)
+	})
+}
+
+// TestDateFormat_CalcEndedEvent_Excel is the real-Excel regression for the
+// showcase YDH bug: a project that declares a USER CalculationEnded event
+// handler (OnRecalc). The pre-fix template emitted a log-only named-event stub
+// AND suppressed the built-in CalculationEnded() macro, so DrainAndApplyDateFormats
+// never ran and the date column stayed raw serials (General). The fix routes the
+// user handler through HandleCalculationEnded(). This test FAILS on the pre-fix
+// template (date column General) and PASSES with the fix in the working tree.
+//
+// SYNC grid, no RTD: the suppression bug is in the calc-end handler and affects
+// every mode equally, so a sync grid is the fastest faithful repro. Note the
+// existing date e2e cases (TestDateFormat_Excel) do NOT declare a
+// CalculationEnded event — which is exactly why they passed while the showcase
+// (which declares one) failed.
+func TestDateFormat_CalcEndedEvent_Excel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	root := repoRootOrFatal(t)
+	workDir := os.Getenv("XLL_DATEEV_DIR")
+	if workDir == "" {
+		var err error
+		workDir, err = os.MkdirTemp("", "xll-dateev-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(workDir) })
+	}
+	projectDir := filepath.Join(workDir, "xll_smoke")
+	if _, err := os.Stat(filepath.Join(projectDir, "xll.yaml")); err != nil {
+		writeProject(t, projectDir, dateEventYaml, dateEventMain, root)
+	}
+	t.Logf("project dir: %s", projectDir)
+	xllPath := buildProject(t, projectDir)
+	t.Logf("xll: %s", xllPath)
+
+	runExcel(t, xllPath, func(app *excelApp, sheet *ole.IDispatch) {
+		// =DateGridEv() -> A1, spills A1:B3. Row 1 is a string header; rows 2-3
+		// column A (A2,A3) are midnight dates, column B (B2,B3) are numbers.
+		// The date column MUST become date-like (yyyy-mm-dd) EVEN THOUGH the
+		// project declares a user CalculationEnded handler (OnRecalc) — that is
+		// the variable that triggered the suppression bug.
+		t.Logf("--- DateGridEv (A1:B3, sync grid, user CalculationEnded handler) ---")
+		mustFormula(t, sheet, "A1", "=DateGridEv()")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatalf("CalculateFull after DateGridEv: %v", err)
+		}
+		// Wait for the grid to spill: the date data cells resolve to a value.
+		pollHasValue(t, sheet, "A2", 25*time.Second)
+		pollHasValue(t, sheet, "A3", 25*time.Second)
+
+		// 2) Date column A2/A3 must become date-like (the fix's drain ran).
+		fmtA2 := pollDateFormat(t, sheet, "A2", 12*time.Second)
+		fmtA3 := pollDateFormat(t, sheet, "A3", 12*time.Second)
+		t.Logf("A2 NumberFormat = %q, A3 NumberFormat = %q", fmtA2, fmtA3)
+		if !isDateLikeFmt(fmtA2) {
+			t.Errorf("A2: date column NumberFormat %q is not date-like (user CalculationEnded handler suppressed the drain?)", fmtA2)
+		}
+		if !isDateLikeFmt(fmtA3) {
+			t.Errorf("A3: date column NumberFormat %q is not date-like (user CalculationEnded handler suppressed the drain?)", fmtA3)
+		}
+
+		// 3) Number column B2/B3 must NOT be date-like (column isolation holds).
+		fmtB2, err := GetCellNumberFormat(sheet, "B2")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(B2): %v", err)
+		}
+		fmtB3, err := GetCellNumberFormat(sheet, "B3")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(B3): %v", err)
+		}
+		t.Logf("B2 NumberFormat = %q, B3 NumberFormat = %q", fmtB2, fmtB3)
+		if isDateLikeFmt(fmtB2) {
+			t.Errorf("B2: number column was date-formatted %q (expected General/number)", fmtB2)
+		}
+		if isDateLikeFmt(fmtB3) {
+			t.Errorf("B3: number column was date-formatted %q (expected General/number)", fmtB3)
+		}
+
+		// Header row A1 (a string) must NOT be date-formatted.
+		fmtA1, err := GetCellNumberFormat(sheet, "A1")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(A1): %v", err)
+		}
+		if isDateLikeFmt(fmtA1) {
+			t.Errorf("A1: header (string) row was date-formatted %q", fmtA1)
+		}
+
+		// 4) graceful clear + recalc before returning so the harness exits clean.
+		_ = SetCellFormula(sheet, "A1", "")
 		_ = app.CalculateFull()
 		time.Sleep(500 * time.Millisecond)
 	})
