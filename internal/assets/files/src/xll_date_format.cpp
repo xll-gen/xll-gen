@@ -23,10 +23,11 @@ std::vector<PendingFormat> PendingDateFormats::Drain() {
     return out;
 }
 
-void ScheduleDateFormatsForCaller(const protocol::Any* result) {
+// Shared back half of the producer: given date cells already collected on the
+// calc thread, capture xlfCaller as the anchor and enqueue one PendingFormat
+// per cell. No-op when `cells` is empty; NEVER throws.
+static void EnqueueDateFormatsForCaller(const std::vector<DateCell>& cells) {
     try {
-        std::vector<DateCell> cells;
-        CollectDateCells(result, cells);
         if (cells.empty()) return;
 
         ScopedXLOPER12 xCaller;
@@ -69,6 +70,25 @@ void ScheduleDateFormatsForCaller(const protocol::Any* result) {
             items.push_back(std::move(pf));
         }
         PendingDateFormats::Instance().Enqueue(items);
+    } catch (...) { /* never throw into the wrapper */ }
+}
+
+void ScheduleDateFormatsForCaller(const protocol::Any* result) {
+    try {
+        std::vector<DateCell> cells;
+        CollectDateCells(result, cells);
+        EnqueueDateFormatsForCaller(cells);
+    } catch (...) { /* never throw into the wrapper */ }
+}
+
+void ScheduleDateFormatsForCaller(const protocol::Grid* grid) {
+    try {
+        // Sync grid wrappers hand us a bare Grid (no Any wrapper). Reuse the
+        // Grid overload of CollectDateCells so date-format derivation stays
+        // centralized in types/converters.cpp.
+        std::vector<DateCell> cells;
+        CollectDateCells(grid, cells);
+        EnqueueDateFormatsForCaller(cells);
     } catch (...) { /* never throw into the wrapper */ }
 }
 

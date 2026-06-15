@@ -3,6 +3,7 @@
 #include "xll_cache.h"
 #include "xll_commands.h"
 #include "xll_ipc.h"
+#include "xll_date_format.h"
 #include "shm/DirectHost.h"
 #include "types/protocol_generated.h"
 #include <vector>
@@ -32,6 +33,14 @@ namespace xll {
         // memoize / unexpired-memoize_ttl payloads survive. See AGENTS.md §19.3.
         xll::RtdOnceGridRegistry::Instance().ClearNonMemoized();
 #endif
+
+        // Date auto-format drain (Plan B / Task 4). UNGATED: sync (non-RTD)
+        // functions that return dates enqueue format requests on the calc
+        // thread via ScheduleDateFormatsForCaller; this STA-thread drain applies
+        // them. Cheap when nothing is pending (a mutex-guarded empty-vector
+        // swap). Runs before the MSG_CALCULATION_ENDED round-trip below so the
+        // formatting and any returned SetCommand/FormatCommand share the cycle.
+        xll::DrainAndApplyDateFormats();
 
         std::vector<uint8_t> respBuf;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);

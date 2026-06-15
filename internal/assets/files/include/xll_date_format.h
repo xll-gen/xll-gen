@@ -56,6 +56,12 @@ private:
 // No-op when there are no dates. NEVER throws.
 void ScheduleDateFormatsForCaller(const protocol::Any* result);
 
+// Grid overload: sync grid-return wrappers hold a bare `protocol::Grid*`
+// (their ipc Response.result is typed `protocol.Grid`, not `protocol.Any`),
+// so they cannot reach the Any entry point above. Same contract: no-op when
+// the grid carries no dates; NEVER throws.
+void ScheduleDateFormatsForCaller(const protocol::Grid* grid);
+
 // Calc-end helper: drain the queue; for each cell apply the format via
 // xlcFormatNumber UNLESS the cell is already date/time-formatted.
 void DrainAndApplyDateFormats();

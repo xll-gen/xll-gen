@@ -31,6 +31,10 @@
 #include "shm/IPCUtils.h"
 #include "schema_generated.h"
 #include "types/protocol_generated.h"
+// UNGATED: date auto-formatting must work in non-RTD builds too. The producer
+// (ScheduleDateFormatsForCaller) runs in sync wrappers and the drain
+// (DrainAndApplyDateFormats) runs at CalculationEnded regardless of RTD/ribbon.
+#include "xll_date_format.h"
 {{if .Rtd.Enabled}}
 #include "xll_rtd.h"
 {{end}}
@@ -775,7 +779,13 @@ start_worker:
 {{end}}
     {{if hasEvent "CalculationEnded" .Events}}
     {{else}}
-    bool needCalcEnded = false;
+    // Date auto-format (Plan B / Task 4): ANY function may return a date, and
+    // the date-format drain runs in HandleCalculationEnded. So CalculationEnded
+    // must be registered unconditionally in every build — not just when an
+    // `any` arg, cache, or ribbon needs it. The drain is cheap when nothing is
+    // pending (a mutex-guarded empty-vector swap), so an always-on registration
+    // costs nothing on date-free recalcs.
+    bool needCalcEnded = true;
     bool hasCache = {{.Cache.Enabled}};
     {{range .Functions}}
     {{if .Cache}}
@@ -1231,6 +1241,9 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
                 return NumGridToFP12(ng);
                 {{else}}
                 const protocol::Grid* gr = any ? any->val_as_Grid() : nullptr;
+                // grid-once spill: schedule date auto-format for any Date cells
+                // before materializing. The Any wrapper carries the dates.
+                xll::ScheduleDateFormatsForCaller(any);
                 return GridToXLOPER12(gr);
                 {{end}}
             }
@@ -1387,8 +1400,10 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         xRes.val.xbool = resp->result() ? 1 : 0;
         return &xRes;
         {{else if eq .Return "any"}}
+        xll::ScheduleDateFormatsForCaller(resp->result());
         return AnyToXLOPER12(resp->result());
         {{else if eq .Return "grid"}}
+        xll::ScheduleDateFormatsForCaller(resp->result());
         return GridToXLOPER12(resp->result());
         {{else if eq .Return "numgrid"}}
         return NumGridToFP12(resp->result());
@@ -1562,8 +1577,10 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     xRes.val.xbool = resp->result() ? 1 : 0;
     return &xRes;
     {{else if eq .Return "any"}}
+    xll::ScheduleDateFormatsForCaller(resp->result());
     return AnyToXLOPER12(resp->result());
     {{else if eq .Return "grid"}}
+    xll::ScheduleDateFormatsForCaller(resp->result());
     return GridToXLOPER12(resp->result());
     {{else if eq .Return "numgrid"}}
     return NumGridToFP12(resp->result());
