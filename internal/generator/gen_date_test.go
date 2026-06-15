@@ -120,9 +120,17 @@ func TestGenCpp_DateFormatWiring(t *testing.T) {
 		t.Errorf("grid-once render missing ungated #include \"xll_date_format.h\"")
 	}
 
-	// (c) The calc-end drain lives in the always-compiled asset
-	// src/xll_events.cpp (HandleCalculationEnded), not the template render.
-	// Assert it is present and UNGATED (outside the XLL_RTD_ENABLED block).
+	// (c) The calc-end date-format drain lives in the always-compiled assets.
+	// As of the 2026-06-15 reentrancy fix it no longer runs INLINE inside the
+	// xleventCalculationEnded callback (HandleCalculationEnded): applying a
+	// number format via xlcSelect/xlcFormatNumber inside the event re-enters
+	// Excel's calc/RTD machinery during an rtd-once teardown window and crashes
+	// Excel (0xc0000005). The drain now runs in the DEFERRED runner
+	// (src/xll_deferred_commands.cpp, RunDeferredCalcEndCommands), scheduled via
+	// xlcOnTime so it executes OUTSIDE the event. Assert:
+	//   1. HandleCalculationEnded does NOT call the drain inline (it routes
+	//      through DeferCalcEndCommands), and
+	//   2. the deferred runner DOES call DrainAndApplyDateFormats, UNGATED.
 	am, err := assets.Assets()
 	if err != nil {
 		t.Fatalf("assets.Assets(): %v", err)
@@ -131,15 +139,27 @@ func TestGenCpp_DateFormatWiring(t *testing.T) {
 	if events == "" {
 		t.Fatalf("asset src/xll_events.cpp not found")
 	}
-	if !strings.Contains(events, "xll::DrainAndApplyDateFormats();") {
-		t.Errorf("HandleCalculationEnded must call xll::DrainAndApplyDateFormats()")
-	}
-	// The drain must NOT be inside the #ifdef XLL_RTD_ENABLED ... #endif block:
-	// it must run in non-RTD builds. Verify it appears after the closing #endif.
-	if endif := strings.Index(events, "#endif"); endif >= 0 {
-		if di := strings.Index(events, "xll::DrainAndApplyDateFormats();"); di >= 0 && di < endif {
-			t.Errorf("DrainAndApplyDateFormats() must be OUTSIDE the XLL_RTD_ENABLED gate")
+	if start := strings.Index(events, "void HandleCalculationEnded()"); start >= 0 {
+		if strings.Contains(events[start:], "xll::DrainAndApplyDateFormats();") {
+			t.Errorf("HandleCalculationEnded must NOT call DrainAndApplyDateFormats() inline " +
+				"(in-event cell mutation -> rtd-once reentrancy crash); it must defer it")
 		}
+	}
+	if !strings.Contains(events, "xll::DeferCalcEndCommands(") {
+		t.Errorf("HandleCalculationEnded must route calc-end work through xll::DeferCalcEndCommands")
+	}
+
+	deferred := am["src/xll_deferred_commands.cpp"]
+	if deferred == "" {
+		t.Fatalf("asset src/xll_deferred_commands.cpp not found")
+	}
+	if !strings.Contains(deferred, "xll::DrainAndApplyDateFormats();") {
+		t.Errorf("deferred runner must call xll::DrainAndApplyDateFormats()")
+	}
+	// The deferred runner TU has no XLL_RTD_ENABLED gate; the drain runs in
+	// non-RTD builds too. Guard against a future gate slipping in.
+	if strings.Contains(deferred, "#ifdef XLL_RTD_ENABLED") {
+		t.Errorf("deferred runner must stay UNGATED (no XLL_RTD_ENABLED) so date formatting works in non-RTD builds")
 	}
 }
 

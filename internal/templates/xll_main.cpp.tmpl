@@ -23,6 +23,7 @@
 #include "xll_cache.h"
 #include "xll_embed.h"
 #include "xll_events.h"
+#include "xll_deferred_commands.h"
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
 #include "xll_excel.h"
@@ -809,6 +810,37 @@ start_worker:
     }
     {{end}}
 
+    {
+        // Register the calc-end DEFERRED COMMAND RUNNER macro (macroType=2).
+        // HandleCalculationEnded schedules this via xlcOnTime so the
+        // cell-mutating commands (xlSet) and date-format application
+        // (xlcSelect/xlcFormatNumber) run OUTSIDE the xleventCalculationEnded
+        // callback — fixing the rtd-once-window reentrancy crash (0xc0000005).
+        // Registered unconditionally because CalculationEnded itself is (the
+        // date-format drain is always-on). Idempotent: re-registering the same
+        // procedure name is harmless. The macro is auto-unregistered when the
+        // DLL unloads, so no explicit teardown is needed (§20.2). See
+        // include/xll_deferred_commands.h.
+        ScopedXLOPER12Result xRegId;
+        int regRes = xll::RegisterFunction(
+            *xDLL,
+            xll::DeferredRunnerMacroName(), // Procedure (exported symbol below)
+            L"A",                           // TypeText: command-style, returns short
+            xll::DeferredRunnerMacroName(), // FunctionText (hidden; xlcOnTime targets it)
+            L"",                            // ArgumentText: none
+            2,                              // macroType=2 (registered macro; xlcOnTime-callable)
+            L"",                            // Category (unused)
+            L"",                            // Shortcut (none)
+            L"",                            // HelpTopic
+            L"",                            // FunctionHelp
+            {},                             // ArgumentHelp
+            *xRegId
+        );
+        if (regRes != xlretSuccess) {
+            SAFE_LOG_ERROR("Failed to register deferred calc-end runner macro. Code: " + std::to_string(regRes));
+        }
+    }
+
     {{if .Commands}}
     // Command names must be set before any command proc or ribbon callback
     // can run (set-before-connect contract, see com/ribbon_addin.h). This must
@@ -1015,6 +1047,20 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
     HandleCalculationEnded();
 }
 {{end}}
+
+// Calc-end deferred command runner. Registered as a macro (macroType=2) in
+// xlAutoOpen and scheduled via xlcOnTime from HandleCalculationEnded. Excel
+// dispatches it on the STA thread at an idle point — OUTSIDE the
+// xleventCalculationEnded callback and after any in-flight recalc / rtd-once
+// topic teardown has settled — which is where it is safe to run the cell
+// mutations (xlSet / xlcSelect / xlcFormatNumber). The exported symbol name
+// MUST match xll::DeferredRunnerMacroName(). Returns short (TypeText "A").
+extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
+    XLL_SAFE_BLOCK_BEGIN
+        xll::RunDeferredCalcEndCommands();
+    XLL_SAFE_BLOCK_END(0)
+    return 1;
+}
 
 // User Functions
 {{range $i, $fn := .Functions}}

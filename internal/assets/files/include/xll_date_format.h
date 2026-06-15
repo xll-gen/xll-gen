@@ -69,6 +69,11 @@ public:
     void Enqueue(const std::vector<PendingFormat>& items);
     std::vector<PendingFormat> Drain();
 
+    // Whether any format requests are queued. Used by the calc-end deferred
+    // runner scheduler so it can wake the runner when only date formats (and no
+    // SetCommand/FormatCommand) are pending. Mutex-guarded like the rest.
+    bool HasPending();
+
     // Once-per-cell guard. A cell is identified by (idSheet,row,col). Once
     // MarkFormatted is called for a cell, AlreadyFormatted returns true for the
     // rest of the loaded-DLL lifetime, so neither the producer nor the drain
@@ -101,9 +106,14 @@ void ScheduleDateFormatsForCaller(const protocol::Any* result);
 // the grid carries no dates; NEVER throws.
 void ScheduleDateFormatsForCaller(const protocol::Grid* grid);
 
-// Calc-end helper: drain the queue; for each cell that is not already in the
-// formatted set, apply the format via xlcSelect + xlcFormatNumber (NO
-// xlfGetCell read), then mark it formatted. NEVER throws into calc-end.
+// Calc-end helper: drain the queue; drop cells already in the formatted set,
+// GROUP the rest by (idSheet, format) — never merging different sheets or
+// formats — then greedy-mesh each group's (row,col) cells into rectangular
+// blocks (see include/xll_greedy_mesh.h). Each rectangle is formatted with ONE
+// xlcSelect + xlcFormatNumber (NO xlfGetCell read); on success every cell in the
+// rectangle is marked formatted, on failure none are (the rect retries next
+// cycle). The common YDH case — one contiguous date column, identical format —
+// collapses to a single format op. NEVER throws into calc-end.
 void DrainAndApplyDateFormats();
 
 } // namespace xll

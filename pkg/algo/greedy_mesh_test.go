@@ -95,6 +95,42 @@ func TestGreedyMesh(t *testing.T) {
 			},
 		},
 		{
+			// YDH date-column shape: one contiguous single-column run of
+			// ~21 same-format date cells (anchor A2..A22) MUST collapse to a
+			// SINGLE rectangle so the date-format drain issues ONE
+			// xlcSelect+xlcFormatNumber. This is the common case the C++ port
+			// (include/xll_greedy_mesh.h) is tuned for.
+			name: "YDH Date Column (single rect)",
+			cells: func() []Cell {
+				cs := make([]Cell, 0, 21)
+				for r := int32(2); r <= 22; r++ {
+					cs = append(cs, Cell{Row: r, Col: 1})
+				}
+				return cs
+			}(),
+			expected: []Rect{
+				{RowFirst: 2, RowLast: 22, ColFirst: 1, ColLast: 1},
+			},
+		},
+		{
+			// A date column with a HOLE (e.g. a cell already in the formatted
+			// set, excluded from the input) must NOT span the gap: it splits
+			// into two rectangles above and below the hole. Proves rectangles
+			// never cover an absent cell.
+			name: "Column With Hole",
+			cells: []Cell{
+				{Row: 1, Col: 1},
+				{Row: 2, Col: 1},
+				// row 3 missing (already formatted)
+				{Row: 4, Col: 1},
+				{Row: 5, Col: 1},
+			},
+			expected: []Rect{
+				{RowFirst: 1, RowLast: 2, ColFirst: 1, ColLast: 1},
+				{RowFirst: 4, RowLast: 5, ColFirst: 1, ColLast: 1},
+			},
+		},
+		{
 			name: "Complex Shape",
 			// 1 1 1
 			// 1 1 .

@@ -2,6 +2,7 @@
 #include "xll_log.h"
 #include "xll_cache.h"
 #include "xll_commands.h"
+#include "xll_deferred_commands.h"
 #include "xll_ipc.h"
 #include "xll_date_format.h"
 #include "shm/DirectHost.h"
@@ -34,23 +35,38 @@ namespace xll {
         xll::RtdOnceGridRegistry::Instance().ClearNonMemoized();
 #endif
 
-        // Date auto-format drain (Plan B / Task 4). UNGATED: sync (non-RTD)
-        // functions that return dates enqueue format requests on the calc
-        // thread via ScheduleDateFormatsForCaller; this STA-thread drain applies
-        // them. Cheap when nothing is pending (a mutex-guarded empty-vector
-        // swap). Runs before the MSG_CALCULATION_ENDED round-trip below so the
-        // formatting and any returned SetCommand/FormatCommand share the cycle.
-        xll::DrainAndApplyDateFormats();
-
+        // Keep the synchronous MSG_CALCULATION_ENDED round-trip HERE, inside the
+        // event: the IPC blocking is NOT the reentrancy hazard (proven by
+        // bisection — see xll_deferred_commands.h). This is also what invokes the
+        // user's Go calc-end handler and produces any returned SetCommand /
+        // FormatCommand. Date-format requests were enqueued on the calc thread
+        // (ScheduleDateFormatsForCaller) before we got here.
         std::vector<uint8_t> respBuf;
+        bool haveCommands = false;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
         if (!res.HasError() && res.Value() > 0) {
-            // Process returned commands (e.g. SetCommand)
             auto root = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data());
             auto commands = root->commands();
-            if (commands) {
-                ExecuteCommands(commands);
-            }
+            haveCommands = commands && commands->size() > 0;
+        }
+
+        // CELL MUTATION MUST NOT HAPPEN INSIDE THIS EVENT CALLBACK.
+        // ExecuteCommands (xlSet) and DrainAndApplyDateFormats
+        // (xlcSelect/xlcFormatNumber) re-enter Excel's calc/RTD machinery and
+        // crash Excel (0xc0000005) when they fire during an rtd-once
+        // materialize/disconnect window. Defer BOTH out of the event: copy the
+        // response buffer into the process-global queue and schedule the runner
+        // macro via xlcOnTime so the writes run on the STA thread at an idle
+        // point, NOT mid-recalc/mid-RTD-teardown. Command ordering is preserved
+        // (FIFO queue; in-order command vector). See xll_deferred_commands.h and
+        // AGENTS.md §19.3 / §23.
+        if (haveCommands) {
+            xll::DeferCalcEndCommands(std::move(respBuf));
+        } else {
+            // No commands, but date formats may be pending — wake the runner so
+            // DrainAndApplyDateFormats still runs (deferred). Empty buffer => the
+            // queue ignores it; the scheduler checks PendingDateFormats.
+            xll::DeferCalcEndCommands(std::vector<uint8_t>{});
         }
     }
 }
