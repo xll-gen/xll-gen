@@ -60,6 +60,7 @@ tasks:
   build-cpp:
     desc: Build C++ XLL (Release)
     cmds:
+      - task: build-go
       - cmake -S generated/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
       - cmake --build build/cpp --config Release
 
