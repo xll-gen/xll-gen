@@ -45,6 +45,17 @@ func writeProject(t *testing.T, projectDir, yaml, mainGo, repoRoot string) {
 		"-replace", "github.com/xll-gen/xll-gen="+repoRoot); err != nil {
 		t.Fatalf("go mod edit: %v\n%s", err, out)
 	}
+	// The generated server's date path imports symbols from `types` that the
+	// pinned tag (versions.Types) does not yet ship. When XLLGEN_TYPES_SRC
+	// points at a local types checkout that has them, replace the module so the
+	// project's Go build resolves them. No-op when the env var is unset (the
+	// pinned tag suffices for the non-date fixtures). Mirrors regression_test.go.
+	if typesSrc := os.Getenv("XLLGEN_TYPES_SRC"); typesSrc != "" {
+		if out, err := runIn(projectDir, "go", "mod", "edit",
+			"-replace", "github.com/xll-gen/types="+typesSrc); err != nil {
+			t.Fatalf("go mod edit replace types: %v\n%s", err, out)
+		}
+	}
 }
 
 func buildProject(t *testing.T, projectDir string) string {

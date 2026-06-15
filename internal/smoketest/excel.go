@@ -256,6 +256,38 @@ func GetCellValue(sheet *ole.IDispatch, cellAddr string) (any, error) {
 	return val.Value(), nil
 }
 
+// GetCellNumberFormat reads cellAddr's number-format code (e.g. "General",
+// "yyyy-mm-dd", "0.00"). Used to assert date auto-formatting was applied.
+func GetCellNumberFormat(sheet *ole.IDispatch, cellAddr string) (string, error) {
+	rng, err := oleutil.GetProperty(sheet, "Range", cellAddr)
+	if err != nil {
+		return "", fmt.Errorf("Range(%s): %w", cellAddr, err)
+	}
+	rngDisp := rng.ToIDispatch()
+	defer rngDisp.Release()
+	v, err := oleutil.GetProperty(rngDisp, "NumberFormat")
+	if err != nil {
+		return "", fmt.Errorf("GetProperty(NumberFormat): %w", err)
+	}
+	s, _ := v.Value().(string)
+	return s, nil
+}
+
+// SetCellNumberFormat writes a number-format code into cellAddr. Used by the
+// date-format idempotency check to pre-format a cell to a DIFFERENT date format.
+func SetCellNumberFormat(sheet *ole.IDispatch, cellAddr, format string) error {
+	rng, err := oleutil.GetProperty(sheet, "Range", cellAddr)
+	if err != nil {
+		return fmt.Errorf("Range(%s): %w", cellAddr, err)
+	}
+	rngDisp := rng.ToIDispatch()
+	defer rngDisp.Release()
+	if _, err := oleutil.PutProperty(rngDisp, "NumberFormat", format); err != nil {
+		return fmt.Errorf("PutProperty(NumberFormat): %w", err)
+	}
+	return nil
+}
+
 // CalculateFull forces Excel to recompute the entire workbook synchronously.
 func (a *excelApp) CalculateFull() error {
 	_, err := oleutil.CallMethod(a.disp, "CalculateFull")

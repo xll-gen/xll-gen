@@ -86,6 +86,15 @@ func buildXLL(projectDir, fetchCache string) (string, error) {
 	if fetchCache != "" {
 		cfgArgs = append(cfgArgs, "-DFETCHCONTENT_BASE_DIR="+fetchCache)
 	}
+	// The generated CMakeLists fetches `types` at the pinned tag (Deps.Types),
+	// which does NOT yet ship the date auto-format symbols (CollectDateCells /
+	// ScheduleDateFormatsForCaller / IsDateLikeFormat). When XLLGEN_TYPES_SRC
+	// points at a local types checkout that has them, redirect the FetchContent
+	// source so the smoke XLL compiles against the local source. No-op when the
+	// env var is unset. Mirrors cpp_compile_gate_test.go.
+	if typesSrc := os.Getenv("XLLGEN_TYPES_SRC"); typesSrc != "" {
+		cfgArgs = append(cfgArgs, "-DFETCHCONTENT_SOURCE_DIR_TYPES="+typesSrc)
+	}
 	if out, err := runIn(projectDir, "cmake", cfgArgs...); err != nil {
 		return "", fmt.Errorf("cmake configure: %w\n%s", err, out)
 	}
