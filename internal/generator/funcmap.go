@@ -61,6 +61,24 @@ func anyRtdOnceGrid(fns []config.Function) bool {
 	return false
 }
 
+// anyDateType reports whether any function takes a date argument or returns a
+// date. Used to gate the `"time"` import in interface.go.tmpl: the handler
+// interface references time.Time only when a date appears, so importing time
+// unconditionally would be an unused import in date-free projects.
+func anyDateType(fns []config.Function) bool {
+	for _, f := range fns {
+		if f.Return == "date" {
+			return true
+		}
+		for _, a := range f.Args {
+			if a.Type == "date" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Helper to check if a specific event type is registered
 func hasEvent(eventType string, events []config.Event) bool {
 	for _, e := range events {
@@ -125,6 +143,7 @@ func parseDurationToMs(s string, defaultMs int) int {
 func GetCommonFuncMap() template.FuncMap {
 	return template.FuncMap{
 		"hasEvent":        hasEvent,
+		"anyDateType":     anyDateType,
 		"getEventHandler": getEventHandler,
 		"escapeCppString": escapeCppString,
 		"derefBool": func(b *bool) bool {

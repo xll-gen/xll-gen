@@ -392,6 +392,11 @@ var validArgTypes = map[string]bool{
 	"grid":    true,
 	"numgrid": true,
 	"any":     true,
+	// "date" rides the double request path: Excel sends the serial as a double
+	// and the generated server decodes it to a time.Time via
+	// server.SerialToTime. Argument-only for now — a date RETURN would require
+	// time.Time→serial encoding in the response path (not yet wired).
+	"date": true,
 }
 
 // validReturnTypes is the set of allowed return types in xll.yaml.

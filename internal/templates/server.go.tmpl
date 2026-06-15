@@ -316,6 +316,8 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	{{range .Args}}
 	{{if eq .Type "string"}}
 	arg_{{.Name}} := string(request.{{.Name|capitalize}}())
+	{{else if eq .Type "date"}}
+	arg_{{.Name}} := server.SerialToTime(request.{{.Name|capitalize}}())
 	{{else if eq .Type "int?"}}
 	var arg_{{.Name}} *int32
 	if v := request.{{.Name|capitalize}}(nil); v != nil {

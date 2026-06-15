@@ -3,7 +3,8 @@ package {{.Package}}
 
 import (
 	"context"
-	"github.com/xll-gen/types/go/protocol"
+{{if anyDateType .Functions}}	"time"
+{{end}}	"github.com/xll-gen/types/go/protocol"
 {{if .Commands}}	"github.com/xll-gen/xll-gen/pkg/server"
 {{end}})
 

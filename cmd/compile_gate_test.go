@@ -85,6 +85,12 @@ functions:
     args: [{name: "g", type: "numgrid"}]
     return: "numgrid"
 
+  # sync with a date arg (rides the double path, decoded via server.SerialToTime
+  # to a time.Time handler argument) — exercises the "time" import guard
+  - name: "SyncDate"
+    args: [{name: "d", type: "date"}, {name: "label", type: "string"}]
+    return: "string"
+
   # sync with range arg + scalar arg mix
   - name: "SyncRange"
     args: [{name: "r", type: "range"}, {name: "n", type: "float"}, {name: "s", type: "string"}, {name: "b", type: "bool"}]
@@ -161,6 +167,7 @@ const compileGateMain = `package main
 
 import (
 	"context"
+	"time"
 
 	"compile_gate/generated"
 
@@ -180,6 +187,10 @@ func (s *Service) SyncGrid(ctx context.Context, g *protocol.Grid) ([][]any, erro
 
 func (s *Service) SyncNumGrid(ctx context.Context, g *protocol.NumGrid) ([][]float64, error) {
 	return [][]float64{{1, 2}, {3, 4}}, nil
+}
+
+func (s *Service) SyncDate(ctx context.Context, d time.Time, label string) (string, error) {
+	return label + d.Format(time.RFC3339), nil
 }
 
 func (s *Service) SyncRange(ctx context.Context, r *protocol.Range, n float64, str string, b bool) (string, error) {

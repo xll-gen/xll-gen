@@ -81,6 +81,21 @@ var typeRegistry = map[string]TypeInfo{
 		ArgCppType:      "FP12*",
 		XllType:         "K%",
 		ArgXllType:      "K%",	},
+	// date: rides the EXISTING double request path — a date ARGUMENT is sent as
+	// a double (Excel serial) and decoded back to a time.Time in the generated
+	// server via server.SerialToTime(...). RetGoType is time.Time for forward
+	// compatibility, but only the ARGUMENT position is wired today (config
+	// validation rejects a date RETURN — the response path does not yet encode
+	// time.Time back to a serial double).
+	"date": {
+		SchemaType: "double",
+		GoType:     "time.Time",
+		RetGoType:  "time.Time",
+		CppType:    "LPXLOPER12",
+		ArgCppType: "double",
+		XllType:    "Q",
+		ArgXllType: "B",
+	},
 	"any": {
 		SchemaType:      "protocol.Any",
 		GoType:          "*protocol.Any",
