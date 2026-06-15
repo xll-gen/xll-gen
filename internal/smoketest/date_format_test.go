@@ -37,6 +37,11 @@ logging:
 server:
   workers: 2
   timeout: "10s"
+rtd:
+  enabled: true
+  prog_id: "XllSmoke.Rtd"
+  description: "xll-gen date-format harness RTD"
+  throttle_interval: "250ms"
 functions:
   - name: "DateScalar"
     description: "Returns a midnight date as any (auto-formats yyyy-mm-dd)."
@@ -47,6 +52,17 @@ functions:
   - name: "BdhGrid"
     description: "Returns a [date,number] grid; only the date column formats."
     return: "grid"
+  - name: "BdhGridOnce"
+    description: "rtd-once [date,number] grid (YDH shape); date column must format."
+    return: "grid"
+    mode: "rtd-once"
+    memoize_ttl: "60s"
+  - name: "YdhGridOnce"
+    description: "rtd-once grid WITH a string arg + LARGE date column (faithful YDH analogue)."
+    return: "grid"
+    mode: "rtd-once"
+    memoize_ttl: "60s"
+    args: [{name: "ticker", type: "string"}]
 `
 
 const dateMain = `package main
@@ -75,8 +91,40 @@ func (s *Service) BdhGrid(ctx context.Context) ([][]any, error) {
 	}, nil
 }
 
+// BdhGridOnce mirrors the YDH showcase shape: a header row of strings, then
+// data rows whose column 0 is a time.Time WITH a time-of-day fraction (22:30 ->
+// .9375 serial fraction, exactly YDH's failing case) and other columns numeric.
+// mode:rtd-once means the grid is delivered guest->host and spilled on the
+// readiness recalc — the path the sync BdhGrid above does NOT exercise.
+func (s *Service) BdhGridOnce(ctx context.Context) ([][]any, error) {
+	return [][]any{
+		{"Date", "Px"},
+		{time.Date(2026, 6, 15, 22, 30, 0, 0, time.UTC), 1.5},
+		{time.Date(2026, 6, 16, 22, 30, 0, 0, time.UTC), 2.5},
+	}, nil
+}
+
+// YdhGridOnce is the faithful YDH analogue: a rtd-once grid WITH a string arg
+// (so it rides the content-hash payload path) returning a LARGE grid: a header
+// row then 30 data rows whose column 0 is a descending series of datetimes
+// (.9375 fraction). This stresses the calc#2 spill-materialization vs.
+// CalculationEnded-drain timing on a many-row spill.
+func (s *Service) YdhGridOnce(ctx context.Context, ticker string) ([][]any, error) {
+	rows := make([][]any, 0, 31)
+	rows = append(rows, []any{"Date", ticker})
+	base := time.Date(2026, 6, 15, 22, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		rows = append(rows, []any{base.AddDate(0, 0, -i), 100.0 + float64(i)})
+	}
+	return rows, nil
+}
+
 func (s *Service) OnCalculationEnded(ctx context.Context) error    { return nil }
 func (s *Service) OnCalculationCanceled(ctx context.Context) error { return nil }
+func (s *Service) OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error {
+	return nil
+}
+func (s *Service) OnRtdDisconnect(ctx context.Context, topicID int32) error { return nil }
 
 func main() { generated.Serve(&Service{}) }
 `
@@ -320,10 +368,112 @@ func TestDateFormat_Excel(t *testing.T) {
 			t.Errorf("idempotency: A1 format changed from %q to %q (conditional-skip should leave an existing date format untouched)", preFmt, fmtA1after)
 		}
 
+		// ---------------------------------------------------------------
+		// 5) rtd-once GRID (YDH showcase): =BdhGridOnce() -> G1, spills
+		//    G1:H3. Row 1 (G1:H1) is a string header; rows 2-3 column G
+		//    (G2,G3) are datetimes (.9375 fraction). The date column MUST be
+		//    auto-formatted as a datetime even though the spill happens on the
+		//    RTD readiness recalc (calc#2), not the user recalc (calc#1). This
+		//    is the path the sync BdhGrid above does NOT cover (the bug).
+		// ---------------------------------------------------------------
+		t.Logf("--- BdhGridOnce (G1:H3, rtd-once) ---")
+		app.SetRtdThrottle(250)
+		mustFormula(t, sheet, "G1", "=BdhGridOnce()")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatalf("CalculateFull after BdhGridOnce: %v", err)
+		}
+		// First paint is #GETTING_DATA; the readiness push recalcs and spills
+		// the real grid. Wait for the date data cells to resolve to a value.
+		pollHasValue(t, sheet, "G2", 25*time.Second)
+		pollHasValue(t, sheet, "G3", 25*time.Second)
+		// Date column G2/G3 must become date-like (datetime, has hh token).
+		fmtG2 := pollDateFormat(t, sheet, "G2", 12*time.Second)
+		fmtG3 := pollDateFormat(t, sheet, "G3", 12*time.Second)
+		t.Logf("G2 NumberFormat = %q, G3 NumberFormat = %q", fmtG2, fmtG3)
+		if !isDateLikeFmt(fmtG2) {
+			t.Errorf("G2: rtd-once date column NumberFormat %q is not date-like", fmtG2)
+		}
+		if !isDateLikeFmt(fmtG3) {
+			t.Errorf("G3: rtd-once date column NumberFormat %q is not date-like", fmtG3)
+		}
+		if !strings.ContainsAny(fmtG2, "hH") {
+			t.Errorf("G2: datetime NumberFormat %q lacks a time token (expected hh:mm:ss)", fmtG2)
+		}
+		// Number column H2/H3 must NOT be date-like (column isolation holds).
+		fmtH2, err := GetCellNumberFormat(sheet, "H2")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(H2): %v", err)
+		}
+		t.Logf("H2 NumberFormat = %q", fmtH2)
+		if isDateLikeFmt(fmtH2) {
+			t.Errorf("H2: number column was date-formatted %q (expected General/number)", fmtH2)
+		}
+		// Header row G1 (a string) must NOT be date-formatted.
+		fmtG1, err := GetCellNumberFormat(sheet, "G1")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(G1): %v", err)
+		}
+		if isDateLikeFmt(fmtG1) {
+			t.Errorf("G1: header (string) row was date-formatted %q", fmtG1)
+		}
+
+		// Idempotency across a re-calc: the format must survive (and not be
+		// stomped by a re-spill clearing it).
+		t.Logf("--- BdhGridOnce idempotency (re-calc) ---")
+		if err := app.CalculateFull(); err != nil {
+			t.Fatalf("CalculateFull (rtd-once grid idempotency): %v", err)
+		}
+		time.Sleep(1500 * time.Millisecond)
+		fmtG2after, err := GetCellNumberFormat(sheet, "G2")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(G2) after re-calc: %v", err)
+		}
+		t.Logf("G2 NumberFormat after re-calc = %q", fmtG2after)
+		if !isDateLikeFmt(fmtG2after) {
+			t.Errorf("idempotency: G2 lost its date format after re-calc (%q)", fmtG2after)
+		}
+
+		// ---------------------------------------------------------------
+		// 6) FAITHFUL YDH analogue: =YdhGridOnce("AAPL") -> J1, spills
+		//    J1:K31 (header + 30 data rows). Column J data cells (J2..J31)
+		//    are datetimes. A LARGE rtd-once spill stresses the calc#2
+		//    spill-materialization vs CalculationEnded-drain timing: if the
+		//    drain runs before Excel commits the later spill rows, the bottom
+		//    rows would be left unformatted (the YDH symptom: raw serials).
+		// ---------------------------------------------------------------
+		t.Logf("--- YdhGridOnce (J1:K31, rtd-once + arg, LARGE) ---")
+		mustFormula(t, sheet, "J1", `=YdhGridOnce("AAPL")`)
+		if err := app.CalculateFull(); err != nil {
+			t.Fatalf("CalculateFull after YdhGridOnce: %v", err)
+		}
+		// Wait for the spill to resolve (top and bottom data cells).
+		pollHasValue(t, sheet, "J2", 25*time.Second)
+		pollHasValue(t, sheet, "J31", 25*time.Second)
+		// Sample date cells across the whole spill: top, middle, bottom.
+		for _, addr := range []string{"J2", "J16", "J31"} {
+			f := pollDateFormat(t, sheet, addr, 12*time.Second)
+			t.Logf("%s NumberFormat = %q", addr, f)
+			if !isDateLikeFmt(f) {
+				t.Errorf("%s: YDH-analogue date cell NumberFormat %q is not date-like", addr, f)
+			}
+			if !strings.ContainsAny(f, "hH") {
+				t.Errorf("%s: datetime NumberFormat %q lacks a time token", addr, f)
+			}
+		}
+		// Number column K must NOT be date-like.
+		fmtK16, err := GetCellNumberFormat(sheet, "K16")
+		if err != nil {
+			t.Fatalf("GetCellNumberFormat(K16): %v", err)
+		}
+		if isDateLikeFmt(fmtK16) {
+			t.Errorf("K16: number column was date-formatted %q", fmtK16)
+		}
+
 		// graceful: clear all formulas before quit so the harness exits cleanly.
-		for _, a := range []string{"A1", "A3", "D1"} {
+		for _, a := range []string{"A1", "A3", "D1", "G1", "J1"} {
 			_ = SetCellFormula(sheet, a, "")
 		}
 		_ = app.CalculateFull()
+		time.Sleep(500 * time.Millisecond)
 	})
 }
