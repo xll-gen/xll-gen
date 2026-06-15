@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/xll-gen/xll-gen/version"
 )
 
 // rootCmd represents the base command when called without any subcommands.
@@ -12,6 +13,9 @@ var rootCmd = &cobra.Command{
 	Short: "A tool to generate Excel Add-ins (XLL) from Go code",
 	Long: `xll-gen is a CLI tool designed to facilitate the creation of Excel Add-ins (XLL)
 using an out-of-process architecture.`,
+	// Enables `xll-gen --version`. The `version` subcommand prints more detail
+	// (pinned dependency versions); both read version.Version as the single source.
+	Version: version.Version,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
