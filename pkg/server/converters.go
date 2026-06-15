@@ -86,8 +86,8 @@ func ParseBool(s string) bool {
 
 // MapAnyValue maps an arbitrary Go value onto a protocol.Any union tag plus
 // the payload the Any builder expects for that tag (nil → Nil, string → Str,
-// int32 → Int, other ints/floats → Num, bool → Bool, time.Time → RFC3339 Str,
-// everything else → fmt-formatted Str). Used by generated code for
+// int32 → Int, other ints/floats → Num, bool → Bool, time.Time → Date (Excel
+// serial), everything else → fmt-formatted Str). Used by generated code for
 // `return: "any"` async results, where the tag is needed at queue time.
 func MapAnyValue(v any) (AnyValue, any) {
 	return fbany.MapGo(v)

@@ -33,6 +33,7 @@ import (
 //	AnyValueNil     → val ignored
 //	AnyValueGrid    → [][]any      (row-major; cells nil/bool/string/int*/float*)
 //	AnyValueNumGrid → [][]float64  (row-major, rectangular)
+//	AnyValueDate    → time.Time    (Excel serial, wall-clock)
 //
 // Any other tag (including AnyValueNONE) produces a well-formed Any whose
 // val_type is forced to AnyValueNONE and whose union member is empty (offset
@@ -216,6 +217,7 @@ func ValidateGridDims[T any](v [][]T) (rows, cols int, err error) {
 //	string                               → Str
 //	int / int8 / int16 / int32 / int64   → Int (int32) when the value fits;
 //	uint*                                  otherwise Num (float64, 53-bit) —
+//	time.Time                            → Date (Excel serial, wall-clock)
 //	                                       mirrors MapGo's no-silent-truncation
 //	                                       rule for the scalar/any return path
 //	float32 / float64                    → Num
