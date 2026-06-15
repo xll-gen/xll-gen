@@ -37,6 +37,19 @@ void ScheduleDateFormatsForCaller(const protocol::Any* result) {
         const DWORD t = xCaller.get()->xltype & ~(xlbitDLLFree | xlbitXLFree);
         if (t & xltypeSRef) {
             anchor = xCaller.get()->val.sref.ref;
+            // SRef is relative to the calling cell's sheet and carries no
+            // idSheet. Resolve the concrete IDSHEET now (on the calc thread,
+            // where it is legal) so the CalculationEnded drain targets the
+            // right sheet even if the active sheet changed by then. No-arg
+            // xlSheetId returns an xltypeRef for the active sheet; mirrors
+            // LookupSheetName in types/src/converters.cpp.
+            ScopedXLOPER12Result xSheetId;
+            if (xll::CallExcel(xlSheetId, xSheetId) == xlretSuccess &&
+                ((xSheetId.get()->xltype & ~(xlbitDLLFree | xlbitXLFree)) & xltypeRef)) {
+                idSheet = xSheetId.get()->val.mref.idSheet;
+            }
+            // If resolution fails, idSheet stays 0 and the per-item drain catch
+            // degrades to "no format" rather than formatting the wrong sheet.
         } else if ((t & xltypeRef) && xCaller.get()->val.mref.lpmref &&
                    xCaller.get()->val.mref.lpmref->count > 0) {
             idSheet = xCaller.get()->val.mref.idSheet;
