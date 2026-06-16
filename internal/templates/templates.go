@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+// protocol.fbs is single-sourced from the pinned `types` module; regenerate it
+// with the syncprotocol tool whenever the types pin changes. The drift gate
+// cmd.TestProtocolFbsMatchesPinnedTypes fails CI if this copy goes stale.
+//
+//go:generate go run ./syncprotocol
+
 // templatesFS embeds all .tmpl files and .fbs files in the current directory.
 //
 //go:embed *.tmpl *.fbs

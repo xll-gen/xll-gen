@@ -25,6 +25,7 @@ table Err { val: XlError = Null; }
 table AsyncHandle { val: [ubyte]; }
 table Nil { }
 table RefCache { key: string; }
+table Date { serial: double; format: string; }
 
 struct Rect {
   row_first: int;
@@ -39,7 +40,7 @@ table Range {
   format: string;
 }
 
-union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil }
+union ScalarValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Date }
 
 table Scalar {
   val: ScalarValue;
@@ -57,7 +58,7 @@ table NumGrid {
   data: [double];
 }
 
-union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Grid, NumGrid, Range, RefCache }
+union AnyValue { Bool, Num, Int, Str, Err, AsyncHandle, Nil, Grid, NumGrid, Range, RefCache, Date }
 
 table Any {
   val: AnyValue;

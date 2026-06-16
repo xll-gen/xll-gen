@@ -136,11 +136,14 @@ This reduces code duplication in `internal/assets/files` and ensures consistency
 
 Certain parts of the codebase are tightly coupled and must be updated together to preserve consistency.
 
-### 18.1 Protocol & Types
-The `protocol.fbs` definition is critical.
-1.  **Schema Source**: `internal/templates/protocol.fbs` is the source for user C++ generation.
-2.  **Go Types**: `github.com/xll-gen/types` (External Repo) is the source for the Go server package.
-**Constraint**: These must be byte-compatible. Any change to `internal/templates/protocol.fbs` requires a simultaneous update to `xll-gen/types`, a new release of `types`, and a `go get` update in `dependencies.go`.
+### 18.1 Protocol & Types — single-sourced from `types`
+The `protocol.fbs` schema has **one source of truth: `types/go/protocol/protocol.fbs`** (the `github.com/xll-gen/types` repo). xll-gen does NOT hand-maintain its own schema.
+1.  **Schema Source (SSOT)**: `types/go/protocol/protocol.fbs`.
+2.  **Embedded copy (derived, do not hand-edit)**: `internal/templates/protocol.fbs` is a **verbatim, auto-synced copy** of the pinned `types` version. It is written into each generated project purely as a flatc parse-stub for `schema.fbs`'s `include "protocol.fbs"` — the generated project's actual protocol code (Go via import rewrite, C++ via `types` FetchContent + include rewrite; both `flatc --no-includes`) comes from the pinned `types` module, **never** from this copy.
+3.  **Sync tool**: `go generate ./internal/templates/` runs `internal/templates/syncprotocol`, copying the pinned `types` version's `protocol.fbs` over the embedded copy (byte-exact).
+4.  **Drift gate**: `cmd/protocol_fbs_sync_test.go` (`TestProtocolFbsMatchesPinnedTypes`) fails CI if the embedded copy is not byte-identical to the pinned `types` schema.
+
+**Workflow to change the protocol schema:** edit `types/go/protocol/protocol.fbs` → regenerate types' own Go/C++ artifacts + release a new `types` tag → bump the pin in `xll-gen` (`go.mod` + `internal/versions/versions.go`) → run `go generate ./internal/templates/` to re-sync the embedded copy → the drift gate confirms parity. NEVER hand-edit `internal/templates/protocol.fbs`; it will be overwritten by the sync and rejected by the gate if it diverges from the pin.
 
 ### 18.2 Shared Dependencies
 The versions of core dependencies must be synchronized across the build system, the generator, and the toolchain:
@@ -155,7 +158,7 @@ When adding a new Excel event (e.g., `SheetActivate`):
 1.  **Config**: Update `internal/config/config.go` (`Event` struct validation).
 2.  **Mapping**: Update `internal/generator/funcmap.go` (`lookupEventCode`, `lookupEventId`).
 3.  **Upstream**: Ensure `github.com/xll-gen/types` contains the `xlEvent` constant.
-4.  **Schema**: Update `internal/templates/protocol.fbs` if the event requires a specific payload structure.
+4.  **Schema**: If the event requires a specific payload structure, change it in `types/go/protocol/protocol.fbs` (the SSOT) and re-sync the embedded copy per §18.1 — do NOT hand-edit `internal/templates/protocol.fbs`.
 
 **⚠️ Event handlers must never perform synchronous Excel COM.** `CalculationEnded` (and any event) is delivered via a SYNCHRONOUS calc-end round-trip: the XLL fires `MSG_CALCULATION_ENDED` and BLOCKS Excel's STA thread inside `g_host.Send(..., 2000)` until the Go handler returns (it must block to fold scheduled commands into the same response — see `pkg/server/handlers.go::HandleCalculationEnded` and `internal/assets/files/src/xll_events.cpp`). If a handler drives Excel over COM (e.g. `sugar` `attachExcel` + `UsedRange().Find` / `Range().SetValue`), those calls need the STA thread that is blocked → hard deadlock until the 2000ms timeout, on EVERY recalc (`g_host.Send` does a non-pumping wait). Symptom: Excel freezes ~2s per recalc, typing becomes impossible. Event handlers must mutate Excel ONLY via `generated.ScheduleSet` / `generated.ScheduleFormat` (deferred commands, applied by the XLL on the STA thread AFTER the handler returns). COM is fine in COMMAND handlers (they run when the STA is free), NOT in event handlers. This footgun is also why a `CalculationEnded` handler cannot dynamically locate a target cell via COM (`Find`) — pass it a known address instead. (Observed 2026-06-15 in xll-gen-showcase `OnRecalc`; fixed there + documented in `README.md` Events.)
 
@@ -163,8 +166,10 @@ When adding a new Excel event (e.g., `SheetActivate`):
 When adding or modifying a data type (e.g., adding `date` support):
 1.  **Configuration**: Update `internal/config/config.go` (`validArgTypes`, `validReturnTypes`).
 2.  **Metadata**: Update `internal/generator/types.go` (`typeRegistry`).
-3.  **Schema**: Update `internal/templates/protocol.fbs` (add table/union member).
-4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type.
+3.  **Schema**: Add the table/union member in `types/go/protocol/protocol.fbs` (the SSOT), release/bump the pin, then re-sync the embedded copy per §18.1 — do NOT hand-edit `internal/templates/protocol.fbs`.
+4.  **Upstream**: Update `github.com/xll-gen/types` to handle the new type (converters + Go helpers).
+
+> Note: a type maps to a `protocol.fbs` member **only if its `SchemaType` is that member**. `date` uses `SchemaType="double"` (see Confirmed-Correct Decisions), so it rides the existing `Num`/`double` path and does not require the `Date` union member in the generated project — adding `date`-like types backed by `double` needs no schema change at all.
 
 **Return-direction (handler → cell) serialization.** A type valid as a RETURN
 may need a distinct handler-facing Go type and a server-side serializer, because
@@ -796,6 +801,43 @@ The `indices` array passed to `SafeArrayPutElement` follows the order of dimensi
 *   **Value**: `indices[0] = 1` (Row 1), `indices[1] = i` (Topic i).
 
 Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, causing them to stay stuck at "Connecting..." or show #N/A.
+
+## Confirmed-Correct Decisions (Do NOT Change)
+
+Synced from the workspace `IMPROVEMENT_BACKLOG.md` §6. These were flagged by past
+reviews and confirmed correct — do not "fix", "harden", or re-propose:
+
+* **`pkg/algo/greedy_mesh.go` int32-wrap boundary guard is unnecessary** (proven
+  2026-06-13). `nextCol/nextRow = MaxInt32+1` wraps to `MinInt32`, but `GreedyMesh`
+  sorts cells `(Row,Col)` ascending, marks `visited`, and expands; the wrap target
+  `MinInt32` is the global minimum so it is **always processed/visited first**, and
+  the `grid[next] && !visited[next]` guard blocks any wrong merge. The wrap is
+  unreachable by any API/reuse path (invariant proof) — no observable behavior
+  change exists, so a guard would be unverifiable dead code. Do not add it.
+* **`range` is intentionally unsupported as a RETURN type** (v0.5.0 decision). A
+  range in value position is meaningless and a `U` return breaks registration
+  (worksheet name → `#NAME?`). Use grid/numgrid returns. See §19.2 / §19.3. Do
+  not re-propose.
+* **raw-XML ribbon mode does not support image files** (2026-06-12, user-confirmed).
+  The `loadImage` rejection on the raw-XML path is by design; file-based icons
+  require structured mode (`tab`/`groups`). See §18 ribbon decision. Do not re-propose.
+* **`date` maps to `SchemaType="double"`, NOT to a `protocol::Date` union member**
+  (verified 2026-06-16). Generated schemas encode dates as `double`; generated C++
+  never references `protocol::Date`. This is why, before the schema was
+  single-sourced (§18.1), a shipped showcase whose `generated/protocol.fbs` lacked
+  the `Date` table still compiled and passed date-I/O e2e — the local `protocol.fbs`
+  is only a flatc parse-stub and the real protocol code comes from the pinned
+  `types` module. The embedded copy is now auto-synced from pinned `types` (so it
+  *does* carry the `Date` table) and the drift gate enforces parity, but the
+  invariant stands: a cross-repo audit that flags `protocol.fbs` `Date` "drift" as
+  a blocker is wrong — date rides the `double` path. Do not re-report it as a
+  blocker, and do not "wire `date` to the `Date` union" without an explicit design
+  decision (it is intentionally `double`-backed today).
+* **RTD RefreshData SAFEARRAY 2-D layout (§22.2/§22.3), async type strings, and
+  the `extern "C"` export scheme** are confirmed correct — do not alter the
+  dimension order or export shape.
+* **x86/x64 TSO assumption (§0.1)** — acquire-release pairs rely on hardware TSO;
+  ARM weak-memory concerns are out of scope. Mirror of `shm`'s rule.
 
 ## 23. Known Improvement Backlog
 
