@@ -151,13 +151,26 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 
 	log.Info("RTD Connect request received", "topicID", topicID, "strings", topicStrings)
 
-	ctx := context.Background()
+	// Derive a cancellable context and register its cancel with the
+	// RtdManager keyed by topicID BEFORE launching the goroutine, so a
+	// disconnect arriving right after this connect ack can cancel the
+	// in-flight handler (HandleRtdDisconnect -> RtdManager.Unsubscribe ->
+	// cancel). The deregister is generation-safe: a normally-completed handler
+	// removes only its own entry, never a newer connect that reused topicID.
+	ctx, cancel := context.WithCancel(context.Background())
+	deregister := h.RtdManager.RegisterConnectCancel(topicID, cancel)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("Panic in OnRtdConnect", "error", r)
 			}
 		}()
+		// On normal completion: drop our registry entry first (generation-safe),
+		// then cancel to release the context's resources. Ordering does not
+		// affect correctness — the deregister only removes our own generation,
+		// and cancel() after the handler returns is a no-op for the handler.
+		defer cancel()
+		defer deregister()
 		if onConnect != nil {
 			if err := onConnect(ctx, topicID, topicStrings, newVal); err != nil {
 				log.Error("OnRtdConnect failed", "error", err)

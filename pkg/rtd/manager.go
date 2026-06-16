@@ -1,6 +1,7 @@
 package rtd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -47,6 +48,16 @@ type chunkSender interface {
 	SendGuestCall(data []byte, msgType shm.MsgType) ([]byte, error)
 }
 
+// connectCancel records the cancel func for one in-flight RTD connect handler,
+// tagged with a per-registration generation. The generation makes the registry
+// safe against topicID reuse: Excel reassigns a topicID after a disconnect, so a
+// completing connect goroutine's deferred deregister must only remove its OWN
+// entry — never a NEWER registration that happened to land on the same topicID.
+type connectCancel struct {
+	cancel context.CancelFunc
+	gen    uint64
+}
+
 // RtdManager manages RTD topic subscriptions and broadcasts.
 type RtdManager struct {
 	mu sync.RWMutex
@@ -55,6 +66,15 @@ type RtdManager struct {
 	// map[TopicID] -> Key
 	idToKey map[int32]string
 	client  rtdClient
+
+	// connectCancels maps an in-flight connect's topicID to its cancel func
+	// (+ generation). Guarded by mu — the same lock as the subscription maps,
+	// so a disconnect's Unsubscribe atomically drops the subscription AND
+	// cancels the in-flight connect under one critical section.
+	connectCancels map[int32]connectCancel
+	// connectGen is a monotonic counter handing out a fresh generation to each
+	// RegisterConnectCancel. Guarded by mu.
+	connectGen uint64
 }
 
 // GlobalRtd is the singleton instance of RtdManager.
@@ -63,8 +83,9 @@ var GlobalRtd = NewRtdManager()
 // NewRtdManager creates a new RtdManager.
 func NewRtdManager() *RtdManager {
 	return &RtdManager{
-		keyToIDs: make(map[string]map[int32]struct{}),
-		idToKey:  make(map[int32]string),
+		keyToIDs:       make(map[string]map[int32]struct{}),
+		idToKey:        make(map[int32]string),
+		connectCancels: make(map[int32]connectCancel),
 	}
 }
 
@@ -106,7 +127,20 @@ func (m *RtdManager) Subscribe(key string, topicID int32) {
 	m.idToKey[topicID] = key
 }
 
-// Unsubscribe removes a TopicID from management.
+// Unsubscribe removes a TopicID from management AND cancels any in-flight
+// connect handler registered for that topicID (see RegisterConnectCancel).
+//
+// Cancelling here is what makes a mid-flight disconnect actually stop a long
+// rtd-once / OnRtdConnect handler: the handler's context.Context becomes Done,
+// so a ctx-observing handler returns ctx.Err() and RunOnce/RunOnceGrid push the
+// cancellation string instead of running to completion against a dead topic.
+//
+// The cancel func is invoked while holding m.mu. That is safe: a
+// context.CancelFunc is non-blocking and re-enters nothing in RtdManager (it
+// only closes the context's done channel). We deliberately do NOT call any
+// RtdManager method from inside this critical section, so there is no
+// lock-ordering hazard with Publish/SendUpdate/Subscribe (all of which also
+// take m.mu).
 func (m *RtdManager) Unsubscribe(topicID int32) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,6 +151,52 @@ func (m *RtdManager) Unsubscribe(topicID int32) {
 			delete(m.keyToIDs, key)
 		}
 		delete(m.idToKey, topicID)
+	}
+
+	if cc, ok := m.connectCancels[topicID]; ok {
+		delete(m.connectCancels, topicID)
+		cc.cancel()
+	}
+}
+
+// RegisterConnectCancel records cancel as the cancellation func for the
+// in-flight connect handler of topicID, replacing (and cancelling) any stale
+// registration still parked on the same topicID. It returns a deregister func
+// that the connect goroutine MUST defer: on normal completion the deregister
+// removes the entry so a later disconnect does not cancel an already-finished
+// handler — and it is GENERATION-SAFE, removing the entry ONLY if it is still
+// this registration (not a newer one for a reused topicID).
+//
+// Register synchronously, BEFORE launching the connect goroutine, so a
+// disconnect arriving immediately after the connect ack cannot miss the cancel.
+//
+// Generation race handling: each registration gets a fresh monotonic
+// generation. Unsubscribe and a replacing RegisterConnectCancel cancel+drop the
+// current entry unconditionally (the caller wants the in-flight handler gone).
+// The returned deregister, by contrast, is a no-op unless the entry it finds
+// carries the SAME generation — so a slow handler whose own topicID was reused
+// by a brand-new connect cannot clobber or cancel that newer registration when
+// it finally finishes.
+func (m *RtdManager) RegisterConnectCancel(topicID int32, cancel context.CancelFunc) (deregister func()) {
+	m.mu.Lock()
+	m.connectGen++
+	gen := m.connectGen
+	// A previous registration on this topicID (e.g. a connect that never
+	// completed before Excel reused the id) is stale: cancel it so its handler
+	// stops, then overwrite. Cancel under the lock — non-blocking, no
+	// re-entrancy (same contract as Unsubscribe above).
+	if prev, ok := m.connectCancels[topicID]; ok {
+		prev.cancel()
+	}
+	m.connectCancels[topicID] = connectCancel{cancel: cancel, gen: gen}
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if cc, ok := m.connectCancels[topicID]; ok && cc.gen == gen {
+			delete(m.connectCancels, topicID)
+		}
 	}
 }
 
