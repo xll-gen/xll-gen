@@ -6,9 +6,21 @@
 // Plan B / Task 3: when a value-materializing wrapper produces a result that
 // contains Date cells, ScheduleDateFormatsForCaller (called ON A CALC THREAD)
 // captures xlfCaller as the anchor and enqueues one PendingFormat per date cell
-// into the single global PendingDateFormats queue. At CalculationEnded (on the
-// main STA thread) DrainAndApplyDateFormats empties the queue and applies the
-// format via xlcSelect + xlcFormatNumber.
+// into the single global PendingDateFormats queue. At calc-end — actually on the
+// deferred runner the STA thread schedules via xlcOnTime, OUTSIDE the
+// CalculationEnded event — DrainAndApplyDateFormats empties the queue and
+// applies each format via COM Range.NumberFormat (NOT xlcSelect/xlcFormatNumber).
+//
+// WHY COM (NO SELECTION CHANGE): the C-API xlcSelect/xlcFormatNumber pair
+// operates on Excel's ACTIVE selection — it must first SELECT the target range,
+// which steals the user's active cell/selection and makes the screen flicker on
+// every recalc that touches a fresh date cell. The COM route
+// (Application -> Workbooks(book) -> Worksheets(sheet) -> Range(a1) ->
+// NumberFormat = fmt) targets the cells directly and leaves the user's active
+// cell and selection completely untouched. This matches the Excel-DNA / xlOil
+// guidance that off-selection formatting must go through a COM Range. The
+// Application IDispatch is acquired via the shared header-only
+// xll::com::AcquireExcelApplication (include/com/excel_app.h), once per drain.
 //
 // ONCE-PER-CELL (perf, 2026-06-15): a recalc fires on EVERY keystroke, so the
 // drain runs constantly while a user types. The old drain issued a SYNCHRONOUS
@@ -19,7 +31,10 @@
 // owns a process-global, mutex-guarded "formatted set" keyed by
 // (idSheet,row,col). The FIRST time a date cell is seen we apply the auto-format
 // UNCONDITIONALLY (overriding any pre-existing user format that one time), then
-// mark the cell in the set; ALL subsequent recalcs do ZERO COM work for it.
+// mark the cell in the set; ALL subsequent recalcs do ZERO COM work for it. The
+// once-per-cell rule matters even more now that the apply is a COM round-trip:
+// the drain still issues at most one Range.NumberFormat per never-before-seen
+// rectangle, never per keystroke for an already-formatted cell.
 // The producer also consults the set so it never re-enqueues an already-formatted
 // cell, keeping the pending vector tiny.
 //
@@ -36,9 +51,11 @@
 // any cell already carrying a date-like format).
 //
 // THREADING: producers run on Excel calc threads; the drain runs on the STA
-// thread at calc-end. All access to the queue AND the formatted set goes through
-// a single mutex, the same discipline as the RTD registries (see
-// include/xll_rtd_once_grid.h).
+// thread via the calc-end deferred runner (xlcOnTime), OUTSIDE the
+// CalculationEnded event — a command context where both the C-API sheet-name
+// lookup (xlSheetNm) and COM (Range.NumberFormat) are legal and safe. All access
+// to the queue AND the formatted set goes through a single mutex, the same
+// discipline as the RTD registries (see include/xll_rtd_once_grid.h).
 //
 // This module is NOT gated by XLL_RTD_ENABLED: sync (non-RTD) date formatting
 // must work in every build, so its TU is compiled unconditionally via the
@@ -109,11 +126,18 @@ void ScheduleDateFormatsForCaller(const protocol::Grid* grid);
 // Calc-end helper: drain the queue; drop cells already in the formatted set,
 // GROUP the rest by (idSheet, format) — never merging different sheets or
 // formats — then greedy-mesh each group's (row,col) cells into rectangular
-// blocks (see include/xll_greedy_mesh.h). Each rectangle is formatted with ONE
-// xlcSelect + xlcFormatNumber (NO xlfGetCell read); on success every cell in the
-// rectangle is marked formatted, on failure none are (the rect retries next
-// cycle). The common YDH case — one contiguous date column, identical format —
-// collapses to a single format op. NEVER throws into calc-end.
+// blocks (see include/xll_greedy_mesh.h). The in-process Application IDispatch
+// is acquired ONCE per drain (xll::com::AcquireExcelApplication); each idSheet
+// is resolved to a worksheet name via the C-API xlSheetNm and then to a COM
+// Worksheet object (cached per drain). Each rectangle is formatted with ONE COM
+// assignment — Worksheet.Range(a1).NumberFormat = fmt — which does NOT touch the
+// user's selection (no xlcSelect/xlcFormatNumber, no xlfGetCell read). On
+// success every cell in the rectangle is marked formatted; on ANY failure
+// (no Application yet, unresolvable sheet, COM error) none are, so the rect
+// retries next cycle (self-heal). The common YDH case — one contiguous date
+// column, identical format — collapses to a single Range.NumberFormat op. All
+// COM objects/VARIANTs/BSTRs are released on every path. NEVER throws into
+// calc-end.
 void DrainAndApplyDateFormats();
 
 } // namespace xll

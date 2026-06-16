@@ -813,7 +813,12 @@ func TestGenCpp_RtdThrottle(t *testing.T) {
 	if !strings.Contains(cmakeFor(base("250ms")), "oleacc") {
 		t.Errorf("CMake with throttle must link oleacc")
 	}
-	if strings.Contains(cmakeFor(base("")), "oleacc") {
-		t.Errorf("CMake without throttle (ribbon off) must not link oleacc")
+	// oleacc is now linked UNCONDITIONALLY: the always-on date auto-format
+	// module (src/xll_date_format.cpp) targets cells via the in-process
+	// Application IDispatch route (AccessibleObjectFromWindow + COM
+	// Range.NumberFormat, no selection change), so the COM libs must link in
+	// every build — including throttle-less, ribbon-off, sync-only projects.
+	if !strings.Contains(cmakeFor(base("")), "oleacc") {
+		t.Errorf("CMake must link oleacc unconditionally (always-on date-format COM Range path)")
 	}
 }

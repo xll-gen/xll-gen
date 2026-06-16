@@ -67,6 +67,13 @@
 {{if or .Commands (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
 #include "com/dispatch_helpers.h"
 {{end}}
+{{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
+// Shared, header-only Application-IDispatch acquisition (window walk +
+// AccessibleObjectFromWindow). Also used UNCONDITIONALLY by the always-on date
+// auto-format module (src/xll_date_format.cpp); pulled in here only for the
+// ribbon / RTD-throttle features that need it on this template TU.
+#include "com/excel_app.h"
+{{end}}
 {{if .Ribbon.Enabled}}
 #include "ribbon_xml.h"
 #include "ribbon_images.h"
@@ -277,59 +284,15 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
 }
 
 {{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
-// Finds the hosting Excel's Application IDispatch using the in-process
-// accessibility route: XLMAIN -> XLDESK -> EXCEL7 child window ->
-// AccessibleObjectFromWindow(OBJID_NATIVEOM) -> Window.Application.
-// Must run on Excel's main STA thread (xlAutoOpen/xlAutoClose qualify).
-static BOOL CALLBACK FindExcel7Proc(HWND hwnd, LPARAM lParam) {
-    wchar_t cls[16] = {};
-    GetClassNameW(hwnd, cls, 15);
-    if (wcscmp(cls, L"EXCEL7") == 0) {
-        *reinterpret_cast<HWND*>(lParam) = hwnd;
-        return FALSE;
-    }
-    return TRUE;
-}
-
-static BOOL CALLBACK FindXlMainProc(HWND hwnd, LPARAM lParam) {
-    wchar_t cls[32] = {};
-    GetClassNameW(hwnd, cls, 31);
-    if (wcscmp(cls, L"XLMAIN") == 0) {
-        *reinterpret_cast<HWND*>(lParam) = hwnd;
-        return FALSE;
-    }
-    return TRUE;
-}
-
-// Returns the hosting Excel's Application IDispatch (AddRef'd; caller
-// releases), or nullptr if the window chain / native object model is not
-// available yet (early startup probe loads).
+// Thin wrapper over the shared header-only xll::com::AcquireExcelApplication
+// (include/com/excel_app.h) so the ribbon/RTD-throttle call sites below keep
+// their familiar name. The window-walk + AccessibleObjectFromWindow logic now
+// lives in one place because the always-on date auto-format module needs it too
+// (it sets Range.NumberFormat directly to avoid changing the user's selection).
+// Returns the Application IDispatch AddRef'd; caller releases. Must run on
+// Excel's main STA thread (xlAutoOpen/xlAutoClose qualify).
 static IDispatch* GetExcelApplication() {
-    HWND frame = nullptr;
-    EnumThreadWindows(GetCurrentThreadId(), FindXlMainProc, reinterpret_cast<LPARAM>(&frame));
-    if (!frame) return nullptr;
-
-    HWND excel7 = nullptr;
-    HWND xldesk = FindWindowExW(frame, nullptr, L"XLDESK", nullptr);
-    if (xldesk) excel7 = FindWindowExW(xldesk, nullptr, L"EXCEL7", nullptr);
-    if (!excel7) {
-        EnumChildWindows(frame, FindExcel7Proc, reinterpret_cast<LPARAM>(&excel7));
-    }
-    if (!excel7) return nullptr;
-
-    IDispatch* pWindow = nullptr;
-    if (FAILED(AccessibleObjectFromWindow(excel7, OBJID_NATIVEOM, IID_IDispatch, reinterpret_cast<void**>(&pWindow))) || !pWindow)
-        return nullptr;
-
-    IDispatch* pApp = nullptr;
-    VARIANT vApp; VariantInit(&vApp);
-    if (SUCCEEDED(xll::com::GetProperty(pWindow, L"Application", &vApp)) && vApp.vt == VT_DISPATCH && vApp.pdispVal) {
-        pApp = vApp.pdispVal;
-        pApp->AddRef();
-    }
-    VariantClear(&vApp);
-    pWindow->Release();
-    return pApp;
+    return xll::com::AcquireExcelApplication();
 }
 {{end}}
 
@@ -814,7 +777,7 @@ start_worker:
         // Register the calc-end DEFERRED COMMAND RUNNER macro (macroType=2).
         // HandleCalculationEnded schedules this via xlcOnTime so the
         // cell-mutating commands (xlSet) and date-format application
-        // (xlcSelect/xlcFormatNumber) run OUTSIDE the xleventCalculationEnded
+        // (COM Range.NumberFormat) run OUTSIDE the xleventCalculationEnded
         // callback — fixing the rtd-once-window reentrancy crash (0xc0000005).
         // Registered unconditionally because CalculationEnded itself is (the
         // date-format drain is always-on). Idempotent: re-registering the same
@@ -1053,7 +1016,8 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
 // dispatches it on the STA thread at an idle point — OUTSIDE the
 // xleventCalculationEnded callback and after any in-flight recalc / rtd-once
 // topic teardown has settled — which is where it is safe to run the cell
-// mutations (xlSet / xlcSelect / xlcFormatNumber). The exported symbol name
+// mutations (xlSet) and the date auto-format (COM Range.NumberFormat applied
+// off-selection; see src/xll_date_format.cpp). The exported symbol name
 // MUST match xll::DeferredRunnerMacroName(). Returns short (TypeText "A").
 extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
     XLL_SAFE_BLOCK_BEGIN

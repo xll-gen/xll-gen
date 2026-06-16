@@ -153,6 +153,25 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   phmap
 )
 
+if(WIN32)
+    # COM libs required UNCONDITIONALLY by the always-on date auto-format module
+    # (src/xll_date_format.cpp). It targets cells with the in-process Application
+    # IDispatch route (AccessibleObjectFromWindow + late-bound Range.NumberFormat)
+    # so it never changes the user's active selection. This route exists in every
+    # build — sync-only projects with no RTD/ribbon still format dates — so these
+    # libs must link regardless of the RTD/ribbon blocks below (which add them
+    # again; duplicate entries are harmless to the linker).
+    #   ole32/oleaut32 : COM + VARIANT/BSTR
+    #   uuid           : IID_IDispatch and friends
+    #   oleacc         : AccessibleObjectFromWindow(OBJID_NATIVEOM)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ole32
+        oleaut32
+        uuid
+        oleacc
+    )
+endif()
+
 {{ if .Rtd.Enabled }}
 target_compile_definitions(${PROJECT_NAME} PRIVATE XLL_RTD_ENABLED)
 if(WIN32)

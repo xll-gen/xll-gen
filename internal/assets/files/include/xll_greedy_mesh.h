@@ -13,11 +13,11 @@
 // WHY HERE / WHY HEADER-ONLY: the ONLY consumer is src/xll_date_format.cpp
 // (the date auto-format calc-end drain), which greedy-meshes contiguous
 // same-format date cells into rectangular blocks so each block is formatted
-// with ONE xlcSelect+xlcFormatNumber instead of one per cell. The common case
-// — a YDH-style single contiguous date COLUMN of ~21 cells with one identical
-// format — collapses to a SINGLE rectangle / single format op. Fewer
-// xlcSelect/xlcFormatNumber calls at calc-end also shrinks the reentrancy
-// surface of the deferred-runner path.
+// with ONE COM Range.NumberFormat assignment instead of one per cell. The
+// common case — a YDH-style single contiguous date COLUMN of ~21 cells with one
+// identical format — collapses to a SINGLE rectangle / single format op. Fewer
+// COM round-trips at calc-end also shrinks the reentrancy surface of the
+// deferred-runner path.
 //
 // DEPENDENCY-FREE BY DESIGN: this header touches NO Excel/XLOPER types — just
 // ints — so the logic is unit-testable in isolation (and the Go test covers it
