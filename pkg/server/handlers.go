@@ -151,26 +151,43 @@ func (h *SystemHandler) HandleRtdConnect(data []byte, respBuf []byte, b *flatbuf
 
 	log.Info("RTD Connect request received", "topicID", topicID, "strings", topicStrings)
 
-	// Derive a cancellable context and register its cancel with the
-	// RtdManager keyed by topicID BEFORE launching the goroutine, so a
-	// disconnect arriving right after this connect ack can cancel the
-	// in-flight handler (HandleRtdDisconnect -> RtdManager.Unsubscribe ->
-	// cancel). The deregister is generation-safe: a normally-completed handler
-	// removes only its own entry, never a newer connect that reused topicID.
+	// Derive a cancellable context and hand its cancel func to the RtdManager,
+	// keyed by topicID, BEFORE launching the goroutine. Ownership of `cancel`
+	// transfers to the RtdManager: the ONLY things that may cancel this ctx are
+	//   (a) HandleRtdDisconnect -> RtdManager.Unsubscribe (the topic went away), or
+	//   (b) a later connect that reuses topicID -> RegisterConnectCancel cancels
+	//       the prior registration before installing the new one.
+	// We deliberately do NOT cancel on the connect goroutine's normal return:
+	// STREAMING handlers (showcase Clock_RTD / StockTick_RTD) return nil
+	// immediately but leave a goroutine pushing on this very ctx until the topic
+	// disconnects. Cancelling on connect-return killed that stream after exactly
+	// one value (the connect-time push), which Excel then saw as an unresponsive
+	// RTD server. Run-to-completion handlers (rtd-once scalar/grid) don't touch
+	// ctx after returning, so letting their ctx live until disconnect is harmless:
+	// context.WithCancel spawns no goroutine, so an un-cancelled ctx is just GC'd
+	// once unreferenced, and the live-topic count bounds outstanding ctxs.
+	//
+	// We deliberately do NOT deregister on the connect goroutine's normal return
+	// either. A STREAMING handler returns nil immediately while its pushing
+	// goroutine keeps the ctx in use; if normal-return deregistered the entry, a
+	// later disconnect's Unsubscribe would find nothing to cancel and the stream
+	// would run forever (and, symmetrically, the freeze we are fixing came from
+	// the old defer cancel()). So removal of the connectCancels entry is owned by
+	//   (a) disconnect (Unsubscribe deletes + cancels), and
+	//   (b) reused-topicID connect (RegisterConnectCancel cancels + overwrites the
+	//       prior generation).
+	// Both keep the map bounded by the live-topic count: every connected topic is
+	// eventually disconnected (or its id reused), which removes its entry. The
+	// generation-safe deregister returned below is therefore unused on this path;
+	// it remains part of RtdManager's API for unit coverage.
 	ctx, cancel := context.WithCancel(context.Background())
-	deregister := h.RtdManager.RegisterConnectCancel(topicID, cancel)
+	_ = h.RtdManager.RegisterConnectCancel(topicID, cancel)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("Panic in OnRtdConnect", "error", r)
 			}
 		}()
-		// On normal completion: drop our registry entry first (generation-safe),
-		// then cancel to release the context's resources. Ordering does not
-		// affect correctness — the deregister only removes our own generation,
-		// and cancel() after the handler returns is a no-op for the handler.
-		defer cancel()
-		defer deregister()
 		if onConnect != nil {
 			if err := onConnect(ctx, topicID, topicStrings, newVal); err != nil {
 				log.Error("OnRtdConnect failed", "error", err)

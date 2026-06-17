@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,64 @@ func TestHandleRtdConnect_DisconnectCancelsInFlight(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("disconnect did not cancel the in-flight connect handler (it ran to completion against a dead topic)")
+	}
+}
+
+// TestHandleRtdConnect_StreamingCtxOutlivesConnect models the real streaming
+// RTD shape (showcase Clock_RTD / StockTick_RTD): the onConnect handler captures
+// ctx, launches a fire-and-forget goroutine that pushes on a short ticker until
+// <-ctx.Done(), and RETURNS nil immediately. The streaming goroutine must keep
+// running after HandleRtdConnect returns (ctx still LIVE) and must stop only on
+// HandleRtdDisconnect (ctx cancelled via RtdManager.Unsubscribe).
+//
+// Before the fix, the connect goroutine's `defer cancel()` fired the moment the
+// handler returned nil, killing ctx after exactly one tick — so the counter
+// froze at its connect-time value. This test FAILS on that code and PASSES once
+// cancellation is owned by disconnect.
+func TestHandleRtdConnect_StreamingCtxOutlivesConnect(t *testing.T) {
+	const topicID = int32(303)
+	const tick = 10 * time.Millisecond
+	h := newRtdSysHandler()
+	respBuf := make([]byte, 4096)
+	b := flatbuffers.NewBuilder(256)
+
+	var ticks int64
+	streaming := func(ctx context.Context, id int32, args []string, newValues bool) error {
+		atomic.AddInt64(&ticks, 1) // immediate first value at connect
+		go func() {
+			t := time.NewTicker(tick)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					atomic.AddInt64(&ticks, 1)
+				}
+			}
+		}()
+		return nil // streaming handler returns immediately
+	}
+
+	h.HandleRtdConnect(buildRtdConnect(topicID, []string{"Clock"}), respBuf, b, streaming)
+
+	// Let several ticker periods elapse; a LIVE ctx means the counter keeps
+	// climbing well past the single connect-time value.
+	time.Sleep(20 * tick)
+	got := atomic.LoadInt64(&ticks)
+	if got < 5 {
+		t.Fatalf("streaming ctx was cancelled on connect return: counter=%d, want it to keep advancing (>=5). The stream delivered only the connect-time value(s) and then died.", got)
+	}
+
+	// Disconnect must cancel ctx so the streaming goroutine stops advancing.
+	h.HandleRtdDisconnect(buildRtdDisconnect(topicID), respBuf, b, nil)
+	// Allow the in-flight tick (if any) to land, then snapshot and confirm the
+	// counter is frozen.
+	time.Sleep(5 * tick)
+	settled := atomic.LoadInt64(&ticks)
+	time.Sleep(20 * tick)
+	if final := atomic.LoadInt64(&ticks); final != settled {
+		t.Fatalf("disconnect did not cancel the streaming ctx: counter advanced %d -> %d after disconnect", settled, final)
 	}
 }
 
