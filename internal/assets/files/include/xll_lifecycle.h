@@ -101,24 +101,54 @@ namespace xll {
     // zombie. See AGENTS.md §20 and the cancel-quit teardown design.
     int OnAutoClose();
 
-    // The DESTRUCTIVE graceful teardown, guarded by an atomic CAS so it runs
-    // EXACTLY ONCE. Driven from the CONFIRMED-shutdown COM events
-    // (RibbonAddIn::OnBeginShutdown / OnDisconnection on both ext_dm_HostShutdown
-    // and ext_dm_UserClosed). Runs on the STA thread (safe — NOT the loader
-    // lock): sets g_isUnloading, runs the registered COM teardown hook, signals
-    // the shutdown event, stops/joins the worker + monitor, runs the §23.0
-    // RTD/command drains, deletes g_phost, and closes the process/job/event
-    // handles. Idempotent: extra calls no-op (the CAS makes a second/re-entrant
-    // call a pure no-op — important because the hook PUMPS the STA loop and Excel
-    // may re-enter this on the same thread via OnDisconnection).
+    // The CONFIRMED-shutdown graceful teardown, guarded by an atomic CAS
+    // (g_teardownDone) so it ENTERS exactly once. Driven from the CONFIRMED-
+    // shutdown COM events (RibbonAddIn::OnBeginShutdown / OnDisconnection on both
+    // ext_dm_HostShutdown and ext_dm_UserClosed). Runs on the STA thread (safe —
+    // NOT the loader lock). Idempotent: a second/re-entrant call is a pure no-op
+    // (the hook PUMPS the STA loop and Excel may re-enter this via OnDisconnection).
     //
-    // DLL_PROCESS_DETACH MUST NOT call this. The joins it performs would run
-    // under the loader lock, where a joined thread that itself needs the loader
-    // lock deadlocks (§20.2). DETACH instead does only the loader-lock-safe
-    // minimum (SetEvent + always-close hJob + thread DETACH, no join, no
-    // g_phost delete); the graceful path here is reached ONLY from the STA COM
-    // events.
-    void GracefulTeardownOnce();
+    // DLL_PROCESS_DETACH MUST NOT call this. The joins the destructive phase
+    // performs would run under the loader lock, where a joined thread that itself
+    // needs the loader lock deadlocks (§20.2). DETACH instead does only the
+    // loader-lock-safe minimum (SetEvent + always-close hJob + thread DETACH, no
+    // join, no g_phost delete).
+    //
+    // §23.6 Stage 4 (close-time ghost fix — SHIPPED 2026-06-17): this function has
+    // TWO shapes keyed on isHostShutdown.
+    //
+    //   isHostShutdown == false (add-in DISABLE / ext_dm_UserClosed, session
+    //   continues): UNCHANGED — runs the destructive teardown SYNCHRONOUSLY here
+    //   (revoke the RTD class object, drain, delete g_phost, reap).
+    //
+    //   isHostShutdown == true (REAL Excel quit — OnBeginShutdown, or
+    //   OnDisconnection with ext_dm_HostShutdown): DEFERRED, in two phases. Excel
+    //   does NOT dispatch its RTD teardown COM calls (DisconnectData per topic,
+    //   then ServerTerminate) until AFTER OnBeginShutdown returns — it serializes.
+    //   Phase 1 (here) runs ONLY the fast prep: the COM hook with the RTD
+    //   class-object revoke SKIPPED (so Excel can START its handshake), then RETURNS
+    //   FAST. It deliberately leaves RTD usable — g_phost alive AND
+    //   g_isUnloading==false, both required by xll_rtd.cpp::DisconnectData to
+    //   actually send MSG_RTD_DISCONNECT. Phase 2 (RunDestructiveTeardown) runs the
+    //   destructive sequence LATER, triggered DIRECTLY from RtdServer::ServerTerminate
+    //   — which Excel calls ON THE STA after all DisconnectData, once its handshake
+    //   completes (§23.6 Stage-4 remediation, 2026-06-17). This clears the windowless
+    //   ghost: Excel completes its RTD topic teardown before the server is reaped and
+    //   g_phost deleted. If ServerTerminate never fires (no live topics), the
+    //   DLL_PROCESS_DETACH backstop (§20.2) still reaps the server via hJob. The
+    //   §23.0 ordering (delete g_phost ONLY AFTER the drains) is preserved in Phase 2.
+    void GracefulTeardownOnce(bool isHostShutdown = false);
+
+    // PHASE 2 destructive teardown body (set g_isUnloading, StopWorker/JoinWorker,
+    // §23.0 drains, delete g_phost, CloseHandle of hProcess/hJob/hShutdownEvent).
+    // Guarded by an internal CAS (g_destructiveDone) so it runs EXACTLY ONCE across
+    // its two STA call sites: RtdServer::ServerTerminate (host-shutdown deferred
+    // path) and GracefulTeardownOnce itself (non-host-shutdown / add-in-disable
+    // path). Declared here so the RTD server (include/rtd/server.h) can invoke it
+    // from ServerTerminate on the STA, at the correctly-timed point after Excel
+    // finishes its RTD handshake (§23.6 Stage-4 remediation, 2026-06-17). MUST run
+    // on the STA (NOT the loader lock) — see the definition's THREAD CONTEXT note.
+    void RunDestructiveTeardown();
 
     // Registers the COM/ribbon/RTD destructive-teardown hook that
     // GracefulTeardownOnce() invokes (ribbon disconnect, CoRevokeClassObject,
@@ -126,7 +156,19 @@ namespace xll {
     // when a ribbon/command or RTD COM add-in exists; keeps this TU decoupled
     // from the template/ribbon/RTD symbols. Pass nullptr (or never call it) for
     // builds with no COM add-in.
-    void SetGracefulTeardownHook(void (*hook)());
+    //
+    // The hook receives revokeRtdClassObject: true => revoke the RTD class object
+    // (add-in disable, session continues); false => SKIP the RTD revoke (host
+    // shutdown — see GracefulTeardownOnce/§23.6). The ribbon revoke is unaffected.
+    void SetGracefulTeardownHook(void (*hook)(bool revokeRtdClassObject));
+
+    // Records that Excel has delivered RtdServer::ServerTerminate (its RTD
+    // handshake completion). RtdServer::ServerTerminate calls this; defined in
+    // xll_lifecycle.cpp. Retained for diagnosability / idempotence: Phase 2 is now
+    // triggered DIRECTLY from inside ServerTerminate (on the STA, after it releases
+    // m_callback) via RunDestructiveTeardown, rather than polled by a watcher
+    // thread (§23.6 Stage-4 remediation, 2026-06-17).
+    void SetRtdServerTerminated();
 }
 
 // XLL Interface Functions

@@ -907,6 +907,280 @@ regression tests in `internal/generator/`.
 ### 23.5 Windows-Specific Code Layout
 * **DONE (2026-05-17):** Created `internal/platform/` with `_windows.go` / `_other.go` build-tagged constants. Migrated 6 `.exe`-extension branches (`internal/flatc/flatc.go`, `internal/regtest/prepare.go`, `internal/regtest/runner.go`, `cmd/regression_test.go`, `cmd/regression_helpers_test.go`) to `platform.ExeName`. Added `platform.FindBuiltExe` for the single-config vs multi-config cmake output layout (used by 2 sites). The remaining `runtime.GOOS == "windows"` checks in `cmd/doctor.go` are install-hint specific (winget) — not the same kind of duplication, intentionally left as-is. Smoketest files use file-level `//go:build windows`, already idiomatic.
 
+### 23.6 Close-time ghost Excel (S1') / orphaned server (S2) — RESOLVED Stage 4 (2026-06-17)
+
+**STATUS: S1' ghost RESOLVED and SHIPPED (Stage 4, 2026-06-17). S2 was never regressed.**
+The deferred-teardown fix (Phase 1/Phase 2 split, below) makes `EXCEL.EXE` exit cleanly on a
+real quit with live RTD topics. The history (Stages 1–3) is kept below for context; the
+authoritative current behavior is the **Stage 4** block at the end of this section. The
+temporary `DiagLog` instrumentation has been **REMOVED**; the teardown timeline is now visible
+via the normal `LogInfo`/`LogDebug` channel (Phase 1 latches `g_isUnloading` only inside Phase 2,
+so the Phase-1 / watcher log lines are not suppressed).
+
+
+Two reproduced close-time bugs (repro: `xll-gen-showcase/tools/diagnose-close-uia.ps1`,
+UIA faithful close + `-KillExcelOnClose`):
+* **S1' — ghost Excel:** after the user closes the last window, `EXCEL.EXE` lingers
+  windowless 40s+ instead of exiting. (S1 proper — a window REOPENING — was NOT
+  reproduced in this pass; only the windowless-ghost variant.)
+* **S2 — orphaned Go server / locked log:** an orphaned server holding the inherited
+  `<proj>_go.log` handle leaves the file undeletable while no Excel exists.
+
+**Stage-1 fixes landed (all runtime assets/templates, NOT `DllMain`-graceful-path logic):**
+* **DONE — #2a job-assignment robustness** (`internal/assets/files/src/xll_launch.cpp::LaunchProcess`):
+  `CreateProcessW` now uses `CREATE_SUSPENDED`, `AssignProcessToJobObject` is RESULT-CHECKED
+  (loud `LogWarn` on failure, naming the locked-environment case), then `ResumeThread`. Closes
+  the assign race and surfaces the locked-env failure that would otherwise silently orphan the
+  server (the Job `KILL_ON_JOB_CLOSE` reap would not cover it).
+* **DONE — #2b Go parent-death watcher** (`internal/templates/server.go.tmpl`): `Serve()` starts
+  `go watchParentDeath(os.Getppid(), …)` which `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject(INFINITE)`
+  on the parent Excel and, on parent exit, `client.Close()` + `osExit(0)`. Inline in the template
+  (uses `golang.org/x/sys/windows`, already an available dep) because the showcase pins xll-gen
+  v0.8.5 with no `replace`, so `pkg/server/*` changes would not propagate. This is the robust
+  backstop that reaps the server even when the Job reap is denied (locked env) — directly fixes S2.
+  Graceful skip on `getppid()==0` / `OpenProcess` failure. `osExit` is an injectable var
+  (defaults to `os.Exit`) for testability. Regressions: `internal/generator/gen_parent_watch_test.go`
+  (structural: watcher wired, FAIL-before confirmed) + `xll-gen-showcase/generated/server_parent_watch_test.go`
+  (behavioral matrix under `-race`: skip/open-fail/wait-fail/reap-on-exit; survives regeneration —
+  separate filename).
+* **DONE — #3 cancel pending `xlcOnTime`** (`internal/assets/files/src/xll_deferred_commands.cpp`):
+  `ScheduleDeferredRunner` saves the exact `xlfNow` serial; new `CancelDeferredRunner()` cancels via
+  `xlcOnTime(savedSerial, macro, /*tolerance*/missing, /*schedule*/FALSE)`; called from
+  `GracefulTeardownOnce` (`xll_lifecycle.cpp`) on the confirmed-teardown path (after `g_isUnloading`,
+  before the hook/drains). Removes the post-teardown dispatch of a runner armed by a late
+  `CalculationEnded`. Regression: `internal/generator/gen_calcend_defer_test.go::TestCalcEnd_DeferredRunner_CancelOnTeardown`
+  (FAIL-before confirmed).
+* **Instrumentation (TEMPORARY — REMOVE LATER):** `xll::DiagLog` (`xll_log.cpp`/`xll_log.h`) writes
+  UNCONDITIONALLY (bypasses the `g_isUnloading` suppression) to a separate `<proj>_diag.log`. Markers
+  at entry of `RibbonAddIn::OnDisconnection`/`OnBeginShutdown`, `GracefulTeardownOnce` (entry+exit+CAS-lost),
+  `DllMain DLL_PROCESS_DETACH`, `RtdServer::ServerTerminate`, `RtdServer::DisconnectData`.
+
+**EVIDENCE-BASED ROOT CAUSE of the still-open S1' ghost (do NOT guess-fix; this is the Stage-2 target):**
+The `<proj>_diag.log` teardown timeline on a faithful close (server already reaped at t=0; Excel then
+ghosts 40s+) shows the FULL graceful path runs and completes fast, and the DLL actually unloads:
+```
+OnBeginShutdown → GracefulTeardownOnce entry
+OnDisconnection RemoveMode=1 (re-entrant during hook STA pump) → GracefulTeardownOnce CAS-lost no-op
+GracefulTeardownOnce exit (handles closed, server reaped)   [~20 ms total]
+DllMain DLL_PROCESS_DETACH entry                            [~245 ms later — real unload]
+```
+Two diagnostic facts pin the cause:
+1. **`RtdServer::ServerTerminate` and `RtdServer::DisconnectData` NEVER appear in the log.** Excel never
+   calls `IRtdServer::ServerTerminate` (nor DisconnectData) before/around its own shutdown for our RTD
+   server. Our RTD server (`rtd/server.h::RtdServerBase`) holds an AddRef'd `IRTDUpdateEvent` callback
+   (`m_callback`) that is released ONLY in `ServerTerminate`/the destructor — neither of which runs.
+2. **`DLL_PROCESS_DETACH` fires (~245 ms after teardown)** — so the XLL fully unloads; nothing in OUR
+   DLL code is holding Excel alive after that point. The lingering process is Excel's OWN shutdown
+   stalling, consistent with an RTD COM teardown that never completes (Excel's RTD machinery still
+   considers the server/topic live because `ServerTerminate` was not driven and the `IRTDUpdateEvent`
+   reference was never released).
+**Conclusion / Stage-2 hypothesis:** the ghost is Excel waiting on RTD COM teardown that we never
+complete because Excel does not call `ServerTerminate` on this shutdown path. The graceful teardown
+revokes the class object (`CoRevokeClassObject` in `GracefulComTeardownHook`) but does NOT proactively
+release the RTD server's `IRTDUpdateEvent` callback / drive `ServerTerminate`-equivalent cleanup, and
+the streaming RTD topics are not torn down (no `DisconnectData`). Stage 2 should investigate
+proactively releasing `m_callback` / signalling the RTD topics dead on the confirmed-teardown path
+BEFORE the class-object revoke (see §22 / §20.3), and verify against the diag log that the ghost
+clears. **A speculative #1/ghost fix was intentionally NOT applied in Stage 1.**
+
+**Stage 2 (2026-06-17) — proactive `m_callback` release APPLIED; ghost NOT cleared. New evidence narrows the holder to Excel's live-topic RTD machinery, NOT our DLL.**
+* **DONE (kept) — proactive callback release:** `rtd::RtdServerBase::ReleaseCallbackForTeardown()`
+  (`include/rtd/server.h`) mirrors `ServerTerminate`'s `m_callback->Release(); m_callback=nullptr;`
+  under `m_callbackMutex`, idempotent + null-checked (safe if `ServerTerminate` later runs — no
+  double-free). Wired in `xll::GracefulTeardownOnce` (`xll_lifecycle.cpp`) via `g_rtdServer`, placed
+  **AFTER `JoinWorker()` and the `WaitForRtdConnectDrain`** so no in-flight `NotifyUpdate`/
+  `ProcessRtdUpdate` (worker thread) or `ConnectData` (detached thread) can race the release. This
+  breaks OUR half of the documented Excel↔RtdServer ref cycle and is a correct leak fix; **keep it.**
+  Diag log confirms it runs: `RtdServer.ReleaseCallbackForTeardown: m_callback released`.
+* **STILL OPEN — ghost persists with the release applied.** Reproduced deterministically
+  (`xll-gen-showcase/tools/ghost-check.ps1`, faithful UIA close with active RTD streaming):
+  EXCEL.EXE lingers windowless 30s+ even though server is reaped, both logs are FREE, the DLL
+  unloads (`DLL_PROCESS_DETACH` fires), AND `m_callback` is released. So releasing our callback ref
+  is **necessary but not sufficient.**
+* **DECISIVE new evidence — the ghost correlates with LIVE, actively-refreshing RTD topics, not
+  with our COM refs:** `ghost-check.ps1 -FastClose` (close ~250 ms after the recalc, BEFORE the RTD
+  server instance is even created / topics established — diag shows no `ReleaseCallbackForTeardown`
+  line because `g_rtdServer` is still null) → **EXCEL EXITS CLEANLY, no ghost.** A normal slow close
+  (2 topics `StockTick`+`Clock` streaming `NotifyUpdate` ~1/s right up to close) → **ghost every
+  time.** `ServerTerminate`/`DisconnectData` never fire on either path.
+* **Conclusion:** the holder is Excel's OWN RTD subsystem keeping the process alive for its 2 live
+  topic subscriptions (it never drove `DisconnectData`/`ServerTerminate`, and likely keeps an
+  internal RTD refresh timer/`Application.RTD` throttle alive). Our DLL holds nothing after DETACH.
+  Releasing `m_callback` cannot make Excel's RTD manager consider its own teardown complete.
+* **NEXT (lead decision required — NOT shipped):** options to evaluate, in order of preference:
+  (1) drive an explicit topic teardown on the confirmed path while the host is still reachable
+  (e.g. from the worksheet/STA context, force the RTD cells dead so Excel issues `DisconnectData`
+  before close) — needs investigation of whether the C API allows this on the close path;
+  (2) probe whether NOT revoking the RTD class object (Excel-DNA does not aggressively revoke) lets
+  Excel complete its own RTD `ServerTerminate` handshake; (3) last-resort destructive teardown at
+  `xlAutoClose` — the user authorized this ONLY as a last resort and ONLY with lead sign-off, since
+  it breaks the cancelled-quit invariant (§20). DiagLog instrumentation is **KEPT** (ghost unresolved).
+
+**Stage 3 (2026-06-17) — revoke-skip + in-OnBeginShutdown STA pump tested. Pump REVERTED (cannot work);
+revoke-skip KEPT (made Excel start its handshake but insufficient alone). Refined root cause: teardown
+is too eager — Excel runs its RTD teardown only AFTER OnBeginShutdown returns, by which point g_phost is
+already deleted.**
+* **KEPT — host-shutdown RTD revoke-skip (Stage B, mode-threaded).** `GracefulTeardownOnce` now takes
+  `bool isHostShutdown`; `RibbonAddIn::OnBeginShutdown` passes `true`, `OnDisconnection` passes
+  `RemoveMode == ext_dm_HostShutdown`. The COM hook (`GracefulComTeardownHook(bool revokeRtdClassObject)`)
+  SKIPS `CoRevokeClassObject(g_rtdCookie)` on host shutdown (revokes on add-in disable — session
+  continues). **Effect, proven by diag:** with the revoke skipped Excel NOW issues `DisconnectData` on
+  every live topic (TopicID 5,4,3 in the repro) — previously it issued NONE (the eager revoke blocked
+  the handshake start). This confirms the Option-2 hypothesis was directionally right.
+* **REVERTED — the in-OnBeginShutdown STA message pump.** A `PeekMessage`/`DispatchMessage` loop placed
+  in `GracefulTeardownOnce` (after the hook, before the drains, awaiting `RtdServer::ServerTerminate`
+  via `SetRtdServerTerminated`) was tried and removed. **It could not work, and the diag proves why:**
+  the pump ran the full 3 s cap with `sawServerTerminate=false`, then `DisconnectData` for all 3 topics
+  fired ~100 ms AFTER `GracefulTeardownOnce` returned, and `ServerTerminate` never came. Excel does NOT
+  dispatch its RTD-teardown COM calls (DisconnectData/ServerTerminate) while we are still INSIDE
+  `OnBeginShutdown` — it serializes: call OnBeginShutdown, wait for return, THEN run RTD teardown. So a
+  pump nested inside the teardown finds an empty queue. (`SetRtdServerTerminated`/`g_rtdServerTerminated`
+  are KEPT as the readiness signal the refined fix will use; the pump itself is gone.)
+* **DECISIVE timeline (default ghost-check.ps1, 3 live topics, faithful UIA close):**
+  `OnBeginShutdown` → `GracefulTeardownOnce(isHostShutdown=true)` → hook (revoke skipped) →
+  [reverted pump ran 3 s, saw nothing] → `ReleaseCallbackForTeardown: m_callback released` →
+  `GracefulTeardownOnce exit (server reaped, g_phost deleted)` → **THEN** `DisconnectData TopicID=5/4/3`
+  (g_phost already null → MSG_RTD_DISCONNECT suppressed) → `DLL_PROCESS_DETACH`. **No `ServerTerminate`.
+  EXCEL.EXE lingers windowless 30 s+ (ghost).** S2 clean throughout (`-KillExcelOnClose`: EXCEL & server
+  both gone at t=0, both logs FREE).
+* **REFINED ROOT CAUSE / NEXT (lead decision required — NOT shipped):** the destructive teardown must be
+  DEFERRED OUT of `OnBeginShutdown` so the call returns fast, Excel proceeds to its RTD teardown
+  (DisconnectData on each topic, then ServerTerminate) WHILE `g_phost` is still alive, and only THEN do
+  the drains + `delete g_phost` + reap run. Candidate shapes (need lead sign-off; each must preserve the
+  §20 cancelled-quit invariant and §23.0 g_phost-last ordering): (a) on host shutdown, have
+  `OnBeginShutdown`/`OnDisconnection(HostShutdown)` set `g_isUnloading` + signal + run the COM hook
+  (revoke-skip) and RETURN immediately, then complete the heavy teardown from `DLL_PROCESS_DETACH`'s
+  loader-lock-safe path or a dedicated post-handshake trigger (e.g. when `g_rtdServerTerminated` is
+  observed, or when the last `DisconnectData` arrives) — but DETACH cannot join/drain/delete under the
+  loader lock (§20.2), so this needs a non-loader-lock completion site; (b) keep `g_phost` alive past
+  `GracefulTeardownOnce` (move only `delete g_phost`/reap to a later, post-ServerTerminate point keyed
+  off `g_rtdServerTerminated`) so the 3 `DisconnectData` sends actually reach the server and Excel can
+  finish; (c) the authorized last-resort force-exit on the CONFIRMED host-shutdown path only (since
+  OnBeginShutdown/GracefulTeardownOnce run ONLY on a real quit, a force-exit there does NOT break the
+  cancelled-quit invariant). DiagLog instrumentation is **KEPT** (ghost still unresolved).
+* **HIGH #2 (xlcOnTime cancel de-queue) — Stage 3 update: NOW PARTIALLY OBSERVED.** In the Stage-3 repro
+  `CancelDeferredRunner: xlcOnTime cancel rc=2` logged on the confirmed-teardown path (a runner WAS
+  armed at close this time, and the cancel issued). rc=2 is the xlcOnTime "clear" return; the de-queue
+  proof (no subsequent `RunDeferredCalcEnd`) held (none logged post-cancel). Still worth the unit/harness
+  hook below for a deterministic assertion.
+* **HIGH #2 (xlcOnTime cancel de-queue) — NOT yet proven on a real armed runner.** Across all
+  faithful-close runs (slow and `-FastClose`) `CancelDeferredRunner` logged nothing → the deferred
+  runner was never armed at close (`g_onTimeArmed==false`): the showcase Build recalc's calc-end
+  either enqueued no deferred commands/date-formats, or the runner drained its xlcOnTime before
+  close. To prove the cancel actually de-queues, need a scenario that leaves a runner pending in the
+  narrow CalculationEnded-armed → OnTime-dispatched window (inherently racy). Proposed proof: a unit
+  /harness hook that calls `ScheduleDeferredRunner()` then `CancelDeferredRunner()` back-to-back and
+  asserts `rc==xlretSuccess` + no subsequent `RunDeferredCalcEnd` dispatch, OR a C-API-level test of
+  `xlcOnTime(serial, macro, missing, FALSE)` against a known-scheduled serial.
+
+**Stage 4 (2026-06-17) — SHIPPED. Deferred destructive teardown (Phase 1 / Phase 2 split). Ghost CLEARED.**
+
+The refined root cause from Stage 3 was correct: the teardown was too eager. Excel does NOT
+dispatch its RTD teardown COM calls (`DisconnectData` per topic, then `ServerTerminate`) until
+AFTER `OnBeginShutdown` returns — it serializes. The pre-Stage-4 `GracefulTeardownOnce` deleted
+`g_phost` + reaped the server synchronously inside `OnBeginShutdown`, so by the time Excel issued
+`DisconnectData` there was no live host, `MSG_RTD_DISCONNECT` went nowhere, `ServerTerminate` never
+completed, and Excel ghosted holding its live topics. The fix splits the host-shutdown path:
+
+* **Phase 1 (synchronous, inside `OnBeginShutdown`/`OnDisconnection(HostShutdown)`):** run only the
+  fast prep — `CancelDeferredRunner`, then the COM hook with the **RTD class-object revoke SKIPPED**
+  — arm a **Phase-2 watcher thread**, and RETURN FAST. Phase 1 deliberately does NOT set
+  `g_isUnloading`, NOT `StopWorker`/`JoinWorker`, NOT drain, NOT `delete g_phost`, NOT reap — because
+  `xll_rtd.cpp::DisconnectData` requires BOTH `g_phost` alive AND `g_isUnloading==false` to actually
+  send `MSG_RTD_DISCONNECT`. RTD stays fully usable across Excel's handshake.
+* **Phase 2 (deferred, `RunDestructiveTeardown`):** the watcher thread (NOT the STA, NOT the loader
+  lock) waits on `g_rtdServerTerminated` (set by `RtdServer::ServerTerminate`) OR a bounded 5 s
+  timeout, then runs the existing destructive sequence in the §23.0-safe order: set `g_isUnloading`,
+  `SetEvent`, `StopWorker`, `JoinWorker`, monitor join, `WaitForRtdConnectDrain`,
+  `ReleaseCallbackForTeardown`, `WaitForCommandDrain`, **`delete g_phost` (only AFTER the drains)**,
+  `CloseHandle(hProcess/hJob/hShutdownEvent)`. A separate CAS (`g_destructiveDone`) makes Phase 2 run
+  exactly once across the ServerTerminate trigger, the timeout, and the synchronous non-host-shutdown
+  path.
+* **Non-host-shutdown (add-in DISABLE / `ext_dm_UserClosed`) UNCHANGED:** `GracefulTeardownOnce` runs
+  `RunDestructiveTeardown` synchronously (RTD class object revoked — session continues, no Excel RTD
+  handshake to wait for). DLL_PROCESS_DETACH unchanged (loader-lock-safe minimum, §20.2).
+* **Cancelled-quit invariant preserved (§20):** the host-shutdown deferral only runs from
+  `OnBeginShutdown`/`OnDisconnection(HostShutdown)`, which fire ONLY on a CONFIRMED real quit, never
+  on a cancelled quit. `xlAutoClose` stays non-destructive.
+
+**PROVEN timeline (ghost-check.ps1 default, 3+ live RTD topics, faithful UIA close — verified
+repeatedly, 4/4 clean closes once the harness actually closes the window):**
+`OnBeginShutdown` → `GracefulTeardownOnce(isHostShutdown=true)` → COM hook (RTD revoke skipped) →
+**Phase 1 returns fast** → Excel issues `DisconnectData TopicID=5/4/3/6` (all topics, against a LIVE
+`g_phost`) → `ServerTerminate` → **Phase-2 watcher observes `g_rtdServerTerminated`** →
+`RunDestructiveTeardown` (drains + `delete g_phost` + server reap) → `DLL_PROCESS_DETACH`. **`EXCEL.EXE`
+EXITS within a few seconds; no windowless ghost.** S2 clean throughout (`-KillExcelOnClose`: EXCEL &
+server both gone at t=0, both logs FREE).
+
+* **Files:** `internal/assets/files/src/xll_lifecycle.cpp` (Phase 1/2 split + `g_destructiveDone` +
+  `g_phase2Watcher` + `RunDestructiveTeardown`), `internal/assets/files/include/xll_lifecycle.h`
+  (doc), `internal/assets/files/include/rtd/server.h` (`ServerTerminate` signals; doc),
+  `internal/assets/files/src/xll_deferred_commands.cpp` (`DiagLog`→`LogInfo`). DiagLog removed from
+  `xll_log.cpp/.h`, `ribbon_addin.cpp`, `xll_rtd.cpp`.
+* **Regression tests (generator pinned-signature):** `internal/generator/gen_close_ghost_test.go`
+  (`TestCloseGhostPhaseSplit`, `TestCloseGhostServerTerminateSignals`,
+  `TestCloseGhostNoDiagInstrumentation`).
+* **Harness:** `xll-gen-showcase/tools/ghost-check.ps1` gained a faithful Alt+F4 fallback for
+  environments where `WindowPattern.Close()` dismisses only the workbook and leaves the app frame up
+  (otherwise no shutdown signal fires and the run is inconclusive).
+* **Follow-up (lower priority):** off-STA Phase-2 vs `DLL_PROCESS_DETACH` race — RESOLVED by the
+  Stage-4 remediation below (the watcher is gone; Phase 2 runs on the STA from `ServerTerminate`).
+
+**Stage 4 REMEDIATION (2026-06-17) — Phase 2 moved ONTO THE STA (watcher thread removed). C++ review NO-GO cleared.**
+
+The Stage-4 watcher-thread trigger functioned (Excel exited, ghost gone) but a C++ review returned
+NO-GO: the destructive Phase 2 ran on an OFF-STA, free-running `std::thread` (`g_phase2Watcher`),
+which (a) could be terminated mid-`delete g_phost`/`CloseHandle` by the loader at process exit (or
+`std::terminate` on an in-flight join) racing `DLL_PROCESS_DETACH`'s unmap [BLOCKER]; (b) touched
+`g_rtdServer` / released `m_callback` off the COM apartment [HIGH UAF + apartment violation]; (c)
+left a stale detachable thread across probe-unload-reuse [HIGH]. **The fix keeps every working part
+(Phase-1 fast return, revoke-skip, the `RunDestructiveTeardown` body, the `g_destructiveDone` CAS,
+the §23.0 ordering, the DETACH backstop) and replaces ONLY the Phase-2 trigger mechanism:**
+
+* **Phase 2 is now triggered DIRECTLY from `RtdServer::ServerTerminate`** (`include/rtd/server.h`).
+  Excel calls `ServerTerminate` ON THE STA, AFTER every `DisconnectData`, once its RTD handshake
+  against a still-live `g_phost` completes — the correct, COM-apartment-safe, naturally-serialized
+  point. `ServerTerminate` releases `m_callback` on the STA (its normal job, mutex scoped so it is
+  not held across teardown) and then calls `xll::RunDestructiveTeardown()`. This is the SAME
+  thread-class (STA) and SAME blocking profile the original synchronous teardown had inside
+  `OnBeginShutdown` — just correctly TIMED. `RunDestructiveTeardown` is now declared in
+  `include/xll_lifecycle.h` so `server.h` can call it.
+* **`GracefulTeardownOnce` Phase 1 (host shutdown) arms NOTHING** — it runs `CancelDeferredRunner` +
+  the COM hook (RTD revoke skipped) and RETURNS FAST. The `g_phase2Watcher` `std::thread`, its 5 s
+  timeout loop, and the `<chrono>` include are DELETED. `g_rtdServerTerminated` is kept (set by
+  `SetRtdServerTerminated`) for diagnosability/idempotence only — it is no longer polled.
+* **`DLL_PROCESS_DETACH` is the UNCHANGED backstop** for the no-RTD / no-live-topic / Excel-skips
+  path (where `ServerTerminate` never fires): it closes `hJob` (reaps the server via
+  `KILL_ON_JOB_CLOSE`) + detaches threads, per §20.2. Verified `-FastClose`: Excel exits ~1 s, server
+  reaped, logs FREE.
+* **`hJob` double-close vs DETACH — RESOLVED:** `RunDestructiveTeardown` (CAS-guarded, single STA
+  site) closes `hJob` and NULLs `g_procInfo.hJob`; DETACH's unconditional close is null-checked, so a
+  prior ServerTerminate-driven close makes it a no-op. On a host shutdown ServerTerminate (hence
+  Phase 2) completes synchronously BEFORE Excel unloads the DLL (DETACH) — the same ordering the
+  pre-Stage-4 synchronous STA teardown relied on — so there is no concurrent double-close.
+* **MED (Phase-1 window late `DisconnectData`):** the 5 s timeout is gone; `g_isUnloading` is latched
+  only inside `RunDestructiveTeardown` (now from `ServerTerminate`, after ALL `DisconnectData`), so
+  late-disconnect suppression by a too-short timer cannot occur. `xll_rtd.cpp::DisconnectData` now
+  `LogDebug`s if `MSG_RTD_DISCONNECT` is ever suppressed by the `g_isUnloading`/null-`g_phost` guard.
+* **Verified (real Excel, `tools/ghost-check.ps1`):** default live-RTD-topic close 3/3 clean — EXCEL
+  EXITS (15–18 s), server reaped, logs FREE, no ghost. `-FastClose` clean (1 s exit). S2 not
+  regressed (no orphan server, logs FREE). Native-log timeline: `OnBeginShutdown` →
+  `GracefulTeardownOnce(host) Phase 1 fast return` → `DisconnectData(all topics)` → `ServerTerminate`
+  → destructive teardown (subsequent logs silenced by the early `g_isUnloading` latch) → exit.
+* **Files:** `internal/assets/files/src/xll_lifecycle.cpp` (remove watcher + `<chrono>`; Phase 1
+  returns fast), `internal/assets/files/include/xll_lifecycle.h` (declare `RunDestructiveTeardown`),
+  `internal/assets/files/include/rtd/server.h` (`ServerTerminate` drives teardown on the STA),
+  `internal/assets/files/src/xll_rtd.cpp` (`DisconnectData` suppression `LogDebug`).
+* **Regression tests:** `internal/generator/gen_close_ghost_test.go` updated to the
+  ServerTerminate-driven shape — `TestCloseGhostPhaseSplit` now asserts `g_phase2Watcher` /
+  `std::this_thread::sleep_for` / `steady_clock` are ABSENT and Phase 1 spawns no thread;
+  `TestCloseGhostServerTerminateDrivesTeardown` (renamed) asserts `ServerTerminate` signals, releases
+  `m_callback`, and calls `xll::RunDestructiveTeardown()` (comment-stripped so a doc-comment cannot
+  mask removal), and that `xll_lifecycle.h` declares `RunDestructiveTeardown`. FAIL-before /
+  PASS-after confirmed by reintroducing the watcher token and deleting the teardown call.
+* **C++ asset change (not `DllMain` graceful-path logic, but touches `DllMain` DETACH reasoning) —
+  re-review by `xll-cpp-reviewer` required before commit.**
+
 ## 24. CLAUDE.md / Agent Tool Compatibility
 
 This repository is configured so that AI tools using `CLAUDE.md` (Claude Code) read this `AGENTS.md` as the authoritative source. **All durable agent guidance must live here, not in `CLAUDE.md`.** `CLAUDE.md`, if present, must contain only a one-line redirect to this file.

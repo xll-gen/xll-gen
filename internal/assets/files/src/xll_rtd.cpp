@@ -386,6 +386,17 @@ HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
             builder.Finish(req);
             slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_DISCONNECT, 500);
         }
+    } else {
+        // MED (AGENTS.md §23.6): MSG_RTD_DISCONNECT suppressed because g_isUnloading
+        // is already set (or g_phost is gone). With the Stage-4 deferral g_isUnloading
+        // stays FALSE through Excel's whole RTD handshake on a host shutdown (it is
+        // latched only inside RunDestructiveTeardown, which now runs FROM
+        // ServerTerminate AFTER every DisconnectData), so reaching this branch on a
+        // host shutdown would mean a late DisconnectData arrived after teardown
+        // already started — log it for diagnosability rather than silently dropping.
+        xll::LogDebug("RtdServer::DisconnectData: MSG_RTD_DISCONNECT suppressed for TopicID "
+                      + std::to_string(TopicID) + " (g_isUnloading set or g_phost null) — "
+                      "topic disconnect not forwarded to the Go backend");
     }
 
     // 2. Clean up in Base Class

@@ -11,6 +11,19 @@
 
 namespace xll {
 
+// Saved serial time of the most recent xlcOnTime schedule (#3, 2026-06-17).
+// xlcOnTime cancellation requires passing the EXACT serial time that was used to
+// schedule the macro, so we capture xlfNow()'s returned value here. Guarded by a
+// mutex because Schedule (calc-end, STA) and Cancel (GracefulTeardownOnce, STA)
+// both touch it — in practice the same thread, but the mutex keeps the
+// discipline explicit and cheap. m_scheduledHasTime gates whether a cancel
+// should be attempted at all (nothing armed -> nothing to cancel).
+namespace {
+    std::mutex g_onTimeMutex;
+    double g_lastOnTimeSerial = 0.0;
+    bool g_onTimeArmed = false;
+}
+
 DeferredCalcEndQueue& DeferredCalcEndQueue::Instance() {
     static DeferredCalcEndQueue inst;
     return inst;
@@ -58,6 +71,15 @@ static void ScheduleDeferredRunner() {
         // xlcOnTime(serial_time, macro_text). Tolerance/insert default.
         if (xll::CallExcel(xlcOnTime, nullptr, xNow.get(), DeferredRunnerMacroName()) != xlretSuccess) {
             DeferredCalcEndQueue::Instance().Disarm();
+            return;
+        }
+        // Capture the EXACT serial time we just scheduled with so a later
+        // CancelDeferredRunner() can cancel THIS schedule (xlcOnTime cancel
+        // matches on serial time). xlfNow returns xltypeNum. (#3, 2026-06-17)
+        if ((xNow.get()->xltype & xltypeNum) != 0) {
+            std::lock_guard<std::mutex> lock(g_onTimeMutex);
+            g_lastOnTimeSerial = xNow.get()->val.num;
+            g_onTimeArmed = true;
         }
     } catch (...) {
         // Never throw into the event. Disarm on the error path so a future
@@ -90,6 +112,16 @@ void RunDeferredCalcEndCommands() {
     // "concurrently" here means an event nested by Excel's own dispatch, not true
     // parallelism, but the ordering is what matters.)
     DeferredCalcEndQueue::Instance().Disarm();
+
+    // This runner is now executing, so the previously-scheduled xlcOnTime has
+    // fired and there is nothing left to cancel. Clear the armed flag so a later
+    // CancelDeferredRunner() (on teardown) does not issue a cancel for a serial
+    // that has already run. A fresh schedule (re-arm during/after the drain) sets
+    // it again. (#3, 2026-06-17)
+    {
+        std::lock_guard<std::mutex> lock(g_onTimeMutex);
+        g_onTimeArmed = false;
+    }
 
     // Unload self-abort (§20.2): if the add-in is tearing down or the host is
     // gone, do NOT touch Excel — just drop any queued work. A leaked xlcOnTime
@@ -133,6 +165,65 @@ void RunDeferredCalcEndCommands() {
         // reentrancy reason as the commands above. Idempotent (once-per-cell).
         xll::DrainAndApplyDateFormats();
     } catch (...) { /* never throw on the STA macro path */ }
+}
+
+void CancelDeferredRunner() {
+    // Cancel any pending xlcOnTime-scheduled deferred runner macro on the
+    // CONFIRMED-teardown path (#3, 2026-06-17). Without this, a runner armed by a
+    // late CalculationEnded (e.g. the RTD-streaming recalc that fires ~1/s) stays
+    // queued on Excel's OnTime list after xlAutoClose; Excel can dispatch that
+    // macro post-teardown, and the act of dispatching a queued OnTime macro is a
+    // candidate for keeping Excel.exe alive windowless and/or re-materializing a
+    // window (symptom S1). The runner itself self-aborts on g_isUnloading, but
+    // cancelling the SCHEDULE removes the dispatch entirely.
+    //
+    // xlcOnTime cancellation form: xlcOnTime(serial_time, macro_text,
+    // tolerance=missing, schedule=FALSE). The serial_time MUST equal the value
+    // used to schedule, which we captured in ScheduleDeferredRunner.
+    //
+    // Host-reachability gate: only attempt the cancel if the host is still
+    // reachable and we are not already too late. We are called from
+    // GracefulTeardownOnce, which sets g_isUnloading=true BEFORE calling us, so we
+    // do NOT gate on g_isUnloading here (that would make this a no-op). We DO gate
+    // on whether a schedule is actually armed, and we wrap the C-API call in the
+    // file's SEH/exception discipline.
+    try {
+        double serial;
+        {
+            std::lock_guard<std::mutex> lock(g_onTimeMutex);
+            if (!g_onTimeArmed) return; // nothing scheduled -> nothing to cancel
+            serial = g_lastOnTimeSerial;
+            g_onTimeArmed = false;
+        }
+
+        // Rebuild the serial-time operand by value (xltypeNum) so it matches the
+        // scheduled time exactly. ScopedXLOPER12(double) is the documented wrapper
+        // for a numeric operand.
+        ScopedXLOPER12 xWhen(serial);
+
+        // tolerance = missing (omitted argument). Zero-init so the whole operand
+        // is in a defined state before it crosses the C API (Excel ignores `val`
+        // for xltypeMissing, but handing it an uninitialized union member is a smell).
+        XLOPER12 xMissing{};
+        xMissing.xltype = xltypeMissing;
+
+        // schedule = FALSE -> cancel.
+        ScopedXLOPER12 xSchedule(false);
+
+        int rc = xll::CallExcel(xlcOnTime, nullptr, xWhen.get(), DeferredRunnerMacroName(), &xMissing, xSchedule.get());
+        if (rc != xlretSuccess) {
+            // Non-fatal: a cancel that misses (e.g. the macro already fired, or
+            // the host rejected the C-API call this late) is harmless because the
+            // runner self-aborts on g_isUnloading anyway. On the §23.6 Stage-4
+            // teardown path CancelDeferredRunner runs in Phase 1 BEFORE g_isUnloading
+            // is latched, so LogInfo is still visible.
+            xll::LogInfo("CancelDeferredRunner: xlcOnTime cancel rc=" + std::to_string(rc));
+        } else {
+            xll::LogInfo("CancelDeferredRunner: pending deferred runner cancelled");
+        }
+    } catch (...) {
+        // Never throw out of teardown.
+    }
 }
 
 } // namespace xll

@@ -56,7 +56,7 @@ func TestCancelQuitOnAutoCloseNonDestructive(t *testing.T) {
 	if ocIdx < 0 {
 		t.Fatalf("OnAutoClose not found in xll_lifecycle.cpp")
 	}
-	const gtMarker = "void xll::GracefulTeardownOnce() {"
+	const gtMarker = "void xll::GracefulTeardownOnce(bool isHostShutdown) {"
 	gtIdx := strings.Index(src, gtMarker)
 	if gtIdx < 0 {
 		t.Fatalf("GracefulTeardownOnce not found in xll_lifecycle.cpp (the destructive path must be factored out)")
@@ -101,7 +101,7 @@ func TestCancelQuitGracefulTeardownOnce(t *testing.T) {
 	}
 	src := m["src/xll_lifecycle.cpp"]
 
-	const gtMarker = "void xll::GracefulTeardownOnce() {"
+	const gtMarker = "void xll::GracefulTeardownOnce(bool isHostShutdown) {"
 	gtIdx := strings.Index(src, gtMarker)
 	if gtIdx < 0 {
 		t.Fatalf("GracefulTeardownOnce not found in xll_lifecycle.cpp")
@@ -135,7 +135,7 @@ func TestCancelQuitGracefulTeardownOnce(t *testing.T) {
 	}
 	// The teardown hook plumbing must exist so the ribbon/RTD TU can register its
 	// COM-specific destructive steps without coupling lifecycle.cpp to them.
-	if !strings.Contains(src, "void SetGracefulTeardownHook(void (*hook)())") {
+	if !strings.Contains(src, "void SetGracefulTeardownHook(void (*hook)(bool))") {
 		t.Errorf("xll_lifecycle.cpp missing SetGracefulTeardownHook")
 	}
 }
@@ -216,13 +216,16 @@ func TestCancelQuitRibbonComEventsDriveTeardown(t *testing.T) {
 	if end := strings.Index(obsBody[1:], "RibbonAddIn::"); end > 0 {
 		obsBody = obsBody[:end]
 	}
-	if !strings.Contains(obsBody, "xll::GracefulTeardownOnce()") {
-		t.Errorf("OnBeginShutdown must call xll::GracefulTeardownOnce()\n---\n%s", obsBody)
+	// OnBeginShutdown fires only on a real quit -> host shutdown (true), which
+	// triggers the §23.6 Stage-4 RTD revoke-skip + deferred Phase-1/Phase-2 teardown.
+	if !strings.Contains(obsBody, "xll::GracefulTeardownOnce(/*isHostShutdown=*/true)") {
+		t.Errorf("OnBeginShutdown must call xll::GracefulTeardownOnce(/*isHostShutdown=*/true)\n---\n%s", obsBody)
 	}
 
 	// OnDisconnection must call GracefulTeardownOnce (covers BOTH ext_dm_HostShutdown
-	// and ext_dm_UserClosed — the impl handles both modes uniformly, so a single
-	// unconditional call satisfies the design's "on BOTH" requirement).
+	// and ext_dm_UserClosed). It threads the mode through: ext_dm_HostShutdown =>
+	// isHostShutdown=true (revoke-skip + deferred Phase-1/Phase-2, §23.6 Stage 4);
+	// ext_dm_UserClosed => isHostShutdown=false (synchronous revoke, session continues).
 	odIdx := strings.Index(src, "RibbonAddIn::OnDisconnection(")
 	if odIdx < 0 {
 		t.Fatalf("OnDisconnection not found in ribbon_addin.cpp")
@@ -231,8 +234,13 @@ func TestCancelQuitRibbonComEventsDriveTeardown(t *testing.T) {
 	if end := strings.Index(odBody[1:], "RibbonAddIn::"); end > 0 {
 		odBody = odBody[:end]
 	}
-	if !strings.Contains(odBody, "xll::GracefulTeardownOnce()") {
-		t.Errorf("OnDisconnection must call xll::GracefulTeardownOnce() (both ext_dm_HostShutdown and ext_dm_UserClosed)\n---\n%s", odBody)
+	if !strings.Contains(odBody, "xll::GracefulTeardownOnce(isHostShutdown)") {
+		t.Errorf("OnDisconnection must call xll::GracefulTeardownOnce(isHostShutdown)\n---\n%s", odBody)
+	}
+	// It must derive isHostShutdown from the RemoveMode (§23.6 Stage B: revoke
+	// only on add-in disable, skip-revoke + pump on host shutdown).
+	if !strings.Contains(odBody, "RemoveMode == ext_dm_HostShutdown") {
+		t.Errorf("OnDisconnection must derive isHostShutdown from (RemoveMode == ext_dm_HostShutdown)\n---\n%s", odBody)
 	}
 }
 
@@ -278,14 +286,14 @@ func TestCancelQuitTemplateXllAutoClose(t *testing.T) {
 	}
 
 	// The COM-event-driven teardown hook must be emitted and registered.
-	if !strings.Contains(src, "static void GracefulComTeardownHook()") {
+	if !strings.Contains(src, "static void GracefulComTeardownHook(bool revokeRtdClassObject)") {
 		t.Errorf("generated source must define GracefulComTeardownHook for ribbon/command/RTD builds")
 	}
 	if !strings.Contains(src, "xll::SetGracefulTeardownHook(&GracefulComTeardownHook);") {
 		t.Errorf("xlAutoOpen must register the COM teardown hook via SetGracefulTeardownHook")
 	}
 	// The relocated destructive steps must live in the hook (not lost).
-	hookIdx := strings.Index(src, "static void GracefulComTeardownHook()")
+	hookIdx := strings.Index(src, "static void GracefulComTeardownHook(bool revokeRtdClassObject)")
 	hookBody := src[hookIdx:]
 	if end := strings.Index(hookBody, "\nextern \"C\""); end > 0 {
 		hookBody = hookBody[:end]

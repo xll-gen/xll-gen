@@ -211,7 +211,14 @@ static bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allo
 // this hook returns and AFTER it has set g_isUnloading, so the drain is the one
 // that closes the §23.0 UAF window; this hook only performs the COM disconnect /
 // revoke / unregister that must live in this template TU.
-static void GracefulComTeardownHook() {
+//
+// revokeRtdClassObject (AGENTS.md §23.6, close-time ghost fix): false on a HOST
+// SHUTDOWN — we then SKIP CoRevokeClassObject(g_rtdCookie) so Excel can start +
+// complete its own RTD ServerTerminate/DisconnectData handshake (an eager revoke
+// here BLOCKS that handshake, leaving Excel windowless). true on an add-in
+// DISABLE (session continues) — we still revoke so no stale factory lingers. The
+// ribbon revoke/disconnect is unaffected by this flag.
+static void GracefulComTeardownHook(bool revokeRtdClassObject) {
     {{if .Ribbon.Enabled}}
     XLL_SAFE_BLOCK_BEGIN
         // Teardown order (com/ribbon_addin.h contract + Excel-DNA practice):
@@ -234,28 +241,47 @@ static void GracefulComTeardownHook() {
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
     {{if .Rtd.Enabled}}
-    // RTD teardown is JUST the class-object revoke. We intentionally do NOT
-    // Release / delete the RtdServer instance here: that instance is EXCEL-OWNED
-    // (Excel holds the IRtdServer reference and releases it during its own
-    // shutdown via ServerTerminate); touching it from here would double-free.
-    // CoRevokeClassObject only stops NEW activations from resolving the factory.
+    // RTD teardown: we intentionally do NOT Release / delete the RtdServer
+    // instance here (that instance is EXCEL-OWNED; touching it would double-free).
+    // The post-delete g_phost fence is the JoinWorker() in
+    // xll::GracefulTeardownOnce() (runs AFTER this hook), not this branch.
     //
-    // The thing that actually fences a post-delete g_phost touch from
-    // RtdServer::ProcessRtdUpdate is NOT this branch — it is the JoinWorker() in
-    // xll::GracefulTeardownOnce(), which runs AFTER this hook returns and joins
-    // the worker that drives ProcessRtdUpdate, so no RTD update can reach into
-    // g_phost after GracefulTeardownOnce deletes it. Keep this branch revoke-only.
+    // CLOSE-TIME GHOST FIX (AGENTS.md §23.6, 2026-06-17). On a HOST SHUTDOWN we
+    // deliberately SKIP CoRevokeClassObject(g_rtdCookie). Evidence (the Option-2
+    // experiment): an eager revoke here BLOCKS Excel from STARTING its own RTD
+    // shutdown handshake — with the revoke skipped Excel issues DisconnectData on
+    // every live topic and (once the STA is pumped, see GracefulTeardownOnce)
+    // delivers ServerTerminate, so Excel's RTD subsystem considers its topics torn
+    // down and the process can exit instead of lingering windowless. The class
+    // object is process-scoped: on a host shutdown the process is ending anyway,
+    // so leaving it registered until DLL_PROCESS_DETACH (which unmaps everything)
+    // is harmless — no new activation can resolve it after the host is gone.
+    //
+    // On an add-in DISABLE (ext_dm_UserClosed; revokeRtdClassObject == true) the
+    // SESSION CONTINUES, so we MUST still revoke — otherwise a stale factory would
+    // linger for the rest of the live session and a re-enable could resolve the
+    // dead class object. The mode is threaded in from RibbonAddIn::OnDisconnection
+    // / OnBeginShutdown via xll::GracefulTeardownOnce(isHostShutdown).
     if (g_rtdCookie != 0) {
-        XLL_SAFE_BLOCK_BEGIN
-            HRESULT hr = CoRevokeClassObject(g_rtdCookie);
-            if (FAILED(hr)) {
-                SAFE_LOG_ERROR("CoRevokeClassObject failed: " + std::to_string(hr));
-            } else {
-                SAFE_LOG_INFO("Revoked RTD Class Object.");
-            }
-        XLL_SAFE_BLOCK_END_CONTINUE
-        g_rtdCookie = 0;
+        if (revokeRtdClassObject) {
+            XLL_SAFE_BLOCK_BEGIN
+                HRESULT hr = CoRevokeClassObject(g_rtdCookie);
+                if (FAILED(hr)) {
+                    SAFE_LOG_ERROR("CoRevokeClassObject failed: " + std::to_string(hr));
+                } else {
+                    SAFE_LOG_INFO("Revoked RTD Class Object (add-in disable / non-host-shutdown).");
+                }
+            XLL_SAFE_BLOCK_END_CONTINUE
+            g_rtdCookie = 0;
+        } else {
+            // Host shutdown: keep the class object registered so Excel can start +
+            // complete its RTD ServerTerminate/DisconnectData handshake. The cookie
+            // is left non-zero on purpose; DLL_PROCESS_DETACH unmaps the factory.
+            SAFE_LOG_INFO("RTD class object revoke SKIPPED on host shutdown (allow Excel to complete its RTD teardown handshake; see AGENTS.md §23.6).");
+        }
     }
+    {{else}}
+    (void)revokeRtdClassObject; // unused in non-RTD builds (ribbon-only teardown)
     {{end}}
 }
 {{end}}

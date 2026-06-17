@@ -130,4 +130,13 @@ void DeferCalcEndCommands(std::vector<uint8_t>&& respBuf);
 // (g_phost == nullptr). NEVER throws.
 void RunDeferredCalcEndCommands();
 
+// Cancel any pending xlcOnTime-scheduled deferred runner (#3, 2026-06-17).
+// Called from xll::GracefulTeardownOnce on the CONFIRMED-teardown path so a
+// runner macro armed by a late CalculationEnded is not left queued on Excel's
+// OnTime list past teardown (a candidate cause of the windowless-ghost /
+// window-reopen symptom S1). Issues xlcOnTime(savedSerial, macro, missing,
+// /*schedule=*/FALSE) using the exact serial captured at schedule time. No-op if
+// nothing is armed. NEVER throws (SEH/exception guarded).
+void CancelDeferredRunner();
+
 } // namespace xll

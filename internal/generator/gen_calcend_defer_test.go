@@ -133,3 +133,57 @@ func TestCalcEnd_DeferredRunner_SchedulerUsesOnTime(t *testing.T) {
 		t.Errorf("RunDeferredCalcEndCommands must self-abort on unload (g_isUnloading / g_phost == nullptr):\n%s", src)
 	}
 }
+
+// TestCalcEnd_DeferredRunner_CancelOnTeardown is the structural regression for
+// the leaked-xlcOnTime-schedule symptom (S1 candidate): a runner armed by a
+// late CalculationEnded (RTD-streaming recalc fires ~1/s) stays queued on
+// Excel's OnTime list after xlAutoClose. Dispatching that queued macro
+// post-teardown is a candidate cause of the windowless-ghost / window-reopen.
+//
+// FIX (#3): ScheduleDeferredRunner saves the EXACT serial time passed to
+// xlcOnTime; CancelDeferredRunner() cancels that schedule via
+// xlcOnTime(savedSerial, macro, /*tolerance*/missing, /*schedule*/FALSE); and
+// GracefulTeardownOnce calls CancelDeferredRunner() on the confirmed-teardown
+// path. This test pins all three. It FAILS on the parent commit (no cancel) and
+// PASSES after the fix.
+func TestCalcEnd_DeferredRunner_CancelOnTeardown(t *testing.T) {
+	t.Parallel()
+
+	m, err := assets.Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	deferred, ok := m["src/xll_deferred_commands.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_deferred_commands.cpp not found in assets")
+	}
+
+	// (1) The cancel function must exist.
+	if !strings.Contains(deferred, "void CancelDeferredRunner()") {
+		t.Errorf("xll_deferred_commands.cpp must define CancelDeferredRunner():\n%s", deferred)
+	}
+	// (2) The schedule path must capture the serial time so the cancel can match it.
+	if !strings.Contains(deferred, "g_lastOnTimeSerial") {
+		t.Errorf("ScheduleDeferredRunner must save the xlcOnTime serial time (g_lastOnTimeSerial) so CancelDeferredRunner can match it:\n%s", deferred)
+	}
+	// (3) The cancel must use the schedule=FALSE form of xlcOnTime with a missing
+	//     tolerance argument.
+	if !strings.Contains(deferred, "xltypeMissing") {
+		t.Errorf("CancelDeferredRunner must pass a missing tolerance operand to xlcOnTime:\n%s", deferred)
+	}
+
+	// (4) GracefulTeardownOnce must invoke the cancel on the confirmed-teardown path.
+	life, ok := m["src/xll_lifecycle.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_lifecycle.cpp not found in assets")
+	}
+	const sig = "void xll::GracefulTeardownOnce(bool isHostShutdown)"
+	start := strings.Index(life, sig)
+	if start < 0 {
+		t.Fatalf("GracefulTeardownOnce not found in xll_lifecycle.cpp:\n%s", life)
+	}
+	body := life[start:]
+	if !strings.Contains(body, "CancelDeferredRunner()") {
+		t.Errorf("GracefulTeardownOnce must call CancelDeferredRunner() on the confirmed-teardown path:\n%s", body)
+	}
+}

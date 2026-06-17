@@ -236,14 +236,51 @@ namespace xll {
             envBlock = envVec.data();
         }
 
-        DWORD flags = CREATE_UNICODE_ENVIRONMENT;
+        // CREATE_SUSPENDED so the child does not run until it has been assigned
+        // to the Job object. Without this there is an assign RACE: the child can
+        // begin executing (and even fork its own children) before
+        // AssignProcessToJobObject runs, so JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE may
+        // not cover everything the child spawned. Suspending the primary thread,
+        // assigning, then resuming closes that window. (#2a, 2026-06-17)
+        DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
 
         if (CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE, flags, envBlock, cwd.c_str(), &si, &pi)) {
             outInfo.hProcess = pi.hProcess;
-            CloseHandle(pi.hThread);
             if (outInfo.hJob) {
-                AssignProcessToJobObject(outInfo.hJob, outInfo.hProcess);
+                // CHECK the assign result. A failure here (commonly an Access
+                // Denied in a locked-down environment, or the process already
+                // belonging to a job that disallows nesting) means the Job's
+                // KILL_ON_JOB_CLOSE reap will NOT cover this server — it would
+                // ORPHAN on teardown (symptom S2). Surface it loudly so the
+                // locked-environment case is diagnosable; the Go-side parent-death
+                // watcher (#2b) is the backstop that still reaps the server when
+                // the job reap is denied.
+                if (!AssignProcessToJobObject(outInfo.hJob, outInfo.hProcess)) {
+                    DWORD err = GetLastError();
+                    LogWarn("AssignProcessToJobObject FAILED (GetLastError=" + std::to_string(err) +
+                            "); server will not be reaped via Job KILL_ON_JOB_CLOSE. "
+                            "Relying on the Go parent-death watcher backstop.");
+                }
             }
+            // Resume only AFTER the assign attempt so the child runs inside the
+            // Job from its first instruction. CHECK the result: if ResumeThread
+            // fails the primary thread never runs, leaving a permanently-suspended
+            // zombie server — every SHM Send would time out against it and the
+            // Go-side parent-death watcher (#2b) would never arm (Serve() never
+            // executes). Treat that as a launch failure and reap the corpse.
+            if (ResumeThread(pi.hThread) == (DWORD)-1) {
+                DWORD err = GetLastError();
+                LogError("ResumeThread FAILED (GetLastError=" + std::to_string(err) +
+                         "); terminating suspended server to avoid a hung zombie.");
+                TerminateProcess(pi.hProcess, 1);
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+                outInfo.hProcess = NULL;
+                if (outInfo.hJob) { CloseHandle(outInfo.hJob); outInfo.hJob = NULL; }
+                CloseHandle(hLog);
+                return false;
+            }
+            CloseHandle(pi.hThread);
             CloseHandle(hLog);
             return true;
         } else {

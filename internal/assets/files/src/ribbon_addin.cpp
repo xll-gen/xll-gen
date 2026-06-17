@@ -272,8 +272,12 @@ HRESULT __stdcall RibbonAddIn::OnDisconnection(ext_DisconnectMode RemoveMode, SA
     // continues. Either way the graceful teardown must run; the CAS in
     // GracefulTeardownOnce() makes it idempotent with OnBeginShutdown and the
     // DETACH backstop. Decoupled via the exported lifecycle hook.
-    (void)RemoveMode;
-    xll::GracefulTeardownOnce();
+    // isHostShutdown drives the close-time ghost fix (AGENTS.md §23.6):
+    // ext_dm_HostShutdown (Excel quitting) => skip the RTD class-object revoke so
+    // Excel can start its RTD DisconnectData/ServerTerminate handshake.
+    // ext_dm_UserClosed (add-in disabled, session continues) => normal revoke.
+    const bool isHostShutdown = (RemoveMode == ext_dm_HostShutdown);
+    xll::GracefulTeardownOnce(isHostShutdown);
     return S_OK;
 }
 
@@ -287,7 +291,11 @@ HRESULT __stdcall RibbonAddIn::OnBeginShutdown(SAFEARRAY**) {
     // not the loader lock), so the §23.0 drains and the clean server shutdown
     // happen here rather than at DETACH. Idempotent via the GracefulTeardownOnce
     // CAS. Decoupled via the exported lifecycle hook.
-    xll::GracefulTeardownOnce();
+    //
+    // OnBeginShutdown fires ONLY on a real Excel quit (never an add-in disable),
+    // so this is unambiguously a HOST SHUTDOWN — pass true to trigger the §23.6
+    // RTD revoke-skip that lets Excel start its RTD teardown handshake.
+    xll::GracefulTeardownOnce(/*isHostShutdown=*/true);
     return S_OK;
 }
 

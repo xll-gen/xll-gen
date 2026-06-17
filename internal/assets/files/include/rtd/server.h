@@ -2,6 +2,7 @@
 #define RTD_SERVER_H
 
 #include <mutex>
+#include <atomic>
 #include <vector>
 #include <map>
 #include <algorithm>
@@ -12,6 +13,25 @@
 
 // Forward declaration of logging
 namespace xll { void LogDebug(const std::string& msg); }
+// Unload flag (defined in xll_lifecycle.cpp). Read in NotifyUpdate as a
+// defense-in-depth guard (review MED-1, 2026-06-17): the in-flight-snapshot
+// window is closed by BOTH the m_callback null-out (in ServerTerminate, before
+// JoinWorker) AND this flag, so a future edit that reorders the null-out cannot
+// re-open a NotifyUpdate-vs-teardown race.
+namespace xll { extern std::atomic<bool> g_isUnloading; }
+// Close-time ghost fix (AGENTS.md §23.6 Stage 4, remediation 2026-06-17):
+// RtdServer::ServerTerminate is the correctly-timed, COM-apartment-safe,
+// naturally-serialized point at which to run the DEFERRED destructive teardown.
+// Excel calls ServerTerminate ON THE STA, AFTER all DisconnectData, once its RTD
+// handshake against a still-live g_phost completes. ServerTerminate releases
+// m_callback (its normal job) and then drives the destructive teardown directly:
+//   - SetRtdServerTerminated(): records handshake completion (diagnosability /
+//     idempotence). Defined in xll_lifecycle.cpp.
+//   - RunDestructiveTeardown(): the §23.0-ordered destructive body (set
+//     g_isUnloading, StopWorker/JoinWorker, drains, delete g_phost, reap server),
+//     self-guarded by an internal CAS so it runs exactly once. Defined in
+//     xll_lifecycle.cpp; safe to call here (this is the STA, not the loader lock).
+namespace xll { void SetRtdServerTerminated(); void RunDestructiveTeardown(); }
 
 namespace rtd {
 
@@ -145,18 +165,84 @@ namespace rtd {
 
         HRESULT __stdcall ServerTerminate() override {
             xll::LogDebug("RtdServer::ServerTerminate");
+            // Record that Excel has completed its RTD teardown handshake (AGENTS.md
+            // §23.6 Stage 4). Plain atomic store; safe + idempotent.
+            xll::SetRtdServerTerminated();
+
+            // Release OUR ref to Excel's IRTDUpdateEvent callback — ServerTerminate's
+            // normal job, performed here ON THE STA in the correct COM apartment.
+            // Scope the mutex so it is NOT held across the destructive teardown below
+            // (teardown does not need m_callbackMutex; holding it would needlessly
+            // serialize against any stray STA ServerStart, and the drains can block).
+            {
+                std::lock_guard<std::mutex> lock(m_callbackMutex);
+                if (m_callback) {
+                    m_callback->Release();
+                    m_callback = nullptr;
+                }
+            }
+
+            // §23.6 Stage-4 remediation (2026-06-17): drive the DEFERRED destructive
+            // teardown HERE, on the STA, at the correctly-timed point — Excel has now
+            // delivered every DisconnectData and this ServerTerminate AFTER they all
+            // completed against a still-live g_phost, so MSG_RTD_DISCONNECT reached
+            // the server and Excel's RTD machinery considers itself torn down. This
+            // is the SAME thread-class (STA) and SAME blocking profile the original
+            // synchronous teardown had inside OnBeginShutdown — just correctly timed.
+            // RunDestructiveTeardown self-guards with its g_destructiveDone CAS, so it
+            // runs exactly once (the only other caller is the non-host-shutdown
+            // synchronous path in GracefulTeardownOnce). On the add-in-disable path
+            // GracefulTeardownOnce already ran the teardown synchronously and revoked
+            // the RTD class object, so Excel does not deliver ServerTerminate there;
+            // even if it did, the CAS makes this a no-op. NOTE: do NOT separately call
+            // ReleaseCallbackForTeardown here — we already released m_callback above
+            // on the STA; RunDestructiveTeardown's own (idempotent, null-checked)
+            // ReleaseCallbackForTeardown is the timeout/belt-and-suspenders cover.
+            xll::RunDestructiveTeardown();
+            return S_OK;
+        }
+
+        /**
+         * @brief Proactively release OUR reference to Excel's IRTDUpdateEvent
+         *        callback on the CONFIRMED-teardown path, breaking the COM
+         *        reference cycle (Excel <-> this RtdServer).
+         *
+         * Belt-and-suspenders for the §23.6 Stage-4 deferred teardown. On a normal
+         * host shutdown ServerTerminate now arrives (the deferred Phase-1/Phase-2
+         * split keeps g_phost alive across Excel's RTD handshake) and releases
+         * m_callback itself; this method is the cover for the timeout path (the
+         * Phase-2 watcher ran without seeing ServerTerminate) and for the
+         * add-in-disable path. It mirrors ServerTerminate's release under
+         * m_callbackMutex and is fully idempotent (null-checked), so it is SAFE if
+         * ServerTerminate also ran — no double-release / double-free.
+         *
+         * CONCURRENCY: this must be called AFTER the worker thread that drives
+         * NotifyUpdate()/ProcessRtdUpdate() has been joined (see
+         * xll::GracefulTeardownOnce -> JoinWorker), so no in-flight UpdateNotify
+         * can race the release. The mutex additionally serializes against any STA
+         * ServerStart/ServerTerminate. It does NOT delete the instance itself
+         * (Excel still owns the IRtdServer ref; CoRevokeClassObject handles the
+         * factory) — it only drops OUR ref to Excel's callback.
+         */
+        void ReleaseCallbackForTeardown() {
             std::lock_guard<std::mutex> lock(m_callbackMutex);
             if (m_callback) {
                 m_callback->Release();
                 m_callback = nullptr;
+                xll::LogDebug("RtdServer::ReleaseCallbackForTeardown: m_callback released");
+            } else {
+                xll::LogDebug("RtdServer::ReleaseCallbackForTeardown: no callback (already released)");
             }
-            return S_OK;
         }
 
         /**
          * @brief Thread-safe helper to notify Excel of updates.
          */
         void NotifyUpdate() {
+            // Defense-in-depth (review MED-1): bail if teardown has begun. The
+            // m_callback null-out already covers the race, but this closes the
+            // snapshot window against future reorderings too.
+            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
             IRTDUpdateEvent* tempCallback = nullptr;
             {
                 std::lock_guard<std::mutex> lock(m_callbackMutex);

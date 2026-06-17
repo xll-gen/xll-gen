@@ -19,6 +19,7 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
+	"golang.org/x/sys/windows"
 )
 
 // Force usage of time and protocol to avoid unused import error
@@ -55,6 +56,67 @@ func PushRtdUpdate(topicID int32, value interface{}) error {
 }
 {{end}}
 
+// watchParentDeath is the robust backstop that reaps THIS server when the
+// parent Excel process exits, even when the C++ side's Job-object
+// KILL_ON_JOB_CLOSE reap is denied (locked-down environments where
+// AssignProcessToJobObject fails — see xll_launch.cpp #2a). It directly fixes
+// the orphaned-server symptom (S2): an orphaned server keeps the inherited
+// _go.log handle open, leaving the file undeletable while NO Excel process
+// exists.
+//
+// It opens the parent process (PID = os.Getppid()) with SYNCHRONIZE rights and
+// blocks on WaitForSingleObject(INFINITE). When the parent exits, it runs a
+// clean shutdown (onExit, which closes the SHM client) and terminates the
+// process. Failure modes (Getppid()==0, OpenProcess denied) are handled
+// gracefully: the watcher is simply skipped with a warning — the Job reap
+// remains the primary mechanism in that case.
+//
+// osExit is indirected (defaults to os.Exit) so the parent-death watcher's
+// terminate step is unit-testable without killing the test binary. Production
+// behavior is identical to calling os.Exit directly.
+var osExit = os.Exit
+
+// openParent / waitOne are indirected so the logic is unit-testable without a
+// real parent process (see server_parent_watch_test.go).
+func watchParentDeath(parentPID int, openParent func(pid int) (windows.Handle, error), waitOne func(windows.Handle) error, onExit func()) {
+	if parentPID == 0 {
+		log.Warn("Parent-death watcher skipped: getppid returned 0 (no parent handle)")
+		return
+	}
+	h, err := openParent(parentPID)
+	if err != nil {
+		log.Warn("Parent-death watcher skipped: could not open parent process", "ppid", parentPID, "error", err)
+		return
+	}
+	defer windows.CloseHandle(h)
+
+	log.Info("Parent-death watcher armed", "ppid", parentPID)
+	if err := waitOne(h); err != nil {
+		log.Warn("Parent-death watcher wait failed; not reaping", "error", err)
+		return
+	}
+	log.Info("Parent (Excel) exited — shutting down server cleanly", "ppid", parentPID)
+	if onExit != nil {
+		onExit()
+	}
+	osExit(0)
+}
+
+func openParentProcess(pid int) (windows.Handle, error) {
+	return windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+}
+
+func waitForProcessExit(h windows.Handle) error {
+	ev, err := windows.WaitForSingleObject(h, windows.INFINITE)
+	if err != nil {
+		return err
+	}
+	if ev == uint32(windows.WAIT_FAILED) {
+		return fmt.Errorf("WaitForSingleObject returned WAIT_FAILED")
+	}
+	return nil
+}
+
 func Serve(handler XllService) {
 	// Parse command line flags to get SHM name
 	shmName := flag.String("xll-shm", "{{.ProjectName}}", "Shared Memory Name")
@@ -77,6 +139,14 @@ func Serve(handler XllService) {
         panic(err)
     }
     defer client.Close()
+
+    // Parent-death backstop (#2b): reap this server if the parent Excel exits
+    // without the Job KILL_ON_JOB_CLOSE reap firing (locked-down env where
+    // AssignProcessToJobObject was denied). Directly fixes the orphaned-server
+    // log-lock symptom (S2). Runs in its own goroutine; on parent exit it closes
+    // the SHM client and os.Exit(0). Skipped gracefully if getppid()/OpenProcess
+    // is unavailable.
+    go watchParentDeath(os.Getppid(), openParentProcess, waitForProcessExit, func() { client.Close() })
 
     {{if .Rtd.Enabled}}
     rtd.GlobalRtd.SetClient(client)
