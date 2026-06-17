@@ -103,7 +103,10 @@ func getEventHandler(eventType string, events []config.Event, defaultHandler str
 // inside a C++ (wide) string literal. Names/shortcuts are charset-validated
 // at config time, but descriptions, categories and help topics accept
 // arbitrary text — an interior quote, backslash or newline would otherwise
-// terminate or corrupt the generated literal.
+// terminate or corrupt the generated literal. Other control characters
+// (notably an embedded NUL, reachable via adversarial/pasted YAML) are
+// escaped as \uXXXX so they cannot truncate the emitted C string, mirroring
+// the sibling cppWideLiteral helper.
 func escapeCppString(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -120,7 +123,11 @@ func escapeCppString(s string) string {
 		case '\t':
 			b.WriteString(`\t`)
 		default:
-			b.WriteRune(r)
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
 		}
 	}
 	return b.String()

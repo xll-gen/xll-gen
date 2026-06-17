@@ -18,7 +18,8 @@ func NewAsyncBatcher() *AsyncBatcher {
 // blocking the caller.
 //
 // Rationale (AGENTS.md §23 / IMPROVEMENT_BACKLOG.md §2): the batch worker can
-// sleep up to ~2.5s per flush in sendWithRetry when the Excel host is gone.
+// sleep up to ~2.56s per flush in sendWithRetry (9 inter-attempt backoff sleeps)
+// when the Excel host is gone.
 // A blocking send here would back up onto the SHM worker pool goroutines that
 // call QueueResult, wedging the entire pool behind a dead host. Dropping a
 // result for a host that cannot receive it is the correct failure mode — the

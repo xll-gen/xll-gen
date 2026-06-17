@@ -25,16 +25,21 @@ var heapBuilderPool = sync.Pool{
 }
 
 // sendWithRetry sends payload as msgType via the SHM client, retrying up to
-// 10 times with exponential backoff (5ms, 10ms, ... ~2.5s max total wait) to
-// ride out transient buffer fullness. It returns nil on success, or the last
-// send error after exhausting all attempts.
+// 10 times with exponential backoff (5ms, 10ms, ... 1.28s; ~2.56s max total
+// wait across the 9 inter-attempt sleeps) to ride out transient buffer
+// fullness. It returns nil on success, or the last send error after exhausting
+// all attempts. The sleep after the final attempt is skipped — there is no
+// subsequent retry to space out, so sleeping would only delay the error return.
 func sendWithRetry(client *shm.Client, payload []byte, msgType shm.MsgType) error {
 	var err error
 	for i := 0; i < 10; i++ {
 		if _, err = client.SendGuestCall(payload, msgType); err == nil {
 			return nil
 		}
-		// Backoff: 5ms, 10ms, ... 2.5s max total wait
+		if i == 9 {
+			break // no retry follows the last attempt; don't sleep before returning
+		}
+		// Backoff: 5ms, 10ms, ... 1.28s
 		time.Sleep(5 * time.Millisecond * time.Duration(1<<i))
 	}
 	return err

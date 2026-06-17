@@ -34,6 +34,33 @@ func TestCppWideLiteral(t *testing.T) {
 	}
 }
 
+// TestEscapeCppString pins the escaping used for config free-text (Description,
+// Category, HelpTopic, Arg.Description) emitted inside an L"..." literal. The
+// regression of record: an embedded control char (notably NUL) must NOT pass
+// through raw, or it would truncate the generated C string.
+func TestEscapeCppString(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"ascii", "Computes the sum", "Computes the sum"},
+		{"quote_and_backslash", `a"b\c`, `a\"b\\c`},
+		{"newline_cr_tab", "a\n\r\tb", `a\n\r\tb`},
+		{"embedded_nul", "a\x00b", fmt.Sprintf(`a\u%04Xb`, 0)},
+		{"other_control", "a\x01\x1fb", fmt.Sprintf(`a\u%04X\u%04Xb`, 1, 0x1f)},
+		// Legitimate non-ASCII text passes through unchanged (cppWideLiteral, by
+		// contrast, escapes it — escapeCppString preserves established behavior).
+		{"unicode_passthrough", "데이터", "데이터"},
+	}
+	for _, tc := range cases {
+		if got := escapeCppString(tc.in); got != tc.want {
+			t.Errorf("%s: escapeCppString(%q) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestAnyRtdOnceGrid covers the gating helper used by later template tasks to
 // decide whether to emit the rtd-once grid-spill C++/Go codegen. It is true
 // only when a function is BOTH mode:"rtd-once" AND returns grid/numgrid.
