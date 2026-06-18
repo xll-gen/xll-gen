@@ -171,6 +171,8 @@ When adding or modifying a data type (e.g., adding `date` support):
 
 > Note: a type maps to a `protocol.fbs` member **only if its `SchemaType` is that member**. `date` uses `SchemaType="double"` (see Confirmed-Correct Decisions), so it rides the existing `Num`/`double` path and does not require the `Date` union member in the generated project — adding `date`-like types backed by `double` needs no schema change at all.
 
+**Argument-direction (cell → handler) request-builder codegen.** In `internal/templates/xll_main.cpp.tmpl` the per-arg encode is split in two loops: the **arg-decode loop** creates an `arg<N>` offset ONLY for composite/by-reference types (`string`/`grid`/`numgrid`/`range`/`any`), and the **request-builder loop** has a SCALAR branch (`add_<name>(<name>)`, passing the by-value C param directly) vs. an ELSE branch (`add_<name>(arg<N>)`, using the decoded offset). A **by-value scalar ARGUMENT** is any type whose `ArgCppType` is a plain scalar (`int`/`double`/`bool` — i.e. `int`, `float`, `bool`, and `date` (`ArgCppType="double"`: Excel passes the serial by value)). Every such type MUST be listed in the builder-loop scalar branch's `or` condition. Omitting one makes it fall to the else branch, which emits `add_<name>(arg<N>)` referencing an `arg<N>` that the decode loop never created → the generated C++ fails to compile. This bit `date` (fixed v0.8.10; regression `gen_date_test.go::TestGenCpp_DateArgRequestBuilder`). **When adding a new by-value scalar arg type, update that scalar branch (not just `typeRegistry`).**
+
 **Return-direction (handler → cell) serialization.** A type valid as a RETURN
 may need a distinct handler-facing Go type and a server-side serializer, because
 FlatBuffers read views (`*protocol.Grid`, `*protocol.Any`) make sense as
@@ -1180,6 +1182,52 @@ the §23.0 ordering, the DETACH backstop) and replaces ONLY the Phase-2 trigger 
   PASS-after confirmed by reintroducing the watcher token and deleting the teardown call.
 * **C++ asset change (not `DllMain` graceful-path logic, but touches `DllMain` DETACH reasoning) —
   re-review by `xll-cpp-reviewer` required before commit.**
+
+**Stage 4 REMEDIATION #2 (2026-06-18) — SHIPPED v0.8.10. ServerTerminate gated on CONFIRMED host shutdown.**
+
+The Remediation #1 trigger ("Phase 2 runs directly from `RtdServer::ServerTerminate` on the STA") rested
+on a FALSE premise: that Excel delivers `ServerTerminate` **only at host shutdown**. **It does not.**
+Excel calls `IRtdServer::ServerTerminate` whenever the RTD server's live-topic count drops to zero —
+**including on a plain workbook close while the Excel Application stays alive** (e.g. a COM-automation
+client that holds the `Application` ref, or any "close one workbook, keep Excel open" flow; this is the
+same zero-topic revoke/re-register "liveness blip" noted for the RTD server lifecycle). On such a close
+`OnBeginShutdown`/`GracefulTeardownOnce` NEVER fire, yet `ServerTerminate` does — so the
+unconditionally-wired `RunDestructiveTeardown()` ran the FULL destructive teardown (`g_isUnloading`,
+`StopWorker`/`JoinWorker`, `delete g_phost`, `CloseHandle(hJob)`=`KILL_ON_JOB_CLOSE` killing the Go
+server) **while the XLL stayed loaded and Excel kept running**. The next workbook/recalc then hit a dead
+server / null `g_phost` → **RPC `0x800706BA` / AV on reopen** (a fast close→reopen of a live YDH rtd-once
+grid workbook crashed Excel; non-regression — present since the Remediation #1 wiring shipped in v0.8.7).
+
+**Fix — gate the destructive trigger on a CONFIRMED host shutdown.** `ServerTerminate` ALWAYS releases
+`m_callback` (its normal COM-cycle-break job, mutex-scoped), but now drives `RunDestructiveTeardown()`
+ONLY when armed:
+
+* New file-static `std::atomic<bool> g_hostShutdownTeardownArmed` in `xll_lifecycle.cpp` + exported
+  accessor `xll::HostShutdownTeardownArmed()` (load-acquire). `GracefulTeardownOnce`'s `isHostShutdown`
+  Phase-1 branch arms it (`store(true, release)`) **before its fast return** — the unique confirmed-
+  real-quit signal. Reset to `false` in `DLL_PROCESS_ATTACH` (probe-unload-reuse symmetry, alongside
+  `g_destructiveDone`/`g_rtdServerTerminated`).
+* `RtdServer::ServerTerminate` (`include/rtd/server.h`): `if (xll::HostShutdownTeardownArmed())
+  RunDestructiveTeardown();` else log + `return S_OK` leaving `g_phost`/server ALIVE so reopen works.
+* **Real-quit path preserved unchanged:** `OnBeginShutdown` → `GracefulTeardownOnce(host)` arms → fast
+  return → Excel `DisconnectData` per topic → `ServerTerminate` reads armed → teardown runs. The arm
+  is sequenced before the Phase-1 return, so it is observable by the time `ServerTerminate` fires. The
+  new flag is an ADDITIONAL gate; `g_teardownDone`/`g_destructiveDone` CAS guards are untouched. Add-in-
+  disable path (synchronous `RunDestructiveTeardown` from `GracefulTeardownOnce`) is unaffected.
+* **LESSON (do not regress):** `IRtdServer::ServerTerminate` is NOT a host-shutdown signal — it fires on
+  every zero-live-topic transition. Any destructive / process-scoped teardown must be gated on a
+  separate confirmed-host-shutdown signal (here `HostShutdownTeardownArmed()`), never driven by
+  `ServerTerminate` alone. `DisconnectData` is likewise per-topic, not a shutdown signal.
+* **Files:** `internal/assets/files/include/rtd/server.h`, `internal/assets/files/src/xll_lifecycle.cpp`,
+  `internal/assets/files/include/xll_lifecycle.h`.
+* **Regression test:** `internal/generator/gen_rtd_terminate_gate_test.go`
+  (`TestRtdServerTerminateGatedOnHostShutdown`) — comment-stripped asserts of the gate, the arm-exactly-
+  once inside the `isHostShutdown` branch before its return, the `DLL_PROCESS_ATTACH` reset, and that
+  `m_callback` is still released unconditionally. FAIL-before / PASS-after confirmed.
+* **Verified:** `xll-cpp-reviewer` GO (0 BLOCKER/0 HIGH). Real Excel `verify-ydp-stranding-uia.ps1`
+  (`$rounds=3`) went WEAK (round-2 `0x800706BA`, Excel gone before round 3) → **PASS** (3 rounds settle,
+  Excel alive). C++ asset change touching `DllMain` reasoning — `xll-cpp-reviewer` pass obtained before
+  commit.
 
 ## 24. CLAUDE.md / Agent Tool Compatibility
 
