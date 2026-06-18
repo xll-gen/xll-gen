@@ -1554,7 +1554,10 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 
     ipc::{{.Name}}RequestBuilder reqBuilder(builder);
     {{range $j, $arg := .Args}}
-    {{if or (eq .Type "int") (eq .Type "float") (eq .Type "bool")}}
+    {{if or (eq .Type "int") (eq .Type "float") (eq .Type "bool") (eq .Type "date")}}
+    {{/* date rides the double request path: the C param is a `double` (ArgCppType),
+         so it is added DIRECTLY like a float/int scalar — NO arg<N> offset is
+         created for it in the arg-decode loop above. */}}
     reqBuilder.add_{{.Name}}({{if eq .Type "bool"}}({{.Name}} != 0){{else}}{{.Name}}{{end}});
     {{else}}
     reqBuilder.add_{{.Name}}(arg{{$j}});

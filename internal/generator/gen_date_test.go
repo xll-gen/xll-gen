@@ -163,6 +163,47 @@ func TestGenCpp_DateFormatWiring(t *testing.T) {
 	}
 }
 
+// TestGenCpp_DateArgRequestBuilder pins the C++ request-builder codegen for a
+// date ARGUMENT. A date arg rides the double request path: it is declared as a
+// `double` C param (ArgCppType) and must be added to the request builder
+// DIRECTLY (add_d(d)), exactly like a float/int/bool scalar. The earlier bug:
+// date was missing from the scalar branch of the builder loop, so it fell to
+// the else branch and emitted `reqBuilder.add_d(arg0)` referencing an
+// undeclared `arg0` (no arg<N> is created for scalar types) → C++ compile
+// failure. Regression for IMPROVEMENT_BACKLOG §"date 인자 + any 반환".
+func TestGenCpp_DateArgRequestBuilder(t *testing.T) {
+	t.Parallel()
+	// generateCppMain bypasses config.Validate (see TestGenCpp_DateFormatWiring),
+	// so we can pair a date arg with several return types to prove the arg-decode
+	// path is return-type-independent.
+	for _, ret := range []string{"int", "any", "grid"} {
+		ret := ret
+		t.Run(ret, func(t *testing.T) {
+			t.Parallel()
+			cfg := &config.Config{
+				Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+				Functions: []config.Function{
+					{Name: "DateArg", Mode: "sync", Return: ret, Args: []config.Arg{{Name: "d", Type: "date"}}},
+				},
+				Server: config.ServerConfig{
+					Timeout: "2s",
+					Launch:  &config.LaunchConfig{Enabled: new(bool)},
+				},
+			}
+			content := renderCppMain(t, cfg)
+
+			// The date scalar must be passed DIRECTLY to the builder.
+			if !strings.Contains(content, "reqBuilder.add_d(d);") {
+				t.Errorf("date arg must be added directly as a scalar (add_d(d)):\n%s", content)
+			}
+			// And must NOT reference an undeclared arg<N> offset.
+			if strings.Contains(content, "reqBuilder.add_d(arg0)") {
+				t.Errorf("date arg wrongly added via undeclared offset arg0 (should be add_d(d)):\n%s", content)
+			}
+		})
+	}
+}
+
 // TestGen_DateArgInterface verifies the handler interface references time.Time
 // for a date arg/return and that the generated interface file imports "time".
 func TestGen_DateArgInterface(t *testing.T) {
