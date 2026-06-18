@@ -71,6 +71,35 @@ namespace xll {
         g_rtdServerTerminated.store(true, std::memory_order_release);
     }
 
+    // CONFIRMED-host-shutdown gate for RtdServer::ServerTerminate's destructive
+    // teardown trigger (AGENTS.md §23.6, remediation 2026-06-18).
+    //
+    // WHY THIS EXISTS: the Stage-4 remediation wired RtdServer::ServerTerminate to
+    // drive RunDestructiveTeardown directly, under the assumption "Excel calls
+    // ServerTerminate ONLY at host shutdown (after OnBeginShutdown)". That
+    // assumption is FALSE. Excel calls ServerTerminate WHENEVER the RTD server's
+    // live topic count drops to zero — including on an ordinary workbook close
+    // while the Excel Application stays alive (e.g. a COM-automation client holds
+    // the Application ref, so OnBeginShutdown / GracefulTeardownOnce never fire).
+    // On such a plain close Excel issues DisconnectData for each streaming topic,
+    // then ServerTerminate — and if ServerTerminate unconditionally ran the
+    // destructive teardown it would set g_isUnloading, Stop/Join the worker,
+    // delete g_phost, and CloseHandle(hJob) (KILL_ON_JOB_CLOSE) — KILLING the Go
+    // server while the XLL is still loaded and Excel is NOT quitting. The next
+    // workbook reopen then hits a dead server / null g_phost → RPC 0x800706BA → AV.
+    //
+    // The UNIQUE signal that a real host shutdown is in progress (and therefore
+    // that the subsequent ServerTerminate is the DEFERRED Phase-2 trigger we want)
+    // is GracefulTeardownOnce's host-shutdown Phase-1 branch. We ARM this flag
+    // there, before its fast return, and ServerTerminate gates RunDestructiveTeardown
+    // on it: armed => real quit, run Phase 2; not armed => zero-topic blip on a
+    // live host, leave g_phost / the server intact. Reset on DLL_PROCESS_ATTACH for
+    // probe-unload-reuse symmetry (alongside g_destructiveDone / g_rtdServerTerminated).
+    static std::atomic<bool> g_hostShutdownTeardownArmed(false);
+    bool HostShutdownTeardownArmed() {
+        return g_hostShutdownTeardownArmed.load(std::memory_order_acquire);
+    }
+
     // Phase-2 single-shot guard. The destructive teardown (RunDestructiveTeardown,
     // below) may be reached from TWO sites: RtdServer::ServerTerminate on the STA
     // (host-shutdown deferred path), and GracefulTeardownOnce itself synchronously
@@ -194,6 +223,12 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD  ul_reason_for_call, LPVOID lpRes
             // RtdServer::ServerTerminate; §23.6 Stage-4 remediation.)
             xll::g_destructiveDone = false;
             xll::g_rtdServerTerminated.store(false, std::memory_order_release);
+            // Reset the §23.6 host-shutdown teardown gate (remediation 2026-06-18)
+            // for the same probe-unload-reuse symmetry: a fresh load must start with
+            // the gate DISARMED so a stray ServerTerminate (zero-topic blip) on the
+            // new generation does not inherit an armed flag from a prior generation
+            // and wrongly run the destructive teardown on a live host.
+            xll::g_hostShutdownTeardownArmed.store(false, std::memory_order_release);
             break;
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
@@ -443,10 +478,21 @@ void xll::GracefulTeardownOnce(bool isHostShutdown) {
             // detaches threads per §20.2. We add NO watcher; a one-session g_phost
             // leak on that rare path is accepted (§20.2), and the server is still
             // reaped.
+            // ARM the host-shutdown teardown gate (AGENTS.md §23.6, remediation
+            // 2026-06-18). This is the ONLY signal that a CONFIRMED real host
+            // shutdown is in progress, so the ServerTerminate Excel issues after its
+            // RTD handshake is the DEFERRED Phase-2 trigger — and must run the
+            // destructive teardown. Without this gate, ServerTerminate also fires on
+            // an ordinary workbook close (zero live topics) while Excel stays alive,
+            // and an unconditional teardown there KILLS the server mid-session
+            // (reopen → dead server → 0x800706BA). Set it BEFORE this fast return so
+            // it is observably true by the time ServerTerminate runs on the STA.
+            g_hostShutdownTeardownArmed.store(true, std::memory_order_release);
             LogInfo("GracefulTeardownOnce Phase 1 (host shutdown): COM hook done (RTD "
-                    "class-object revoke skipped); returning fast so Excel can complete "
-                    "its RTD DisconnectData/ServerTerminate handshake against a live "
-                    "g_phost. Phase 2 (destructive teardown) will run from "
+                    "class-object revoke skipped); armed host-shutdown teardown gate; "
+                    "returning fast so Excel can complete its RTD "
+                    "DisconnectData/ServerTerminate handshake against a live g_phost. "
+                    "Phase 2 (destructive teardown) will run from "
                     "RtdServer::ServerTerminate on the STA (AGENTS.md §23.6).");
             return;
         }

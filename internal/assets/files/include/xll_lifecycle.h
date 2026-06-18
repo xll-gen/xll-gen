@@ -169,6 +169,19 @@ namespace xll {
     // m_callback) via RunDestructiveTeardown, rather than polled by a watcher
     // thread (§23.6 Stage-4 remediation, 2026-06-17).
     void SetRtdServerTerminated();
+
+    // §23.6 host-shutdown teardown gate (remediation 2026-06-18). Returns true ONLY
+    // when a CONFIRMED real host shutdown is in progress — i.e. GracefulTeardownOnce
+    // ran its isHostShutdown Phase-1 branch (the unique real-quit signal). Reset to
+    // false on DLL_PROCESS_ATTACH (probe-unload-reuse symmetry).
+    //
+    // RtdServer::ServerTerminate gates its RunDestructiveTeardown trigger on this:
+    // Excel calls ServerTerminate not only at host shutdown but ALSO on an ordinary
+    // workbook close once the live RTD topic count drops to zero (Application stays
+    // alive). On that non-shutdown close the destructive teardown must NOT run — it
+    // would kill the server mid-session and the next reopen would hit a dead server
+    // (RPC 0x800706BA / AV). Only the armed (real-quit) case runs Phase 2.
+    bool HostShutdownTeardownArmed();
 }
 
 // XLL Interface Functions

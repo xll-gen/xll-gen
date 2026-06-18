@@ -32,6 +32,14 @@ namespace xll { extern std::atomic<bool> g_isUnloading; }
 //     self-guarded by an internal CAS so it runs exactly once. Defined in
 //     xll_lifecycle.cpp; safe to call here (this is the STA, not the loader lock).
 namespace xll { void SetRtdServerTerminated(); void RunDestructiveTeardown(); }
+// §23.6 host-shutdown teardown gate (remediation 2026-06-18). Excel calls
+// ServerTerminate WHENEVER the RTD server's live topic count drops to zero — NOT
+// only at host shutdown. On an ordinary workbook close (Application stays alive)
+// the destructive teardown must be SKIPPED, or it kills the Go server mid-session
+// and the next reopen hits a dead server (RPC 0x800706BA / AV). This accessor is
+// true ONLY when GracefulTeardownOnce armed it from its confirmed host-shutdown
+// Phase-1 branch. Defined in xll_lifecycle.cpp.
+namespace xll { bool HostShutdownTeardownArmed(); }
 
 namespace rtd {
 
@@ -182,23 +190,44 @@ namespace rtd {
                 }
             }
 
-            // §23.6 Stage-4 remediation (2026-06-17): drive the DEFERRED destructive
-            // teardown HERE, on the STA, at the correctly-timed point — Excel has now
-            // delivered every DisconnectData and this ServerTerminate AFTER they all
-            // completed against a still-live g_phost, so MSG_RTD_DISCONNECT reached
-            // the server and Excel's RTD machinery considers itself torn down. This
-            // is the SAME thread-class (STA) and SAME blocking profile the original
-            // synchronous teardown had inside OnBeginShutdown — just correctly timed.
-            // RunDestructiveTeardown self-guards with its g_destructiveDone CAS, so it
-            // runs exactly once (the only other caller is the non-host-shutdown
-            // synchronous path in GracefulTeardownOnce). On the add-in-disable path
-            // GracefulTeardownOnce already ran the teardown synchronously and revoked
-            // the RTD class object, so Excel does not deliver ServerTerminate there;
-            // even if it did, the CAS makes this a no-op. NOTE: do NOT separately call
-            // ReleaseCallbackForTeardown here — we already released m_callback above
-            // on the STA; RunDestructiveTeardown's own (idempotent, null-checked)
-            // ReleaseCallbackForTeardown is the timeout/belt-and-suspenders cover.
-            xll::RunDestructiveTeardown();
+            // §23.6 Stage-4 remediation (2026-06-17): on a CONFIRMED host shutdown,
+            // drive the DEFERRED destructive teardown HERE, on the STA, at the
+            // correctly-timed point — Excel has now delivered every DisconnectData and
+            // this ServerTerminate AFTER they all completed against a still-live
+            // g_phost, so MSG_RTD_DISCONNECT reached the server and Excel's RTD
+            // machinery considers itself torn down. This is the SAME thread-class
+            // (STA) and SAME blocking profile the original synchronous teardown had
+            // inside OnBeginShutdown — just correctly timed. RunDestructiveTeardown
+            // self-guards with its g_destructiveDone CAS, so it runs exactly once.
+            //
+            // §23.6 GATE (remediation 2026-06-18): ServerTerminate fires not ONLY at
+            // host shutdown but ALSO whenever the live RTD topic count drops to zero —
+            // including on an ordinary workbook close while the Excel Application stays
+            // alive (e.g. a COM-automation client holds the Application ref, so
+            // OnBeginShutdown / GracefulTeardownOnce never fire). On that NON-shutdown
+            // close, running the destructive teardown would set g_isUnloading,
+            // Stop/Join the worker, delete g_phost, and CloseHandle(hJob)
+            // (KILL_ON_JOB_CLOSE) — killing the Go server while the XLL is still loaded
+            // and Excel is NOT quitting; the next reopen would hit a dead server / null
+            // g_phost → RPC 0x800706BA → AV. So we run RunDestructiveTeardown ONLY when
+            // xll::HostShutdownTeardownArmed() is true (armed by GracefulTeardownOnce's
+            // confirmed host-shutdown Phase-1 branch). Otherwise this is a zero-topic
+            // blip on a live host: we have already released m_callback above (the
+            // correct, normal ServerTerminate behavior), and we return S_OK WITHOUT
+            // destroying g_phost / the server, leaving the add-in fully usable so a
+            // later workbook reopen re-subscribes against a live server.
+            // NOTE: do NOT separately call ReleaseCallbackForTeardown here — we already
+            // released m_callback above on the STA; RunDestructiveTeardown's own
+            // (idempotent, null-checked) ReleaseCallbackForTeardown is the
+            // belt-and-suspenders cover on the armed path.
+            if (xll::HostShutdownTeardownArmed()) {
+                xll::RunDestructiveTeardown();
+            } else {
+                xll::LogDebug("RtdServer::ServerTerminate: host-shutdown teardown NOT "
+                              "armed (ordinary workbook-close / zero-topic termination) "
+                              "— releasing m_callback only, leaving g_phost and the "
+                              "server intact (AGENTS.md §23.6).");
+            }
             return S_OK;
         }
 
