@@ -701,7 +701,14 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     int workers = {{if .Server.Workers}}{{.Server.Workers}}{{else}}std::thread::hardware_concurrency(){{end}};
     if (workers < 1) workers = 1;
     hostCfg.numHostSlots = workers * 2 + 2;
-    hostCfg.numGuestSlots = 2;
+    // Guest slots back every guest->host push: streaming RTD updates, one-shot
+    // rtd-once results, and grid sends. A connect storm (many RTD topics
+    // connecting at once on workbook open) plus a grid send that holds a slot
+    // for the duration of its transfer can momentarily saturate this pool. With
+    // shm >= v0.7.8 a push waits (up to its timeout) for a free slot instead of
+    // failing, but a larger pool keeps that wait short and avoids stranding a
+    // one-shot rtd-once cell at #GETTING_DATA under load.
+    hostCfg.numGuestSlots = 4;
     hostCfg.shmName = shmName;
     hostCfg.payloadSize = 1024 * 1024; // 1MB
 
