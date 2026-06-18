@@ -804,6 +804,40 @@ The `indices` array passed to `SafeArrayPutElement` follows the order of dimensi
 
 Failure to follow this exact layout (e.g., swapping Rows and Columns) will result in Excel failing to update the cell values, causing them to stay stuck at "Connecting..." or show #N/A.
 
+### 22.4 `UpdateNotify` must run on the STA (worker → hidden message window) — SHIPPED v0.8.11
+
+Excel hands us the `IRTDUpdateEvent` callback (`m_callback`) on its main STA thread in
+`RtdServerBase::ServerStart`. But RTD value updates are dispatched on the **background worker thread**
+(`xll_worker.cpp WorkerLoop`, a plain `std::thread` with no `CoInitialize`). Calling
+`m_callback->UpdateNotify()` directly from there (as the code did pre-v0.8.11) is a **raw cross-apartment
+COM call** on an unmarshalled "Both"-threaded interface — a latent defect — and the synchronous call can
+head-of-line block the single worker while the STA is busy (e.g. COM-automation-driven sheet building),
+stalling all RTD updates then delivering a burst.
+
+**Fix:** route the notify onto the STA via a hidden `HWND_MESSAGE` window. New assets
+`include/xll_rtd_notify.h` + `src/xll_rtd_notify.cpp` (`XLL_RTD_ENABLED`-gated):
+* `CreateRtdNotifyWindow()` — registers a window class (`g_hModule` HINSTANCE) + creates a message-only
+  window, called at `xlAutoOpen` ON THE STA, before `StartWorker()`.
+* `SignalRtdUpdate()` — called by the worker from `ProcessRtdUpdate` instead of `NotifyUpdate()`. A
+  coalescing `std::atomic<bool>` ensures only the 0→1 transition `PostMessageW`s `WM_APP+1`; PostMessage is
+  **non-blocking** even when the STA is busy, so the worker never blocks. Bursts collapse to one notify per
+  pump cycle (`UpdateTopic` already stored every value under `m_topicMutex`, so `RefreshData` reads them all).
+* WndProc (dispatched by Excel's STA pump → correct apartment) clears the coalescing flag FIRST (so an
+  update arriving during the call re-posts, none lost), guards `g_isUnloading`/`g_rtdServer`, then calls
+  `NotifyUpdate()`. Wrapped in `XLL_SAFE_BLOCK` (C-ABI fault containment, §20).
+* `DestroyRtdNotifyWindow()` — called in `RunDestructiveTeardown` AFTER `JoinWorker` (no post can race),
+  ON THE STA (same thread that created it — required by `DestroyWindow`). Reached on BOTH teardown paths
+  (real quit via `ServerTerminate`→`RunDestructiveTeardown`; add-in disable via `GracefulTeardownOnce`).
+  Forced `DLL_PROCESS_DETACH` (no graceful teardown) LEAKS the window — accepted §20.2 residual (worker
+  stopped, WndProc `g_isUnloading`-guarded); do NOT `DestroyWindow` under the loader lock.
+
+**Why a window and not `xlcOnTime`** (which §"calc-end deferred xlSet" chose to avoid the WndProc teardown
+hazard): `xlcOnTime` is a C-API (`Excel12`) call that can only be issued from an Excel/macro thread. The
+calc-end deferral runs in `HandleCalculationEnded` (already on the STA), so it CAN use `xlcOnTime`. The RTD
+notify originates on the **worker thread**, which is not an Excel thread and cannot call `Excel12` at all —
+the only way an arbitrary thread can hand work to the STA is `PostMessage` to a window it owns. So the
+hidden message window is unavoidable here. Regression: `internal/generator/gen_rtd_notify_window_test.go`.
+
 ## Confirmed-Correct Decisions (Do NOT Change)
 
 Synced from the workspace `IMPROVEMENT_BACKLOG.md` §6. These were flagged by past

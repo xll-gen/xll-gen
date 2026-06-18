@@ -4,6 +4,7 @@
 #include "xll_rtd_once.h"
 #include "xll_rtd_once_grid.h"
 #include "xll_rtd_placeholder.h"
+#include "xll_rtd_notify.h" // xll::SignalRtdUpdate (STA-routed UpdateNotify, §0)
 #include "xll_log.h"
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
@@ -133,11 +134,22 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     }
 
     if (g_rtdServer) {
-        // Update topic in RtdServerBase
+        // Update topic in RtdServerBase (stores the value under m_topicMutex, so
+        // RefreshData will pick it up on the next pump cycle regardless of how the
+        // coalesced notify lands).
         g_rtdServer->UpdateTopic(topicID, v);
 
-        xll::LogDebug("RTD: Notifying Excel via g_rtdServer->NotifyUpdate()");
-        g_rtdServer->NotifyUpdate();
+        // STA-routed, coalesced UpdateNotify (IMPROVEMENT_BACKLOG §0). This runs on
+        // the WORKER thread (a plain std::thread, NOT a COM STA). Calling
+        // g_rtdServer->NotifyUpdate() directly here would make a raw cross-apartment
+        // COM call on Excel's IRTDUpdateEvent (obtained on the STA in ServerStart)
+        // and could head-of-line block while the STA is busy. Instead PostMessage a
+        // coalesced signal to the hidden HWND_MESSAGE window; Excel's STA pump
+        // dispatches our WndProc on the STA, which calls NotifyUpdate() on the
+        // correct apartment. Non-blocking, so the worker never blocks. See
+        // xll_rtd_notify.{h,cpp}.
+        xll::LogDebug("RTD: Signaling STA to call NotifyUpdate via xll::SignalRtdUpdate()");
+        xll::SignalRtdUpdate();
     } else {
         xll::LogDebug("RTD: Update notification skipped, Server is NULL");
     }

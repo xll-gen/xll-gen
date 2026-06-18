@@ -38,6 +38,7 @@
 #include "xll_date_format.h"
 {{if .Rtd.Enabled}}
 #include "xll_rtd.h"
+#include "xll_rtd_notify.h" // CreateRtdNotifyWindow (STA-routed UpdateNotify, §0)
 {{end}}
 {{if anyRtdOnce .Functions}}
 #include "xll_rtd_once.h"
@@ -684,6 +685,14 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     } else {
         SAFE_LOG_INFO("RTD Server registered in memory successfully.");
     }
+
+    // Create the hidden HWND_MESSAGE window that routes RTD UpdateNotify onto this
+    // STA (IMPROVEMENT_BACKLOG §0). MUST be created here, on the STA, BEFORE
+    // xll::StartWorker() below — the worker's ProcessRtdUpdate calls
+    // xll::SignalRtdUpdate(), which PostMessages to this window, so the window must
+    // exist before any RTD update can arrive. Destroyed on the STA in
+    // RunDestructiveTeardown (after JoinWorker). See xll_rtd_notify.{h,cpp}.
+    xll::CreateRtdNotifyWindow();
     {{end}}
 
     // Initialize Shared Memory

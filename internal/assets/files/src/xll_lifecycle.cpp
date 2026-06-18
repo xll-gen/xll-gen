@@ -12,6 +12,7 @@
 #include <atomic>  // g_destructiveDone / g_rtdServerTerminated CAS + signal
 #ifdef XLL_RTD_ENABLED
 #include "xll_rtd.h"
+#include "xll_rtd_notify.h" // DestroyRtdNotifyWindow (STA-routed UpdateNotify, §0)
 #endif
 
 using namespace xll;
@@ -546,6 +547,18 @@ void xll::RunDestructiveTeardown() {
         if (g_monitorThread.joinable()) g_monitorThread.join();
 
 #ifdef XLL_RTD_ENABLED
+        // Destroy the hidden RTD notify window (IMPROVEMENT_BACKLOG §0). Done HERE,
+        // on the STA (both reach-sites — RtdServer::ServerTerminate on host shutdown,
+        // and GracefulTeardownOnce non-host branch on add-in disable — run on the
+        // STA, the same thread xlAutoOpen created the window on, so DestroyWindow is
+        // on the correct creating thread), and AFTER JoinWorker above (the worker is
+        // stopped, so no more xll::SignalRtdUpdate -> PostMessage can race the
+        // destroy). On a forced DLL_PROCESS_DETACH with no graceful teardown the
+        // window LEAKS instead — an accepted §20.2 residual (same class as the
+        // intentionally-leaked hProcess/hShutdownEvent): DestroyWindow from the wrong
+        // thread / under the loader lock is unsafe and would fail anyway.
+        xll::DestroyRtdNotifyWindow();
+
         // Drain in-flight RTD ConnectData detached threads BEFORE deleting g_phost
         // (AGENTS.md §23.0). The 2 s cap is strictly larger than the ConnectData
         // thread's <=250 ms-per-attempt unload responsiveness; a timeout here is
