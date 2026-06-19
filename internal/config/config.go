@@ -461,6 +461,42 @@ func Validate(config *Config) error {
 		return err
 	}
 
+	if err := validateBuild(config); err != nil {
+		return err
+	}
+	if err := validateEvents(config); err != nil {
+		return err
+	}
+	if err := validateFunctionReturns(config); err != nil {
+		return err
+	}
+	if err := validateLogging(config); err != nil {
+		return err
+	}
+	if err := validateFunctionModes(config); err != nil {
+		return err
+	}
+	if err := validateServerTimeouts(config); err != nil {
+		return err
+	}
+	if err := validateRtd(config); err != nil {
+		return err
+	}
+	if err := validateServerChunk(config); err != nil {
+		return err
+	}
+	cmdNames, err := validateCommands(config)
+	if err != nil {
+		return err
+	}
+	if err := validateRibbon(config, cmdNames); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateBuild checks the build.singlefile mode.
+func validateBuild(config *Config) error {
 	if config.Build.Singlefile != "" {
 		switch config.Build.Singlefile {
 		case "xll":
@@ -471,7 +507,11 @@ func Validate(config *Config) error {
 			return fmt.Errorf("invalid singlefile mode: %s (allowed: xll)", config.Build.Singlefile)
 		}
 	}
+	return nil
+}
 
+// validateEvents rejects duplicate and unsupported event types.
+func validateEvents(config *Config) error {
 	seenEvents := make(map[string]bool)
 	for _, evt := range config.Events {
 		if seenEvents[evt.Type] {
@@ -486,7 +526,14 @@ func Validate(config *Config) error {
 			return fmt.Errorf("event type '%s' is not supported (allowed: %s)", evt.Type, allowedTypesList(validEventTypes))
 		}
 	}
+	return nil
+}
 
+// validateFunctionReturns checks each function's return type (per mode) and
+// argument types. Kept as a separate pass from validateFunctionModes to
+// preserve the original error-reporting order (return/arg errors surface before
+// mode/lifecycle errors across the whole function list).
+func validateFunctionReturns(config *Config) error {
 	for _, fn := range config.Functions {
 		// Plain mode:"rtd" and mode:"rtd-once" accept BOTH scalar and composite
 		// (range/grid/numgrid/any) arguments. Scalar args are stringified into
@@ -553,6 +600,11 @@ func Validate(config *Config) error {
 		}
 	}
 
+	return nil
+}
+
+// validateLogging checks the logging.level enum.
+func validateLogging(config *Config) error {
 	if config.Logging.Level != "" {
 		switch strings.ToLower(config.Logging.Level) {
 		case "debug", "info", "warn", "error":
@@ -561,7 +613,13 @@ func Validate(config *Config) error {
 			return fmt.Errorf("invalid logging level: %s (allowed: debug, info, warn, error)", config.Logging.Level)
 		}
 	}
+	return nil
+}
 
+// validateFunctionModes checks each function's name collision, execution mode,
+// rtd-once requirements, memoize/memoize_ttl/loading_placeholder/caller/macro
+// compatibility, and timeout. Second function pass (see validateFunctionReturns).
+func validateFunctionModes(config *Config) error {
 	for _, fn := range config.Functions {
 		if msg := checkExcelNameCollision(fn.Name); msg != "" {
 			return fmt.Errorf("function '%s': name %s", fn.Name, msg)
@@ -629,7 +687,13 @@ func Validate(config *Config) error {
 			}
 		}
 	}
+	return nil
+}
 
+// validateServerTimeouts checks server.timeout and server.async_ack_timeout.
+// Split from validateServerChunk (with validateRtd between them) to preserve
+// the original error-reporting order.
+func validateServerTimeouts(config *Config) error {
 	if config.Server.Timeout != "" {
 		if _, err := parseDuration(config.Server.Timeout); err != nil {
 			return fmt.Errorf("server.timeout: %w", err)
@@ -640,7 +704,11 @@ func Validate(config *Config) error {
 			return fmt.Errorf("server.async_ack_timeout: %w", err)
 		}
 	}
+	return nil
+}
 
+// validateRtd checks rtd.prog_id presence and rtd.throttle_interval bounds.
+func validateRtd(config *Config) error {
 	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
 		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
 	}
@@ -658,7 +726,11 @@ func Validate(config *Config) error {
 			return fmt.Errorf("rtd.throttle_interval must be between 0 and %dms, got %s", math.MaxInt32, config.Rtd.ThrottleInterval)
 		}
 	}
+	return nil
+}
 
+// validateServerChunk checks the server.chunk tuning block.
+func validateServerChunk(config *Config) error {
 	if c := config.Server.Chunk; c != nil {
 		if c.MaxBufferBytes < 0 {
 			return fmt.Errorf("server.chunk.max_buffer_bytes must be non-negative, got %d", c.MaxBufferBytes)
@@ -674,7 +746,13 @@ func Validate(config *Config) error {
 			}
 		}
 	}
+	return nil
+}
 
+// validateCommands checks command names, collisions (with functions and each
+// other), and shortcuts. It returns the set of valid command names for the
+// ribbon validation that follows.
+func validateCommands(config *Config) (map[string]bool, error) {
 	fnNames := make(map[string]bool)
 	for _, fn := range config.Functions {
 		fnNames[fn.Name] = true
@@ -683,24 +761,24 @@ func Validate(config *Config) error {
 	seenShortcuts := make(map[string]string)
 	for _, cmd := range config.Commands {
 		if cmd.Name == "" {
-			return fmt.Errorf("command name cannot be empty")
+			return nil, fmt.Errorf("command name cannot be empty")
 		}
 		for _, r := range cmd.Name {
 			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-				return fmt.Errorf("command '%s': name must match [A-Za-z0-9_]+ (it is emitted into generated C++ and registered with Excel via xlfRegister)", cmd.Name)
+				return nil, fmt.Errorf("command '%s': name must match [A-Za-z0-9_]+ (it is emitted into generated C++ and registered with Excel via xlfRegister)", cmd.Name)
 			}
 		}
 		if cmd.Name[0] >= '0' && cmd.Name[0] <= '9' {
-			return fmt.Errorf("command '%s': name must not start with a digit", cmd.Name)
+			return nil, fmt.Errorf("command '%s': name must not start with a digit", cmd.Name)
 		}
 		if fnNames[cmd.Name] {
-			return fmt.Errorf("command '%s' collides with a function of the same name (xlfRegister namespace is shared)", cmd.Name)
+			return nil, fmt.Errorf("command '%s' collides with a function of the same name (xlfRegister namespace is shared)", cmd.Name)
 		}
 		if msg := checkExcelNameCollision(cmd.Name); msg != "" {
-			return fmt.Errorf("command '%s': name %s", cmd.Name, msg)
+			return nil, fmt.Errorf("command '%s': name %s", cmd.Name, msg)
 		}
 		if cmdNames[cmd.Name] {
-			return fmt.Errorf("duplicate command name: %s", cmd.Name)
+			return nil, fmt.Errorf("duplicate command name: %s", cmd.Name)
 		}
 		cmdNames[cmd.Name] = true
 		if cmd.Shortcut != "" {
@@ -708,16 +786,21 @@ func Validate(config *Config) error {
 			// ASCII letters only — xlfRegister's shortcut table is ASCII
 			// (Ctrl+Shift+<letter>); do not "fix" with unicode.IsLetter.
 			if len(r) != 1 || !((r[0] >= 'a' && r[0] <= 'z') || (r[0] >= 'A' && r[0] <= 'Z')) {
-				return fmt.Errorf("command '%s': shortcut must be a single letter (Excel binds it as Ctrl+Shift+<letter>), got %q", cmd.Name, cmd.Shortcut)
+				return nil, fmt.Errorf("command '%s': shortcut must be a single letter (Excel binds it as Ctrl+Shift+<letter>), got %q", cmd.Name, cmd.Shortcut)
 			}
 			key := strings.ToUpper(cmd.Shortcut)
 			if prev, ok := seenShortcuts[key]; ok {
-				return fmt.Errorf("command '%s': shortcut %q already used by command '%s'", cmd.Name, cmd.Shortcut, prev)
+				return nil, fmt.Errorf("command '%s': shortcut %q already used by command '%s'", cmd.Name, cmd.Shortcut, prev)
 			}
 			seenShortcuts[key] = cmd.Name
 		}
 	}
+	return cmdNames, nil
+}
 
+// validateRibbon checks ribbon mode (structured vs raw-XML), that buttons
+// reference known commands, and image/size validity.
+func validateRibbon(config *Config, cmdNames map[string]bool) error {
 	if config.Ribbon.Enabled() {
 		if len(config.Commands) == 0 {
 			return fmt.Errorf("ribbon requires at least one entry in 'commands'")
