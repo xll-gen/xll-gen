@@ -89,33 +89,42 @@ func updateDependencies(baseDir string, opts Options) error {
 
 // fixGoImports traverses the generated directory and replaces local protocol imports
 // with the correct package path github.com/xll-gen/types/go/protocol.
+//
+// flatc is invoked with --go-module-name <goModPath> (see generator.go), so the
+// generated ipc files reference the protocol namespace via an import of
+// "<goModPath>/protocol" (older output without a module name may use the bare
+// "protocol"). That package actually lives in the pinned types module, so those
+// imports must be rewritten to targetPkg.
 func fixGoImports(dir string, goModPath string) error {
-	targetPkg := "github.com/xll-gen/types/go/protocol"
+	const targetPkg = "github.com/xll-gen/types/go/protocol"
 
-	// Regex to match:
-	// "protocol"  OR  protocol "protocol"
-	// "temp_prj/generated/protocol" OR protocol "temp_prj/generated/protocol"
-	// We look for patterns like: [optional alias] "path/to/protocol"
-	// The pattern handles both short "protocol" and long "some/path/protocol"
-	re := regexp.MustCompile(`(protocol\s+)?\"([^"]*/)?protocol\"`)
+	// Anchor to the two exact paths flatc can emit — bare "protocol" or
+	// "<goModPath>/protocol" — rather than "anything ending in /protocol". The
+	// broad form used to also clobber unrelated imports such as
+	// "github.com/foo/protocol". An explicit package alias (group 2, e.g. the
+	// "protocol" alias flatc emits) is captured and re-emitted so downstream
+	// references through that alias keep compiling.
+	importRe := regexp.MustCompile(
+		`(?m)^(\s*)([\p{L}_][\p{L}\p{N}_]*\s+)?"(?:protocol|` +
+			regexp.QuoteMeta(goModPath+"/protocol") + `)"`)
+	replacement := `${1}${2}"` + targetPkg + `"`
 
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() && strings.HasSuffix(path, ".go") {
-			content, err := os.ReadFile(path)
-			if err != nil {
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		s := importRe.ReplaceAllString(string(content), replacement)
+		if s != string(content) {
+			if err := os.WriteFile(path, []byte(s), 0644); err != nil {
 				return err
-			}
-
-			s := string(content)
-			s = re.ReplaceAllString(s, fmt.Sprintf("protocol \"%s\"", targetPkg))
-
-			if s != string(content) {
-				if err := os.WriteFile(path, []byte(s), 0644); err != nil {
-					return err
-				}
 			}
 		}
 		return nil
