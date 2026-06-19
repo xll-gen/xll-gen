@@ -2,9 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
-	mrand "math/rand/v2"
 	"os"
 	"runtime/debug"
 	"time"
@@ -14,6 +11,7 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/rtd"
+	"github.com/xll-gen/xll-gen/pkg/transferid"
 )
 
 // SystemHandler processes generic system messages.
@@ -343,7 +341,7 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
 	}
 
 	// Chunking needed
-	transferId := generateTransferID()
+	transferId := transferid.New()
 	chunkSize := ChunkBudget(respBuf)
 	out := &OutgoingChunk{
 		Data:       make([]byte, len(payload)),
@@ -376,19 +374,4 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
 	}
 	copy(respBuf, chunkPayload)
 	return int32(len(chunkPayload)), MsgChunk
-}
-
-func generateTransferID() uint64 {
-	var b [8]byte
-	_, err := rand.Read(b[:])
-	if err != nil {
-		// crypto/rand should essentially never fail, but if it does,
-		// returning a constant 0 would collide every concurrent transfer
-		// onto the same correlation key — guaranteed corruption. Fall back
-		// to math/rand/v2's Uint64 (auto-seeded, lock-free) so IDs stay
-		// distinct even on the degraded path.
-		log.Error("generateTransferID: crypto/rand failed, falling back to math/rand/v2", "err", err)
-		return mrand.Uint64()
-	}
-	return binary.LittleEndian.Uint64(b[:])
 }

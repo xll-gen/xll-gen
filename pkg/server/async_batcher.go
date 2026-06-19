@@ -1,7 +1,6 @@
 package server
 
 import (
-	"math/rand"
 	"sync"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/internal/fbany"
 	"github.com/xll-gen/xll-gen/pkg/log"
+	"github.com/xll-gen/xll-gen/pkg/transferid"
 )
 
 // Heap Builder Pool for outgoing messages (retains buffer capacity).
@@ -105,7 +105,7 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 }
 
 func sendChunkedAsync(data []byte, client *shm.Client) {
-	transferId := uint64(rand.Int63())
+	transferId := transferid.New()
 	total := len(data)
 	offset := 0
 	const chunkSize = DefaultChunkSize

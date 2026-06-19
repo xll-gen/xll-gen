@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/msgid"
 	"github.com/xll-gen/xll-gen/pkg/pool"
+	"github.com/xll-gen/xll-gen/pkg/transferid"
 )
 
 // onceGridChunkSize is the per-chunk payload byte budget for a chunked
@@ -320,7 +320,7 @@ func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
 		return fmt.Errorf("rtd.SendOnceGrid: payload of %d bytes exceeds single-slot budget %d but client does not support chunked send", len(payload), onceGridChunkSize)
 	}
 
-	transferID := uint64(rand.Int63())
+	transferID := transferid.New()
 	total := len(payload)
 	b := pool.GetBuilder(nil)
 	defer pool.PutBuilder(b)

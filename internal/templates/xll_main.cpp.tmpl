@@ -830,7 +830,7 @@ start_worker:
         int regRes = xll::RegisterFunction(
             *xDLL,
             xll::DeferredRunnerMacroName(), // Procedure (exported symbol below)
-            L"A",                           // TypeText: command-style, returns short
+            L"I",                           // TypeText: "I" = 2-byte signed int (matches the short return below; macroType=2 ignores the value). See §19.2.
             xll::DeferredRunnerMacroName(), // FunctionText (hidden; xlcOnTime targets it)
             L"",                            // ArgumentText: none
             2,                              // macroType=2 (registered macro; xlcOnTime-callable)
@@ -946,7 +946,7 @@ start_worker:
         int regRes = xll::RegisterFunction(
             *xDLL,
             L"Cmd_{{.Name}}", // Procedure (exported symbol)
-            L"A", // TypeText: command returns short/bool
+            L"J", // TypeText: "J" = 4-byte signed int (matches the `int` Cmd_ export return; macroType=2 ignores the value). See §19.2.
             L"{{.Name}}", // FunctionText: name typed in the Alt+F8 dialog
             L"", // ArgumentText: commands take none
             2, // MacroType 2 = command
@@ -1060,7 +1060,7 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
 // topic teardown has settled — which is where it is safe to run the cell
 // mutations (xlSet) and the date auto-format (COM Range.NumberFormat applied
 // off-selection; see src/xll_date_format.cpp). The exported symbol name
-// MUST match xll::DeferredRunnerMacroName(). Returns short (TypeText "A").
+// MUST match xll::DeferredRunnerMacroName(). Returns short (TypeText "I").
 extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
     XLL_SAFE_BLOCK_BEGIN
         xll::RunDeferredCalcEndCommands();
