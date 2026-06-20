@@ -8,6 +8,7 @@ import (
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/internal/fbany"
+	"github.com/xll-gen/xll-gen/pkg/chunk"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/transferid"
 )
@@ -104,33 +105,23 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 	}
 }
 
+// sendChunkedAsync splits an oversized batch-async response into protocol.Chunk
+// frames and pushes each guest->host with retry. The split loop + frame build +
+// chunk-size constant come from the shared pkg/chunk.Sender; the TRANSPORT model
+// (push + AsyncRetry, abort on a chunk's final failure) stays async-specific.
+// Each chunk frame carries msg_type=MsgBatchAsyncResponse so the host's
+// HandleChunk dispatches the reassembled payload correctly; the slot-level
+// message type is MsgChunk.
 func sendChunkedAsync(data []byte, client *shm.Client) {
-	transferId := transferid.New()
-	total := len(data)
-	offset := 0
-	const chunkSize = DefaultChunkSize
+	b := heapBuilderPool.Get().(*flatbuffers.Builder)
+	defer heapBuilderPool.Put(b)
 
-	for offset < total {
-		end := offset + chunkSize
-		if end > total {
-			end = total
-		}
-		chunkData := data[offset:end]
-
-		b := heapBuilderPool.Get().(*flatbuffers.Builder)
-
-		payload := BuildChunkResponse(b, chunkData, transferId, total, offset, MsgBatchAsyncResponse)
-
-		// Send Chunk with Retry
-		err := sendWithRetry(client, payload, MsgChunk)
-
-		heapBuilderPool.Put(b)
-
-		if err != nil {
-			log.Error("Failed to send async chunk", "error", err, "id", transferId, "offset", offset)
-			return // Abort transfer
-		}
-
-		offset = end
+	sender := &chunk.Sender{ChunkSize: DefaultChunkSize, Builder: b}
+	send := func(frame []byte) error {
+		_, err := client.SendGuestCall(frame, MsgChunk)
+		return err
+	}
+	if err := sender.Send(data, transferid.New(), MsgBatchAsyncResponse, send, chunk.AsyncRetry); err != nil {
+		log.Error("Failed to send async chunk", "error", err)
 	}
 }

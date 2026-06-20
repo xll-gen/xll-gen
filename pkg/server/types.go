@@ -6,6 +6,7 @@ import (
 
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/pkg/algo"
+	"github.com/xll-gen/xll-gen/pkg/chunk"
 	"github.com/xll-gen/xll-gen/pkg/msgid"
 )
 
@@ -66,7 +67,11 @@ const (
 // overhead. It is the UPPER BOUND on a chunk; the actual budget is derived
 // per-call from the real respBuf size via ChunkBudget so a smaller slot
 // payload chunks correctly instead of overflowing.
-const DefaultChunkSize = 950 * 1024
+//
+// Single source of truth: pkg/chunk.DefaultChunkSize. Aliased here (and
+// formerly hand-copied as pkg/rtd.onceGridChunkSize) so all three chunk-framing
+// sites split at the same boundary. See AGENTS.md §18.4.
+const DefaultChunkSize = chunk.DefaultChunkSize
 
 // ChunkFramingOverhead is a conservative upper bound on the bytes
 // BuildChunkResponse adds around the raw chunk payload (FlatBuffers vtable +

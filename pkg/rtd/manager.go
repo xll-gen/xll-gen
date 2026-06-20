@@ -10,6 +10,7 @@ import (
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/xll-gen/internal/fbany"
+	"github.com/xll-gen/xll-gen/pkg/chunk"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/msgid"
 	"github.com/xll-gen/xll-gen/pkg/pool"
@@ -17,14 +18,16 @@ import (
 )
 
 // onceGridChunkSize is the per-chunk payload byte budget for a chunked
-// guest->host RtdOnceGrid transfer. It mirrors pkg/server.DefaultChunkSize
-// (950 KiB) — duplicated here rather than imported because pkg/server imports
-// pkg/rtd (NewSystemHandler takes rtd.GlobalRtd), so the dependency cannot run
-// the other way. A grid payload at or below this size goes in a single slot
-// tagged MsgRtdOnceGrid; a larger one is split into protocol.Chunk messages
-// (each tagged MsgChunk, carrying the real MsgRtdOnceGrid msg_type) that the
-// C++ host's HandleChunk reassembles before dispatching MSG_RTD_ONCE_GRID.
-const onceGridChunkSize = 950 * 1024
+// guest->host RtdOnceGrid transfer AND the single-slot threshold. It is now an
+// alias of the single source of truth, pkg/chunk.DefaultChunkSize (950 KiB),
+// rather than the former hand-copied literal: pkg/chunk is a leaf, so pkg/rtd
+// can import it despite the pkg/server->pkg/rtd cycle (NewSystemHandler takes
+// rtd.GlobalRtd) that previously blocked importing the constant from pkg/server.
+// A grid payload at or below this size goes in a single slot tagged
+// MsgRtdOnceGrid; a larger one is split into protocol.Chunk messages (each
+// tagged MsgChunk, carrying the real MsgRtdOnceGrid msg_type) that the C++
+// host's HandleChunk reassembles before dispatching MSG_RTD_ONCE_GRID.
+const onceGridChunkSize = chunk.DefaultChunkSize
 
 // onceGridSendTimeout bounds each guest->host send for a one-shot grid. It is
 // generous relative to the RtdUpdate 1s timeout because a grid (especially when
@@ -320,33 +323,29 @@ func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
 		return fmt.Errorf("rtd.SendOnceGrid: payload of %d bytes exceeds single-slot budget %d but client does not support chunked send", len(payload), onceGridChunkSize)
 	}
 
-	transferID := transferid.New()
-	total := len(payload)
 	b := pool.GetBuilder(nil)
 	defer pool.PutBuilder(b)
 
-	for offset := 0; offset < total; {
-		end := offset + onceGridChunkSize
-		if end > total {
-			end = total
-		}
-		chunk := payload[offset:end]
-
-		b.Reset()
-		dataOff := b.CreateByteVector(chunk)
-		protocol.ChunkStart(b)
-		protocol.ChunkAddId(b, transferID)
-		protocol.ChunkAddTotalSize(b, uint32(total))
-		protocol.ChunkAddOffset(b, uint32(offset))
-		protocol.ChunkAddData(b, dataOff)
-		protocol.ChunkAddMsgType(b, uint32(msgid.MsgRtdOnceGrid))
-		root := protocol.ChunkEnd(b)
-		b.FinishWithFileIdentifier(root, []byte("XCHN"))
-
-		if _, err := cs.SendGuestCall(b.FinishedBytes(), msgid.MsgChunk); err != nil {
-			return fmt.Errorf("rtd.SendOnceGrid: chunk at offset %d (id %#x): %w", offset, transferID, err)
-		}
-		offset = end
+	// Split loop + frame build + chunk-size constant come from the shared
+	// pkg/chunk.Sender (byte-identical frames to the host's HandleChunk). Each
+	// frame carries msg_type=MsgRtdOnceGrid so the host dispatches the
+	// reassembled grid correctly; the slot-level message type is MsgChunk.
+	//
+	// Retry policy: chunk.NoRetry — DELIBERATE, preserving the pre-R24 behavior.
+	// This path is SYNCHRONOUS and the caller (RunOnceGrid) must observe the
+	// first send failure immediately so it does NOT signal RTD readiness for a
+	// grid the host never received. The async batch path uses chunk.AsyncRetry
+	// because it is fire-and-forget and can tolerate riding out transient buffer
+	// fullness; here a stuck send would block readiness anyway, so surfacing the
+	// error up-front (and letting the RTD layer retry the whole one-shot) is the
+	// safer policy. See AGENTS.md §23.3 (retry-policy divergence made explicit).
+	sender := &chunk.Sender{ChunkSize: chunk.DefaultChunkSize, Builder: b}
+	send := func(frame []byte) error {
+		_, err := cs.SendGuestCall(frame, msgid.MsgChunk)
+		return err
+	}
+	if err := sender.Send(payload, transferid.New(), uint32(msgid.MsgRtdOnceGrid), send, chunk.NoRetry); err != nil {
+		return fmt.Errorf("rtd.SendOnceGrid: %w", err)
 	}
 
 	return nil
