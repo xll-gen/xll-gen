@@ -1446,37 +1446,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(cachedData.data());
 
-        {{if eq .Return "string"}}
-        std::wstring wres = StringToWString(resp->result()->str());
-        return NewExcelString(wres.c_str());
-        {{else if eq .Return "int"}}
-        static thread_local XLOPER12 xRes;
-        xRes.xltype = xltypeInt;
-        xRes.val.w = resp->result();
-        return &xRes;
-        {{else if eq .Return "float"}}
-        static thread_local XLOPER12 xRes;
-        xRes.xltype = xltypeNum;
-        xRes.val.num = resp->result();
-        return &xRes;
-        {{else if eq .Return "bool"}}
-        static thread_local XLOPER12 xRes;
-        xRes.xltype = xltypeBool;
-        xRes.val.xbool = resp->result() ? 1 : 0;
-        return &xRes;
-        {{else if eq .Return "any"}}
-        xll::ScheduleDateFormatsForCaller(resp->result());
-        return AnyToXLOPER12(resp->result());
-        {{else if eq .Return "grid"}}
-        xll::ScheduleDateFormatsForCaller(resp->result());
-        return GridToXLOPER12(resp->result());
-        {{else if eq .Return "numgrid"}}
-        return NumGridToFP12(resp->result());
-        {{else if eq .Return "range"}}
-        return RangeToXLOPER12(resp->result());
-        {{else}}
-        return resp->result();
-        {{end}}
+{{template "returnConversion" (dict "Indent" "        " "Ret" .Return)}}
     }
     {{end}}
 
@@ -1626,37 +1596,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     }
     {{end}}
 
-    {{if eq .Return "string"}}
-    std::wstring wres = StringToWString(resp->result()->str());
-    return NewExcelString(wres.c_str());
-    {{else if eq .Return "int"}}
-    static thread_local XLOPER12 xRes;
-    xRes.xltype = xltypeInt;
-    xRes.val.w = resp->result();
-    return &xRes;
-    {{else if eq .Return "float"}}
-    static thread_local XLOPER12 xRes;
-    xRes.xltype = xltypeNum;
-    xRes.val.num = resp->result();
-    return &xRes;
-    {{else if eq .Return "bool"}}
-    static thread_local XLOPER12 xRes;
-    xRes.xltype = xltypeBool;
-    xRes.val.xbool = resp->result() ? 1 : 0;
-    return &xRes;
-    {{else if eq .Return "any"}}
-    xll::ScheduleDateFormatsForCaller(resp->result());
-    return AnyToXLOPER12(resp->result());
-    {{else if eq .Return "grid"}}
-    xll::ScheduleDateFormatsForCaller(resp->result());
-    return GridToXLOPER12(resp->result());
-    {{else if eq .Return "numgrid"}}
-    return NumGridToFP12(resp->result());
-    {{else if eq .Return "range"}}
-    return RangeToXLOPER12(resp->result());
-    {{else}}
-    return resp->result();
-    {{end}}
+{{template "returnConversion" (dict "Indent" "    " "Ret" .Return)}}
     {{end}}
     {{end}}
 }
@@ -1676,3 +1616,34 @@ extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
 }
 {{end}}
 {{end}}
+{{define "returnConversion"}}{{.Indent}}{{if eq .Ret "string"}}
+{{.Indent}}std::wstring wres = StringToWString(resp->result()->str());
+{{.Indent}}return NewExcelString(wres.c_str());
+{{.Indent}}{{else if eq .Ret "int"}}
+{{.Indent}}static thread_local XLOPER12 xRes;
+{{.Indent}}xRes.xltype = xltypeInt;
+{{.Indent}}xRes.val.w = resp->result();
+{{.Indent}}return &xRes;
+{{.Indent}}{{else if eq .Ret "float"}}
+{{.Indent}}static thread_local XLOPER12 xRes;
+{{.Indent}}xRes.xltype = xltypeNum;
+{{.Indent}}xRes.val.num = resp->result();
+{{.Indent}}return &xRes;
+{{.Indent}}{{else if eq .Ret "bool"}}
+{{.Indent}}static thread_local XLOPER12 xRes;
+{{.Indent}}xRes.xltype = xltypeBool;
+{{.Indent}}xRes.val.xbool = resp->result() ? 1 : 0;
+{{.Indent}}return &xRes;
+{{.Indent}}{{else if eq .Ret "any"}}
+{{.Indent}}xll::ScheduleDateFormatsForCaller(resp->result());
+{{.Indent}}return AnyToXLOPER12(resp->result());
+{{.Indent}}{{else if eq .Ret "grid"}}
+{{.Indent}}xll::ScheduleDateFormatsForCaller(resp->result());
+{{.Indent}}return GridToXLOPER12(resp->result());
+{{.Indent}}{{else if eq .Ret "numgrid"}}
+{{.Indent}}return NumGridToFP12(resp->result());
+{{.Indent}}{{else if eq .Ret "range"}}
+{{.Indent}}return RangeToXLOPER12(resp->result());
+{{.Indent}}{{else}}
+{{.Indent}}return resp->result();
+{{.Indent}}{{end}}{{end}}

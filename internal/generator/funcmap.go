@@ -211,6 +211,27 @@ func GetCommonFuncMap() template.FuncMap {
 				return "0"
 			}
 		},
+		// dict builds a map[string]any from alternating key/value pairs, so a
+		// template {{define}} block can be invoked with a small struct of named
+		// fields (e.g. an indent string plus a return-type tag) rather than the
+		// caller's dot. Used by the unified per-type marshalling ladder defines
+		// to thread the call-site indentation in without duplicating the block
+		// once per indent level. Panics on an odd argument count (a template
+		// authoring bug, surfaced at render time).
+		"dict": func(pairs ...any) map[string]any {
+			if len(pairs)%2 != 0 {
+				panic("dict: odd number of arguments")
+			}
+			m := make(map[string]any, len(pairs)/2)
+			for i := 0; i < len(pairs); i += 2 {
+				key, ok := pairs[i].(string)
+				if !ok {
+					panic("dict: keys must be strings")
+				}
+				m[key] = pairs[i+1]
+			}
+			return m
+		},
 		// Arithmetic helpers
 		"add": func(a, b int) int {
 			return a + b

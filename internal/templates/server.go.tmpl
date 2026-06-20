@@ -215,19 +215,7 @@ func Serve(handler XllService) {
                              connect) returns an error so RunOnce/OnRtdConnect
                              pushes a clear value instead of hanging at
                              #GETTING_DATA. */}}
-                        {{range $i, $arg := .Args}}{{if eq .Type "grid"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveGridArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{else if eq .Type "numgrid"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveNumGridArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{else if eq .Type "range"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveRangeArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{else if eq .Type "any"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{end}}{{end}}
+                        {{template "rtdResolveCompositeArgs" .}}
                         return handler.{{.Name}}_RTD(ctx, topicID {{range $i, $arg := .Args}}, {{if eq .Type "int"}}server.ParseInt(args[{{add $i 1}}]){{else if eq .Type "float"}}server.ParseFloat(args[{{add $i 1}}]){{else if eq .Type "bool"}}server.ParseBool(args[{{add $i 1}}]){{else if or (eq .Type "grid") (eq .Type "numgrid") (eq .Type "range") (eq .Type "any")}}rarg_{{.Name}}{{else}}args[{{add $i 1}}]{{end}}{{end}})
                     {{end}}{{end}}
                     {{range $fn := .Functions}}{{if eq .Mode "rtd-once" }}
@@ -250,19 +238,7 @@ func Serve(handler XllService) {
                              fresh copy of the cached bytes, so they survive the
                              calc-end RefCache.Clear; a miss is surfaced as a
                              pushed error value. */}}
-                        {{range $i, $arg := .Args}}{{if eq .Type "grid"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveGridArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{else if eq .Type "numgrid"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveNumGridArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{else if eq .Type "range"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveRangeArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{else if eq .Type "any"}}
-                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
-                        {{end}}{{end}}
+                        {{template "rtdResolveCompositeArgs" .}}
                         {{if or (eq .Return "grid") (eq .Return "numgrid")}}
                         // grid/numgrid rtd-once SPILLS: RTD can only carry a
                         // scalar, so the handler runs once, its grid is shipped
@@ -621,3 +597,16 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 }
 {{end}}
 {{end}}
+{{define "rtdResolveCompositeArgs"}}{{range $i, $arg := .Args}}{{if eq .Type "grid"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveGridArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "numgrid"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveNumGridArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "range"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveRangeArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{else if eq .Type "any"}}
+                        rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        {{end}}{{end}}{{end}}
