@@ -1,8 +1,8 @@
 package versions
 
 const (
-	SHM         = "v0.7.8"
-	Types       = "v0.2.13"
+	SHM         = "v0.7.9"
+	Types       = "v0.2.14"
 	FlatBuffers = "v25.9.23"
 	PHMAP       = "v2.0.0"
 	Zstd        = "v1.5.7"
