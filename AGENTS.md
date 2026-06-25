@@ -875,6 +875,30 @@ reviews and confirmed correct — do not "fix", "harden", or re-propose:
   dimension order or export shape.
 * **x86/x64 TSO assumption (§0.1)** — acquire-release pairs rely on hardware TSO;
   ARM weak-memory concerns are out of scope. Mirror of `shm`'s rule.
+* **`CacheManager::GetOrComputeRefHash`'s `xltype` guard is load-bearing, NOT a
+  duplicate of its caller** (over-defensive-logic audit, 2026-06-25). The caller
+  admits `xltypeRef | xltypeSRef`, but the function narrows to `xltypeRef`;
+  because `xltypeRef (0x0008)` and `xltypeSRef (0x0400)` are distinct
+  non-overlapping bits (from `types`/`xlcall.h`), an SRef-only input passes the
+  caller and is correctly filtered here. It is also a behavior-selecting branch
+  (SRef early-return vs hash computation), not a no-op guard. Do not remove or
+  "simplify". Likewise, the incoming XLOPER12 is **raw Excel input** — its type
+  guards are external-boundary validation and stay regardless.
+
+### Over-defensive-logic audit (2026-06-25) — the boundary rule
+
+A cross-repo audit hunted for guards made redundant by a caller's
+completeness/safety guarantee. Across all four repos exactly **one** guard was
+removed (a dead intra-function length re-check in `shm`); every xll-gen candidate
+was correctly kept. The durable lesson: **a guard is safe to delete only when (a)
+it lives entirely inside one trust domain over an internally-produced value, (b)
+an earlier check or the caller's predicate *logically implies* it, and (c) it is
+a pure no-op-on-pass guard, not a behavior-selecting branch.** It must stay when
+it touches an exported API, the C++↔Go SHM wire, raw Excel `XLOPER12` /
+FlatBuffers input (the UDF-argument and `xlAutoFree`/callback surfaces are all
+external boundaries), a raw `operator[]` over independently-mutable state, or a
+real initialization-order window. Local provability is necessary but never
+sufficient.
 
 ## 23. Known Improvement Backlog
 
