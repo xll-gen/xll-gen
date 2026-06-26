@@ -1,7 +1,7 @@
 package versions
 
 const (
-	SHM         = "v0.8.1"
+	SHM         = "v0.8.2"
 	Types       = "v0.2.14"
 	FlatBuffers = "v25.9.23"
 	PHMAP       = "v2.0.0"

@@ -27,7 +27,7 @@ set(SHM_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   shm
   GIT_REPOSITORY https://github.com/xll-gen/shm.git
-  GIT_TAG v0.8.1
+  GIT_TAG v0.8.2
   GIT_SHALLOW TRUE
   GIT_SUBMODULES ""
 )
