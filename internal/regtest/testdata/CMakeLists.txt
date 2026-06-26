@@ -27,7 +27,7 @@ set(SHM_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   shm
   GIT_REPOSITORY https://github.com/xll-gen/shm.git
-  GIT_TAG v0.7.3
+  GIT_TAG v0.8.1
   GIT_SHALLOW TRUE
   GIT_SUBMODULES ""
 )
@@ -42,7 +42,7 @@ endif()
 FetchContent_Declare(
   types
   GIT_REPOSITORY https://github.com/xll-gen/types.git
-  GIT_TAG v0.2.9
+  GIT_TAG v0.2.14
   GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(types)
