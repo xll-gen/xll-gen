@@ -1425,14 +1425,42 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         xArg = CreateStringXLOPER(s.c_str());
         xArg.xltype |= xlbitDLLFree;
         cacheArgs.push_back(&xArg);
+        {{else if eq .Type "date"}}
+        // date rides ArgCppType "double" (Excel passes the serial by value), so
+        // it is NOT an LPXLOPER12 — a blanket (LPXLOPER12){{.Name}} cast is
+        // ill-formed and fails to compile. Wrap the serial in a temp xltypeNum
+        // XLOPER12 (identical to the float branch) so the cache key reflects the
+        // date's value.
+        xArg.xltype = xltypeNum;
+        xArg.val.num = {{.Name}};
+        cacheArgs.push_back(&xArg);
+        {{else if eq .Type "numgrid"}}
+        // numgrid is an FP12* (not an XLOPER12), so it cannot enter the
+        // LPXLOPER12 cacheArgs vector — reinterpret-casting FP12* to LPXLOPER12
+        // would make MakeCacheKey read the FP12 double payload as an XLOPER
+        // (garbage xltype -> silent mis-key or a bogus lpmref deref/AV). Its
+        // content hash is folded into cacheKey AFTER MakeCacheKey below via the
+        // same ContentHashTokenFP12 the RTD path uses (§19.3).
+        (void)xArg;
         {{else}}
-        // Already a pointer
+        // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
+        // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
+        // U-passed range references), so the identity cast is well-formed and
+        // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12){{.Name}});
         {{end}}
     }
     {{end}}
 
     std::string cacheKey = xll::MakeCacheKey("{{.Name}}", cacheArgs);
+    {{range .Args}}{{if eq .Type "numgrid"}}
+    // Fold this numgrid (FP12*) arg's content hash into the cache key. A numgrid
+    // arg cannot enter the LPXLOPER12 cacheArgs vector, so MakeCacheKey never
+    // saw it; append the same ContentHashTokenFP12 token the RTD content-hash
+    // path uses (§19.3) so distinct grids get distinct keys and identical grids
+    // share one. Without this the numgrid arg would be invisible to the key.
+    cacheKey += "|numgrid:" + xll::ContentHashTokenFP12({{.Name}});
+    {{end}}{{end}}
 
     // Cleanup temporary string allocations
     {{range $j, $arg := .Args}}

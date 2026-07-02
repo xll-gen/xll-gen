@@ -1627,6 +1627,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncStr", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -1756,6 +1757,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncInt", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -1886,6 +1888,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncFloat", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -2016,6 +2019,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncBool", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -2138,13 +2142,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Already a pointer
+        // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
+        // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
+        // U-passed range references), so the identity cast is well-formed and
+        // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12)a);
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncAny", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -2264,13 +2272,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Already a pointer
+        // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
+        // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
+        // U-passed range references), so the identity cast is well-formed and
+        // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12)g);
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncGrid", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -2412,13 +2424,26 @@ extern "C" __declspec(dllexport) FP12* __stdcall SyncNumGrid(FP12* ng) {
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Already a pointer
-        cacheArgs.push_back((LPXLOPER12)ng);
+        // numgrid is an FP12* (not an XLOPER12), so it cannot enter the
+        // LPXLOPER12 cacheArgs vector — reinterpret-casting FP12* to LPXLOPER12
+        // would make MakeCacheKey read the FP12 double payload as an XLOPER
+        // (garbage xltype -> silent mis-key or a bogus lpmref deref/AV). Its
+        // content hash is folded into cacheKey AFTER MakeCacheKey below via the
+        // same ContentHashTokenFP12 the RTD path uses (§19.3).
+        (void)xArg;
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncNumGrid", cacheArgs);
+    
+    // Fold this numgrid (FP12*) arg's content hash into the cache key. A numgrid
+    // arg cannot enter the LPXLOPER12 cacheArgs vector, so MakeCacheKey never
+    // saw it; append the same ContentHashTokenFP12 token the RTD content-hash
+    // path uses (§19.3) so distinct grids get distinct keys and identical grids
+    // share one. Without this the numgrid arg would be invisible to the key.
+    cacheKey += "|numgrid:" + xll::ContentHashTokenFP12(ng);
+    
 
     // Cleanup temporary string allocations
     
@@ -2537,13 +2562,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Already a pointer
+        // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
+        // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
+        // U-passed range references), so the identity cast is well-formed and
+        // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12)r);
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncRange", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -2667,13 +2696,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Already a pointer
-        cacheArgs.push_back((LPXLOPER12)d);
+        // date rides ArgCppType "double" (Excel passes the serial by value), so
+        // it is NOT an LPXLOPER12 — a blanket (LPXLOPER12)d cast is
+        // ill-formed and fails to compile. Wrap the serial in a temp xltypeNum
+        // XLOPER12 (identical to the float branch) so the cache key reflects the
+        // date's value.
+        xArg.xltype = xltypeNum;
+        xArg.val.num = d;
+        cacheArgs.push_back(&xArg);
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncDate", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -2835,13 +2871,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     {
         XLOPER12& xArg = tempArgs[4];
         
-        // Already a pointer
+        // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
+        // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
+        // U-passed range references), so the identity cast is well-formed and
+        // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12)g);
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncMulti", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -3034,6 +3074,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     
 
     std::string cacheKey = xll::MakeCacheKey("SyncCachedGrid", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
@@ -3155,13 +3196,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Already a pointer
+        // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
+        // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
+        // U-passed range references), so the identity cast is well-formed and
+        // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12)r);
         
     }
     
 
     std::string cacheKey = xll::MakeCacheKey("CallerMacroRange", cacheArgs);
+    
 
     // Cleanup temporary string allocations
     
