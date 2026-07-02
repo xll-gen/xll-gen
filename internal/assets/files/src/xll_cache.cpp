@@ -169,7 +169,13 @@ std::string SerializeXLOPER(const XLOPER12* px) {
 
     switch (px->xltype & ~(xlbitXLFree | xlbitDLLFree)) {
         case xltypeNum:
-            ss << "Num:" << px->val.num;
+            // Round-trip precision (max_digits10 = 17): the default stream
+            // precision (~6 sig-figs) collapses distinct doubles that agree to
+            // 6 figures onto one cache key -> a stale result for a different
+            // input. This matters for `date` args (they ride this Num branch),
+            // whose serials carry sub-day fractional time exceeding 6 figures,
+            // so two distinct timestamps on the same day would otherwise collide.
+            ss << "Num:" << std::setprecision(17) << px->val.num;
             break;
         case xltypeStr:
             {
