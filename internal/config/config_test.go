@@ -1026,3 +1026,72 @@ func TestValidate_RtdOnce_StillRejectsRangeReturn(t *testing.T) {
 		t.Fatal("rtd-once return \"range\" must still be rejected")
 	}
 }
+
+// TestValidate_Identifiers pins Defect D: function names, argument names, and
+// handler names are validated as legal generated Go/C++ identifiers.
+func TestValidate_Identifiers(t *testing.T) {
+	fnCfg := func(name string, args []Arg) *Config {
+		return &Config{
+			Project:   ProjectConfig{Name: "TestProject"},
+			Functions: []Function{{Name: name, Return: "int", Args: args}},
+		}
+	}
+
+	// Function name: bad charset, leading digit, C++/Go keyword.
+	for _, bad := range []string{"my func", "my-func", "2fast", "int", "new", "type"} {
+		if err := Validate(fnCfg(bad, nil)); err == nil {
+			t.Errorf("function name %q must be rejected", bad)
+		}
+	}
+	// Valid function names (incl. underscore, which is fine for a function).
+	for _, ok := range []string{"MyFunc", "compute_v2", "HandleData"} {
+		if err := Validate(fnCfg(ok, nil)); err != nil {
+			t.Errorf("function name %q must be valid, got %v", ok, err)
+		}
+	}
+
+	// Duplicate function names.
+	dup := &Config{
+		Project: ProjectConfig{Name: "TestProject"},
+		Functions: []Function{
+			{Name: "Foo", Return: "int"},
+			{Name: "Foo", Return: "int"},
+		},
+	}
+	if err := Validate(dup); err == nil || !strings.Contains(err.Error(), "duplicate function") {
+		t.Errorf("duplicate function name must be rejected, got %v", err)
+	}
+
+	// Argument names: keyword, bad charset, leading digit, and — crucially —
+	// underscores (flatc camelizes the accessor, breaking the generated Go).
+	for _, bad := range []string{"type", "new", "class", "1st", "bad name", "start_date"} {
+		if err := Validate(fnCfg("Fn", []Arg{{Name: bad, Type: "int"}})); err == nil {
+			t.Errorf("argument name %q must be rejected", bad)
+		}
+	}
+	// Valid arg names (lowerCamelCase, no underscore).
+	if err := Validate(fnCfg("Fn", []Arg{{Name: "startDate", Type: "date"}})); err != nil {
+		t.Errorf("arg startDate must be valid, got %v", err)
+	}
+	// Duplicate argument names within a function.
+	if err := Validate(fnCfg("Fn", []Arg{{Name: "x", Type: "int"}, {Name: "x", Type: "int"}})); err == nil ||
+		!strings.Contains(err.Error(), "duplicate argument") {
+		t.Errorf("duplicate arg name must be rejected")
+	}
+
+	// Command handler and event handler identifier checks.
+	cmdBad := &Config{
+		Project:  ProjectConfig{Name: "TestProject"},
+		Commands: []Command{{Name: "DoIt", Handler: "func"}},
+	}
+	if err := Validate(cmdBad); err == nil || !strings.Contains(err.Error(), "reserved word") {
+		t.Errorf("command handler that is a Go keyword must be rejected, got %v", err)
+	}
+	evtBad := &Config{
+		Project: ProjectConfig{Name: "TestProject"},
+		Events:  []Event{{Type: "CalculationEnded", Handler: "2bad"}},
+	}
+	if err := Validate(evtBad); err == nil {
+		t.Errorf("event handler with a leading digit must be rejected")
+	}
+}

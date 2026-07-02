@@ -448,6 +448,68 @@ var rtdCompositeReturnTypes = map[string]bool{
 	"numgrid": true,
 }
 
+// goReservedWords are the Go keywords. A function/argument/handler name that is
+// a Go keyword is emitted verbatim as a Go identifier (interface method params,
+// dispatch, handler names) and would be a syntax error.
+var goReservedWords = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+}
+
+// cppReservedWords are C++ keywords (C++17). A function/argument name that is a
+// C++ keyword is emitted verbatim as a C++ identifier (wrapper params,
+// registration) and would be a syntax error. Matched case-sensitively so a
+// capitalized name like "New"/"Class" (not a keyword) is not falsely rejected.
+var cppReservedWords = map[string]bool{
+	"alignas": true, "alignof": true, "and": true, "and_eq": true, "asm": true,
+	"auto": true, "bitand": true, "bitor": true, "bool": true, "break": true,
+	"case": true, "catch": true, "char": true, "char16_t": true, "char32_t": true,
+	"class": true, "compl": true, "const": true, "constexpr": true, "const_cast": true,
+	"continue": true, "decltype": true, "default": true, "delete": true, "do": true,
+	"double": true, "dynamic_cast": true, "else": true, "enum": true, "explicit": true,
+	"export": true, "extern": true, "false": true, "float": true, "for": true,
+	"friend": true, "goto": true, "if": true, "inline": true, "int": true,
+	"long": true, "mutable": true, "namespace": true, "new": true, "noexcept": true,
+	"not": true, "not_eq": true, "nullptr": true, "operator": true, "or": true,
+	"or_eq": true, "private": true, "protected": true, "public": true, "register": true,
+	"reinterpret_cast": true, "return": true, "short": true, "signed": true, "sizeof": true,
+	"static": true, "static_assert": true, "static_cast": true, "struct": true, "switch": true,
+	"template": true, "this": true, "thread_local": true, "throw": true, "true": true,
+	"try": true, "typedef": true, "typeid": true, "typename": true, "union": true,
+	"unsigned": true, "using": true, "virtual": true, "void": true, "volatile": true,
+	"wchar_t": true, "while": true, "xor": true, "xor_eq": true,
+}
+
+// validateIdentifier checks a name destined to be emitted verbatim as a
+// generated Go and/or C++ identifier (and registered with Excel): non-empty,
+// [A-Za-z0-9_]+, no leading digit, and not a Go or C++ reserved word. `kind` is
+// a human label for the error message (e.g. "command", "function",
+// "argument"). Extracted from the original command-name validation so
+// functions, arguments, and handlers get the same guard.
+func validateIdentifier(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s name cannot be empty", kind)
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("%s '%s': name must match [A-Za-z0-9_]+ (it is emitted into generated Go/C++ identifiers and registered with Excel via xlfRegister)", kind, name)
+		}
+	}
+	if name[0] >= '0' && name[0] <= '9' {
+		return fmt.Errorf("%s '%s': name must not start with a digit", kind, name)
+	}
+	if goReservedWords[name] {
+		return fmt.Errorf("%s '%s': name is a Go reserved word (it is emitted verbatim as a Go identifier in the generated server/interface)", kind, name)
+	}
+	if cppReservedWords[name] {
+		return fmt.Errorf("%s '%s': name is a C++ reserved word (it is emitted verbatim as a C++ identifier in the generated wrapper)", kind, name)
+	}
+	return nil
+}
+
 // Validate checks the configuration for errors, such as duplicate event types
 // or unsupported argument types.
 //
@@ -525,6 +587,14 @@ func validateEvents(config *Config) error {
 		if !validEventTypes[evt.Type] {
 			return fmt.Errorf("event type '%s' is not supported (allowed: %s)", evt.Type, allowedTypesList(validEventTypes))
 		}
+		// Handler is dispatched as handler.<Handler>(ctx); defaulted to On<Type>
+		// by ApplyDefaults, but validate it when explicitly set (a direct Validate
+		// call may run without ApplyDefaults).
+		if evt.Handler != "" {
+			if err := validateIdentifier("event handler", evt.Handler); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -589,7 +659,25 @@ func validateFunctionReturns(config *Config) error {
 			}
 			return fmt.Errorf("function '%s': return type '%s' is not supported (allowed: %s)", fn.Name, fn.Return, allowedTypesList(validReturnTypes))
 		}
+		seenArgs := make(map[string]bool)
 		for _, arg := range fn.Args {
+			if err := validateIdentifier(fmt.Sprintf("function '%s' argument", fn.Name), arg.Name); err != nil {
+				return err
+			}
+			// flatc camelizes snake_case field names in its Go accessor
+			// (start_date -> StartDate()), but the generator addresses the arg via
+			// the template `capitalize` helper (start_date -> Start_date()), so an
+			// underscore in an arg name makes the generated server reference a
+			// method flatc never emitted -> Go compile failure. Reject underscores
+			// in arg names (they are safe in function/command names, which do not
+			// ride flatc field accessors).
+			if strings.Contains(arg.Name, "_") {
+				return fmt.Errorf("function '%s' argument '%s': argument names cannot contain '_' (flatc camelizes the FlatBuffers accessor, e.g. start_date -> StartDate(), which the generated server would not match); use lowerCamelCase", fn.Name, arg.Name)
+			}
+			if seenArgs[arg.Name] {
+				return fmt.Errorf("function '%s': duplicate argument name '%s'", fn.Name, arg.Name)
+			}
+			seenArgs[arg.Name] = true
 			if !validArgTypes[arg.Type] {
 				// Special error message for nullable scalar types
 				if strings.HasSuffix(arg.Type, "?") {
@@ -620,7 +708,20 @@ func validateLogging(config *Config) error {
 // rtd-once requirements, memoize/memoize_ttl/loading_placeholder/caller/macro
 // compatibility, and timeout. Second function pass (see validateFunctionReturns).
 func validateFunctionModes(config *Config) error {
+	seenFuncs := make(map[string]bool)
 	for _, fn := range config.Functions {
+		// Identifier legality: the name becomes an exported Go handler method, a
+		// C++ wrapper symbol, and a flatc <Name>Request table — a bad charset,
+		// leading digit, or reserved word breaks one of those. (Previously only
+		// commands were charset-validated; a duplicate/empty function name only
+		// surfaced late as flatc "type already exists".)
+		if err := validateIdentifier("function", fn.Name); err != nil {
+			return err
+		}
+		if seenFuncs[fn.Name] {
+			return fmt.Errorf("duplicate function name: %s (the xlfRegister namespace and the flatc <Name>Request table are shared)", fn.Name)
+		}
+		seenFuncs[fn.Name] = true
 		if msg := checkExcelNameCollision(fn.Name); msg != "" {
 			return fmt.Errorf("function '%s': name %s", fn.Name, msg)
 		}
@@ -760,16 +861,16 @@ func validateCommands(config *Config) (map[string]bool, error) {
 	cmdNames := make(map[string]bool)
 	seenShortcuts := make(map[string]string)
 	for _, cmd := range config.Commands {
-		if cmd.Name == "" {
-			return nil, fmt.Errorf("command name cannot be empty")
+		if err := validateIdentifier("command", cmd.Name); err != nil {
+			return nil, err
 		}
-		for _, r := range cmd.Name {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-				return nil, fmt.Errorf("command '%s': name must match [A-Za-z0-9_]+ (it is emitted into generated C++ and registered with Excel via xlfRegister)", cmd.Name)
+		// Handler is the Go method name dispatched as handler.<Handler>; defaulted
+		// to Name by ApplyDefaults, but validate it when explicitly set (a direct
+		// Validate call may run without ApplyDefaults).
+		if cmd.Handler != "" {
+			if err := validateIdentifier("command handler", cmd.Handler); err != nil {
+				return nil, err
 			}
-		}
-		if cmd.Name[0] >= '0' && cmd.Name[0] <= '9' {
-			return nil, fmt.Errorf("command '%s': name must not start with a digit", cmd.Name)
 		}
 		if fnNames[cmd.Name] {
 			return nil, fmt.Errorf("command '%s' collides with a function of the same name (xlfRegister namespace is shared)", cmd.Name)
