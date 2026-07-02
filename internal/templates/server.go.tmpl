@@ -156,8 +156,8 @@ func Serve(handler XllService) {
 		server.FlushAsyncBatch(batch, client)
 	})
 
-	{{range .Functions}}
-	{{if .Timeout}}
+	{{range .Functions}}{{/* Only non-rtd modes have a dispatch case that consumes timeout_<Name>; declaring it for an rtd(-once) function would be an unused variable. config.Validate already rejects rtd(-once)+timeout, so this gate is defence in depth. */}}
+	{{if and .Timeout (not (isRtdLike .Mode))}}
 	timeout_{{.Name}}, _ := time.ParseDuration("{{.Timeout}}")
 	{{end}}
 	{{end}}

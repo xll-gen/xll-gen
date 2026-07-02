@@ -1027,6 +1027,45 @@ func TestValidate_RtdOnce_StillRejectsRangeReturn(t *testing.T) {
 	}
 }
 
+// TestValidate_RtdTimeoutRejected pins Defect B: an rtd / rtd-once function with
+// a per-function timeout is rejected at config time. The generated server
+// declares timeout_<Name> for every function but only uses it in the non-rtd
+// dispatch case, so an rtd(-once)+timeout config would emit a
+// declared-and-not-used variable and fail `go build`.
+func TestValidate_RtdTimeoutRejected(t *testing.T) {
+	for _, mode := range []string{"rtd", "rtd-once"} {
+		cfg := &Config{
+			Project: ProjectConfig{Name: "TestProject"},
+			Rtd:     RtdConfig{Enabled: true, ProgID: "P.Rtd"},
+			Functions: []Function{{
+				Name:    "Slow",
+				Mode:    mode,
+				Return:  "int",
+				Timeout: "2s",
+			}},
+		}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "timeout is not supported") {
+			t.Errorf("mode %q + timeout must be rejected, got %v", mode, err)
+		}
+	}
+	// sync/async + timeout stays valid.
+	for _, mode := range []string{"sync", "async"} {
+		cfg := &Config{
+			Project: ProjectConfig{Name: "TestProject"},
+			Functions: []Function{{
+				Name:    "Slow",
+				Mode:    mode,
+				Return:  "int",
+				Timeout: "2s",
+			}},
+		}
+		if err := Validate(cfg); err != nil {
+			t.Errorf("mode %q + timeout must be valid, got %v", mode, err)
+		}
+	}
+}
+
 // TestValidate_Identifiers pins Defect D: function names, argument names, and
 // handler names are validated as legal generated Go/C++ identifiers.
 func TestValidate_Identifiers(t *testing.T) {

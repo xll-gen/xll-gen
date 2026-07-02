@@ -783,6 +783,15 @@ func validateFunctionModes(config *Config) error {
 			return fmt.Errorf("function '%s': macro:true (macro-sheet registration) is not supported with mode:\"rtd-once\" (the handler runs on a topic connect, not in the calling cell's calc, so the macro-level C-API is unreachable)", fn.Name)
 		}
 		if fn.Timeout != "" {
+			// The RTD modes have no per-call timeout: the wrapper routes through
+			// xlfRtd and the handler runs off the calc thread on a topic connect,
+			// so the C++ rtd wrapper never consumes .Timeout. Worse, the generated
+			// server declares `timeout_<Name>` for EVERY function but only USES it
+			// in the non-rtd dispatch case, so an rtd(-once)+timeout config emits a
+			// declared-and-not-used variable -> `go build` failure. Reject it.
+			if strings.EqualFold(fn.Mode, "rtd") || strings.EqualFold(fn.Mode, "rtd-once") {
+				return fmt.Errorf("function '%s': timeout is not supported with mode:%q (the RTD wrapper routes through xlfRtd and the handler runs off the calc thread on a topic connect — there is no per-call timeout to enforce)", fn.Name, fn.Mode)
+			}
 			if _, err := parseDuration(fn.Timeout); err != nil {
 				return fmt.Errorf("function '%s': timeout: %w", fn.Name, err)
 			}
