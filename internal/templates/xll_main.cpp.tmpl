@@ -1120,6 +1120,11 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         if ({{.Name}}->xltype == xltypeStr) {
             t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
         }
+        {{else if eq .Type "date"}}
+        // date rides the double path (ArgCppType "double", passed by value): the
+        // Excel serial IS the topic-identity, so stringify it as a plain scalar.
+        // The Go dispatch parses it back via server.SerialToTime(ParseFloat(...)).
+        t{{add $j 1}} = std::to_wstring({{.Name}});
         {{else}}
         // Composite arg (grid/numgrid/range/any): content-hash payload path
         // (AGENTS.md §19.3). The topic carries only the content-hash token; the
@@ -1220,7 +1225,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 
     {{range $j, $arg := .Args}}
     std::wstring t{{add $j 1}};
-    {{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string")}}
+    {{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string") (ne .Type "date")}}
     // Composite-arg payloads, built now (for the content hash that goes into
     // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
     std::vector<uint8_t> refPayload{{add $j 1}};
@@ -1237,6 +1242,12 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         if ({{.Name}}->xltype == xltypeStr) {
             t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
         }
+        {{else if eq .Type "date"}}
+        // date rides the double path (ArgCppType "double", by value): stringify
+        // the serial as a plain scalar. It flows into the once-key exactly like
+        // any other scalar; the Go dispatch parses it back via
+        // server.SerialToTime(ParseFloat(...)).
+        t{{add $j 1}} = std::to_wstring({{.Name}});
         {{else}}
         // Composite arg (grid/numgrid/range/any): content-hash payload path.
         // The token is content-addressed, so it flows into the once-key below
@@ -1330,7 +1341,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
-    {{range $j, $arg := .Args}}{{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string")}}
+    {{range $j, $arg := .Args}}{{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string") (ne .Type "date")}}
     if (!refPayload{{add $j 1}}.empty()) {
         if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, refPayload{{add $j 1}}.data(), refPayload{{add $j 1}}.size())) {
             SAFE_LOG_WARN("rtd-once {{$fn.Name}}: failed to ship composite arg payload for token " + refTok{{add $j 1}});

@@ -120,6 +120,13 @@ functions:
     args: [{name: "r", type: "range"}]
     return: "float"
 
+  # rtd with a date arg (Defect C): the serial rides the topic as a scalar and
+  # the dispatch decodes it via server.SerialToTime(ParseFloat(...)) -> time.Time
+  - name: "RtdAsOf"
+    mode: "rtd"
+    args: [{name: "asof", type: "date"}, {name: "sym", type: "string"}]
+    return: "float"
+
   # rtd-once with memoize_ttl
   - name: "RtdOnceTTL"
     mode: "rtd-once"
@@ -131,6 +138,12 @@ functions:
   - name: "SumGridOnce"
     mode: "rtd-once"
     args: [{name: "g", type: "grid"}]
+    return: "float"
+
+  # rtd-once with a date arg (Defect C): scalar date topic -> SerialToTime
+  - name: "AsOfOnce"
+    mode: "rtd-once"
+    args: [{name: "asof", type: "date"}]
     return: "float"
 
   # rtd-once returning grid — the spill path (RunOnceGrid + onceKey join +
@@ -208,6 +221,12 @@ func (s *Service) RtdTick_RTD(ctx context.Context, topicID int32, symbol string)
 func (s *Service) RtdRangeSum_RTD(ctx context.Context, topicID int32, r *protocol.Range) error {
 	return nil
 }
+
+func (s *Service) RtdAsOf_RTD(ctx context.Context, topicID int32, asof time.Time, sym string) error {
+	return nil
+}
+
+func (s *Service) AsOfOnce(ctx context.Context, asof time.Time) (float64, error) { return 0, nil }
 
 func (s *Service) RtdOnceTTL(ctx context.Context, n int32) (float64, error) { return float64(n), nil }
 
