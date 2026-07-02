@@ -47,6 +47,45 @@ func TestFlatbuffersVersionConsistency(t *testing.T) {
 	}
 }
 
+// TestRegtestCMakePinsMatchVersions guards the hardcoded GIT_TAG pins in
+// internal/regtest/testdata/CMakeLists.txt against drift from
+// internal/versions/versions.go. That file is a go:embed STATIC asset (the
+// regtest mock-host build), so unlike the generated CMakeLists.txt.tmpl it is
+// NOT templated from versions.go — the shm / types / flatbuffers tags there are
+// maintained BY HAND (see the 677b331 manual bump). Without this gate a
+// versions.go bump silently leaves the regtest fixture building the old
+// dependency. Note the XLLGEN_TYPES_SRC / XLLGEN_SHM_SRC overrides only redirect
+// the SOURCE dir; shm and flatbuffers otherwise always come from these pins.
+//
+// This is the 6th shared-dependency pin location (AGENTS.md §18.2).
+func TestRegtestCMakePinsMatchVersions(t *testing.T) {
+	cmakePath := filepath.Join("..", "internal", "regtest", "testdata", "CMakeLists.txt")
+	data, err := os.ReadFile(cmakePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	// Each FetchContent_Declare has "GIT_REPOSITORY .../<name>.git" followed
+	// (across newlines) by "GIT_TAG <tag>". Capture the tag per known repo.
+	pins := map[string]string{
+		"flatbuffers": versions.FlatBuffers,
+		"shm":         versions.SHM,
+		"types":       versions.Types,
+	}
+	for repo, want := range pins {
+		re := regexp.MustCompile(`/` + regexp.QuoteMeta(repo) + `\.git\s+GIT_TAG\s+(\S+)`)
+		m := re.FindStringSubmatch(content)
+		if len(m) < 2 {
+			t.Errorf("could not find GIT_TAG for %s in %s", repo, cmakePath)
+			continue
+		}
+		if got := m[1]; got != want {
+			t.Errorf("regtest CMakeLists.txt %s GIT_TAG = %q, but versions.go pins %q — sync the hand-maintained pin (AGENTS.md §18.2)", repo, got, want)
+		}
+	}
+}
+
 // TestFlatbuffersVersion_TypesProvenance cross-checks that the flatc
 // version recorded in the upstream `types` module matches the version
 // xll-gen pins. A skew here means `types` was bumped without

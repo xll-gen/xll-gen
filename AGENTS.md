@@ -152,6 +152,7 @@ The versions of core dependencies must be synchronized across the build system, 
 3.  **Toolchain**: `internal/flatc/flatc.go` (defines `flatcVersion` which must match `flatbuffers` in CMake).
 4.  **Verification**: `cmd/doctor_version_test.go` (`TestFlatbuffersVersionConsistency`) enforces that the `flatc` version in Go matches the CMake tag.
 5.  **Self**: `go.mod` of the `xll-gen` repository itself (for regression testing and tool stability).
+6.  **Regtest static fixture**: `internal/regtest/testdata/CMakeLists.txt` hardcodes `GIT_TAG` for `flatbuffers`, `shm`, and `types`. It is a `go:embed` STATIC asset (the mock-host build), NOT templated from `versions.go`, so these three pins are hand-maintained. `cmd/doctor_version_test.go` (`TestRegtestCMakePinsMatchVersions`) fails CI if any drifts from `internal/versions/versions.go`. (The `XLLGEN_TYPES_SRC`/`XLLGEN_SHM_SRC` env overrides redirect only the source dir; the pinned tags here are otherwise authoritative for that fixture.)
 
 ### 18.3 Event Handling
 When adding a new Excel event (e.g., `SheetActivate`):
