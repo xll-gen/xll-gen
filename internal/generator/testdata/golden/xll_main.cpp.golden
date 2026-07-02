@@ -1616,12 +1616,15 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Convert string to temp XLOPER12 for cache key
-        // Use PascalToWString for safe conversion if it is string
-        std::wstring s = ((s->xltype & xltypeStr) ? PascalToWString(s->val.str) : L"");
-        xArg = CreateStringXLOPER(s.c_str());
-        xArg.xltype |= xlbitDLLFree;
-        cacheArgs.push_back(&xArg);
+        // A `string` arg is registered LPXLOPER12 (ArgCppType), so s is
+        // already a well-formed Excel-owned XLOPER12* (xltypeStr / Missing / Err
+        // for an empty cell). Push it directly like grid/range/any —
+        // MakeCacheKey's SerializeXLOPER content-hashes xltypeStr via
+        // PascalToWString, so the key already tracks the string's content. (The
+        // old branch called CreateStringXLOPER, which is defined nowhere and so
+        // never compiled whenever a cache-enabled function had a string arg.)
+        (void)xArg;
+        cacheArgs.push_back(s);
         
     }
     
@@ -1629,12 +1632,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     std::string cacheKey = xll::MakeCacheKey("SyncStr", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    delete[] tempArgs[0].val.str;
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -1759,10 +1758,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     std::string cacheKey = xll::MakeCacheKey("SyncInt", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -1890,10 +1887,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     std::string cacheKey = xll::MakeCacheKey("SyncFloat", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2021,10 +2016,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     std::string cacheKey = xll::MakeCacheKey("SyncBool", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2154,10 +2147,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     std::string cacheKey = xll::MakeCacheKey("SyncAny", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2284,10 +2275,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     std::string cacheKey = xll::MakeCacheKey("SyncGrid", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2445,10 +2434,8 @@ extern "C" __declspec(dllexport) FP12* __stdcall SyncNumGrid(FP12* ng) {
     cacheKey += "|numgrid:" + xll::ContentHashTokenFP12(ng);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2574,10 +2561,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     std::string cacheKey = xll::MakeCacheKey("SyncRange", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2711,10 +2696,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     std::string cacheKey = xll::MakeCacheKey("SyncDate", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -2832,12 +2815,15 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Convert string to temp XLOPER12 for cache key
-        // Use PascalToWString for safe conversion if it is string
-        std::wstring s = ((s->xltype & xltypeStr) ? PascalToWString(s->val.str) : L"");
-        xArg = CreateStringXLOPER(s.c_str());
-        xArg.xltype |= xlbitDLLFree;
-        cacheArgs.push_back(&xArg);
+        // A `string` arg is registered LPXLOPER12 (ArgCppType), so s is
+        // already a well-formed Excel-owned XLOPER12* (xltypeStr / Missing / Err
+        // for an empty cell). Push it directly like grid/range/any —
+        // MakeCacheKey's SerializeXLOPER content-hashes xltypeStr via
+        // PascalToWString, so the key already tracks the string's content. (The
+        // old branch called CreateStringXLOPER, which is defined nowhere and so
+        // never compiled whenever a cache-enabled function had a string arg.)
+        (void)xArg;
+        cacheArgs.push_back(s);
         
     }
     
@@ -2883,20 +2869,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     std::string cacheKey = xll::MakeCacheKey("SyncMulti", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    delete[] tempArgs[0].val.str;
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -3063,12 +3037,15 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     {
         XLOPER12& xArg = tempArgs[0];
         
-        // Convert string to temp XLOPER12 for cache key
-        // Use PascalToWString for safe conversion if it is string
-        std::wstring s = ((k->xltype & xltypeStr) ? PascalToWString(k->val.str) : L"");
-        xArg = CreateStringXLOPER(s.c_str());
-        xArg.xltype |= xlbitDLLFree;
-        cacheArgs.push_back(&xArg);
+        // A `string` arg is registered LPXLOPER12 (ArgCppType), so k is
+        // already a well-formed Excel-owned XLOPER12* (xltypeStr / Missing / Err
+        // for an empty cell). Push it directly like grid/range/any —
+        // MakeCacheKey's SerializeXLOPER content-hashes xltypeStr via
+        // PascalToWString, so the key already tracks the string's content. (The
+        // old branch called CreateStringXLOPER, which is defined nowhere and so
+        // never compiled whenever a cache-enabled function had a string arg.)
+        (void)xArg;
+        cacheArgs.push_back(k);
         
     }
     
@@ -3076,12 +3053,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     std::string cacheKey = xll::MakeCacheKey("SyncCachedGrid", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    delete[] tempArgs[0].val.str;
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
@@ -3208,10 +3181,8 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     std::string cacheKey = xll::MakeCacheKey("CallerMacroRange", cacheArgs);
     
 
-    // Cleanup temporary string allocations
-    
-    
-    
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {

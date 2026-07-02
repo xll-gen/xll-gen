@@ -21,6 +21,10 @@ import (
 //   - `numgrid` (FP12*): the blanket cast reinterpreted the FP12* as an
 //     XLOPER12* -> compiled but mis-keyed / could AV; the fix folds its
 //     ContentHashTokenFP12 into the cache key instead.
+//   - `string` (registered LPXLOPER12): the old branch called CreateStringXLOPER,
+//     which is defined nowhere — so cache-enabled functions with a string arg
+//     never compiled. Now pushed directly (Excel-owned XLOPER12*, content-hashed
+//     by SerializeXLOPER's xltypeStr case) like grid/range/any.
 //   - `grid`/`range`/`any` (genuine LPXLOPER12): kept their correct blanket
 //     push (MakeCacheKey content-hashes them). Included so the gate proves the
 //     preserved path still compiles alongside the reworked branches.
@@ -54,6 +58,10 @@ functions:
   - name: "CacheComposite"
     mode: "sync"
     args: [{name: "g", type: "grid"}, {name: "r", type: "range"}, {name: "a", type: "any"}]
+    return: "int"
+  - name: "CacheString"
+    mode: "sync"
+    args: [{name: "s", type: "string"}]
     return: "int"
 `
 

@@ -123,3 +123,30 @@ func TestCacheKeyLadder_CompositePointerArgsPreserved(t *testing.T) {
 		}
 	}
 }
+
+// TestCacheKeyLadder_StringArgNoUndefinedHelper pins that a cache-enabled
+// function with a string arg no longer calls CreateStringXLOPER — a helper
+// defined nowhere in xll-gen/types/assets, so the old branch never compiled for
+// any cache-enabled function with a string arg. The string arg is registered
+// LPXLOPER12, so it is now pushed directly (Excel-owned; MakeCacheKey's
+// SerializeXLOPER content-hashes its xltypeStr value).
+func TestCacheKeyLadder_StringArgNoUndefinedHelper(t *testing.T) {
+	out := renderCacheCppMain(t, []config.Function{
+		{Name: "CacheString", Mode: "sync", Return: "int",
+			Args: []config.Arg{{Name: "s", Type: "string"}}},
+	})
+
+	// The undefined-helper CALL must be gone (a comment may still name it).
+	if strings.Contains(out, "CreateStringXLOPER(s") {
+		t.Errorf("string arg still calls the undefined helper CreateStringXLOPER (would not compile)")
+	}
+	// The string arg (already an LPXLOPER12) must be pushed directly.
+	if !strings.Contains(out, "cacheArgs.push_back(s);") {
+		t.Errorf("string arg not pushed directly into cacheArgs (expected `cacheArgs.push_back(s);`)")
+	}
+	// The stale per-string cleanup that delete[]'d a never-allocated buffer must
+	// be gone (it would be a delete[] on uninitialized tempArgs memory now).
+	if strings.Contains(out, "delete[] tempArgs") {
+		t.Errorf("stale `delete[] tempArgs[..].val.str` cleanup still emitted (UB now that no temp string is allocated)")
+	}
+}

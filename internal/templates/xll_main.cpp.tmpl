@@ -1419,12 +1419,15 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         xArg.val.xbool = {{.Name}} ? 1 : 0;
         cacheArgs.push_back(&xArg);
         {{else if eq .Type "string"}}
-        // Convert string to temp XLOPER12 for cache key
-        // Use PascalToWString for safe conversion if it is string
-        std::wstring s = (({{.Name}}->xltype & xltypeStr) ? PascalToWString({{.Name}}->val.str) : L"");
-        xArg = CreateStringXLOPER(s.c_str());
-        xArg.xltype |= xlbitDLLFree;
-        cacheArgs.push_back(&xArg);
+        // A `string` arg is registered LPXLOPER12 (ArgCppType), so {{.Name}} is
+        // already a well-formed Excel-owned XLOPER12* (xltypeStr / Missing / Err
+        // for an empty cell). Push it directly like grid/range/any —
+        // MakeCacheKey's SerializeXLOPER content-hashes xltypeStr via
+        // PascalToWString, so the key already tracks the string's content. (The
+        // old branch called CreateStringXLOPER, which is defined nowhere and so
+        // never compiled whenever a cache-enabled function had a string arg.)
+        (void)xArg;
+        cacheArgs.push_back({{.Name}});
         {{else if eq .Type "date"}}
         // date rides ArgCppType "double" (Excel passes the serial by value), so
         // it is NOT an LPXLOPER12 — a blanket (LPXLOPER12){{.Name}} cast is
@@ -1462,12 +1465,8 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     cacheKey += "|numgrid:" + xll::ContentHashTokenFP12({{.Name}});
     {{end}}{{end}}
 
-    // Cleanup temporary string allocations
-    {{range $j, $arg := .Args}}
-    {{if eq .Type "string"}}
-    delete[] tempArgs[{{$j}}].val.str;
-    {{end}}
-    {{end}}
+    // (No temporary string allocations to clean up: string cache args are the
+    // Excel-owned XLOPER12* pushed directly above, not DLL-allocated copies.)
 
     std::vector<uint8_t> cachedData;
     if (xll::CacheManager::Instance().Get(cacheKey, cachedData)) {
