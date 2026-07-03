@@ -42,7 +42,7 @@ endif()
 FetchContent_Declare(
   types
   GIT_REPOSITORY https://github.com/xll-gen/types.git
-  GIT_TAG v0.2.15
+  GIT_TAG v0.2.16
   GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(types)
