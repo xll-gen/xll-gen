@@ -59,8 +59,9 @@ functions:
 //
 // Skipped (not failed) when the toolchain or the local checkouts are absent, so
 // it stays green on CI without MinGW; gated by -short like the sibling gate.
+// NOTE: deliberately NOT t.Parallel — the cmake C++ gates contend on the shared
+// FetchContent cache dir, so this suite runs them serially.
 func TestSyncDateCppCompiles(t *testing.T) {
-	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping C++ compile gate in short mode")
 	}
