@@ -4,11 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/xll-gen/shm/go"
 	"github.com/xll-gen/xll-gen/pkg/log"
 )
+
+// envPlaceholderRe matches ${VAR} placeholders in logging.dir, mirroring the
+// C++ side's ExpandEnvVarsW so e.g. ${TEMP} resolves identically in both logs.
+var envPlaceholderRe = regexp.MustCompile(`\$\{(\w+)\}`)
 
 func InitLog(logDir string, level string, projectName string) (string, error) {
 	exePath, _ := os.Executable()
@@ -16,6 +21,9 @@ func InitLog(logDir string, level string, projectName string) (string, error) {
 
 	logDir = strings.ReplaceAll(logDir, "${XLL_DIR}", os.Getenv("XLL_DIR"))
 	logDir = strings.ReplaceAll(logDir, "${BIN_DIR}", binDir)
+	logDir = envPlaceholderRe.ReplaceAllStringFunc(logDir, func(m string) string {
+		return os.Getenv(m[2 : len(m)-1])
+	})
 
 	if logDir == "" {
 		logDir = "."

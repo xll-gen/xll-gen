@@ -6,6 +6,7 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <filesystem>
 #include <map>
 #include <set>
 #include <algorithm>
@@ -117,7 +118,24 @@ namespace xll {
 
         outCmd = cmd;
         outCwd = cwd;
-        outLogPath = cwd + L"\\" + cfg.projectName + L"_go.log";
+
+        // The Go server's stdout/stderr log lands in the same directory as the
+        // native log: cfg.logDir carries the resolved logging.dir so both
+        // <proj>_native.log and <proj>_go.log share one location. An empty
+        // logDir keeps the legacy behavior (next to the launched exe).
+        std::wstring logDir = cfg.logDir;
+        if (logDir.empty()) {
+            logDir = cwd;
+        } else {
+            try {
+                std::filesystem::create_directories(std::filesystem::path(logDir));
+            } catch (...) {
+                // Uncreatable configured dir: fall back to the launch cwd so
+                // the launch (which must open the log handle) still succeeds.
+                logDir = cwd;
+            }
+        }
+        outLogPath = logDir + L"\\" + cfg.projectName + L"_go.log";
     }
 
     bool LaunchServer(const LaunchConfig& cfg, const std::wstring& xllDir, ProcessInfo& outInfo, std::wstring& outLogPath) {

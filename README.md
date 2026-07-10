@@ -146,7 +146,11 @@ build:
 
 logging:
   level: "info"
-  dir: "" # Defaults to working directory
+  # ONE directory for BOTH log files (<proj>_native.log and <proj>_go.log).
+  # Supports ${XLL_DIR}, ${BIN_DIR}, ${TEMP} and absolute paths.
+  # Default (empty) = ${BIN_DIR}: the XLL directory in standalone mode, or the
+  # extraction directory <temp_dir>\<project>\ in singlefile mode.
+  dir: ""
 
 server:
   workers: 0         # 0 = Use runtime.NumCPU()
@@ -526,11 +530,13 @@ Run `xll-gen doctor`. It will attempt to download the correct version of the Fla
 Ensure the XLL and the Go server are using the same shared memory name.
 
 **"Server Logs"**:
-*   **Standard Mode**: Logs are located in the directory specified by `logging.dir`.
-*   **Singlefile Mode**: Logs are located in the temporary directory (e.g., `%TEMP%\<ProjectName>\`).
-    *   `{ProjectName}_go.log`: Launch process stdout/stderr.
-    *   `<Project>_native.log`: C++ XLL internal errors.
-    *   `<Project>.log`: Go server logs (if configured).
+Both log files always live in the **same** directory, resolved from `logging.dir`:
+*   `<Project>_native.log`: C++ XLL internal log.
+*   `<Project>_go.log`: Go server log (stdout/stderr of the launched process).
+
+Where that directory is:
+*   **Standalone Mode**: `logging.dir` (default `${BIN_DIR}` = the XLL/exe directory).
+*   **Singlefile Mode**: `${BIN_DIR}` resolves to the extraction directory `<temp_dir>\<ProjectName>\` (e.g., `%TEMP%\<ProjectName>\`), so by default both logs sit next to the extracted server executable. Set `logging.dir` explicitly (e.g., `${XLL_DIR}` or an absolute path) to move both logs elsewhere.
 
 ## License
 

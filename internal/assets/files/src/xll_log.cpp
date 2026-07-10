@@ -137,7 +137,9 @@ bool InitLog(const std::wstring& configuredPath, const std::string& level, const
     }
 
     if (isSingleFile && (configuredPath.empty() || configuredPath == L"BIN_DIR" || configuredPath == L"TEMP_DIR")) {
-        // Construct path in temp dir
+        // Fallback: construct the path in the extraction directory
+        // <temp_dir>\<project>\ — the same directory ExtractEmbeddedExe uses
+        // and where the launcher puts <proj>_go.log, so both logs stay together.
         std::wstring wTempDirPattern = StringToWString(tempDirPattern);
         std::wstring tempDir = ExpandEnvVarsW(wTempDirPattern);
 
@@ -145,20 +147,26 @@ bool InitLog(const std::wstring& configuredPath, const std::string& level, const
         if (!tempDir.empty() && (tempDir.back() == L'\\' || tempDir.back() == L'/')) {
             tempDir.pop_back();
         }
-
-        // Ensure directory exists
-        try {
-            std::filesystem::path dirPath(tempDir);
-            std::filesystem::create_directories(dirPath);
-        } catch (const std::exception& e) {
-            outError = "Failed to create log directory '" + WideToUtf8(tempDir) + "': " + e.what();
-            return false;
-        } catch (...) {
-            outError = "Failed to create log directory '" + WideToUtf8(tempDir) + "': Unknown error";
-            return false;
+        if (!wProjName.empty()) {
+            tempDir += L"\\" + wProjName;
         }
 
         path = tempDir + L"\\" + logFileName;
+    }
+
+    // Ensure the log directory exists (e.g. the singlefile extraction dir may
+    // not have been created yet on a fresh machine).
+    try {
+        std::filesystem::path p = std::filesystem::u8path(WideToUtf8(path));
+        if (p.has_parent_path()) {
+            std::filesystem::create_directories(p.parent_path());
+        }
+    } catch (const std::exception& e) {
+        outError = "Failed to create log directory for '" + WideToUtf8(path) + "': " + e.what();
+        return false;
+    } catch (...) {
+        outError = "Failed to create log directory for '" + WideToUtf8(path) + "': Unknown error";
+        return false;
     }
 
     // Try to open file to verify permissions

@@ -12,7 +12,10 @@ gen:
 logging:
   # Log level (DEBUG, INFO, WARN, ERROR)
   level: "{{if .DevMode}}DEBUG{{else}}INFO{{end}}"
-  # Directory for log files (${XLL_DIR}, ${BIN_DIR}, ${TEMP}, or absolute path)
+  # ONE directory for BOTH log files: <proj>_native.log (C++ XLL) and
+  # <proj>_go.log (Go server). Supports ${XLL_DIR}, ${BIN_DIR}, ${TEMP}, or an
+  # absolute path. ${BIN_DIR} = the server exe directory: next to the XLL in
+  # standalone mode, or <temp_dir>\<project>\ in singlefile mode.
   dir: "{{if .DevMode}}${XLL_DIR}{{else}}${BIN_DIR}{{end}}"
 
 build:

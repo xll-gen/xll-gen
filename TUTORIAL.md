@@ -63,7 +63,9 @@ build:
 
 logging:
   level: info
-  dir: "."
+  # Both FibDemo_native.log and FibDemo_go.log go here. Default (${BIN_DIR})
+  # = the extraction dir %TEMP%\FibDemo\ in singlefile mode.
+  dir: "${BIN_DIR}"
 
 server:
   workers: 0 # Use all CPUs
@@ -184,10 +186,9 @@ Once loaded:
 
 *   **Excel crashes**: Ensure you are not returning invalid memory. Since we are using `xll-gen` (which uses shared memory), this is handled for you.
 *   **"#VALUE!" Error**: This usually means the Go server is not running or crashed.
-    *   Check logs for errors. In **singlefile** mode, logs are in your temporary directory (e.g., `%TEMP%\FibDemo\`):
-        *   `FibDemo.log`: Go server errors.
+    *   Check logs for errors. Both logs share the `logging.dir` directory — in **singlefile** mode that defaults to the extraction directory (e.g., `%TEMP%\FibDemo\`):
         *   `FibDemo_native.log`: C++ XLL errors.
-        *   `{ProjectName}_go.log`: Launch details.
+        *   `FibDemo_go.log`: Go server log (stdout/stderr).
     *   If the server crashed, the XLL might display a message box with the error.
 *   **Compilation Errors**: Run `xll-gen doctor` to ensure your C++ compiler is set up correctly.
 

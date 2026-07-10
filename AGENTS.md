@@ -300,6 +300,42 @@ Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort 
 
 **Constraint**: Adding or renaming a `commands`/`ribbon` field, changing the ribbon XML shape, or touching `CommandInvokeRequest/Response` requires walking all five locations above plus the message-ID mirror, and verifying the templates still compile.
 
+### 18.12 Log Path Resolution (single-directory contract, 2026-07-10)
+
+`logging.dir` resolves to **ONE directory** that holds BOTH log files:
+`<proj>_native.log` (C++ XLL) and `<proj>_go.log` (the launched Go server's
+redirected stdout/stderr). The resolution happens once, in the generated
+`xlAutoOpen` (`internal/templates/xll_main.cpp.tmpl`), and flows to all consumers:
+
+1.  **Template** (`xll_main.cpp.tmpl`): resolves `logging.dir` (`${XLL_DIR}`,
+    `${BIN_DIR}`, `${TEMP}`, legacy bare tokens `XLL_DIR`/`TEMP_DIR`) into
+    `logDir`; empty → `binDir`. In **singlefile** mode `${BIN_DIR}` = the
+    extraction dir `<temp_dir>\<project>` (the dir `ExtractEmbeddedExe` uses),
+    NOT the temp root — this is what keeps exe + both logs together. The
+    resolved `logDir` feeds both `InitLog(...)` (native log) and
+    `LaunchConfig.logDir` (Go log).
+2.  **Launcher** (`internal/assets/files/src/xll_launch.cpp::ResolveServerPath`):
+    `outLogPath = cfg.logDir + L"\\<proj>_go.log"`; empty `logDir` falls back to
+    the launch cwd (legacy), and an uncreatable configured dir also falls back
+    to cwd so the launch never aborts on a bad log path.
+3.  **Native sink** (`internal/assets/files/src/xll_log.cpp::InitLog`): creates
+    the parent directory of the final path; its singlefile fallback branch
+    (empty/`BIN_DIR`/`TEMP_DIR` configured path) also targets
+    `<temp_dir>\<project>\`.
+4.  **Standalone Go** (`pkg/server/bootstrap.go::InitLog`): used only when the
+    server runs WITHOUT the launcher (no `XLL_LOG_TO_STDOUT=1`); expands
+    `${XLL_DIR}`/`${BIN_DIR}` plus generic `${VAR}` env placeholders the same
+    way.
+
+**Constraint**: changing how `logging.dir` is resolved (new placeholder,
+default, or singlefile layout) requires walking all four locations above plus
+the docs (`README.md` "Server Logs", `TUTORIAL.md` troubleshooting,
+`internal/templates/xll.yaml.tmpl` comments) and regenerating the goldens
+(`UPDATE_GOLDEN=1 go test ./internal/generator/ -run TestGolden`). Do NOT
+reintroduce a per-side default (e.g. Go log hardcoded to the launch cwd while
+the native log honors `logging.dir`) — the split-log inconsistency in
+singlefile mode was the original bug.
+
 ## 19. Excel XLL Registration Rules
 
 When generating the `xlfRegister` type string in `xll_main.cpp.tmpl`, follow these strict rules to avoid Excel registration failures or immediate unloads.

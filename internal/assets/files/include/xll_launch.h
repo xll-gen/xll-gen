@@ -14,6 +14,7 @@ namespace xll {
         std::wstring projectName;
         bool isSingleFile;
         std::wstring tempDir;      // Used only if logic needs to know temp dir (e.g. for logging)
+        std::wstring logDir;       // Resolved logging.dir; <proj>_go.log goes here (empty = launch cwd)
         std::string cwd;           // from xll.yaml server.launch.cwd
         std::string command;       // from xll.yaml server.launch.command
         std::string shmName;       // Shared Memory Name

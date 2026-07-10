@@ -267,26 +267,30 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     std::wstring binDir = GetXllDir();
     
+    // Singlefile: ${BIN_DIR} is the extraction directory <temp_dir>\<project>
+    // (where ExtractEmbeddedExe unpacks the Go server), so the default
+    // logging.dir of ${BIN_DIR} keeps the exe and BOTH logs in one place.
     binDir = ExpandEnvVarsW(L"temp_golden");
+    while (!binDir.empty() && (binDir.back() == L'\\' || binDir.back() == L'/')) binDir.pop_back();
+    binDir += L"\\GoldenProj";
     
 
-    std::wstring logPath = L"logs";
-    if (logPath == L"XLL_DIR") {
-        logPath = GetXllDir() + L"\\GoldenProj_native.log";
-    } else if (logPath == L"TEMP_DIR") {
-        logPath = ExpandEnvVarsW(L"${TEMP}") + L"\\GoldenProj_native.log";
+    // Resolve logging.dir into ONE directory shared by both log files:
+    // <dir>\<proj>_native.log (this XLL) and <dir>\<proj>_go.log (server stdout).
+    std::wstring logDir = L"logs";
+    if (logDir == L"XLL_DIR") {
+        logDir = GetXllDir();
+    } else if (logDir == L"TEMP_DIR") {
+        logDir = ExpandEnvVarsW(L"${TEMP}");
     } else {
         // Support placeholders like ${XLL_DIR}, ${BIN_DIR} and ${TEMP}
-        ReplaceAll(logPath, L"${XLL_DIR}", GetXllDir());
-        ReplaceAll(logPath, L"${BIN_DIR}", binDir);
-        logPath = ExpandEnvVarsW(logPath);
-
-        // If it's a directory (or ends with slash), append default log name
-        if (!logPath.empty() && (std::filesystem::is_directory(logPath) || logPath.back() == L'\\' || logPath.back() == L'/')) {
-            if (logPath.back() != L'\\' && logPath.back() != L'/') logPath += L"\\";
-            logPath += L"GoldenProj_native.log";
-        }
+        ReplaceAll(logDir, L"${XLL_DIR}", GetXllDir());
+        ReplaceAll(logDir, L"${BIN_DIR}", binDir);
+        logDir = ExpandEnvVarsW(logDir);
     }
+    if (logDir.empty()) logDir = binDir;
+    while (!logDir.empty() && (logDir.back() == L'\\' || logDir.back() == L'/')) logDir.pop_back();
+    std::wstring logPath = logDir + L"\\GoldenProj_native.log";
 
     std::string logInitError;
     if (!InitLog(logPath, "info", tempPattern, projName, isSingleFile, logInitError)) {
@@ -399,6 +403,7 @@ launch_server:
     // Prepare Launch Config
     cfg.projectName = L"GoldenProj";
     cfg.isSingleFile = isSingleFile;
+    cfg.logDir = logDir; // Same resolved logging.dir as the native log
     cfg.cwd = ""; // Default CWD (relative to bindir)
     cfg.command = "";
     cfg.shmName = shmName;
