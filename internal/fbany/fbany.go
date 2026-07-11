@@ -132,14 +132,22 @@ func Build(b *flatbuffers.Builder, tag protocol.AnyValue, val any) flatbuffers.U
 // `return: "any"` paths, so a value renders identically in a cell no matter
 // which route delivered it:
 //
-//	nil          → AnyValueNil  (empty cell)
-//	string       → AnyValueStr
-//	int32        → AnyValueInt
-//	int, int64   → AnyValueNum  (Go ints can exceed 32 bits; double keeps 53)
-//	float64/32   → AnyValueNum
-//	bool         → AnyValueBool
-//	time.Time    → AnyValueDate (Excel serial, wall-clock)
-//	anything else → AnyValueStr via fmt.Sprintf("%v", v)
+//	nil                   → AnyValueNil  (empty cell)
+//	string                → AnyValueStr
+//	int32                 → AnyValueInt
+//	int8/int16            → AnyValueInt  (widened to int32)
+//	uint8/uint16          → AnyValueInt  (widened to int32)
+//	int, int64            → AnyValueNum  (Go ints can exceed 32 bits; double keeps 53)
+//	uint/uint32/uint64    → AnyValueInt when the value fits int32, else AnyValueNum
+//	float64/32            → AnyValueNum
+//	bool                  → AnyValueBool
+//	time.Time             → AnyValueDate (Excel serial, wall-clock)
+//	anything else         → AnyValueStr via fmt.Sprintf("%v", v)
+//
+// The integer rules mirror buildScalarCell (the grid-cell path), so a numeric
+// value renders as a NUMBER in the cell whichever path carries it — before
+// 2026-07-10 the sized-int/uint kinds fell to the Sprintf default and arrived
+// as text (e.g. uint64(42) → "42" via `any`, but numeric 42 in a grid cell).
 func MapGo(value any) (protocol.AnyValue, any) {
 	switch v := value.(type) {
 	case nil:
@@ -149,11 +157,25 @@ func MapGo(value any) (protocol.AnyValue, any) {
 	case int:
 		// Go int can be 64-bit, so send as double to prevent truncation
 		return protocol.AnyValueNum, float64(v)
+	case int8:
+		return protocol.AnyValueInt, int32(v)
+	case int16:
+		return protocol.AnyValueInt, int32(v)
 	case int32:
 		return protocol.AnyValueInt, v
 	case int64:
 		// Protocol only supports 32-bit int, so we send as double to preserve value (up to 53 bits)
 		return protocol.AnyValueNum, float64(v)
+	case uint8:
+		return protocol.AnyValueInt, int32(v)
+	case uint16:
+		return protocol.AnyValueInt, int32(v)
+	case uint:
+		return mapUint64(uint64(v))
+	case uint32:
+		return mapUint64(uint64(v))
+	case uint64:
+		return mapUint64(v)
 	case float64:
 		return protocol.AnyValueNum, v
 	case float32:
@@ -165,6 +187,15 @@ func MapGo(value any) (protocol.AnyValue, any) {
 	default:
 		return protocol.AnyValueStr, fmt.Sprintf("%v", v)
 	}
+}
+
+// mapUint64 is MapGo's unsigned-integer rule, mirroring buildUintOrNumCell:
+// Int when the value fits int32, Num (float64, 53-bit) otherwise.
+func mapUint64(v uint64) (protocol.AnyValue, any) {
+	if v <= math.MaxInt32 {
+		return protocol.AnyValueInt, int32(v)
+	}
+	return protocol.AnyValueNum, float64(v)
 }
 
 // BuildGo maps value through MapGo and serializes it with Build, returning
