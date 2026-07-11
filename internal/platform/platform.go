@@ -35,6 +35,12 @@ func ExeName(base string) string {
 // variant in the same loop).
 func ExeSuffix() string { return exeSuffix }
 
+// ExcelPath resolves the host Excel executable's full path from the Windows
+// registry (App Paths\excel.exe). It returns the path and true on success, or
+// ("", false) when Excel is not registered or the lookup runs on a non-Windows
+// developer host. Callers should fall back to a sensible default on false.
+func ExcelPath() (string, bool) { return excelPath() }
+
 // FindBuiltExe locates an executable that cmake produced under `buildDir`.
 // CMake's output layout differs between single-config generators (Make,
 // Ninja, MinGW Makefiles — output at `buildDir/<name>`) and multi-config

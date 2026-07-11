@@ -11,7 +11,7 @@ import (
 	"time"
 	"runtime"
 	"runtime/debug"
-	"{{.ModName}}/generated/ipc"
+	"{{.ModName}}/{{.Package}}/ipc"
 	"github.com/xll-gen/xll-gen/pkg/log"
 	"github.com/xll-gen/xll-gen/pkg/server"
 	"github.com/xll-gen/xll-gen/pkg/pool"
@@ -325,7 +325,10 @@ func Serve(handler XllService) {
                 }:
                 default:
                     log.Warn("Async worker pool full, returning Busy error", "func", "{{.Name}}")
-                    // Fast-fail
+                    // Fast-fail: the queued closure (which owns the deferred
+                    // cancel) never runs on this path, so release the timeout
+                    // ctx here or its timer lingers until the deadline.
+                    cancel()
                     reqObj := ipc.GetRootAs{{.Name}}Request(reqCopy, 0)
                     h := reqObj.AsyncHandleBytes()
                     asyncBatcher.QueueResult(h, nil, protocol.AnyValue(0), "Server Busy")

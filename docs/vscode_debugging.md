@@ -36,8 +36,8 @@ Create a `.vscode/launch.json` file with the content below. You may need to adju
             "type": "go",
             "request": "attach",
             "mode": "local",
-            "processId": 0,
-            "description": "Attach to the auto-launched server process."
+            "processId": "${command:pickProcess}",
+            "description": "Attach to the auto-launched server process (pickProcess opens a filterable process picker)."
         },
         {
             "name": "2. Debug XLL (Excel) - MSVC",

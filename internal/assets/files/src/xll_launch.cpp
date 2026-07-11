@@ -74,9 +74,26 @@ namespace xll {
             std::string cfgCmd = cfg.command;
             std::wstring wCmd = StringToWString(cfgCmd);
 
-            std::wstring varBin = L"${BIN}";
-            if (wCmd.find(varBin) != std::wstring::npos) {
-                ReplaceAll(wCmd, varBin, defaultBinPath);
+            // server.launch.command placeholders: ${BIN} (full server exe path),
+            // ${BIN_DIR} (its directory), ${XLL_DIR} (the XLL's directory). A
+            // command containing any placeholder is used verbatim after
+            // expansion; a placeholder-free command falls through to the legacy
+            // relative/absolute resolution below. (Replacement order is not
+            // load-bearing: the search keys are brace-delimited, so "${BIN}"
+            // can never match inside "${BIN_DIR}".) NOTE: a command that
+            // carries ARGUMENTS or a wrapper must quote the executable token
+            // itself (e.g. "\"${BIN}\" --flag") — the quoting block below
+            // wraps the WHOLE string in one quote pair when it does not
+            // already start with a quote, and CreateProcessW would then treat
+            // the entire expansion as the executable path.
+            bool hadPlaceholder =
+                wCmd.find(L"${BIN}") != std::wstring::npos ||
+                wCmd.find(L"${BIN_DIR}") != std::wstring::npos ||
+                wCmd.find(L"${XLL_DIR}") != std::wstring::npos;
+            if (hadPlaceholder) {
+                ReplaceAll(wCmd, L"${BIN_DIR}", binDir);
+                ReplaceAll(wCmd, L"${XLL_DIR}", xllDir);
+                ReplaceAll(wCmd, L"${BIN}", defaultBinPath);
                 exePath = wCmd;
             } else {
                 if (cfg.isSingleFile) {

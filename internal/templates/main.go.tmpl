@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"{{.ProjectName}}/generated"
+	"{{.ProjectName}}/{{.Package}}"
 	"time"
 )
 
@@ -68,7 +68,7 @@ func (s *MyService) StockQuote_RTD(ctx context.Context, topicID int32, symbol st
 			case <-ticker.C:
 				price := 100.0 + (50.0 * (rand.Float64() - 0.5))
 				val := fmt.Sprintf("%s: %.2f", symbol, price)
-				generated.PushRtdUpdate(topicID, val)
+				{{.Package}}.PushRtdUpdate(topicID, val)
 			}
 		}
 	}()
@@ -77,5 +77,5 @@ func (s *MyService) StockQuote_RTD(ctx context.Context, topicID int32, symbol st
 
 func main() {
 	// Connects to SHM and starts processing
-	generated.Serve(&MyService{})
+	{{.Package}}.Serve(&MyService{})
 }

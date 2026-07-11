@@ -16,7 +16,7 @@ var regtestCmd = &cobra.Command{
 	Short: "Run a regression test simulation (Mock Host)",
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := regtest.Run(); err != nil {
-			fmt.Printf("Error: %v\n", err)
+			printError("Regtest", fmt.Sprintf("%v", err))
 			os.Exit(1)
 		}
 	},

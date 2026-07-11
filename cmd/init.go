@@ -5,14 +5,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/template"
 
 	"github.com/spf13/cobra"
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/generator"
+	"github.com/xll-gen/xll-gen/internal/platform"
 	"github.com/xll-gen/xll-gen/internal/templates"
-	"gopkg.in/yaml.v3"
 )
+
+// defaultExcelPath is the fallback baked into launch.json when the registry
+// lookup fails (e.g. generating on a non-Windows dev host, or Excel not
+// registered). It is the common 64-bit Click-to-Run install location.
+const defaultExcelPath = `C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE`
+
+// resolveExcelPathForJSON returns the Excel executable path with backslashes
+// escaped for embedding in a JSON string literal (launch.json). It prefers the
+// registry-resolved path and falls back to defaultExcelPath.
+func resolveExcelPathForJSON() string {
+	p, ok := platform.ExcelPath()
+	if !ok || p == "" {
+		p = defaultExcelPath
+	}
+	return strings.ReplaceAll(p, `\`, `\\`)
+}
 
 var (
 	force bool
@@ -77,13 +94,27 @@ func runInit(projectPath string, force, dev bool) error {
 	}
 	printSuccess("Created", "xll.yaml")
 
-	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectPath, "main.go"), struct{ ProjectName string }{projectName}); err != nil {
+	// Load the scaffolded config now: the remaining scaffold templates
+	// (main.go import path, .gitignore) depend on gen.go.package.
+	cfg, err := config.Load(filepath.Join(projectPath, "xll.yaml"))
+	if err != nil {
+		return err
+	}
+	config.ApplyDefaults(cfg)
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
+
+	if err := generateFileFromTemplate("main.go.tmpl", filepath.Join(projectPath, "main.go"), struct {
+		ProjectName string
+		Package     string
+	}{projectName, cfg.GoPackage()}); err != nil {
 		return err
 	}
 	printSuccess("Created", "main.go")
 
 	if !dev {
-		if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectPath, ".gitignore"), nil); err != nil {
+		if err := generateFileFromTemplate("gitignore.tmpl", filepath.Join(projectPath, ".gitignore"), struct{ Package string }{cfg.GoPackage()}); err != nil {
 			return err
 		}
 		printSuccess("Created", ".gitignore")
@@ -93,7 +124,10 @@ func runInit(projectPath string, force, dev bool) error {
 	if err := os.MkdirAll(vscodeDir, 0755); err != nil {
 		return err
 	}
-	if err := generateFileFromTemplate("launch.json.tmpl", filepath.Join(vscodeDir, "launch.json"), struct{ ProjectName string }{projectName}); err != nil {
+	if err := generateFileFromTemplate("launch.json.tmpl", filepath.Join(vscodeDir, "launch.json"), struct {
+		ProjectName string
+		ExcelPath   string
+	}{projectName, resolveExcelPathForJSON()}); err != nil {
 		return err
 	}
 	printSuccess("Created", ".vscode/launch.json")
@@ -107,28 +141,12 @@ func runInit(projectPath string, force, dev bool) error {
 	}
 	printSuccess("Initialized", "Go module")
 
-	data, err := os.ReadFile(filepath.Join(projectPath, "xll.yaml"))
-	if err != nil {
-		return fmt.Errorf("failed to read xll.yaml: %w", err)
-	}
-
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("failed to parse xll.yaml: %w", err)
-	}
-
-	config.ApplyDefaults(&cfg)
-
-	if err := config.Validate(&cfg); err != nil {
-		return err
-	}
-
 	// We use the project name as the module name since we just ran 'go mod init <projectName>'
 	fmt.Println("") // Add spacing
 	opts := generator.Options{
 		DevMode: dev,
 	}
-	if err := generator.Generate(&cfg, projectPath, projectName, opts); err != nil {
+	if err := generator.Generate(cfg, projectPath, projectName, opts); err != nil {
 		return fmt.Errorf("failed to generate code: %w", err)
 	}
 

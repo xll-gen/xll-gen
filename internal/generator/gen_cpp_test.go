@@ -685,6 +685,43 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 	}
 }
 
+// TestGenCpp_SyncErrorSurfacedToCell is the batch-2 item-1 regression: an
+// errored sync handler response (Go server sets Response.error) must be
+// returned to the cell as a text XLOPER12 — matching the async path in
+// xll_async.cpp — instead of collapsing to the shared #VALUE! sentinel with the
+// message only in the Go log. numgrid returns FP12* (K%), which cannot carry a
+// string, so the error branch must NOT be emitted for it.
+func TestGenCpp_SyncErrorSurfacedToCell(t *testing.T) {
+	t.Parallel()
+
+	// A string sync function: its return conversion MUST surface handler errors.
+	strCfg := &config.Config{
+		Project:   config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{{Name: "TestStr", Return: "string", Args: []config.Arg{}}},
+		Server:    config.ServerConfig{Timeout: "2s", Launch: &config.LaunchConfig{Enabled: boolPtr(true)}},
+	}
+	strContent := renderCppMain(t, strCfg)
+
+	if !strings.Contains(strContent, "if (resp->error() && resp->error()->size() > 0) {") {
+		t.Fatal("sync return path must check resp->error() and surface it to the cell")
+	}
+	if !strings.Contains(strContent, "return NewExcelString(werr.c_str());") {
+		t.Fatal("sync error branch must return the error text as a string XLOPER12")
+	}
+
+	// A numgrid sync function returns FP12* (K%) and cannot carry a string, so
+	// the error branch must NOT be emitted for it.
+	ngCfg := &config.Config{
+		Project:   config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{{Name: "TestNumGrid", Return: "numgrid", Args: []config.Arg{{Name: "ng", Type: "numgrid"}}}},
+		Server:    config.ServerConfig{Timeout: "2s", Launch: &config.LaunchConfig{Enabled: boolPtr(true)}},
+	}
+	ngContent := renderCppMain(t, ngCfg)
+	if strings.Contains(ngContent, "resp->error()") {
+		t.Fatal("numgrid sync return must NOT emit the string error branch (FP12* cannot carry a string)")
+	}
+}
+
 // TestGenCpp_DescriptionEscaping is the regression for free-text config
 // fields (function/command/arg descriptions, category, help topic) being
 // emitted into C++ wide-string literals without escaping: a quote, backslash

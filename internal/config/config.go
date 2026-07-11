@@ -147,9 +147,11 @@ type BuildConfig struct {
 
 // ServerConfig configures the runtime behavior of the Go server.
 type ServerConfig struct {
-	// Command is the command to launch the server (e.g., "path/to/server").
+	// Command is the LEGACY top-level launch command (e.g., "path/to/server").
 	// Supports "${BIN}" placeholder for the full path of the server executable.
 	// If you need to pass arguments, you must wrap "${BIN}" or the path in quotes (e.g., "\"${BIN}\" --arg").
+	// Prefer server.launch.command (LaunchConfig.Command), which wins over this
+	// field when both are set; this one is kept for backward compatibility.
 	Command string `yaml:"command"`
 	// Workers determines the size of the worker pool for handling requests.
 	// If 0, defaults to runtime.NumCPU().
@@ -187,6 +189,20 @@ type ChunkConfig struct {
 type LaunchConfig struct {
 	// Enabled, if true (default), causes the XLL to spawn the server process.
 	Enabled *bool `yaml:"enabled"`
+	// Command overrides the launch command line. Placeholders ${BIN} (full
+	// path of the server executable), ${BIN_DIR} and ${XLL_DIR} are expanded
+	// by the C++ launcher (internal/assets/files/src/xll_launch.cpp,
+	// ResolveServerPath). Empty means "launch the server executable" (${BIN}).
+	// To pass arguments (or use a wrapper), quote the executable token
+	// yourself, e.g. "\"${BIN}\" --arg" — an unquoted multi-token command is
+	// wrapped whole in one quote pair and treated as a single executable path.
+	// Precedence: server.launch.command wins over the legacy top-level
+	// server.command when both are set.
+	Command string `yaml:"command"`
+	// Cwd overrides the server's working directory. Placeholders ${BIN_DIR}
+	// and ${XLL_DIR} are expanded; a relative value resolves against
+	// ${BIN_DIR}. Empty means ${BIN_DIR} (the server executable's directory).
+	Cwd string `yaml:"cwd"`
 }
 
 // ProjectConfig contains project metadata.
@@ -209,6 +225,28 @@ type GenConfig struct {
 type GoConfig struct {
 	// Module is the Go module name.
 	Module string `yaml:"module"`
+	// Package is the generated Go package name (default "generated"). It sets
+	// BOTH the package clause of the generated Go files AND the output
+	// directory / import-path segment (Go convention ties them): the code is
+	// written to <project>/<package>/ and imported as "<module>/<package>"
+	// (FlatBuffers code as "<module>/<package>/ipc"). Must be a valid Go
+	// identifier and not a reserved word (validated in Validate).
+	Package string `yaml:"package"`
+}
+
+// DefaultGoPackage is the generated Go package (and directory) name used when
+// gen.go.package is omitted.
+const DefaultGoPackage = "generated"
+
+// GoPackage returns the effective generated-package name: gen.go.package, or
+// DefaultGoPackage when unset. Generator code must use this accessor (not the
+// raw field) so direct calls that skip ApplyDefaults keep the historical
+// "generated" behavior.
+func (c *Config) GoPackage() string {
+	if c.Gen.Go.Package == "" {
+		return DefaultGoPackage
+	}
+	return c.Gen.Go.Package
 }
 
 // Function represents a user-defined Excel function.
@@ -523,6 +561,9 @@ func Validate(config *Config) error {
 		return err
 	}
 
+	if err := validateGenGoPackage(config); err != nil {
+		return err
+	}
 	if err := validateBuild(config); err != nil {
 		return err
 	}
@@ -553,6 +594,33 @@ func Validate(config *Config) error {
 	}
 	if err := validateRibbon(config, cmdNames); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateGenGoPackage checks gen.go.package: it becomes both the package
+// clause of the generated Go files and their directory / import-path segment,
+// so it must be a valid Go package identifier. "main" is rejected because the
+// generated package must be importable from the user's main package.
+func validateGenGoPackage(config *Config) error {
+	pkg := config.Gen.Go.Package
+	if pkg == "" {
+		// Defaulted to DefaultGoPackage by ApplyDefaults / GoPackage().
+		return nil
+	}
+	for _, r := range pkg {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("gen.go.package '%s': must match [A-Za-z0-9_]+ (it is used as the generated Go package name and output directory)", pkg)
+		}
+	}
+	if pkg[0] >= '0' && pkg[0] <= '9' {
+		return fmt.Errorf("gen.go.package '%s': must not start with a digit", pkg)
+	}
+	if goReservedWords[pkg] {
+		return fmt.Errorf("gen.go.package '%s': is a Go reserved word", pkg)
+	}
+	if pkg == "main" {
+		return fmt.Errorf("gen.go.package 'main': the generated package must be importable; 'main' cannot be imported")
 	}
 	return nil
 }
@@ -1004,6 +1072,11 @@ func ApplyDefaults(config *Config) {
 
 	if config.Build.TempDir == "" {
 		config.Build.TempDir = "${TEMP}"
+	}
+
+	// Generated Go package (also the output directory / import-path segment).
+	if config.Gen.Go.Package == "" {
+		config.Gen.Go.Package = DefaultGoPackage
 	}
 
 	// Server Launch defaults

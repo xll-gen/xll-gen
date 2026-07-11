@@ -5,6 +5,9 @@ project:
 # Code generation settings
 gen:
   go:
+    # Generated Go package name. Also names the output directory and the
+    # import-path segment: code lands in <project>/<package>/ and is imported
+    # as "<module>/<package>". Must be a valid Go identifier.
     package: "generated"
   disable_pid_suffix: true # Optional: If true, prevents appending the PID to the shared memory name. Default is false.
 
@@ -35,11 +38,12 @@ server:
     enabled: true # If true, the XLL automatically launches the Go server.
     # Variable substitution:
     #   ${BIN}      - The full path to the server executable. (Available in 'command')
-    #   ${BIN_DIR}  - The directory containing the server executable. (Available in 'cwd')
-    #   ${XLL_DIR}  - The directory containing the XLL file. (Available in 'cwd')
+    #   ${BIN_DIR}  - The directory containing the server executable. (Available in 'command' and 'cwd')
+    #   ${XLL_DIR}  - The directory containing the XLL file. (Available in 'command' and 'cwd')
     #
     # Examples:
     #   cwd: "${XLL_DIR}/data"
+    #   command: "\"${BIN}\" --my-flag"  # To pass arguments, quote the executable token yourself.
     command: "${BIN}" # Optional: Command to launch the server. ${BIN} resolves to the executable path.
     cwd: "${BIN_DIR}" # Optional: Working directory for the server process. Defaults to the directory containing the executable.
 

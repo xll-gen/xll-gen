@@ -152,6 +152,12 @@ func (h *Handler) ReverseString(ctx context.Context, input string) (string, erro
 	return string(runes), nil
 }
 
+// The generated XllService interface always includes OnCalculationEnded and
+// OnCalculationCanceled (unless you declare them as events in xll.yaml), so the
+// Handler must implement them. Leave them as no-ops until you need calc hooks.
+func (h *Handler) OnCalculationEnded(ctx context.Context) error   { return nil }
+func (h *Handler) OnCalculationCanceled(ctx context.Context) error { return nil }
+
 func main() {
 	// Start the server with our handler
 	generated.Serve(&Handler{})
@@ -194,6 +200,6 @@ Once loaded:
 
 ## Next Steps
 
-*   Explore **Asynchronous Functions** (`async: true` in `xll.yaml`) for long-running tasks.
+*   Explore **Asynchronous Functions** (`mode: "async"` in `xll.yaml`) for long-running tasks.
 *   Use **Ranges** (`type: any` or `type: grid`) to handle array inputs.
 *   See `xll.yaml` comments for advanced configuration like `launch.command` or `events`.

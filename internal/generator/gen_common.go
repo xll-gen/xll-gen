@@ -21,10 +21,12 @@ func generateTaskfile(cfg *config.Config, dir string) error {
 		ProjectName string
 		Version     string
 		Build       config.BuildConfig
+		Package     string
 	}{
 		ProjectName: cfg.Project.Name,
 		Version:     version.Version,
 		Build:       cfg.Build,
+		Package:     cfg.GoPackage(),
 	}
 
 	return executeTemplate("Taskfile.yml.tmpl", filepath.Join(dir, "Taskfile.yml"), data, GetCommonFuncMap())

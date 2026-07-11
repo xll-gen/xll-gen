@@ -2,8 +2,7 @@
 
 ![cover](cover.png)
 
-> **WARNING: EXPERIMENTAL SOFTWARE**
-> This tool is currently in an experimental stage and is not recommended for use in production environments.
+> This tool is currently in **beta** and under active development.
 
 `xll-gen` is a command-line interface (CLI) tool designed to streamline the creation of Excel Add-ins (XLL) using an out-of-process architecture. By leveraging Shared Memory for high-performance Inter-Process Communication (IPC), it allows developers to write Excel extensions in languages like Go, bypassing the complexity and limitations of traditional C++ XLL development.
 
@@ -124,6 +123,10 @@ Open Excel and load the generated XLL file located in `build/my-quant-lib.xll`. 
 
 The `xll.yaml` file is the single source of truth for your add-in.
 
+> **Strict parsing.** Unknown or misspelled keys are rejected: `xll-gen` fails
+> with a line-numbered error (e.g. `line 12: field tImeout not found in type ...`)
+> rather than silently ignoring a typo. Fix or remove the offending key.
+
 ```yaml
 project:
   name: "my-project"
@@ -131,6 +134,9 @@ project:
 
 gen:
   go:
+    # Generated Go package name (default "generated"). Also names the output
+    # directory and import-path segment: code lands in <project>/<package>/
+    # and is imported as "<module>/<package>". Must be a valid Go identifier.
     package: "generated"
   # disable_pid_suffix: by default the SHM name is "<project>_<pid>" so a
   # second XLL instance never collides with the first. Set to true ONLY for
@@ -210,11 +216,21 @@ functions:
 
 ### Launch Configuration Variables
 
-The `server.launch` section supports the following variables in `command` and `cwd`:
+The `server.launch` section supports the following variables:
 
-*   `${BIN}`: Resolves to the full path of the server executable.
-*   `${BIN_DIR}`: Resolves to the directory containing the server executable. In `singlefile` mode, this is the temporary extraction directory.
-*   `${XLL_DIR}`: Resolves to the directory containing the `.xll` file.
+*   `${BIN}`: Resolves to the full path of the server executable. (`command` only)
+*   `${BIN_DIR}`: Resolves to the directory containing the server executable. In `singlefile` mode, this is the temporary extraction directory. (`command` and `cwd`)
+*   `${XLL_DIR}`: Resolves to the directory containing the `.xll` file. (`command` and `cwd`)
+
+Defaults: an empty/omitted `command` launches the server executable (equivalent
+to `"${BIN}"`); an empty/omitted `cwd` uses the server executable's directory
+(equivalent to `"${BIN_DIR}"`). A relative `cwd` resolves against `${BIN_DIR}`.
+The legacy top-level `server.command` is still honored, but
+`server.launch.command` wins when both are set.
+
+To pass arguments (or use a wrapper), quote the executable token yourself,
+e.g. `command: "\"${BIN}\" --my-flag"` — an unquoted multi-token command is
+wrapped whole in one quote pair and treated as a single executable path.
 
 ### Supported Types
 
@@ -224,6 +240,7 @@ The `server.launch` section supports the following variables in `command` and `c
 | `float` | 64-bit Float | `float64` | `float64` | `double` |
 | `bool` | Boolean | `bool` | `bool` | `boolean` |
 | `string` | Unicode String | `string` | `string` | `string` |
+| `date` | Excel date (serial) | `time.Time` | *(not a return type)* | `double` (serial) |
 | `any` | Any Value (Scalar/Array) | `*types.Any` | `any` | `CheckRange/Variant` |
 | `range` | Reference to a range | `*types.Range` | *(not a return type)* | `Reference` |
 | `grid` | Generic 2D Array (mixed cells) | `*types.Grid` | `[][]any` | `Array` (spills) |
@@ -231,14 +248,14 @@ The `server.launch` section supports the following variables in `command` and `c
 
 When a handler returns `grid` (`[][]any`) or `numgrid` (`[][]float64`), the value
 **spills** into the surrounding cells on Excel 2021+/365 — see *Dynamic arrays
-(spill)* below. `range` is argument-only: returning a live reference is not
-meaningful and breaks Excel registration.
+(spill)* below. `range` and `date` are argument-only: `range` can't return a
+live reference (it breaks Excel registration), and `date` has no response-path
+encoding yet. A `date` argument arrives as an Excel serial and is decoded to a
+`time.Time` in the generated server.
 
 **Optional Function Flags**:
 *   `caller: true`: Passes an additional `caller *types.Range` argument to the handler, representing the cell(s) calling the function. This is **position-only**: the wrapper calls `xlfCaller` (callable from any worksheet function) and reports the caller's range, but `caller.Format()` (the cell's number-format string) is left empty unless the function also sets `macro: true`. Caller-only functions stay **thread-safe**.
 *   `macro: true`: Registers the function as a **macro-sheet equivalent** (`#`), granting macro-level C-API access inside the C++ wrapper — in particular the caller's number-format fetch (`xlfGetCell`) that populates `caller.Format()`. The cost is that Excel rejects the `#`+`$` combination, so a `macro: true` function is **not** registered thread-safe. It does **not** make Excel's COM object model writable from Go handlers during calculation — sheet writes belong in commands. `macro: true` is incompatible with `mode: "rtd-once"` (same as `caller: true`).
-
-> **Migration (v0.5.0)**: `caller: true` no longer registers `#`; handlers reading `Range.Format()` from the caller get an empty string unless the function also sets `macro: true`. Caller-only functions are now thread-safe (`$`).
 
 > **Note**: Nullable scalar types (`int?`, `float?`, `bool?`, `string?`) are **not supported**. Use `any` to handle missing or nil values (checking for `xltypeMissing`).
 
@@ -495,6 +512,10 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
 
 ## CLI Reference
 
+> **Colored output** is enabled only when writing to an interactive terminal.
+> It auto-disables when output is piped/redirected or when the `NO_COLOR`
+> environment variable is set.
+
 ### `init <name>`
 Scaffolds a new project structure.
 *   `-f, --force`: Overwrite existing directory.
@@ -506,7 +527,12 @@ Generates C++ and Go source code based on `xll.yaml`.
 Wraps `task build` to compile the project. Requires `task` to be installed.
 
 ### `doctor`
-Checks the environment for required tools (C++ compiler, `flatc`).
+Checks the environment for required tools (C++ compiler, `flatc`). It enforces
+minimum versions — **Go ≥ 1.24** and **CMake ≥ 3.24** — and warns when Visual
+Studio is installed but `cl.exe` is not on `PATH` (run `xll-gen` from a
+*Developer Command Prompt for VS* so the compiler is on `PATH`). In a
+non-interactive shell (output piped, CI) `doctor` **suggests** the `winget`
+install command instead of prompting to run it.
 
 ## Debugging
 
@@ -514,12 +540,14 @@ Checks the environment for required tools (C++ compiler, `flatc`).
 
 **Setup**:
 1.  Install the **Go** and **C/C++** extensions for VS Code.
-2.  Use the generated `.vscode/launch.json` configuration.
+2.  Use the generated `.vscode/launch.json` configuration. Generated projects
+    git-ignore the whole `.vscode/` directory; `xll-gen init` regenerates
+    `.vscode/launch.json` (with your machine's Excel path baked in) when needed.
 
 **Steps**:
 1.  **Build** the project.
-2.  **Launch Excel**: Use the "Debug XLL" configuration to start Excel with your XLL.
-3.  **Attach Go Debugger**: Use the "Attach to Go Server" configuration to attach to the automatically spawned `my-project.exe`.
+2.  **Launch Excel**: Use the "Debug Excel (C++)" configuration to start Excel with your XLL.
+3.  **Attach Go Debugger**: Use the "Attach to Go Server" configuration to attach to the automatically spawned `my-project.exe` (a process picker opens so you can select it).
 
 ## Troubleshooting
 

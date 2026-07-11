@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/generator"
-	"gopkg.in/yaml.v3"
 )
 
 // disablePidSuffix controls whether the PID is appended to the shared memory name.
@@ -21,7 +20,7 @@ var generateCmd = &cobra.Command{
 	Short: "Generate Go and C++ code from xll.yaml",
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := runGenerate(); err != nil {
-			fmt.Printf("Error: %v\n", err)
+			printError("Generation", fmt.Sprintf("%v", err))
 			os.Exit(1)
 		}
 	},
@@ -38,20 +37,15 @@ func init() {
 // Returns:
 //   - error: An error if generation fails at any step.
 func runGenerate() error {
-	// 1. Read xll.yaml
-	data, err := os.ReadFile("xll.yaml")
+	// 1. Read + strictly parse xll.yaml (unknown/misspelled keys fail here).
+	cfg, err := config.Load("xll.yaml")
 	if err != nil {
-		return fmt.Errorf("failed to read xll.yaml: %w", err)
+		return err
 	}
 
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("failed to parse xll.yaml: %w", err)
-	}
+	config.ApplyDefaults(cfg)
 
-	config.ApplyDefaults(&cfg)
-
-	if err := config.Validate(&cfg); err != nil {
+	if err := config.Validate(cfg); err != nil {
 		return err
 	}
 
@@ -64,7 +58,7 @@ func runGenerate() error {
 		DisablePidSuffix: disablePidSuffix,
 	}
 
-	return generator.Generate(&cfg, ".", modName, opts)
+	return generator.Generate(cfg, ".", modName, opts)
 }
 
 // getModuleName extracts the Go module name from the go.mod file in the current directory.

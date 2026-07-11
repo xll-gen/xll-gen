@@ -764,8 +764,14 @@ launch_server:
     cfg.projectName = L"{{.ProjectName}}";
     cfg.isSingleFile = isSingleFile;
     cfg.logDir = logDir; // Same resolved logging.dir as the native log
-    cfg.cwd = ""; // Default CWD (relative to bindir)
-    cfg.command = "{{.Server.Command}}";
+    // server.launch.cwd — placeholders (${BIN_DIR}, ${XLL_DIR}) are expanded by
+    // ResolveServerPath (xll_launch.cpp); empty keeps the default (the server
+    // executable's directory, i.e. ${BIN_DIR}).
+    cfg.cwd = "{{escapeCppString .Server.Launch.Cwd}}";
+    // server.launch.command wins over the legacy top-level server.command;
+    // placeholders (${BIN}, ${BIN_DIR}, ${XLL_DIR}) are expanded by
+    // ResolveServerPath. Empty launches the server executable (${BIN}).
+    cfg.command = "{{if .Server.Launch.Command}}{{escapeCppString .Server.Launch.Command}}{{else}}{{escapeCppString .Server.Command}}{{end}}";
     cfg.shmName = shmName;
     {{if eq .Build.Singlefile "xll"}}cfg.tempDir = StringToWString(tempPattern);{{end}}
 
@@ -1659,7 +1665,17 @@ extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
 }
 {{end}}
 {{end}}
-{{define "returnConversion"}}{{.Indent}}{{if eq .Ret "string"}}
+{{define "returnConversion"}}{{if ne .Ret "numgrid"}}{{.Indent}}// Surface a handler error to the cell as text (mirrors the async path in
+{{.Indent}}// xll_async.cpp). The Go server writes Response.error when the handler
+{{.Indent}}// returns a non-nil error; without this the errored response falls through
+{{.Indent}}// to resp->result() and the cell shows the shared #VALUE! sentinel with the
+{{.Indent}}// message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
+{{.Indent}}// it is excluded and keeps its empty-grid error result.
+{{.Indent}}if (resp->error() && resp->error()->size() > 0) {
+{{.Indent}}    std::wstring werr = StringToWString(resp->error()->str());
+{{.Indent}}    return NewExcelString(werr.c_str());
+{{.Indent}}}
+{{end}}{{.Indent}}{{if eq .Ret "string"}}
 {{.Indent}}std::wstring wres = StringToWString(resp->result()->str());
 {{.Indent}}return NewExcelString(wres.c_str());
 {{.Indent}}{{else if eq .Ret "int"}}

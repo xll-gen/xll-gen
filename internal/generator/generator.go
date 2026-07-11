@@ -48,7 +48,10 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	}
 	baseDir = absBaseDir
 
-	genDir := filepath.Join(baseDir, "generated")
+	// gen.go.package names BOTH the generated Go package and its directory /
+	// import-path segment (default "generated"; validated in config.Validate).
+	goPkg := cfg.GoPackage()
+	genDir := filepath.Join(baseDir, goPkg)
 	cppDir := filepath.Join(genDir, "cpp")
 	if err := os.MkdirAll(cppDir, 0755); err != nil {
 		return err
@@ -103,7 +106,7 @@ func Generate(cfg *config.Config, baseDir string, modName string, opts Options) 
 	}
 	ui.PrintSuccess("Generated", "schema.fbs")
 
-	goModulePath := modName + "/generated"
+	goModulePath := modName + "/" + goPkg
 
 	var flatcPath string
 	if opts.FlatcPath != "" {

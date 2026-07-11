@@ -5,7 +5,7 @@
             "name": "Debug Excel (C++)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+            "program": "{{ .ExcelPath }}",
             "args": [
                 "${workspaceFolder}/build/{{ .ProjectName }}.xll"
             ],
@@ -19,7 +19,7 @@
             "type": "go",
             "request": "attach",
             "mode": "local",
-            "processId": 0
+            "processId": "${command:pickProcess}"
         }
     ],
     "compounds": [

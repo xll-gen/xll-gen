@@ -521,6 +521,64 @@ func TestValidate_ProjectName(t *testing.T) {
 	}
 }
 
+// TestValidate_GenGoPackage covers batch-3 item 2: gen.go.package names both
+// the generated Go package and its output directory / import-path segment, so
+// it must be a valid, importable Go identifier.
+func TestValidate_GenGoPackage(t *testing.T) {
+	tests := []struct {
+		name      string
+		pkg       string
+		wantError string
+	}{
+		{name: "empty (defaulted later)", pkg: "", wantError: ""},
+		{name: "default", pkg: "generated", wantError: ""},
+		{name: "custom", pkg: "xllapi", wantError: ""},
+		{name: "underscore+digits", pkg: "gen_v2", wantError: ""},
+		{name: "leading digit", pkg: "2gen", wantError: "must not start with a digit"},
+		{name: "hyphen", pkg: "my-pkg", wantError: "must match [A-Za-z0-9_]+"},
+		{name: "path separator", pkg: "a/b", wantError: "must match [A-Za-z0-9_]+"},
+		{name: "go keyword", pkg: "func", wantError: "Go reserved word"},
+		{name: "main not importable", pkg: "main", wantError: "cannot be imported"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "TestProj"},
+				Gen:       GenConfig{Go: GoConfig{Package: tt.pkg}},
+				Functions: []Function{},
+			}
+			err := Validate(cfg)
+			if tt.wantError != "" {
+				if err == nil {
+					t.Fatalf("Validate() expected error containing %q, got nil", tt.wantError)
+				}
+				if !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("Validate() error = %v, want substring %q", err, tt.wantError)
+				}
+			} else if err != nil {
+				t.Fatalf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestApplyDefaults_GenGoPackage pins the default and the GoPackage accessor.
+func TestApplyDefaults_GenGoPackage(t *testing.T) {
+	cfg := &Config{Project: ProjectConfig{Name: "TestProj"}}
+	if got := cfg.GoPackage(); got != "generated" {
+		t.Fatalf("GoPackage() before defaults = %q, want \"generated\"", got)
+	}
+	ApplyDefaults(cfg)
+	if cfg.Gen.Go.Package != "generated" {
+		t.Fatalf("ApplyDefaults left Gen.Go.Package = %q, want \"generated\"", cfg.Gen.Go.Package)
+	}
+	cfg.Gen.Go.Package = "xllapi"
+	if got := cfg.GoPackage(); got != "xllapi" {
+		t.Fatalf("GoPackage() = %q, want \"xllapi\"", got)
+	}
+}
+
 func TestClassifyRibbonImage(t *testing.T) {
 	cases := []struct {
 		value   string
