@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/xll-gen/xll-gen/internal/flatc"
+	"github.com/xll-gen/xll-gen/internal/platform"
 )
 
 // Minimum tool versions xll-gen requires. Reported as a FAIL by `doctor` when a
@@ -34,6 +35,7 @@ var doctorCmd = &cobra.Command{
 		checkGo()
 		checkCMake()
 		checkTask()
+		checkExcelSecurityAddins()
 
 		fmt.Println("")
 	},
@@ -45,6 +47,26 @@ func init() {
 
 func checkSystem() {
 	printSuccess("System", fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH))
+}
+
+// checkExcelSecurityAddins scans the registered Excel COM add-ins for
+// DLP / document-classification suites. These hook Workbook events — often
+// WorkbookBeforeClose with a modal classification prompt — which is exactly
+// the surface the ribbon temp-workbook bounce touches during xlAutoOpen, and
+// the combination can crash or hang Excel at startup. Advisory only (WARN),
+// never a gate: the detection is substring-based and the conflict only
+// applies to ribbon projects with the default bounce.
+func checkExcelSecurityAddins() {
+	if runtime.GOOS != "windows" {
+		return // registry scan is meaningless on non-Windows dev hosts
+	}
+	detected := platform.DetectExcelSecurityAddins()
+	if len(detected) == 0 {
+		printSuccess("Excel add-ins", "No known DLP/classification add-ins detected")
+		return
+	}
+	printWarning("Excel add-ins", fmt.Sprintf("DLP/classification add-in(s) detected: %s", strings.Join(detected, "; ")))
+	printWarning("Recommendation", "These add-ins hook workbook close with modal prompts and can crash Excel during XLL load. If your project uses a ribbon, set `ribbon.bounce: keep-open` (or `off`) in xll.yaml. See README \"Deploying alongside DLP/classification add-ins\".")
 }
 
 // checkCompiler verifies if a suitable C++ compiler (MSVC or MinGW) is available in the system PATH.

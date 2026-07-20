@@ -788,9 +788,9 @@ hazard) and only matters in the rare case the bounce itself fails (e.g. C API
 unavailable). Graceful degradation throughout: a failed bounce logs a warning and
 leaves functions/commands fully operational.
 
-**`ribbon.bounce` modes (DLP/Titus interop, 2026-07-20).** The bounce's workbook
+**`ribbon.bounce` modes (DLP interop, 2026-07-20).** The bounce's workbook
 create/close fires third-party `Workbook` event hooks at a hostile time: DLP /
-document-classification COM add-ins (e.g. Titus) hook `WorkbookBeforeClose` with a
+document-classification COM add-ins hook `WorkbookBeforeClose` with a
 modal classification prompt, and closing an unclassified scratch book mid-`xlAutoOpen`
 — before Excel's UI (and the add-in itself) finished initializing — can crash or hang
 Excel at startup. `ribbon.bounce` in `xll.yaml` therefore selects one of three
@@ -798,7 +798,22 @@ template-gated shapes (`RibbonConfig.BounceMode()` maps unset → `full`; templa
 call `BounceMode`, never raw `.Bounce`, because generator tests construct configs
 directly and skip default application):
 
-- **`full`** (default) — the historical create + connect + close-by-identity sequence.
+- **`full`** (default) — the historical create + connect + close-by-identity sequence,
+  hardened (2026-07-20): the close is wrapped in `ScratchCloseEventSuppressor`, which
+  sets `Application.EnableEvents=false` + `DisplayAlerts=false` before `xlcFileClose`
+  and restores the ORIGINAL captured values afterwards. The restore is load-bearing —
+  leaving `EnableEvents=false` would silence every add-in's Workbook events for the
+  session — so it does NOT rely on the dtor alone: the suppression state lives in a
+  file-static pending record (AddRef'd Application + captured originals + armed flags)
+  and the restore is the idempotent `RestorePendingEventSuppression()`, called from the
+  dtor (normal path) AND from `xlAutoOpen` right after the connect attempt's
+  `XLL_SAFE_BLOCK` — the belt-and-braces replay for the §20.3 SEH residual (an async
+  fault inside `xlcFileClose` unwinds via `__except` WITHOUT running C++ dtors on
+  /EHsc; xll-cpp-reviewer HIGH, 2026-07-20). Restores only what was actually flipped
+  (armed flags, property-by-property so partial construction is covered), never a
+  blind `=true`; a failed restore put is logged, not swallowed. Pinned by
+  `TestRibbonBounceFullSuppressesEventsAroundClose`; compiled by
+  `cmd/cpp_compile_gate_bounce_test.go` (full is the only mode that renders it).
 - **`keep-open`** — create the scratch workbook, connect, and **never close it** (no
   `xlcFileClose` is even emitted; the close-by-identity machinery
   `GetActiveWorkbookName`/`xlfGetDocument` is not rendered, and `xlcWorkbookInsert` is

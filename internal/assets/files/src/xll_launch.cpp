@@ -319,10 +319,30 @@ namespace xll {
             CloseHandle(hLog);
             return true;
         } else {
-            std::wstring msg = L"Failed to launch Go server.\nCommand: " + cmd;
+            // Capture the error code FIRST — any intervening Win32 call (even
+            // inside logging) can clobber GetLastError.
+            DWORD err = GetLastError();
+            std::wstring msg = L"Failed to launch Go server (GetLastError=" + std::to_wstring(err) + L").\nCommand: " + cmd;
+            // Endpoint-security breadcrumb (IMPROVEMENT_BACKLOG §3 xll-gen,
+            // 2026-07-20): in locked-down environments the launch is commonly
+            // blocked by policy rather than broken by a bad path — Defender ASR
+            // "Block Office applications from creating child processes" and
+            // DLP/EDR agents surface as ERROR_ACCESS_DENIED (5), and AV
+            // quarantine/blocklist verdicts as ERROR_VIRUS_INFECTED (225) /
+            // ERROR_VIRUS_DELETED (226). Say so explicitly: the generic message
+            // sends users chasing a non-existent path/build problem when the
+            // fix is an allowlist request to their security team.
+            if (err == ERROR_ACCESS_DENIED || err == ERROR_VIRUS_INFECTED || err == ERROR_VIRUS_DELETED) {
+                msg += L"\n\nThis is likely an endpoint security policy blocking Excel from starting the server process "
+                       L"(e.g. Defender ASR 'Block Office child processes', DLP/EDR agent, or AV quarantine). "
+                       L"Ask your administrator to allowlist the XLL directory and the server executable.";
+            }
             LogError(WideToUtf8(msg));
             MessageBoxW(NULL, msg.c_str(), L"Launch Error", MB_OK | MB_ICONERROR);
-            if (outInfo.hJob) CloseHandle(outInfo.hJob);
+            // NULL the field after closing (consistency with the ResumeThread
+            // failure branch): callers must not inherit a dangling job handle
+            // in outInfo on a false return.
+            if (outInfo.hJob) { CloseHandle(outInfo.hJob); outInfo.hJob = NULL; }
             CloseHandle(hLog);
             return false;
         }

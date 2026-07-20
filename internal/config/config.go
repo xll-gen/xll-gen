@@ -418,7 +418,7 @@ type RibbonConfig struct {
 	//   "full" (default) — create a scratch workbook, connect, close it
 	//                      (close-by-identity; Excel-DNA's mechanism).
 	//   "keep-open"      — create the scratch workbook but NEVER close it.
-	//                      For DLP/classification add-ins (e.g. Titus) that hook
+	//                      For DLP/classification add-ins that hook
 	//                      WorkbookBeforeClose with a modal classification prompt:
 	//                      closing an unclassified scratch book mid-xlAutoOpen can
 	//                      crash or hang Excel. Cost: a blank Book1 stays open.

@@ -16,10 +16,10 @@ func bounceCfg(mode string) *config.Config {
 	return cfg
 }
 
-// TestRibbonBounceKeepOpen pins ribbon.bounce: keep-open — the DLP/Titus
+// TestRibbonBounceKeepOpen pins ribbon.bounce: keep-open — the DLP
 // mitigation mode. The scratch workbook is created (xlcNew) so the EXCEL7
 // window materializes and the COMAddIns connect can run at xlAutoOpen, but it
-// is NEVER closed: DLP/classification add-ins (e.g. Titus) hook
+// is NEVER closed: DLP/classification add-ins hook
 // WorkbookBeforeClose with a modal classification prompt, and closing an
 // unclassified scratch book mid-xlAutoOpen can crash or hang Excel. With no
 // close there is no data-loss hazard either, so the close-by-identity
@@ -91,6 +91,70 @@ func TestRibbonBounceOff(t *testing.T) {
 	} {
 		if strings.Contains(src, gone) {
 			t.Errorf("xll_main.cpp (bounce off) must not contain %q (the bounce is disabled)", gone)
+		}
+	}
+}
+
+// TestRibbonBounceFullSuppressesEventsAroundClose pins the full-mode (default)
+// DLP hardening: the scratch-book close is wrapped in an RAII guard that
+// sets Application.EnableEvents=false and .DisplayAlerts=false before
+// xlcFileClose and restores the ORIGINAL captured values on destruction —
+// so third-party WorkbookBeforeClose hooks (modal classification
+// prompts) cannot fire mid-xlAutoOpen. keep-open and off have no close, so
+// the guard must not be emitted there at all.
+func TestRibbonBounceFullSuppressesEventsAroundClose(t *testing.T) {
+	t.Parallel()
+	src := renderCppMain(t, bounceCfg("full"))
+
+	for _, want := range []string{
+		// The RAII guard type exists and is instantiated before the close.
+		"struct ScratchCloseEventSuppressor",
+		"ScratchCloseEventSuppressor suppressEvents(pApp);",
+		// It flips BOTH properties via the dispatch helpers (state lives in
+		// the file-static pending record, not the object — §20.3 SEH path)...
+		`xll::com::GetProperty(p.app, L"EnableEvents", &p.oldEnableEvents)`,
+		`xll::com::GetProperty(p.app, L"DisplayAlerts", &p.oldDisplayAlerts)`,
+		// ...the record holds an AddRef'd app so it outlives the frame on the
+		// dtor-skipped SEH path...
+		"static PendingEventSuppression g_pendingSuppression;",
+		"p.app->AddRef();",
+		// ...and the idempotent restore replays the captured originals (not a
+		// blind =true), gated on the armed flags, LOGGING a failed put.
+		`if (p.armedEvents) {`,
+		`xll::com::Invoke(p.app, L"EnableEvents", DISPATCH_PROPERTYPUT, { p.oldEnableEvents }, nullptr);`,
+		`xll::com::Invoke(p.app, L"DisplayAlerts", DISPATCH_PROPERTYPUT, { p.oldDisplayAlerts }, nullptr);`,
+		"failed to restore Application.EnableEvents",
+		// The dtor routes through the same idempotent restore.
+		"~ScratchCloseEventSuppressor() { RestorePendingEventSuppression(); }",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("xll_main.cpp (bounce full) missing %q", want)
+		}
+	}
+
+	// The guard instantiation must precede the close call site in the render
+	// (RAII scope covers the close).
+	guardIdx := strings.Index(src, "ScratchCloseEventSuppressor suppressEvents(pApp);")
+	closeIdx := strings.Index(src, "xll::CallExcel(xlcFileClose, nullptr, false)")
+	if guardIdx < 0 || closeIdx < 0 || guardIdx > closeIdx {
+		t.Errorf("event-suppressor guard must be instantiated before xlcFileClose (guard@%d, close@%d)", guardIdx, closeIdx)
+	}
+
+	// §20.3 belt-and-braces: xlAutoOpen must call the idempotent restore AFTER
+	// the SAFE_BLOCK wrapping the connect attempt, so a dtor-skipping SEH
+	// unwind from inside the bounce still gets EnableEvents/DisplayAlerts
+	// restored. The call must come after the xlAutoOpen connect attempt.
+	connectIdx := strings.Index(src, `TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`)
+	restoreIdx := strings.LastIndex(src, "RestorePendingEventSuppression();")
+	if connectIdx < 0 || restoreIdx < 0 || restoreIdx < connectIdx {
+		t.Errorf("xlAutoOpen must invoke RestorePendingEventSuppression() after the connect attempt (connect@%d, restore@%d)", connectIdx, restoreIdx)
+	}
+
+	// keep-open / off have no close -> the guard must not be rendered.
+	for _, mode := range []string{"keep-open", "off"} {
+		modeSrc := renderCppMain(t, bounceCfg(mode))
+		if strings.Contains(modeSrc, "ScratchCloseEventSuppressor") {
+			t.Errorf("xll_main.cpp (bounce %s) must not emit ScratchCloseEventSuppressor (no close in this mode)", mode)
 		}
 	}
 }

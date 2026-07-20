@@ -345,8 +345,8 @@ static IDispatch* GetExcelApplication() {
 //
 // ribbon.bounce (xll.yaml) governs this helper: "full" (default) is the
 // create-connect-close sequence described above; "keep-open" creates the
-// scratch workbook but never closes it (DLP/classification add-ins such as
-// Titus hook WorkbookBeforeClose with a modal prompt — closing an unclassified
+// scratch workbook but never closes it (DLP/classification add-ins hook
+// WorkbookBeforeClose with a modal prompt — closing an unclassified
 // scratch book mid-xlAutoOpen can crash or hang Excel); "off" never bounces
 // (the COMAddIns connect waits for the calc-end fallback).
 {{if eq .Ribbon.BounceMode "full"}}
@@ -364,6 +364,103 @@ static std::wstring GetActiveWorkbookName() {
     if ((xName.get()->xltype & xltypeStr) == 0 || !xName.get()->val.str) return std::wstring();
     return PascalToWString(xName.get()->val.str);
 }
+
+// Suppresses Application.EnableEvents / .DisplayAlerts for the scratch-book
+// close and restores the ORIGINAL captured values afterwards.
+//
+// WHY: DLP/document-classification add-ins hook
+// WorkbookBeforeClose with a modal classification prompt; firing that
+// mid-xlAutoOpen — before Excel's UI (and the add-in itself) has finished
+// initializing — can crash or hang Excel (IMPROVEMENT_BACKLOG §2 xll-gen,
+// 2026-07-20). EnableEvents=false stops the Application event sink entirely
+// (covers third-party COM add-in sinks); DisplayAlerts=false additionally
+// suppresses Excel-native prompts. ribbon.bounce: keep-open removes the close
+// altogether; this guard hardens the DEFAULT (full) mode.
+//
+// RESTORE PATHS (§20.3 caveat — xll-cpp-reviewer 2026-07-20). The RAII dtor
+// covers normal exit and C++ unwind, but an ASYNC SEH FAULT inside
+// xlcFileClose (the very scenario this guard defends against) unwinds via
+// XLL_SAFE_BLOCK's __except WITHOUT running intervening C++ dtors on /EHsc.
+// Leaving EnableEvents=false would silence every add-in's Workbook events for
+// the rest of the session, so the suppression state does NOT live in the
+// object: it lives in the file-static g_pendingSuppression record (AddRef'd
+// app + captured originals + armed flags), and the restore is the idempotent
+// free function RestorePendingEventSuppression(). The dtor calls it (normal
+// path), and xlAutoOpen calls it again right AFTER the SAFE_BLOCK that wraps
+// the connect attempt — the belt-and-braces replay for the dtor-skipped SEH
+// path (a no-op when the dtor already ran). This also covers partial
+// construction: the record arms property-by-property, so a fault between the
+// two puts still leaves the first one replayable.
+//
+// Best-effort by design: if a property cannot be read (unexpected VT) or the
+// put fails, the corresponding armed flag stays false, nothing is restored
+// for it, and the close proceeds exactly as it did before this guard existed.
+// VT_BOOL VARIANTs own no resources, but VariantClear is load-bearing hygiene:
+// a hostile IDispatch may have returned a non-BOOL (VT_DISPATCH/VT_BSTR) that
+// failed the VT_BOOL arm check yet still owns resources.
+struct PendingEventSuppression {
+    IDispatch* app = nullptr; // AddRef'd while a suppression is pending
+    VARIANT oldEnableEvents;
+    VARIANT oldDisplayAlerts;
+    bool armedEvents = false;
+    bool armedAlerts = false;
+};
+static PendingEventSuppression g_pendingSuppression; // STA-only access (bounce + xlAutoOpen)
+
+// Idempotent: replays the captured originals for whatever is still armed,
+// LOGS (not swallows) a failed restore put, releases the AddRef'd app, and
+// clears the record. Restores ONLY what was actually flipped (armed flags),
+// with the original captured values — never a blind =true, which would
+// clobber a user/automation host that had them off on purpose.
+static void RestorePendingEventSuppression() {
+    PendingEventSuppression& p = g_pendingSuppression;
+    if (p.app) {
+        if (p.armedEvents) {
+            HRESULT hr = xll::com::Invoke(p.app, L"EnableEvents", DISPATCH_PROPERTYPUT, { p.oldEnableEvents }, nullptr);
+            if (FAILED(hr)) SAFE_LOG_WARN("Ribbon bounce: failed to restore Application.EnableEvents after the scratch-book close (hr=" + std::to_string(hr) + "); Workbook events may stay suppressed for this session.");
+        }
+        if (p.armedAlerts) {
+            HRESULT hr = xll::com::Invoke(p.app, L"DisplayAlerts", DISPATCH_PROPERTYPUT, { p.oldDisplayAlerts }, nullptr);
+            if (FAILED(hr)) SAFE_LOG_WARN("Ribbon bounce: failed to restore Application.DisplayAlerts after the scratch-book close (hr=" + std::to_string(hr) + ").");
+        }
+        p.app->Release();
+        p.app = nullptr;
+    }
+    p.armedEvents = false;
+    p.armedAlerts = false;
+    VariantClear(&p.oldEnableEvents);
+    VariantClear(&p.oldDisplayAlerts);
+}
+
+struct ScratchCloseEventSuppressor {
+    explicit ScratchCloseEventSuppressor(IDispatch* a) {
+        PendingEventSuppression& p = g_pendingSuppression;
+        VariantInit(&p.oldEnableEvents);
+        VariantInit(&p.oldDisplayAlerts);
+        p.armedEvents = false;
+        p.armedAlerts = false;
+        if (!a) return; // no Application object -> nothing to suppress
+        p.app = a;
+        p.app->AddRef(); // the record outlives this frame on the SEH path
+        VARIANT vFalse; VariantInit(&vFalse);
+        vFalse.vt = VT_BOOL;
+        vFalse.boolVal = VARIANT_FALSE;
+        if (SUCCEEDED(xll::com::GetProperty(p.app, L"EnableEvents", &p.oldEnableEvents)) && p.oldEnableEvents.vt == VT_BOOL) {
+            p.armedEvents = SUCCEEDED(xll::com::Invoke(p.app, L"EnableEvents", DISPATCH_PROPERTYPUT, { vFalse }, nullptr));
+        }
+        if (SUCCEEDED(xll::com::GetProperty(p.app, L"DisplayAlerts", &p.oldDisplayAlerts)) && p.oldDisplayAlerts.vt == VT_BOOL) {
+            p.armedAlerts = SUCCEEDED(xll::com::Invoke(p.app, L"DisplayAlerts", DISPATCH_PROPERTYPUT, { vFalse }, nullptr));
+        }
+        if (!p.armedEvents && !p.armedAlerts) {
+            // Nothing flipped: clear the record now so the belt-and-braces
+            // replay has nothing to do (and the AddRef does not linger).
+            RestorePendingEventSuppression();
+        }
+    }
+    ~ScratchCloseEventSuppressor() { RestorePendingEventSuppression(); }
+    ScratchCloseEventSuppressor(const ScratchCloseEventSuppressor&) = delete;
+    ScratchCloseEventSuppressor& operator=(const ScratchCloseEventSuppressor&) = delete;
+};
 {{end}}
 
 static IDispatch* GetExcelApplicationOrBounce() {
@@ -373,7 +470,7 @@ static IDispatch* GetExcelApplicationOrBounce() {
     // ribbon.bounce: off — NEVER create a scratch workbook. Explicit opt-out
     // for environments where the bounce's workbook create/close fires
     // third-party Workbook event hooks at a hostile time (DLP/classification
-    // add-ins such as Titus can crash or hang Excel mid-xlAutoOpen). The
+    // add-ins can crash or hang Excel mid-xlAutoOpen). The
     // COMAddIns connect is deferred to the calc-end fallback — i.e. the ribbon
     // tab appears once the user opens (or creates) the first workbook.
     SAFE_LOG_INFO("Ribbon: temp-workbook bounce disabled (ribbon.bounce: off); connect deferred to the calc-end fallback.");
@@ -400,8 +497,8 @@ static IDispatch* GetExcelApplicationOrBounce() {
 
     {{if eq .Ribbon.BounceMode "keep-open"}}
     // ribbon.bounce: keep-open — the scratch workbook is deliberately NEVER
-    // closed (no xlcFileClose on this path). DLP/classification add-ins (e.g.
-    // Titus) hook WorkbookBeforeClose with a modal classification prompt;
+    // closed (no xlcFileClose on this path). DLP/classification add-ins
+    // hook WorkbookBeforeClose with a modal classification prompt;
     // closing an unclassified scratch book mid-xlAutoOpen — before Excel's UI
     // (and the add-in itself) has finished initializing — can crash or hang
     // Excel. A blank scratch workbook staying open is the explicit, accepted
@@ -435,6 +532,12 @@ static IDispatch* GetExcelApplicationOrBounce() {
         } else {
             // Identity confirmed: close the scratch book WITHOUT saving.
             // xlcFileClose(false) = close, discard changes.
+            // Suppress Application events + alerts across the close so
+            // third-party WorkbookBeforeClose hooks (DLP/classification
+            // add-ins, modal classification prompts) cannot fire mid-xlAutoOpen;
+            // the RAII destructor restores the original values at scope end,
+            // immediately after the close returns.
+            ScratchCloseEventSuppressor suppressEvents(pApp);
             int rcClose = xll::CallExcel(xlcFileClose, nullptr, false);
             if (rcClose != xlretSuccess) {
                 SAFE_LOG_WARN("Ribbon: temp-workbook bounce could not close the scratch workbook (xlcFileClose rc=" + std::to_string(rcClose) + ").");
@@ -1033,6 +1136,16 @@ start_worker:
         // fallback for the rare case the bounce itself fails.
         TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);
     XLL_SAFE_BLOCK_END_CONTINUE
+    {{if eq .Ribbon.BounceMode "full"}}
+    // §20.3 belt-and-braces: if the bounce's xlcFileClose faulted, the SEH
+    // unwind of the SAFE_BLOCK above SKIPPED the ScratchCloseEventSuppressor
+    // dtor (/EHsc does not run C++ dtors on async SEH unwind) — replay the
+    // captured EnableEvents/DisplayAlerts originals now. Idempotent: a no-op
+    // when the dtor already ran on the normal path.
+    XLL_SAFE_BLOCK_BEGIN
+        RestorePendingEventSuppression();
+    XLL_SAFE_BLOCK_END_CONTINUE
+    {{end}}
     {{end}}
 
     {{if and .Rtd.Enabled .Rtd.ThrottleInterval}}

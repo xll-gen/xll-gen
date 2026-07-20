@@ -480,10 +480,12 @@ ribbon:                        # optional; the two modes below are MUTUALLY EXCL
                                #   full (default) — create a scratch workbook,
                                #     connect, close it (close-by-identity)
                                #   keep-open — create but NEVER close it; use when
-                               #     a DLP/classification add-in (e.g. Titus) hooks
+                               #     a DLP/classification add-in hooks
                                #     workbook close with a modal prompt and crashes/
                                #     hangs Excel during add-in load (a blank Book1
-                               #     stays open, like classic empty-start Excel)
+                               #     stays open, like classic empty-start Excel;
+                               #     COM automation hosts that assume an empty
+                               #     Workbooks collection must account for it)
                                #   off — never bounce; the ribbon tab appears when
                                #     the first workbook is opened
 ```
@@ -577,6 +579,50 @@ Both log files always live in the **same** directory, resolved from `logging.dir
 Where that directory is:
 *   **Standalone Mode**: `logging.dir` (default `${BIN_DIR}` = the XLL/exe directory).
 *   **Singlefile Mode**: `${BIN_DIR}` resolves to the extraction directory `<temp_dir>\<ProjectName>\` (e.g., `%TEMP%\<ProjectName>\`), so by default both logs sit next to the extracted server executable. Set `logging.dir` explicitly (e.g., `${XLL_DIR}` or an absolute path) to move both logs elsewhere.
+
+### Deploying alongside DLP/classification add-ins
+
+Corporate DLP / document-classification products install their own Excel COM add-ins that hook
+workbook events — most importantly `WorkbookBeforeClose`, often with a **modal classification
+prompt**. Two interactions with `xll-gen` add-ins are known:
+
+**Symptom 1 — Excel crashes or hangs at startup while the XLL loads (ribbon projects).**
+At `xlAutoOpen` a ribbon project may perform a temp-workbook "bounce" (create + close a scratch
+workbook) to reach the Application object when Excel starts with no document open. Closing that
+unclassified scratch book fires the DLP add-in's close hook at a moment when neither Excel's UI
+nor the DLP add-in has finished initializing — which can crash or hang Excel.
+
+Diagnosis:
+1.  Run `xll-gen doctor` — it warns when a known DLP/classification add-in is registered.
+2.  Event Viewer → Windows Logs → Application → Excel Event ID 1000: check the *faulting module*.
+3.  `<Project>_native.log`: the last line shows how far `xlAutoOpen` got.
+4.  Confirm by starting Excel by double-clicking any workbook file (a workbook exists → no bounce
+    happens). If the crash disappears, it's the bounce.
+
+Fix — set the bounce mode in `xll.yaml` (see [Commands & Ribbon](#commands--ribbon)):
+
+```yaml
+ribbon:
+  bounce: keep-open   # create the scratch workbook but never close it
+                      # (no close -> the DLP close hook never fires; a blank
+                      # Book1 stays open, like classic empty-start Excel)
+  # bounce: off       # last resort: never bounce; the ribbon tab appears
+                      # when the first workbook is opened
+```
+
+The default (`bounce: full`) also disables `Application.EnableEvents`/`DisplayAlerts` around the
+scratch-book close (restored immediately after), which suppresses most third-party close hooks —
+`keep-open` is for environments where even that is not enough.
+
+Note: with `keep-open`, automation hosts that start Excel with `Visible=false` and assume
+`Workbooks.Count == 0` / a particular `ActiveWorkbook` should account for the leftover blank
+scratch workbook.
+
+**Symptom 2 — the XLL loads but the Go server never starts (endpoint policy).**
+Defender ASR's "Block Office applications from creating child processes" rule and some DLP/EDR
+agents block Excel from spawning the server executable. The launch error dialog/log shows
+`GetLastError=5` (access denied) or `225/226` (AV verdict) with a policy hint. Ask your
+administrator to allowlist the XLL directory and the server executable.
 
 ## License
 
