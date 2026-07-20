@@ -788,6 +788,30 @@ hazard) and only matters in the rare case the bounce itself fails (e.g. C API
 unavailable). Graceful degradation throughout: a failed bounce logs a warning and
 leaves functions/commands fully operational.
 
+**`ribbon.bounce` modes (DLP/Titus interop, 2026-07-20).** The bounce's workbook
+create/close fires third-party `Workbook` event hooks at a hostile time: DLP /
+document-classification COM add-ins (e.g. Titus) hook `WorkbookBeforeClose` with a
+modal classification prompt, and closing an unclassified scratch book mid-`xlAutoOpen`
+— before Excel's UI (and the add-in itself) finished initializing — can crash or hang
+Excel at startup. `ribbon.bounce` in `xll.yaml` therefore selects one of three
+template-gated shapes (`RibbonConfig.BounceMode()` maps unset → `full`; templates must
+call `BounceMode`, never raw `.Bounce`, because generator tests construct configs
+directly and skip default application):
+
+- **`full`** (default) — the historical create + connect + close-by-identity sequence.
+- **`keep-open`** — create the scratch workbook, connect, and **never close it** (no
+  `xlcFileClose` is even emitted; the close-by-identity machinery
+  `GetActiveWorkbookName`/`xlfGetDocument` is not rendered, and `xlcWorkbookInsert` is
+  skipped so the leftover book is a plain 1-sheet Book1). This removes the
+  highest-risk hook point (`WorkbookBeforeClose`) while keeping the ribbon connected
+  at startup. Cost: a blank Book1 stays open (classic empty-start Excel behavior).
+- **`off`** — never bounce (no `xlcNew` at all); the COMAddIns connect defers to the
+  calc-end fallback, so the ribbon tab appears when the first workbook opens. The
+  escape hatch when even scratch-workbook *creation* (`NewWorkbook` hooks) is hostile.
+
+Pinned by `gen_ribbon_bounce_test.go` (keep-open/off shapes, unset≡full) and
+`config_test.go` (value validation).
+
 ## 21. C++ Name Mangling & Export Rules
 
 All functions intended to be called by Excel (entry points like `xlAutoOpen` and all user-defined XLL functions) must be exported with **C linkage** to prevent C++ name mangling.

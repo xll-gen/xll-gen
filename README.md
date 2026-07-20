@@ -474,6 +474,18 @@ ribbon:                        # optional; the two modes below are MUTUALLY EXCL
   # -- mode 2: raw XML escape hatch (full customUI control) --
   # xml: "ribbon.xml"          # path relative to xll.yaml; every onAction="X"
                                # must match a commands[].name (checked at build time)
+
+  # bounce: full               # temp-workbook bounce at startup when Excel opens
+                               # with NO workbook (needed to connect the ribbon):
+                               #   full (default) — create a scratch workbook,
+                               #     connect, close it (close-by-identity)
+                               #   keep-open — create but NEVER close it; use when
+                               #     a DLP/classification add-in (e.g. Titus) hooks
+                               #     workbook close with a modal prompt and crashes/
+                               #     hangs Excel during add-in load (a blank Book1
+                               #     stays open, like classic empty-start Excel)
+                               #   off — never bounce; the ribbon tab appears when
+                               #     the first workbook is opened
 ```
 
 Your service implements one method per command, following the event-handler shape (`ctx` first, `error` return):

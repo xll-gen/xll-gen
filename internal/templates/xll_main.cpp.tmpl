@@ -342,6 +342,14 @@ static IDispatch* GetExcelApplication() {
 // xlAutoOpen qualifies. Do NOT call this from worksheet-function or RTD
 // contexts. Graceful degradation: if the bounce fails (C API unavailable,
 // command rejected), log a warning and return nullptr — never crash.
+//
+// ribbon.bounce (xll.yaml) governs this helper: "full" (default) is the
+// create-connect-close sequence described above; "keep-open" creates the
+// scratch workbook but never closes it (DLP/classification add-ins such as
+// Titus hook WorkbookBeforeClose with a modal prompt — closing an unclassified
+// scratch book mid-xlAutoOpen can crash or hang Excel); "off" never bounces
+// (the COMAddIns connect waits for the calc-end fallback).
+{{if eq .Ribbon.BounceMode "full"}}
 // Returns the name of the currently ACTIVE workbook via the XLM macro function
 // GET.DOCUMENT(88) (xlfGetDocument, selector 88 = "name of the active document/
 // workbook", e.g. L"Book1"), or an empty string if it cannot be determined.
@@ -356,12 +364,22 @@ static std::wstring GetActiveWorkbookName() {
     if ((xName.get()->xltype & xltypeStr) == 0 || !xName.get()->val.str) return std::wstring();
     return PascalToWString(xName.get()->val.str);
 }
+{{end}}
 
 static IDispatch* GetExcelApplicationOrBounce() {
     IDispatch* pApp = GetExcelApplication();
     if (pApp) return pApp; // workbook already exists -> no bounce needed
-
-    // No EXCEL7 window yet. Create a temp workbook so one exists, then close it.
+    {{if eq .Ribbon.BounceMode "off"}}
+    // ribbon.bounce: off — NEVER create a scratch workbook. Explicit opt-out
+    // for environments where the bounce's workbook create/close fires
+    // third-party Workbook event hooks at a hostile time (DLP/classification
+    // add-ins such as Titus can crash or hang Excel mid-xlAutoOpen). The
+    // COMAddIns connect is deferred to the calc-end fallback — i.e. the ribbon
+    // tab appears once the user opens (or creates) the first workbook.
+    SAFE_LOG_INFO("Ribbon: temp-workbook bounce disabled (ribbon.bounce: off); connect deferred to the calc-end fallback.");
+    return nullptr;
+    {{else}}
+    // No EXCEL7 window yet. Create a temp workbook so one exists{{if eq .Ribbon.BounceMode "keep-open"}} — and, per ribbon.bounce: keep-open, LEAVE it open{{else}}, then close it{{end}}.
     //   xlcNew(5)            -> new workbook
     //   xlcWorkbookInsert(6) -> insert a worksheet so it is a real workbook
     // (verified opcode names in types/include/types/xlcall.h).
@@ -370,10 +388,29 @@ static IDispatch* GetExcelApplicationOrBounce() {
         SAFE_LOG_WARN("Ribbon: temp-workbook bounce failed (xlcNew rc=" + std::to_string(rcNew) + "); connect deferred to calc-end fallback.");
         return nullptr;
     }
+    {{if eq .Ribbon.BounceMode "keep-open"}}
+    // (No xlcWorkbookInsert here: it is best-effort anyway — xlcNew(5) already
+    // yields a workbook with a sheet — and in keep-open mode the scratch book
+    // STAYS OPEN for the user, so it should look like a plain 1-sheet Book1.)
+    {{else}}
     // xlcWorkbookInsert is best-effort; xlcNew(5) already yields a workbook with
     // a sheet. Don't fail the bounce if the insert is rejected.
     xll::CallExcel(xlcWorkbookInsert, nullptr, 6);
+    {{end}}
 
+    {{if eq .Ribbon.BounceMode "keep-open"}}
+    // ribbon.bounce: keep-open — the scratch workbook is deliberately NEVER
+    // closed (no xlcFileClose on this path). DLP/classification add-ins (e.g.
+    // Titus) hook WorkbookBeforeClose with a modal classification prompt;
+    // closing an unclassified scratch book mid-xlAutoOpen — before Excel's UI
+    // (and the add-in itself) has finished initializing — can crash or hang
+    // Excel. A blank scratch workbook staying open is the explicit, accepted
+    // cost (it matches classic empty-start Excel behavior), and with no close
+    // there is no data-loss hazard, so the close-by-identity machinery is not
+    // emitted in this mode at all.
+    pApp = GetExcelApplication();
+    SAFE_LOG_INFO("Ribbon: temp-workbook bounce left the scratch workbook open (ribbon.bounce: keep-open).");
+    {{else}}
     // The scratch book is ACTIVE right after creation: capture its name now so we
     // can close it by IDENTITY later. xlcFileClose(false) closes whatever is
     // active and DISCARDS unsaved changes; if a real user document became active
@@ -404,11 +441,13 @@ static IDispatch* GetExcelApplicationOrBounce() {
             }
         }
     }
+    {{end}}
 
     if (!pApp) {
         SAFE_LOG_WARN("Ribbon: temp-workbook bounce did not yield an Application object; connect deferred to calc-end fallback.");
     }
     return pApp;
+    {{end}}
 }
 {{end}}
 

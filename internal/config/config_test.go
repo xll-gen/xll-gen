@@ -396,6 +396,28 @@ func TestCommandValidation(t *testing.T) {
 				}}
 			},
 		},
+		{
+			name: "invalid ribbon bounce mode",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", Bounce: "sometimes"}
+			},
+			wantErr: "ribbon.bounce",
+		},
+		{
+			name: "valid ribbon bounce keep-open",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", Bounce: "keep-open"}
+			},
+		},
+		{
+			name: "valid ribbon bounce off",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", Bounce: "off"}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -413,6 +413,29 @@ type RibbonConfig struct {
 	ProgID string `yaml:"prog_id"`
 	// Clsid is the helper's class ID (derived from ProgID if empty).
 	Clsid string `yaml:"clsid"`
+	// Bounce controls the temp-workbook bounce at xlAutoOpen (used to reach the
+	// Application object when Excel starts with no workbook open):
+	//   "full" (default) — create a scratch workbook, connect, close it
+	//                      (close-by-identity; Excel-DNA's mechanism).
+	//   "keep-open"      — create the scratch workbook but NEVER close it.
+	//                      For DLP/classification add-ins (e.g. Titus) that hook
+	//                      WorkbookBeforeClose with a modal classification prompt:
+	//                      closing an unclassified scratch book mid-xlAutoOpen can
+	//                      crash or hang Excel. Cost: a blank Book1 stays open.
+	//   "off"            — never bounce; the COMAddIns connect waits for the
+	//                      calc-end fallback (first workbook the user opens).
+	Bounce string `yaml:"bounce"`
+}
+
+// BounceMode returns the effective ribbon.bounce mode, mapping the empty
+// (unset) value to the "full" default. Templates call this (not .Bounce) so
+// configs built directly in tests — which skip default application — still
+// render the default behavior.
+func (r RibbonConfig) BounceMode() string {
+	if r.Bounce == "" {
+		return "full"
+	}
+	return r.Bounce
 }
 
 // Enabled reports whether a ribbon UI was declared in either mode.
@@ -982,6 +1005,11 @@ func validateRibbon(config *Config, cmdNames map[string]bool) error {
 	if config.Ribbon.Enabled() {
 		if len(config.Commands) == 0 {
 			return fmt.Errorf("ribbon requires at least one entry in 'commands'")
+		}
+		switch config.Ribbon.Bounce {
+		case "", "full", "keep-open", "off":
+		default:
+			return fmt.Errorf("ribbon.bounce: invalid value '%s' (allowed: full, keep-open, off)", config.Ribbon.Bounce)
 		}
 		if config.Ribbon.XML != "" && (config.Ribbon.Tab != "" || len(config.Ribbon.Groups) > 0) {
 			return fmt.Errorf("ribbon: 'xml' and 'tab'/'groups' are mutually exclusive")
