@@ -165,7 +165,7 @@ server:
     enabled: true    # Automatically start the Go server when XLL loads
     # command: "${BIN}" # Optional: Defaults to the server executable
     # cwd: "${BIN_DIR}" # Optional: Defaults to the directory containing the executable
-  # chunk: (optional, v0.3.5+) — tune the runtime ChunkManager.
+  # chunk: (optional) — tune the runtime ChunkManager.
   #   Omit the block to keep defaults: 256 MiB cap, 30s sweep, 60s idle TTL.
   # chunk:
   #   max_buffer_bytes: 134217728   # 128 MiB cap on per-transfer reassembly
@@ -209,7 +209,7 @@ functions:
       - name: "ticker"
         type: "string"
     return: "float"
-    mode: "async"    # Asynchronous mode ('async: true' is deprecated)
+    mode: "async"    # Asynchronous mode
     help_topic: "https://example.com/help/GetPrice" # Optional: Help topic URL
     caller: true     # Optional: Passes the calling cell range as an argument
 ```
@@ -544,8 +544,8 @@ Wraps `task build` to compile the project. Requires `task` to be installed.
 Checks the environment for required tools (C++ compiler, `flatc`). It enforces
 minimum versions — **Go ≥ 1.24** and **CMake ≥ 3.24** — and warns when Visual
 Studio is installed but `cl.exe` is not on `PATH` (run `xll-gen` from a
-*Developer Command Prompt for VS* so the compiler is on `PATH`). In a
-non-interactive shell (output piped, CI) `doctor` **suggests** the `winget`
+*Developer Command Prompt for VS* so the compiler is on `PATH`). When stdin is
+not an interactive terminal (input piped, CI) `doctor` **suggests** the `winget`
 install command instead of prompting to run it.
 
 ## Debugging
