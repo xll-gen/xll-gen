@@ -13,6 +13,7 @@
 #include <sstream>
 #include <map>
 #include <fstream>
+#include <cwchar> // std::swprintf for FormatDoubleRoundTrip
 #include "xll_log.h"
 #include "xll_path.h"
 #include "types/mem.h"
@@ -80,6 +81,20 @@
 #pragma warning(disable: 4100)
 
 using namespace xll;
+
+// FormatDoubleRoundTrip renders a double as a round-trippable decimal string for
+// use as an RTD topic component (and, for rtd-once, the once-key). std::to_wstring
+// (double) formats with %f — 6 fractional digits — which TRUNCATES precision: two
+// distinct arguments (e.g. 1e-7 and 2e-7, both "0.000000") collapse to ONE topic
+// string, merging their topics and colliding their memo/once-key entries. %.17g is
+// the shortest format guaranteed to round-trip an IEEE-754 double, and Go's
+// strconv.ParseFloat parses its output (including exponent notation) unchanged, so
+// no Go-side change is required.
+[[maybe_unused]] static std::wstring FormatDoubleRoundTrip(double v) {
+    wchar_t buf[32];
+    std::swprintf(buf, sizeof(buf) / sizeof(buf[0]), L"%.17g", v);
+    return std::wstring(buf);
+}
 
 
 // Global CLSID
@@ -3991,7 +4006,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
     std::wstring t3;
     {
         
-        t3 = std::to_wstring(f);
+        // %.17g round-trip (NOT std::to_wstring's 6-digit %f): the topic string is
+        // the ONLY channel for a scalar value, so truncation merges distinct
+        // arguments onto one topic. Go parses %.17g via strconv.ParseFloat.
+        t3 = FormatDoubleRoundTrip(f);
         
     }
     
@@ -4345,7 +4363,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceScalar(int32_t i, doub
     
     {
         
-        t2 = std::to_wstring(f);
+        // %.17g round-trip (NOT std::to_wstring's 6-digit %f): the topic string
+        // also feeds the once-key (MakeRtdOnceKey), so a 6-digit truncation would
+        // collide distinct inputs onto one memo entry. Go parses %.17g fine.
+        t2 = FormatDoubleRoundTrip(f);
         
     }
     
