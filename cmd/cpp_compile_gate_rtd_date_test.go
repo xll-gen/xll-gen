@@ -16,8 +16,9 @@ import (
 // xll::ContentHashToken('a', <double>) / declares refPayload — but
 // ContentHashToken takes an XLOPER12*, so the generated wrapper FAILED TO
 // COMPILE for any rtd(-once) function with a date arg. The fix stringifies the
-// date serial as a plain scalar topic (std::to_wstring), co-changed with the Go
-// dispatch (server.SerialToTime(ParseFloat(...))).
+// date serial as a plain scalar topic (via the %.17g round-trip helper
+// xll_main's FormatDoubleRoundTrip), co-changed with the Go dispatch
+// (server.SerialToTime(ParseFloat(...))).
 const cppRtdDateGateYaml = `project:
   name: "cpp_rtd_date_gate"
   version: "0.1.0"

@@ -13,6 +13,7 @@
 #include <sstream>
 #include <map>
 #include <fstream>
+#include <cwchar> // std::swprintf for FormatDoubleRoundTrip
 #include "xll_log.h"
 #include "xll_path.h"
 #include "types/mem.h"
@@ -99,6 +100,20 @@
 #pragma warning(disable: 4100)
 
 using namespace xll;
+
+// FormatDoubleRoundTrip renders a double as a round-trippable decimal string for
+// use as an RTD topic component (and, for rtd-once, the once-key). std::to_wstring
+// (double) formats with %f — 6 fractional digits — which TRUNCATES precision: two
+// distinct arguments (e.g. 1e-7 and 2e-7, both "0.000000") collapse to ONE topic
+// string, merging their topics and colliding their memo/once-key entries. %.17g is
+// the shortest format guaranteed to round-trip an IEEE-754 double, and Go's
+// strconv.ParseFloat parses its output (including exponent notation) unchanged, so
+// no Go-side change is required.
+[[maybe_unused]] static std::wstring FormatDoubleRoundTrip(double v) {
+    wchar_t buf[32];
+    std::swprintf(buf, sizeof(buf) / sizeof(buf[0]), L"%.17g", v);
+    return std::wstring(buf);
+}
 
 {{if .Rtd.Enabled}}
 // Global CLSID
@@ -762,7 +777,7 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 
     {{if eq .Build.Singlefile "xll"}}
     isSingleFile = true;
-    tempPattern = "{{.Build.TempDir}}";
+    tempPattern = "{{escapeCppString .Build.TempDir}}";
     {{end}}
 
     std::wstring binDir = GetXllDir();
@@ -770,14 +785,14 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     // Singlefile: ${BIN_DIR} is the extraction directory <temp_dir>\<project>
     // (where ExtractEmbeddedExe unpacks the Go server), so the default
     // logging.dir of ${BIN_DIR} keeps the exe and BOTH logs in one place.
-    binDir = ExpandEnvVarsW(L"{{.Build.TempDir}}");
+    binDir = ExpandEnvVarsW(L"{{escapeCppString .Build.TempDir}}");
     while (!binDir.empty() && (binDir.back() == L'\\' || binDir.back() == L'/')) binDir.pop_back();
     binDir += L"\\{{.ProjectName}}";
     {{end}}
 
     // Resolve logging.dir into ONE directory shared by both log files:
     // <dir>\<proj>_native.log (this XLL) and <dir>\<proj>_go.log (server stdout).
-    std::wstring logDir = L"{{.Logging.Dir}}";
+    std::wstring logDir = L"{{escapeCppString .Logging.Dir}}";
     if (logDir == L"XLL_DIR") {
         logDir = GetXllDir();
     } else if (logDir == L"TEMP_DIR") {
@@ -1276,7 +1291,10 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{if eq .Type "int"}}
         t{{add $j 1}} = std::to_wstring({{.Name}});
         {{else if eq .Type "float"}}
-        t{{add $j 1}} = std::to_wstring({{.Name}});
+        // %.17g round-trip (NOT std::to_wstring's 6-digit %f): the topic string is
+        // the ONLY channel for a scalar value, so truncation merges distinct
+        // arguments onto one topic. Go parses %.17g via strconv.ParseFloat.
+        t{{add $j 1}} = FormatDoubleRoundTrip({{.Name}});
         {{else if eq .Type "bool"}}
         t{{add $j 1}} = {{.Name}} ? L"TRUE" : L"FALSE";
         {{else if eq .Type "string"}}
@@ -1285,9 +1303,11 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         }
         {{else if eq .Type "date"}}
         // date rides the double path (ArgCppType "double", passed by value): the
-        // Excel serial IS the topic-identity, so stringify it as a plain scalar.
-        // The Go dispatch parses it back via server.SerialToTime(ParseFloat(...)).
-        t{{add $j 1}} = std::to_wstring({{.Name}});
+        // Excel serial IS the topic-identity, so stringify it as a plain scalar
+        // with %.17g round-trip precision (std::to_wstring's %f would truncate the
+        // fractional time-of-day). The Go dispatch parses it back via
+        // server.SerialToTime(ParseFloat(...)).
+        t{{add $j 1}} = FormatDoubleRoundTrip({{.Name}});
         {{else}}
         // Composite arg (grid/numgrid/range/any): content-hash payload path
         // (AGENTS.md §19.3). The topic carries only the content-hash token; the
@@ -1398,7 +1418,10 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{if eq .Type "int"}}
         t{{add $j 1}} = std::to_wstring({{.Name}});
         {{else if eq .Type "float"}}
-        t{{add $j 1}} = std::to_wstring({{.Name}});
+        // %.17g round-trip (NOT std::to_wstring's 6-digit %f): the topic string
+        // also feeds the once-key (MakeRtdOnceKey), so a 6-digit truncation would
+        // collide distinct inputs onto one memo entry. Go parses %.17g fine.
+        t{{add $j 1}} = FormatDoubleRoundTrip({{.Name}});
         {{else if eq .Type "bool"}}
         t{{add $j 1}} = {{.Name}} ? L"TRUE" : L"FALSE";
         {{else if eq .Type "string"}}
@@ -1407,10 +1430,10 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         }
         {{else if eq .Type "date"}}
         // date rides the double path (ArgCppType "double", by value): stringify
-        // the serial as a plain scalar. It flows into the once-key exactly like
-        // any other scalar; the Go dispatch parses it back via
-        // server.SerialToTime(ParseFloat(...)).
-        t{{add $j 1}} = std::to_wstring({{.Name}});
+        // the serial as a plain scalar with %.17g round-trip precision (%f would
+        // truncate). It flows into the once-key exactly like any other scalar; the
+        // Go dispatch parses it back via server.SerialToTime(ParseFloat(...)).
+        t{{add $j 1}} = FormatDoubleRoundTrip({{.Name}});
         {{else}}
         // Composite arg (grid/numgrid/range/any): content-hash payload path.
         // The token is content-addressed, so it flows into the once-key below

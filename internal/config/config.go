@@ -660,6 +660,26 @@ func validateBuild(config *Config) error {
 			return fmt.Errorf("invalid singlefile mode: %s (allowed: xll)", config.Build.Singlefile)
 		}
 	}
+	// build.temp_dir is emitted verbatim into generated C++ string literals
+	// (xll_main.cpp) and drives filesystem paths; a control character (e.g. an
+	// embedded NUL from pasted/adversarial YAML) would corrupt the literal or the
+	// path. escapeCppString neutralizes it in the literal, but reject it here too
+	// so the value never reaches the filesystem or the launcher.
+	if err := rejectControlChars("build.temp_dir", config.Build.TempDir); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rejectControlChars fails validation if s contains an ASCII control character
+// (U+0000–U+001F). These fields flow into generated C++ wide-string literals
+// and filesystem paths; a control char would corrupt or truncate them.
+func rejectControlChars(field, s string) error {
+	for i, r := range s {
+		if r < 0x20 {
+			return fmt.Errorf("%s contains an illegal control character (U+%04X) at byte offset %d", field, r, i)
+		}
+	}
 	return nil
 }
 
@@ -791,6 +811,12 @@ func validateLogging(config *Config) error {
 		default:
 			return fmt.Errorf("invalid logging level: %s (allowed: debug, info, warn, error)", config.Logging.Level)
 		}
+	}
+	// logging.dir is emitted verbatim into generated Go and C++ string literals
+	// (server.go InitLog, xll_main.cpp logDir); a control character would corrupt
+	// the literal or the resolved log path. Reject it before it reaches codegen.
+	if err := rejectControlChars("logging.dir", config.Logging.Dir); err != nil {
+		return err
 	}
 	return nil
 }

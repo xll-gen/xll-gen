@@ -64,9 +64,11 @@ func TestGen_RtdDateArgDispatch(t *testing.T) {
 
 // TestGenCpp_RtdDateArgTopic pins Defect C (C++ side): an rtd / rtd-once date
 // arg (ArgCppType "double", passed by value) must be serialized into its RTD
-// topic string as a plain scalar (std::to_wstring), NOT routed through the
-// composite content-hash path (ContentHashToken), which takes an XLOPER12* and
-// does not compile for a double.
+// topic string as a plain scalar, NOT routed through the composite content-hash
+// path (ContentHashToken), which takes an XLOPER12* and does not compile for a
+// double. The scalar serialization must use the %.17g round-trip helper
+// (FormatDoubleRoundTrip), NOT std::to_wstring — %f truncation would collide
+// distinct serials (incl. the time-of-day fraction) onto one topic/once-key.
 func TestGenCpp_RtdDateArgTopic(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"rtd", "rtd-once"} {
@@ -85,9 +87,14 @@ func TestGenCpp_RtdDateArgTopic(t *testing.T) {
 				Server: config.ServerConfig{Timeout: "2s", Launch: &config.LaunchConfig{Enabled: new(bool)}},
 			}
 			content := renderCppMain(t, cfg)
-			// The date arg must be stringified as a scalar serial.
-			if !strings.Contains(content, "std::to_wstring(asof)") {
-				t.Errorf("%s: date topic must be std::to_wstring(asof):\n%s", mode, content)
+			// The date arg must be stringified as a scalar serial with round-trip
+			// precision.
+			if !strings.Contains(content, "FormatDoubleRoundTrip(asof)") {
+				t.Errorf("%s: date topic must be FormatDoubleRoundTrip(asof):\n%s", mode, content)
+			}
+			// The lossy %f path (std::to_wstring on a double) must be gone.
+			if strings.Contains(content, "std::to_wstring(asof)") {
+				t.Errorf("%s: date topic must not use lossy std::to_wstring:\n%s", mode, content)
 			}
 			// It must NOT fall into the composite content-hash branch.
 			if strings.Contains(content, "ContentHashToken('a', asof)") {

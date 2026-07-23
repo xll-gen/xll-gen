@@ -127,7 +127,7 @@ func Serve(handler XllService) {
             fmt.Printf("Failed to initialize stdout logger: %v\n", err)
         }
     } else {
-        if _, err := server.InitLog("{{.Logging.Dir}}", "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
+        if _, err := server.InitLog({{printf "%q" .Logging.Dir}}, "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
             fmt.Printf("Failed to initialize logger: %v\n", err)
         }
     }
