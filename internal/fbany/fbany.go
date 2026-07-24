@@ -231,6 +231,16 @@ func ValidateGridDims[T any](v [][]T) (rows, cols int, err error) {
 	if cols == 0 {
 		return 0, 0, fmt.Errorf("grid row 0 has no columns")
 	}
+	// Reject a rows*cols product that overflows int32. Excel/C++ (and the
+	// protocol.Grid/NumGrid data vector) carry the total cell count as an
+	// int32, so a product > MaxInt32 would wrap when serialized. This mirrors
+	// types' validateDims (go/protocol/extensions.go), keeping the Go-value
+	// build path symmetric with the wire-view validation. Checked before the
+	// rectangularity scan so an oversized declared geometry is rejected without
+	// walking a giant grid.
+	if uint64(rows)*uint64(cols) > math.MaxInt32 {
+		return 0, 0, fmt.Errorf("grid dimensions %dx%d exceed maximum supported cell count (int32): %d > %d", rows, cols, uint64(rows)*uint64(cols), math.MaxInt32)
+	}
 	for i, row := range v {
 		if len(row) != cols {
 			return 0, 0, fmt.Errorf("grid is not rectangular: row %d has %d columns, want %d", i, len(row), cols)

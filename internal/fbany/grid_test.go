@@ -1,6 +1,7 @@
 package fbany
 
 import (
+	"strings"
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -171,6 +172,26 @@ func TestBuildGrid_Errors(t *testing.T) {
 		_, err := BuildNumGrid(flatbuffers.NewBuilder(64), [][]float64{{1, 2, 3}, {4, 5}})
 		if err == nil {
 			t.Fatal("jagged numgrid must error")
+		}
+	})
+	// rows*cols overflowing int32 must be rejected (symmetry with types'
+	// validateDims). Only the declared geometry needs to be oversized: rows =
+	// len(v) rows (mostly nil, cheap) and cols = len(v[0]); the product is
+	// checked before the rectangularity scan, so we never allocate the full
+	// ~2.1e9-cell grid. 46341^2 = 2147488281 > math.MaxInt32 (2147483647).
+	t.Run("grid rows*cols overflow", func(t *testing.T) {
+		const n = 46341
+		v := make([][]any, n)
+		v[0] = make([]any, n)
+		_, _, err := ValidateGridDims(v)
+		if err == nil {
+			t.Fatal("rows*cols > MaxInt32 must error")
+		}
+		// Assert the OVERFLOW branch fired (not the rectangularity scan that
+		// follows it). Without the overflow guard the rows[1:] nil rows would
+		// trip "not rectangular" instead — this pins the guard, not jaggedness.
+		if !strings.Contains(err.Error(), "exceed maximum supported cell count") {
+			t.Fatalf("expected overflow error, got: %v", err)
 		}
 	})
 }
