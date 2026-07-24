@@ -418,11 +418,166 @@ func TestCommandValidation(t *testing.T) {
 				c.Ribbon = RibbonConfig{Tab: "Tools", Bounce: "off"}
 			},
 		},
+		{
+			name: "ribbon prog_id with whitespace rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", ProgID: "My Ribbon"}
+			},
+			wantErr: "ribbon.prog_id",
+		},
+		{
+			name: "ribbon prog_id with quote rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", ProgID: `My"Ribbon`}
+			},
+			wantErr: "ribbon.prog_id",
+		},
+		{
+			name: "ribbon prog_id over 39 chars rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", ProgID: strings.Repeat("a", 40)}
+			},
+			wantErr: "39 characters",
+		},
+		{
+			name: "ribbon clsid malformed rejected",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", Clsid: "not-a-guid"}
+			},
+			wantErr: "ribbon.clsid",
+		},
+		{
+			name: "ribbon prog_id with hyphen accepted (default shape)",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", ProgID: "my-proj.Ribbon"}
+			},
+		},
+		{
+			name: "ribbon clsid well-formed accepted",
+			mutate: func(c *Config) {
+				c.Commands = []Command{{Name: "A"}}
+				c.Ribbon = RibbonConfig{Tab: "Tools", Clsid: "{11111111-2222-3333-4444-555555555555}"}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := baseCmdCfg()
 			tt.mutate(cfg)
+			err := Validate(cfg)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected success, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestRtdIdentifierValidation pins the prog_id charset/length rule and the
+// clsid GUID-format rule for the RTD server config.
+func TestRtdIdentifierValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		rtd     RtdConfig
+		wantErr string // "" = expect success
+	}{
+		{
+			name: "valid prog_id with dot",
+			rtd:  RtdConfig{Enabled: true, ProgID: "MyProj.RTD"},
+		},
+		{
+			name: "valid prog_id with hyphen (default shape)",
+			rtd:  RtdConfig{Enabled: true, ProgID: "my-proj.RTD"},
+		},
+		{
+			name:    "prog_id with whitespace rejected",
+			rtd:     RtdConfig{Enabled: true, ProgID: "My RTD"},
+			wantErr: "rtd.prog_id",
+		},
+		{
+			name:    "prog_id with backslash rejected",
+			rtd:     RtdConfig{Enabled: true, ProgID: `My\RTD`},
+			wantErr: "rtd.prog_id",
+		},
+		{
+			name:    "prog_id with quote rejected",
+			rtd:     RtdConfig{Enabled: true, ProgID: `My"RTD`},
+			wantErr: "rtd.prog_id",
+		},
+		{
+			name:    "prog_id over 39 chars rejected",
+			rtd:     RtdConfig{Enabled: true, ProgID: strings.Repeat("a", 40)},
+			wantErr: "39 characters",
+		},
+		{
+			name:    "clsid malformed rejected",
+			rtd:     RtdConfig{Enabled: true, ProgID: "MyProj.RTD", Clsid: "1234"},
+			wantErr: "rtd.clsid",
+		},
+		{
+			name:    "clsid without braces rejected",
+			rtd:     RtdConfig{Enabled: true, ProgID: "MyProj.RTD", Clsid: "11111111-2222-3333-4444-555555555555"},
+			wantErr: "rtd.clsid",
+		},
+		{
+			name: "clsid well-formed accepted",
+			rtd:  RtdConfig{Enabled: true, ProgID: "MyProj.RTD", Clsid: "{11111111-2222-3333-4444-555555555555}"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Project:   ProjectConfig{Name: "demo"},
+				Functions: []Function{{Name: "MyFunc", Return: "float"}},
+				Rtd:       tt.rtd,
+			}
+			err := Validate(cfg)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected success, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestFunctionShortcutValidation pins that a function shortcut, like a command
+// shortcut, must be a single ASCII letter.
+func TestFunctionShortcutValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut string
+		wantErr  string
+	}{
+		{name: "single letter accepted", shortcut: "A"},
+		{name: "empty accepted (no shortcut)", shortcut: ""},
+		{name: "multi-char rejected", shortcut: "Ctrl+Shift+A", wantErr: "shortcut"},
+		{name: "two letters rejected", shortcut: "AB", wantErr: "shortcut"},
+		{name: "non-ascii rejected", shortcut: "é", wantErr: "shortcut"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Project: ProjectConfig{Name: "demo"},
+				Functions: []Function{
+					{Name: "MyFunc", Return: "int", Shortcut: tt.shortcut,
+						Args: []Arg{{Name: "a", Type: "int"}}},
+				},
+			}
 			err := Validate(cfg)
 			if tt.wantErr == "" {
 				if err != nil {

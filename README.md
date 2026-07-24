@@ -201,7 +201,6 @@ functions:
         description: "Second number"
     return: "int"
     category: "Math"
-    shortcut: "Ctrl+Shift+A"
 
   - name: "GetPrice"
     description: "Fetches price for a ticker"

@@ -4,11 +4,19 @@ import (
 	"fmt"
 	"math"
 	"path"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
+
+// clsidPattern matches a registry-form GUID: braces around 8-4-4-4-12 hex
+// digits. The generated default (uuid.NewSHA1 wrapped in braces) always
+// matches; validateClsid uses it to reject a hand-written malformed CLSID
+// before it reaches StringToGuid / CLSIDFromString in the generated C++.
+var clsidPattern = regexp.MustCompile(`^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$`)
 
 // Config represents the top-level structure of the xll.yaml file.
 // It maps directly to the YAML configuration provided by the user.
@@ -899,6 +907,18 @@ func validateFunctionModes(config *Config) error {
 		if fn.Macro && strings.EqualFold(fn.Mode, "rtd-once") {
 			return fmt.Errorf("function '%s': macro:true (macro-sheet registration) is not supported with mode:\"rtd-once\" (the handler runs on a topic connect, not in the calling cell's calc, so the macro-level C-API is unreachable)", fn.Name)
 		}
+		// Function.Shortcut is registered like Command.Shortcut (Excel binds it
+		// as Ctrl+Shift+<letter>), so it must be a single ASCII letter — the
+		// xlfRegister shortcut table is ASCII. (Note: for a worksheet function,
+		// macroType=1, Excel ignores the shortcut; it is honored for commands.
+		// We still validate the shape so a malformed value never reaches the
+		// generated registration string.)
+		if fn.Shortcut != "" {
+			r := []rune(fn.Shortcut)
+			if len(r) != 1 || !((r[0] >= 'a' && r[0] <= 'z') || (r[0] >= 'A' && r[0] <= 'Z')) {
+				return fmt.Errorf("function '%s': shortcut must be a single letter (Excel binds it as Ctrl+Shift+<letter>), got %q", fn.Name, fn.Shortcut)
+			}
+		}
 		if fn.Timeout != "" {
 			// The RTD modes have no per-call timeout: the wrapper routes through
 			// xlfRtd and the handler runs off the calc thread on a topic connect,
@@ -938,6 +958,19 @@ func validateServerTimeouts(config *Config) error {
 func validateRtd(config *Config) error {
 	if config.Rtd.Enabled && config.Rtd.ProgID == "" {
 		return fmt.Errorf("rtd.prog_id is required when rtd.enabled is true")
+	}
+	// prog_id / clsid are emitted into generated C++ wide-string literals and
+	// used for COM registration. Validate whenever present (ApplyDefaults may
+	// have derived the clsid; a direct Validate call may run without it).
+	if config.Rtd.ProgID != "" {
+		if err := validateProgID("rtd.prog_id", config.Rtd.ProgID); err != nil {
+			return err
+		}
+	}
+	if config.Rtd.Clsid != "" {
+		if err := validateClsid("rtd.clsid", config.Rtd.Clsid); err != nil {
+			return err
+		}
 	}
 	if config.Rtd.ThrottleInterval != "" {
 		if !config.Rtd.Enabled {
@@ -1032,6 +1065,19 @@ func validateRibbon(config *Config, cmdNames map[string]bool) error {
 		if len(config.Commands) == 0 {
 			return fmt.Errorf("ribbon requires at least one entry in 'commands'")
 		}
+		// prog_id / clsid identify the ribbon COM add-in and are emitted into
+		// generated C++ literals + used for COM registration (same discipline
+		// as rtd). ApplyDefaults derives both from the project name when unset.
+		if config.Ribbon.ProgID != "" {
+			if err := validateProgID("ribbon.prog_id", config.Ribbon.ProgID); err != nil {
+				return err
+			}
+		}
+		if config.Ribbon.Clsid != "" {
+			if err := validateClsid("ribbon.clsid", config.Ribbon.Clsid); err != nil {
+				return err
+			}
+		}
 		switch config.Ribbon.Bounce {
 		case "", "full", "keep-open", "off":
 		default:
@@ -1074,6 +1120,42 @@ func validateRibbon(config *Config, cmdNames map[string]bool) error {
 // re-parsing durations here.
 func parseDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
+}
+
+// validateProgID checks a COM ProgID (the RTD server's or the ribbon add-in's).
+// The charset rule is deliberately LENIENT: a strict COM charset (alphanumeric
+// + '.') would reject the hyphen-bearing values xll-gen itself generates — the
+// ribbon ProgID defaults to "<project>.Ribbon" and project names may contain
+// hyphens (validateProjectName allows them). It rejects only what would break
+// the emitted C++ wide-string literal or COM registration: control characters,
+// quotes, backslash, and whitespace. It also enforces the COM 39-character
+// ProgID limit (CLSIDFromProgID rejects longer strings), so an over-long ProgID
+// fails at generate time instead of silently at Excel load.
+func validateProgID(field, s string) error {
+	for i, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s contains an illegal control character (U+%04X) at byte offset %d", field, r, i)
+		}
+		if r == '"' || r == '\'' || r == '\\' || unicode.IsSpace(r) {
+			return fmt.Errorf("%s contains an illegal character %q at byte offset %d (a ProgID may not contain quotes, backslashes, or whitespace)", field, r, i)
+		}
+	}
+	if n := len([]rune(s)); n > 39 {
+		return fmt.Errorf("%s is %d characters; a COM ProgID must be 39 characters or fewer (CLSIDFromProgID rejects longer strings)", field, n)
+	}
+	return nil
+}
+
+// validateClsid checks that a CLSID string is a well-formed registry GUID
+// ("{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"). An empty value is the caller's
+// signal to auto-derive one (ApplyDefaults), so callers skip empty; a non-empty
+// but malformed value would otherwise reach StringToGuid / CLSIDFromString in
+// the generated C++ and fail (or silently misregister) at Excel load.
+func validateClsid(field, s string) error {
+	if !clsidPattern.MatchString(s) {
+		return fmt.Errorf("%s must be a GUID of the form {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} (8-4-4-4-12 hex digits in braces), got %q", field, s)
+	}
+	return nil
 }
 
 func validateProjectName(name string) error {

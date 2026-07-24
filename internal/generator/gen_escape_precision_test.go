@@ -135,6 +135,49 @@ func TestGenCpp_RtdFloatTopicRoundTrip(t *testing.T) {
 	}
 }
 
+// TestGenCpp_RtdProgIDDescriptionEscaping is the regression for rtd.prog_id /
+// rtd.description being emitted verbatim into C++ wide-string literals. A
+// description carrying a quote or backslash (free text — validation only
+// rejects control chars/quotes/backslash/whitespace in the prog_id, NOT the
+// description) would terminate or corrupt the literal. Both the ProgID and the
+// FriendlyName (description) globals — and the two xlfRtd wrapper wProgID
+// literals — must route through escapeCppString. Self-policy: all free text is
+// escaped (gen_cpp_test.go convention).
+func TestGenCpp_RtdProgIDDescriptionEscaping(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Rtd: config.RtdConfig{
+			Enabled:     true,
+			ProgID:      "TestProj.RTD",
+			Description: `He said "hi"\go`,
+			Clsid:       "{11111111-2222-3333-4444-555555555555}",
+		},
+		Functions: []config.Function{
+			{Name: "Tick", Mode: "rtd", Return: "float",
+				Args: []config.Arg{{Name: "s", Type: "string"}}},
+		},
+		Server: config.ServerConfig{Timeout: "2s", Launch: &config.LaunchConfig{Enabled: new(bool)}},
+	}
+	content := renderCppMain(t, cfg)
+
+	// The description's interior quotes and backslash must be escaped so the
+	// emitted literal stays well-formed.
+	want := `const wchar_t* g_szFriendlyName = L"He said \"hi\"\\go";`
+	if !strings.Contains(content, want) {
+		t.Errorf("expected escaped FriendlyName literal %q, not found in:\n%s", want, content)
+	}
+	// The raw (corrupting) form must be gone.
+	if strings.Contains(content, `L"He said "hi"\go"`) {
+		t.Errorf("found unescaped (corrupting) description literal")
+	}
+	// ProgID globals + wrapper wProgID all route through escapeCppString; for a
+	// clean ProgID the bytes are unchanged, so assert it is present intact.
+	if !strings.Contains(content, `L"TestProj.RTD"`) {
+		t.Errorf("expected ProgID literal L\"TestProj.RTD\" in:\n%s", content)
+	}
+}
+
 // TestConfig_RejectsControlCharsInDirs pins the validation guard: a control
 // character (e.g. an embedded NUL) in logging.dir or build.temp_dir is rejected
 // at config time, before it can reach a generated C++ literal or the filesystem.

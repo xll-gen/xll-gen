@@ -128,8 +128,8 @@ const CLSID& GetRtdClsid() {
     return clsid;
 }
 
-const wchar_t* g_szProgID = L"{{.Rtd.ProgID}}";
-const wchar_t* g_szFriendlyName = L"{{.Rtd.Description}}";
+const wchar_t* g_szProgID = L"{{escapeCppString .Rtd.ProgID}}";
+const wchar_t* g_szFriendlyName = L"{{escapeCppString .Rtd.Description}}";
 
 // Cookie for In-Proc RTD Registration
 DWORD g_rtdCookie = 0;
@@ -144,7 +144,7 @@ const CLSID& GetRibbonClsid() {
     }();
     return clsid;
 }
-const wchar_t* g_szRibbonProgID = L"{{.Ribbon.ProgID}}";
+const wchar_t* g_szRibbonProgID = L"{{escapeCppString .Ribbon.ProgID}}";
 // Cookie for In-Proc Ribbon Add-in Registration
 DWORD g_ribbonCookie = 0;
 {{end}}
@@ -1362,7 +1362,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     {{end}}
 
     // Call Excel RTD(ProgID, Server, Topic1, Topic2...)
-    static std::wstring wProgID = L"{{$.Rtd.ProgID}}";
+    static std::wstring wProgID = L"{{escapeCppString $.Rtd.ProgID}}";
     
     int xlRet = xll::CallExcel(xlfRtd, &xRes, 
         wProgID.c_str(), 
@@ -1536,7 +1536,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     {{end}}{{end}}
     {
         static thread_local XLOPER12 xRes;
-        static std::wstring wProgID = L"{{$.Rtd.ProgID}}";
+        static std::wstring wProgID = L"{{escapeCppString $.Rtd.ProgID}}";
 
         int xlRet = xll::CallExcel(xlfRtd, &xRes,
             wProgID.c_str(),
