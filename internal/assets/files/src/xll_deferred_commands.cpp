@@ -7,7 +7,9 @@
 #include "xll_log.h"
 #include "types/ScopedXLOPER12.h"
 #include "types/protocol_generated.h"
+#include <atomic>
 #include <flatbuffers/flatbuffers.h>
+#include <mutex>
 
 namespace xll {
 
@@ -22,7 +24,44 @@ namespace {
     std::mutex g_onTimeMutex;
     double g_lastOnTimeSerial = 0.0;
     bool g_onTimeArmed = false;
+
+    // Diagnostic dispatch counter (#3 empirical de-queue proof, 2026-07-24).
+    // Incremented at the TOP of RunDeferredCalcEndCommands — i.e. every time Excel
+    // ACTUALLY dispatches the OnTime runner macro, even if the runner then
+    // self-aborts (g_isUnloading / g_phost==nullptr) and discards the queue. This
+    // is the observable signal that answers "did the OnTime schedule survive a
+    // CancelDeferredRunner?" without relying on a cell side effect. Pure atomic;
+    // touches nothing Excel/g_phost-related, so it does not perturb the STA
+    // self-abort invariant documented in RunDeferredCalcEndCommands.
+    std::atomic<int> g_runnerDispatchCount{0};
+
+    // Decode an Excel12 xlret status into a human-readable tag so the
+    // CancelDeferredRunner log line is self-explanatory. In particular
+    // xlretInvXlfn (2) means Excel REJECTED the call because the current context
+    // does not permit command-class (xlc*) C-API functions — which is what
+    // happens on the host-shutdown teardown path (see CancelDeferredRunner).
+    const char* XlretName(int rc) {
+        switch (rc) {
+            case xlretSuccess:       return "xlretSuccess";
+            case xlretAbort:         return "xlretAbort";
+            case xlretInvXlfn:       return "xlretInvXlfn(invalid-context/fn)";
+            case xlretInvCount:      return "xlretInvCount";
+            case xlretInvXloper:     return "xlretInvXloper";
+            case xlretStackOvfl:     return "xlretStackOvfl";
+            case xlretFailed:        return "xlretFailed";
+            case xlretUncalced:      return "xlretUncalced";
+            case xlretNotThreadSafe: return "xlretNotThreadSafe";
+            default:                 return "xlret(other)";
+        }
+    }
 }
+
+// Diagnostic accessor: total number of times Excel has dispatched the deferred
+// runner macro this process generation. Used by the #3 de-queue proof harness
+// (a valid-context Schedule+Cancel must leave this UNCHANGED; a Schedule-only
+// control must increment it). See AGENTS.md §23.6 HIGH #2.
+int DeferredRunnerDispatchCount() { return g_runnerDispatchCount.load(); }
+void ResetDeferredRunnerDispatchCount() { g_runnerDispatchCount.store(0); }
 
 DeferredCalcEndQueue& DeferredCalcEndQueue::Instance() {
     static DeferredCalcEndQueue inst;
@@ -69,7 +108,10 @@ static void ScheduleDeferredRunner() {
             return;
         }
         // xlcOnTime(serial_time, macro_text). Tolerance/insert default.
-        if (xll::CallExcel(xlcOnTime, nullptr, xNow.get(), DeferredRunnerMacroName()) != xlretSuccess) {
+        int schedRc = xll::CallExcel(xlcOnTime, nullptr, xNow.get(), DeferredRunnerMacroName());
+        if (schedRc != xlretSuccess) {
+            xll::LogInfo(std::string("ScheduleDeferredRunner: xlcOnTime schedule rc=") +
+                         std::to_string(schedRc) + " (" + XlretName(schedRc) + ")");
             DeferredCalcEndQueue::Instance().Disarm();
             return;
         }
@@ -105,6 +147,13 @@ void DeferCalcEndCommands(std::vector<uint8_t>&& respBuf) {
 }
 
 void RunDeferredCalcEndCommands() {
+    // Diagnostic: record that Excel ACTUALLY dispatched the OnTime runner macro
+    // (#3 de-queue proof). Logged/counted BEFORE the self-abort check so a leaked
+    // or un-cancelled schedule that fires is always visible. A successful
+    // CancelDeferredRunner must prevent this line from appearing after the cancel.
+    int dispatchN = g_runnerDispatchCount.fetch_add(1) + 1;
+    xll::LogInfo("RunDeferredCalcEndCommands: dispatched (count=" + std::to_string(dispatchN) + ")");
+
     // Disarm BEFORE draining (HIGH fix, 2026-06-16). Clearing the schedule guard
     // first means a calc-end that enqueues while we are draining/executing below
     // will win TryArm() and schedule a fresh runner — so concurrently-arriving
@@ -212,14 +261,23 @@ void CancelDeferredRunner() {
 
         int rc = xll::CallExcel(xlcOnTime, nullptr, xWhen.get(), DeferredRunnerMacroName(), &xMissing, xSchedule.get());
         if (rc != xlretSuccess) {
-            // Non-fatal: a cancel that misses (e.g. the macro already fired, or
-            // the host rejected the C-API call this late) is harmless because the
-            // runner self-aborts on g_isUnloading anyway. On the §23.6 Stage-4
-            // teardown path CancelDeferredRunner runs in Phase 1 BEFORE g_isUnloading
-            // is latched, so LogInfo is still visible.
-            xll::LogInfo("CancelDeferredRunner: xlcOnTime cancel rc=" + std::to_string(rc));
+            // Non-fatal, but IMPORTANT to read correctly: this is the Excel12
+            // xlret STATUS of the call, NOT a boolean "cleared" result. rc=2 is
+            // xlretInvXlfn — Excel REJECTED the command because the current
+            // context does not permit command-class (xlc*) C-API calls. That is
+            // the normal outcome on the host-shutdown teardown path (this runs
+            // from OnBeginShutdown/OnDisconnection, a COM-event context, NOT an
+            // Excel-dispatched macro/command context), so the schedule is NOT
+            // de-queued here. It is harmless only because the runner self-aborts
+            // on g_isUnloading/g_phost==nullptr and Excel un-registers this XLL's
+            // macros on unload — those, not this cancel, are what neutralize a
+            // leaked OnTime dispatch. (#3 empirical finding, 2026-07-24; see
+            // AGENTS.md §23.6 HIGH #2.)
+            xll::LogInfo(std::string("CancelDeferredRunner: xlcOnTime cancel rc=") +
+                         std::to_string(rc) + " (" + XlretName(rc) +
+                         ") — schedule NOT de-queued (see #3 note)");
         } else {
-            xll::LogInfo("CancelDeferredRunner: pending deferred runner cancelled");
+            xll::LogInfo("CancelDeferredRunner: pending deferred runner cancelled (rc=xlretSuccess)");
         }
     } catch (...) {
         // Never throw out of teardown.

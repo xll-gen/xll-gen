@@ -1197,20 +1197,44 @@ already deleted.**
   finish; (c) the authorized last-resort force-exit on the CONFIRMED host-shutdown path only (since
   OnBeginShutdown/GracefulTeardownOnce run ONLY on a real quit, a force-exit there does NOT break the
   cancelled-quit invariant). DiagLog instrumentation is **KEPT** (ghost still unresolved).
-* **HIGH #2 (xlcOnTime cancel de-queue) — Stage 3 update: NOW PARTIALLY OBSERVED.** In the Stage-3 repro
-  `CancelDeferredRunner: xlcOnTime cancel rc=2` logged on the confirmed-teardown path (a runner WAS
-  armed at close this time, and the cancel issued). rc=2 is the xlcOnTime "clear" return; the de-queue
-  proof (no subsequent `RunDeferredCalcEnd`) held (none logged post-cancel). Still worth the unit/harness
-  hook below for a deterministic assertion.
-* **HIGH #2 (xlcOnTime cancel de-queue) — NOT yet proven on a real armed runner.** Across all
-  faithful-close runs (slow and `-FastClose`) `CancelDeferredRunner` logged nothing → the deferred
-  runner was never armed at close (`g_onTimeArmed==false`): the showcase Build recalc's calc-end
-  either enqueued no deferred commands/date-formats, or the runner drained its xlcOnTime before
-  close. To prove the cancel actually de-queues, need a scenario that leaves a runner pending in the
-  narrow CalculationEnded-armed → OnTime-dispatched window (inherently racy). Proposed proof: a unit
-  /harness hook that calls `ScheduleDeferredRunner()` then `CancelDeferredRunner()` back-to-back and
-  asserts `rc==xlretSuccess` + no subsequent `RunDeferredCalcEnd` dispatch, OR a C-API-level test of
-  `xlcOnTime(serial, macro, missing, FALSE)` against a known-scheduled serial.
+* **HIGH #2 (xlcOnTime cancel de-queue) — RESOLVED / empirically characterized (2026-07-24).**
+  The earlier "PARTIALLY OBSERVED — de-queue held" note **misread the return code**: `rc=2` is
+  **`xlretInvXlfn`** (the Excel12 xlret STATUS of the call, i.e. "invalid function/context"), NOT an
+  "xlcOnTime clear return". Excel12's return is the call status, not the boolean ON.TIME result (that
+  would be in the `res` XLOPER, which we pass as `nullptr`). So on the ONE historical occasion a runner
+  was actually armed at host-shutdown (native log 2026-06-20), the cancel was **REJECTED and de-queued
+  NOTHING**. Every other close logged nothing (`g_onTimeArmed==false` → early return).
+  - **Root cause (proven):** `CancelDeferredRunner` runs from `GracefulTeardownOnce`, driven by
+    `RibbonAddIn::OnBeginShutdown`/`OnDisconnection` — a **COM-event context on the STA, NOT an
+    Excel-dispatched macro/command context**. Excel does not permit command-class (`xlc*`) C-API calls
+    there, hence `xlretInvXlfn`. (The SCHEDULE side succeeds because it is issued from the
+    `xleventCalculationEnded` callback, which IS a valid command context — that asymmetry is the whole
+    story.) Arg count is fine (4 args valid for ON.TIME); a bad count would be `xlretInvCount`(4), a bad
+    operand `xlretInvXloper`(8) — so `rc=2` isolates the fault to context, not marshaling.
+  - **Deterministic proof (real Excel, 3/3 runs, 2026-07-24):** two throwaway probe macros
+    (`__xllgen_TestOnTimeSchedOnly`, `__xllgen_TestOnTimeCancel`) invoked via COM `Application.Run`
+    (a VALID macro context). A dispatch counter (`DeferredRunnerDispatchCount`) is bumped at the top of
+    `RunDeferredCalcEndCommands`. Control (schedule only) → `dispatched (count=1)` ~10ms later. Test
+    (schedule+cancel) → `CancelDeferredRunner: ... cancelled (rc=xlretSuccess)` + **no dispatch in the
+    following 6 s** (count stays 0). ⇒ the cancel **MECHANISM is correct and DOES de-queue when the
+    context is valid**; the serial round-trip / `schedule=FALSE` marshaling are all fine.
+  - **Net verdict:** de-queue on the **production teardown path does NOT happen** (rejected,
+    `xlretInvXlfn`). It is **harmless** — the ghost was fixed by the §23.6 Stage-4 deferred-teardown
+    split, and any leaked OnTime dispatch is neutralized by the runner's `g_isUnloading`/`g_phost`
+    self-abort + Excel un-registering the XLL's macros on unload. `CancelDeferredRunner` on the
+    host-shutdown path is therefore a **documented no-op / dead belt-and-suspenders**.
+  - **Shipped fix (working tree):** self-documenting `xlret` decode in the cancel/schedule logs (so the
+    rejection can never again be misread as success); dispatch counter + entry log in the runner;
+    corrected the false "valid from this STA macro/command context" comment in
+    `xll_deferred_commands.cpp`/`.h` and `xll_lifecycle.cpp`. **Open decision for xll-cpp-reviewer:**
+    remove the non-functional teardown-path `xlcOnTime` cancel (proven no-op there) vs keep as
+    documented best-effort. Files: `internal/assets/files/src/xll_deferred_commands.cpp`,
+    `internal/assets/files/include/xll_deferred_commands.h`, `internal/assets/files/src/xll_lifecycle.cpp`.
+  - **Note for §3 (ribbon.bounce off → OnTime-based connect retry):** that item reuses this exact
+    schedule/cancel infra. Scheduling from a valid command context works; but any cancel/retry issued
+    from a COM-event context (add-in callbacks, `OnConnection`) will hit the same `xlretInvXlfn` wall —
+    design the retry so both schedule AND cancel run from Excel-dispatched macro contexts (or rely on
+    the runner self-abort instead of a C-API cancel). See "§3 assessment" below.
 
 **Stage 4 (2026-06-17) — SHIPPED. Deferred destructive teardown (Phase 1 / Phase 2 split). Ghost CLEARED.**
 

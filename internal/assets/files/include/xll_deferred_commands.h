@@ -137,6 +137,21 @@ void RunDeferredCalcEndCommands();
 // window-reopen symptom S1). Issues xlcOnTime(savedSerial, macro, missing,
 // /*schedule=*/FALSE) using the exact serial captured at schedule time. No-op if
 // nothing is armed. NEVER throws (SEH/exception guarded).
+//
+// EMPIRICAL CAVEAT (#3, 2026-07-24): on the host-shutdown path this runs from a
+// COM-event context (OnBeginShutdown/OnDisconnection), where Excel does NOT
+// permit command-class (xlc*) C-API calls, so the cancel is REJECTED with
+// xlretInvXlfn (rc=2) and does NOT de-queue. The de-queue is neither achieved
+// nor required there: the runner's g_isUnloading/g_phost self-abort + macro
+// un-registration on unload neutralize any leaked dispatch. See AGENTS.md §23.6.
 void CancelDeferredRunner();
+
+// Diagnostics for the #3 de-queue proof (2026-07-24). DeferredRunnerDispatchCount
+// returns how many times Excel has ACTUALLY dispatched the runner macro this
+// process generation (incremented at the top of RunDeferredCalcEndCommands,
+// before any self-abort). A valid-context ScheduleDeferredRunner+CancelDeferredRunner
+// pair must leave it UNCHANGED; a Schedule-only control must increment it.
+int DeferredRunnerDispatchCount();
+void ResetDeferredRunnerDispatchCount();
 
 } // namespace xll

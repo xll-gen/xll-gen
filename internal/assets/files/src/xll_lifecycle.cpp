@@ -417,10 +417,26 @@ void xll::GracefulTeardownOnce(bool isHostShutdown) {
         // A late CalculationEnded (RTD-streaming recalc fires ~1/s) can arm an
         // xlcOnTime macro that Excel has not yet dispatched; left queued it can be
         // dispatched AFTER teardown. Run it FIRST (before the hook pumps the STA
-        // loop) while the host is still reachable. It is a C-API command call,
-        // valid from this STA macro/command context; self-guards (SEH + no-op when
-        // nothing armed) and never throws. Safe to run on BOTH paths and BEFORE we
-        // touch g_isUnloading (host-shutdown Phase 1 keeps g_isUnloading==false).
+        // loop) while the host is still reachable.
+        //
+        // EMPIRICAL CAVEAT (#3, 2026-07-24 — corrects an earlier assertion): this
+        // call runs from OnBeginShutdown/OnDisconnection, which is a COM-event
+        // context on the STA — NOT an Excel-dispatched macro/command context. Excel
+        // does NOT permit command-class (xlc*) C-API calls there, so xlcOnTime is
+        // REJECTED with xlretInvXlfn (rc=2) and NO de-queue occurs. (The SCHEDULE
+        // side succeeds because it is issued from the xleventCalculationEnded
+        // callback, which IS a valid command context.) This cancel is therefore a
+        // no-op on the host-shutdown path; the actual guard against a leaked
+        // dispatch is the runner's g_isUnloading/g_phost self-abort plus Excel
+        // un-registering this XLL's macros on unload (and the §23.6 Stage-4
+        // deferred-teardown split, which fixed the ghost independently of this
+        // cancel). Kept as documented best-effort + diagnostic; self-guards
+        // (SEH + no-op when nothing armed) and never throws. Safe on BOTH paths and
+        // BEFORE g_isUnloading (host-shutdown Phase 1 keeps g_isUnloading==false).
+        // See AGENTS.md §23.6 HIGH #2. KEEP: documented no-op diagnostic
+        // (xll-cpp-reviewer approved 2026-07-24) — harmless under SEH/try-catch,
+        // logs the xlret for diagnosis, and the schedule/cancel infrastructure
+        // is reused by the planned OnTime-based ribbon connect retry.
         xll::CancelDeferredRunner();
 
         // COM/ribbon/RTD destructive steps (ribbon disconnect, CoRevokeClassObject,
