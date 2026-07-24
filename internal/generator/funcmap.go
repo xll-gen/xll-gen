@@ -145,14 +145,30 @@ func parseDurationToMs(s string, defaultMs int) int {
 	return int(d.Milliseconds())
 }
 
+// failUnhandledType aborts codegen loudly when a per-type template ladder
+// reaches a type it has no EXPLICIT branch for. It exists so a new type added
+// to the registry cannot silently fall through a blanket {{else}} that was only
+// ever correct for a specific closed set (e.g. the cache-key ladder's blanket
+// else was safe ONLY because grid/range/any are all LPXLOPER12; a future
+// non-LPXLOPER12 scalar would be miscast). Returning a non-nil error as the
+// last result makes text/template's Execute abort with this message, so
+// generation fails with an actionable diagnostic instead of emitting a silent
+// miscast. The rendered string is always empty (Execute stops on the error).
+func failUnhandledType(site, typ, name string) (string, error) {
+	return "", fmt.Errorf("%s: no explicit template branch for type %q (arg %q); "+
+		"add an explicit branch — the blanket {{else}} was removed to prevent silent "+
+		"LPXLOPER12 miscasts of newly-added scalar types", site, typ, name)
+}
+
 // GetCommonFuncMap returns a map of common template functions used across different generators.
 // This centralization ensures consistency and avoids code duplication.
 func GetCommonFuncMap() template.FuncMap {
 	return template.FuncMap{
-		"hasEvent":        hasEvent,
-		"anyDateType":     anyDateType,
-		"getEventHandler": getEventHandler,
-		"escapeCppString": escapeCppString,
+		"failUnhandledType": failUnhandledType,
+		"hasEvent":          hasEvent,
+		"anyDateType":       anyDateType,
+		"getEventHandler":   getEventHandler,
+		"escapeCppString":   escapeCppString,
 		"derefBool": func(b *bool) bool {
 			if b == nil {
 				return false

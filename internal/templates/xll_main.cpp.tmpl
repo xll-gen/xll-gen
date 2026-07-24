@@ -1298,8 +1298,25 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{else if eq .Type "bool"}}
         t{{add $j 1}} = {{.Name}} ? L"TRUE" : L"FALSE";
         {{else if eq .Type "string"}}
+        // A `string` arg is registered LPXLOPER12 (arg position `Q`), so it is
+        // USUALLY xltypeStr — but a numeric/bool/blank cell arrives as
+        // xltypeNum/Bool/Missing. The old `== xltypeStr` guard then left the
+        // topic string EMPTY, collapsing DISTINCT non-string inputs (e.g. two
+        // different numeric cells) onto ONE topic + one memo entry — the same
+        // class of value-identity bug as the pre-v0.8.29 %f float truncation.
+        // Coerce non-string inputs to text via xlCoerce(xltypeStr); the
+        // Excel-allocated result rides a ScopedXLOPER12Result so its xlFree
+        // pairs on scope exit (XLL SDK ownership rule). A coerce failure keeps
+        // the historical empty-string fallback.
         if ({{.Name}}->xltype == xltypeStr) {
             t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
+        } else {
+            ScopedXLOPER12Result xCoerced;
+            XLOPER12 xStrType; xStrType.xltype = xltypeInt; xStrType.val.w = xltypeStr;
+            if (xll::CallExcel(xlCoerce, xCoerced, {{.Name}}, &xStrType) == xlretSuccess &&
+                (xCoerced->xltype & xltypeStr) && xCoerced->val.str) {
+                t{{add $j 1}} = PascalToWString(xCoerced->val.str);
+            }
         }
         {{else if eq .Type "date"}}
         // date rides the double path (ArgCppType "double", passed by value): the
@@ -1425,8 +1442,21 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{else if eq .Type "bool"}}
         t{{add $j 1}} = {{.Name}} ? L"TRUE" : L"FALSE";
         {{else if eq .Type "string"}}
+        // Coerce non-string inputs to text (see the plain-rtd branch above): a
+        // numeric/bool/blank cell passed to a `string` arg would otherwise leave
+        // this topic component EMPTY and, because the topic strings feed the
+        // once-key (MakeRtdOnceKey), collide DISTINCT inputs onto ONE memo
+        // entry. xlCoerce(xltypeStr) result held in a ScopedXLOPER12Result
+        // (xlFree pairs on scope exit); coerce failure keeps the "" fallback.
         if ({{.Name}}->xltype == xltypeStr) {
             t{{add $j 1}} = PascalToWString({{.Name}}->val.str);
+        } else {
+            ScopedXLOPER12Result xCoerced;
+            XLOPER12 xStrType; xStrType.xltype = xltypeInt; xStrType.val.w = xltypeStr;
+            if (xll::CallExcel(xlCoerce, xCoerced, {{.Name}}, &xStrType) == xlretSuccess &&
+                (xCoerced->xltype & xltypeStr) && xCoerced->val.str) {
+                t{{add $j 1}} = PascalToWString(xCoerced->val.str);
+            }
         }
         {{else if eq .Type "date"}}
         // date rides the double path (ArgCppType "double", by value): stringify
@@ -1642,12 +1672,20 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         // content hash is folded into cacheKey AFTER MakeCacheKey below via the
         // same ContentHashTokenFP12 the RTD path uses (§19.3).
         (void)xArg;
-        {{else}}
+        {{else if or (eq .Type "grid") (eq .Type "range") (eq .Type "any")}}
         // grid/range/any are already LPXLOPER12; MakeCacheKey content-hashes
         // them (SerializeXLOPER for value arrays, GetOrComputeRefHash for the
         // U-passed range references), so the identity cast is well-formed and
         // the cache key already tracks their content.
         cacheArgs.push_back((LPXLOPER12){{.Name}});
+        {{else}}
+        {{/* HARDENING (IMPROVEMENT_BACKLOG §3): grid/range/any are matched
+             EXPLICITLY above — the three types that are LPXLOPER12 and safe to
+             (LPXLOPER12)-cast. A blanket {{else}} would silently cast any FUTURE
+             non-LPXLOPER12 scalar added to the registry the same way (garbage
+             xltype -> mis-key or AV), the way `date`/`numgrid` would have. Fail
+             codegen loudly instead so a new type MUST declare its own branch. */}}
+        {{failUnhandledType "cache-key ladder" .Type .Name}}
         {{end}}
     }
     {{end}}

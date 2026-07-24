@@ -34,9 +34,13 @@ RtdServer* g_rtdServer = nullptr;
 
 // In-flight counter for detached ConnectData lambdas. Each spawned thread
 // increments on entry and decrements on exit via RtdConnectInFlightGuard.
-// OnAutoClose calls WaitForRtdConnectDrain() to drain these before
-// `delete g_phost` is performed. The wiring lives in
-// xll_lifecycle.cpp::OnAutoClose (guarded by XLL_RTD_ENABLED).
+// xll::RunDestructiveTeardown() (xll_lifecycle.cpp) calls
+// WaitForRtdConnectDrain() to drain these before `delete g_phost`. Since the
+// 2026-06-13 cancel-quit refactor (AGENTS.md §20.3, §23.6) xlAutoClose /
+// OnAutoClose are NON-destructive; the destructive path runs EXACTLY ONCE from
+// RunDestructiveTeardown, reached via GracefulTeardownOnce (non-host-shutdown /
+// add-in disable) or RtdServer::ServerTerminate (host shutdown, after Excel's
+// RTD DisconnectData handshake). That drain call is guarded by XLL_RTD_ENABLED.
 static std::atomic<int> g_rtdConnectInFlight{0};
 
 namespace {
@@ -243,20 +247,23 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
     }
 
     // The detached thread accesses g_host (== *g_phost; see xll_ipc.h), a global
-    // owned by xll_ipc / lifecycle. On a graceful close, OnAutoClose calls
-    // WaitForRtdConnectDrain (in xll_lifecycle.cpp, guarded by XLL_RTD_ENABLED)
-    // BEFORE deleting g_phost; on a forced unload (DllMain DLL_PROCESS_DETACH per
-    // AGENTS.md §20), threads are leaked rather than joined. To make this safe:
+    // owned by xll_ipc / lifecycle. On a graceful close, xll::RunDestructiveTeardown
+    // (xll_lifecycle.cpp, guarded by XLL_RTD_ENABLED) calls WaitForRtdConnectDrain
+    // BEFORE deleting g_phost. Per the 2026-06-13 cancel-quit model (AGENTS.md
+    // §20.3/§23.6) that teardown is reached from GracefulTeardownOnce or
+    // RtdServer::ServerTerminate — NOT the now-non-destructive xlAutoClose. On a
+    // forced unload (DllMain DLL_PROCESS_DETACH per AGENTS.md §20), threads are
+    // leaked rather than joined. To make this safe:
     //   1. Re-check xll::g_isUnloading at every yield point — top of lambda,
     //      before SHM access, before every slot acquire, before every Send.
-    //   2. Hold an RtdConnectInFlightGuard so OnAutoClose can wait for
+    //   2. Hold an RtdConnectInFlightGuard so RunDestructiveTeardown can wait for
     //      in-flight Connects to drain before tearing down g_phost.
     //
     // Drain-cap alignment (AGENTS.md §23.0): the old code issued a SINGLE Send
     // with a 5000 ms blocking timeout. WaitForRtdConnectDrain's cap is 2000 ms
     // (xll_lifecycle.cpp). A Connect that blocked >2 s inside that single Send
-    // outlived the drain, so OnAutoClose proceeded to `delete g_phost` while the
-    // Send was still touching the slot — a narrow use-after-free. The fix mirrors
+    // outlived the drain, so RunDestructiveTeardown proceeded to `delete g_phost`
+    // while the Send was still touching the slot — a narrow use-after-free. The fix mirrors
     // ribbon_addin.cpp::SendCommandInvoke (same structural problem): a bounded
     // retry loop of SHORT per-attempt timeouts that re-checks g_isUnloading
     // between attempts and re-acquires a FRESH ZeroCopySlot each attempt

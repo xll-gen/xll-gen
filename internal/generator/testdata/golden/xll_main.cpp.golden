@@ -3997,8 +3997,25 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
     std::wstring t2;
     {
         
+        // A `string` arg is registered LPXLOPER12 (arg position `Q`), so it is
+        // USUALLY xltypeStr — but a numeric/bool/blank cell arrives as
+        // xltypeNum/Bool/Missing. The old `== xltypeStr` guard then left the
+        // topic string EMPTY, collapsing DISTINCT non-string inputs (e.g. two
+        // different numeric cells) onto ONE topic + one memo entry — the same
+        // class of value-identity bug as the pre-v0.8.29 %f float truncation.
+        // Coerce non-string inputs to text via xlCoerce(xltypeStr); the
+        // Excel-allocated result rides a ScopedXLOPER12Result so its xlFree
+        // pairs on scope exit (XLL SDK ownership rule). A coerce failure keeps
+        // the historical empty-string fallback.
         if (s->xltype == xltypeStr) {
             t2 = PascalToWString(s->val.str);
+        } else {
+            ScopedXLOPER12Result xCoerced;
+            XLOPER12 xStrType; xStrType.xltype = xltypeInt; xStrType.val.w = xltypeStr;
+            if (xll::CallExcel(xlCoerce, xCoerced, s, &xStrType) == xlretSuccess &&
+                (xCoerced->xltype & xltypeStr) && xCoerced->val.str) {
+                t2 = PascalToWString(xCoerced->val.str);
+            }
         }
         
     }
@@ -4473,8 +4490,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
     
     {
         
+        // Coerce non-string inputs to text (see the plain-rtd branch above): a
+        // numeric/bool/blank cell passed to a `string` arg would otherwise leave
+        // this topic component EMPTY and, because the topic strings feed the
+        // once-key (MakeRtdOnceKey), collide DISTINCT inputs onto ONE memo
+        // entry. xlCoerce(xltypeStr) result held in a ScopedXLOPER12Result
+        // (xlFree pairs on scope exit); coerce failure keeps the "" fallback.
         if (s->xltype == xltypeStr) {
             t1 = PascalToWString(s->val.str);
+        } else {
+            ScopedXLOPER12Result xCoerced;
+            XLOPER12 xStrType; xStrType.xltype = xltypeInt; xStrType.val.w = xltypeStr;
+            if (xll::CallExcel(xlCoerce, xCoerced, s, &xStrType) == xlretSuccess &&
+                (xCoerced->xltype & xltypeStr) && xCoerced->val.str) {
+                t1 = PascalToWString(xCoerced->val.str);
+            }
         }
         
     }
@@ -4596,8 +4626,21 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
     
     {
         
+        // Coerce non-string inputs to text (see the plain-rtd branch above): a
+        // numeric/bool/blank cell passed to a `string` arg would otherwise leave
+        // this topic component EMPTY and, because the topic strings feed the
+        // once-key (MakeRtdOnceKey), collide DISTINCT inputs onto ONE memo
+        // entry. xlCoerce(xltypeStr) result held in a ScopedXLOPER12Result
+        // (xlFree pairs on scope exit); coerce failure keeps the "" fallback.
         if (s->xltype == xltypeStr) {
             t1 = PascalToWString(s->val.str);
+        } else {
+            ScopedXLOPER12Result xCoerced;
+            XLOPER12 xStrType; xStrType.xltype = xltypeInt; xStrType.val.w = xltypeStr;
+            if (xll::CallExcel(xlCoerce, xCoerced, s, &xStrType) == xlretSuccess &&
+                (xCoerced->xltype & xltypeStr) && xCoerced->val.str) {
+                t1 = PascalToWString(xCoerced->val.str);
+            }
         }
         
     }
