@@ -7,8 +7,8 @@ require (
 	github.com/google/flatbuffers v25.9.23+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.2
-	github.com/xll-gen/shm v0.8.9
-	github.com/xll-gen/sugar v0.8.6
+	github.com/xll-gen/shm v0.8.10
+	github.com/xll-gen/sugar v0.8.7
 	github.com/xll-gen/types v0.2.17
 	golang.org/x/sys v0.33.0
 	gopkg.in/yaml.v3 v3.0.1
