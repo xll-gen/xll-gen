@@ -14,20 +14,20 @@ When a change crosses repo boundaries, update **all** affected `AGENTS.md` files
 
 ## 0.1. Platform Support (HARD CONSTRAINT)
 
-`xll-gen` is **Windows-only** and targets **x86 / x86-64 (Intel/AMD)** architectures exclusively. This is not a "primary focus" — it is a hard constraint:
+`xll-gen` is **Windows-only** and targets **x86-64 (amd64/"x64", Intel/AMD)** exclusively. This is not a "primary focus" — it is a hard constraint:
 
 * **OS**: Microsoft Windows. No Linux, no macOS, no WSL as a runtime target.
-* **CPU**: x86 (32-bit) and x86-64 (64-bit, "x64"). **No ARM (incl. Windows-on-ARM, Apple Silicon).**
-* **Excel**: A generated XLL's bitness MUST match the host Excel's bitness. 32-bit Excel → 32-bit XLL; 64-bit Excel → 64-bit XLL.
-* **Memory model assumption**: x86/x64 provides Total Store Order (TSO). Implementations and reviews MAY rely on TSO guarantees — sequential consistency of acquire-release pairs is hardware-provided. ARM weak-memory-model concerns are out of scope for the xll-gen runtime path.
+* **CPU**: x86-64 (64-bit, "x64") only. **32-bit x86 is NOT supported** (the `shm` Go guest's Win32 struct layouts are amd64-only and reject `windows/386` at compile time — see `shm/AGENTS.md` §"Platform Targets"). **No ARM (incl. Windows-on-ARM, Apple Silicon).**
+* **Excel**: Only **64-bit Excel** is supported; a generated XLL is 64-bit and matches 64-bit Excel. **32-bit Excel is not supported** — there is no 32-bit XLL/server build, so a 32-bit Excel host cannot load a generated add-in.
+* **Memory model assumption**: x64 (amd64) provides Total Store Order (TSO). Implementations and reviews MAY rely on TSO guarantees — sequential consistency of acquire-release pairs is hardware-provided. ARM weak-memory-model concerns are out of scope for the xll-gen runtime path.
 
 **Implications for agents and reviewers**:
 
-* Findings phrased as "ARM-only bug" or "weak memory model concern" against xll-gen runtime code are **non-issues** unless they also affect x86 (rare).
+* Findings phrased as "ARM-only bug" or "weak memory model concern" against xll-gen runtime code are **non-issues** unless they also affect x64 (rare).
 * Cross-platform build infra (Linux CI for Go-only unit tests, etc.) is acceptable as a developer convenience but is NOT a supported deployment target.
-* Companion repos have different platform stories: `shm` is cross-platform by design (its Linux backend exists for testing and potential reuse) but its production deployment via `xll-gen` is Windows x86/x64 only; `sugar` is Windows-only (COM-bound); `types` Go code is portable but its C++ side targets Windows + the SDK.
+* Companion repos have different platform stories: `shm` is cross-platform by design (its Linux backend exists for testing and potential reuse) but its production deployment via `xll-gen` is Windows x64 (amd64) only; `sugar` is Windows-only (COM-bound); `types` Go code is portable but its C++ side targets Windows + the SDK.
 
-When in doubt about whether a concern applies, ask: "Does this affect Windows x86/x64 with stock MSVC/MinGW + recent Excel?" If no → out of scope for xll-gen.
+When in doubt about whether a concern applies, ask: "Does this affect Windows x64 (amd64) with stock MSVC/MinGW + recent 64-bit Excel?" If no → out of scope for xll-gen.
 
 ## Development Setup
 

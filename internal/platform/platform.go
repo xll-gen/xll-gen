@@ -1,6 +1,7 @@
 // Package platform centralizes the small set of OS-specific helpers
 // xll-gen needs at build / test time. Per AGENTS.md §0.1, the deployed
-// runtime is Windows x86/x64 only; this package exists so the *developer
+// runtime is Windows x64 (amd64) only — 32-bit x86 is not supported; this
+// package exists so the *developer
 // tooling* (CLI, regtest, smoketest) can compile and run on Linux/macOS
 // for unit tests without scattering `runtime.GOOS == "windows"` branches
 // across every file that needs an executable suffix.
