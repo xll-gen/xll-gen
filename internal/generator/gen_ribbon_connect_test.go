@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -54,8 +55,9 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	src := renderCppMain(t, ribbonConnectCfg())
 
 	for _, want := range []string{
-		// The retryable connect helper exists and threads allowBounce.
-		"static bool TryConnectRibbon(const char* phase, bool allowBounce = false)",
+		// The retryable connect helper exists and threads allowBounce + the
+		// noApp out-param (see TestXllMainRibbonRetryNoAppBudget).
+		"static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* pNoApp = nullptr)",
 		// The temp-workbook bounce helper exists.
 		"static IDispatch* GetExcelApplicationOrBounce()",
 		// It uses the verified xlc* command opcodes via xll::CallExcel.
@@ -81,9 +83,11 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		`TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`,
 		// The bounce helper honors graceful degradation (warn, not crash).
 		"SAFE_LOG_WARN(",
-		// The no-workbook-yet case is detected and does NOT burn the give-up budget.
+		// The no-workbook-yet case is detected, does NOT burn the give-up budget,
+		// and is REPORTED to the caller so the OnTime retry can honor the same rule.
 		"bool noApp = false;",
-		"if (noApp) return false;",
+		"if (noApp) {",
+		"if (pNoApp) *pNoApp = true;",
 		// Calc-end retries the connect as a defensive fallback (no bounce).
 		`TryConnectRibbon("calc end");`,
 		// The connect state is a single atomic guard (pending/connected/gave-up).
@@ -184,24 +188,25 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 			src := renderCppMain(t, tc.cfg)
 			for _, want := range []string{
 				// The bounded budget constants exist (name + count/spacing).
-				"kRibbonRetryMaxAttempts = 30",
-				"kRibbonRetryIntervalSec = 2.0",
+				"kRibbonRetryMaxAttempts       = 30",
+				"kRibbonRetryIntervalSec       = 2.0",
 				// The retry macro is exported with the shared single-source name.
 				`extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry()`,
 				"xll::RibbonConnectRetryMacroName()",
 				// The runner retries the connect (no bounce on retries).
-				`TryConnectRibbon("ontime retry");`,
+				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryNoApp);`,
 				// Self-abort on unload BEFORE touching Excel (no re-arm on unload).
 				"if (g_isUnloading.load(std::memory_order_acquire)) return 1;",
 				// Stops once the connect resolves (connected/gave-up).
 				"if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;",
 				// Bounded re-arm through the reused asset scheduler.
-				"s_retryAttempts.fetch_add(1) + 1 >= kRibbonRetryMaxAttempts",
-				"xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);",
+				"g_ribbonRetryAttempts.fetch_add(1) + 1;",
+				"if (n >= kRibbonRetryMaxAttempts) {",
+				"xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);",
 				// The macro is registered (macroType=2) so xlcOnTime can target it.
 				"Failed to register ribbon-connect OnTime retry macro.",
 				// xlAutoOpen arms the first retry ONLY when not yet connected.
-				"g_ribbonConnectState.load(std::memory_order_acquire) == 0) {",
+				"g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&",
 			} {
 				if !strings.Contains(src, want) {
 					t.Errorf("[%s] xll_main.cpp (ribbon) missing %q", tc.name, want)
@@ -233,11 +238,237 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 		"__xllgen_RibbonConnectRetry",
 		"RibbonConnectRetryMacroName",
 		"kRibbonRetryMaxAttempts",
+		"kRibbonRetryNoAppMaxAttempts",
+		"g_ribbonRetryArmed",
 	} {
 		if strings.Contains(noRibbonSrc, gone) {
 			t.Errorf("ribbon-disabled render must not emit %q", gone)
 		}
 	}
+}
+
+// TestXllMainRibbonRetryNoAppBudget is the MED regression for the retry's
+// budget-accounting bug (2026-07-26).
+//
+// TryConnectRibbon has ALWAYS declined to charge a "no Application object yet"
+// (noApp) attempt against its own give-up budget — that state is not a failure,
+// it just means the user has not opened a workbook. The xlcOnTime retry runner
+// did not make that distinction: it charged every attempt to the single
+// kRibbonRetryMaxAttempts=30 budget. Consequence, for the EXACT scenario the
+// retry was added to fix: Excel started empty with `ribbon.bounce: off`, the
+// retry polled 30 times over 60 s against no workbook, exhausted the budget, and
+// stopped. The user then opened a manual-calc / no-formula workbook at t=90 s —
+// no budget left, and calc-end never fires for such a book — so the ribbon tab
+// was STILL delayed indefinitely. The feature did not fix its own target case.
+//
+// The fix threads a `bool* pNoApp` out-param through TryConnectRibbon and gives
+// the noApp class its own, much longer, time-shaped budget with a relaxed poll
+// interval, while the productive (Application reachable, Connect rejected) class
+// keeps the original tight 30-attempt budget. Both budgets stay FINITE.
+//
+// This test pins the separation itself; a regression that folds the two classes
+// back into one counter fails here.
+func TestXllMainRibbonRetryNoAppBudget(t *testing.T) {
+	t.Parallel()
+
+	offCfg := ribbonConnectCfg()
+	offCfg.Ribbon.Bounce = "off"
+
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"default", ribbonConnectCfg()},
+		{"off", offCfg},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := renderCppMain(t, tc.cfg)
+
+			for _, want := range []string{
+				// A SEPARATE noApp budget exists, with its own spacing and hard stop.
+				"kRibbonRetryNoAppFastAttempts",
+				"kRibbonRetryNoAppIdleSec",
+				"kRibbonRetryNoAppMaxAttempts",
+				// …and its own counter, distinct from the productive one.
+				"g_ribbonRetryNoAppAttempts",
+				"g_ribbonRetryAttempts",
+				// The runner asks TryConnectRibbon which class the failure was.
+				"bool retryNoApp = false;",
+				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryNoApp);`,
+				// …and branches on it before charging anything.
+				"if (retryNoApp) {",
+				"g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;",
+				"if (n >= kRibbonRetryNoAppMaxAttempts) {",
+				// The poll relaxes once the fast window is spent (still bounded).
+				"if (n >= kRibbonRetryNoAppFastAttempts) nextDelaySec = kRibbonRetryNoAppIdleSec;",
+				// The re-arm honors the per-class spacing.
+				"double nextDelaySec = kRibbonRetryIntervalSec;",
+				"xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);",
+			} {
+				if !strings.Contains(src, want) {
+					t.Errorf("[%s] xll_main.cpp ribbon OnTime retry missing %q", tc.name, want)
+				}
+			}
+
+			// The pre-fix shape: a single unconditional charge to the productive
+			// budget, with no noApp branch. If this reappears, the empty-Excel
+			// scenario burns its 30 attempts in 60 s again.
+			for _, gone := range []string{
+				"s_retryAttempts",
+				"s_retryAttempts.fetch_add(1) + 1 >= kRibbonRetryMaxAttempts",
+			} {
+				if strings.Contains(src, gone) {
+					t.Errorf("[%s] xll_main.cpp still contains the pre-fix single-budget retry counter %q; "+
+						"a noApp attempt must not consume the connect-failure budget", tc.name, gone)
+				}
+			}
+
+			// Neither budget may become unbounded: an add-in that polls Excel
+			// forever is its own defect. Both hard stops must be present.
+			if !strings.Contains(src, "if (n >= kRibbonRetryMaxAttempts) {") {
+				t.Errorf("[%s] the productive retry budget lost its hard stop", tc.name)
+			}
+			if strings.Contains(src, "for (;;)") || strings.Contains(src, "while (true)") {
+				t.Errorf("[%s] the ribbon retry must never spin unbounded", tc.name)
+			}
+		})
+	}
+}
+
+// TestXllMainRibbonRetryArmRcAndSingleChain pins two MED fixes on the arm path
+// (2026-07-26):
+//
+//  1. The arm site discarded ScheduleOnTimeMacro's return value. If Excel
+//     rejected the xlcOnTime (e.g. a context/host state that refuses command-class
+//     C-API calls) the whole self-re-arming chain never started and NOTHING said
+//     so — indistinguishable in the log from "armed and still retrying". Both the
+//     initial arm and the runner's re-arm must inspect the rc and warn.
+//
+//  2. The attempt counter was a FUNCTION-LOCAL static inside the SEH __try block
+//     of __xllgen_RibbonConnectRetry. A second xlAutoOpen in the same process
+//     generation (probe-unload-reuse, or add-in disable→enable without a DLL
+//     unload) while still unconnected armed a SECOND chain sharing that counter:
+//     double the dispatch rate, half the effective budget each. The counters move
+//     to file scope and a start-once CAS latch (g_ribbonRetryArmed) makes the arm
+//     idempotent.
+func TestXllMainRibbonRetryArmRcAndSingleChain(t *testing.T) {
+	t.Parallel()
+	src := renderCppMain(t, ribbonConnectCfg())
+
+	for _, want := range []string{
+		// (2) File-scope state, not function-local statics in an SEH __try.
+		"static std::atomic<bool> g_ribbonRetryArmed{false};",
+		"static std::atomic<int>  g_ribbonRetryAttempts{0};",
+		"static std::atomic<int>  g_ribbonRetryNoAppAttempts{0};",
+		// (2) Start-once CAS at the arm site: at most one chain per process.
+		"bool retryExpected = false;",
+		"g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {",
+		// (1) The initial arm inspects the rc and un-latches so a later
+		//     xlAutoOpen may legitimately try again (nothing is in flight).
+		"int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);",
+		"if (armRc != xlretSuccess) {",
+		"g_ribbonRetryArmed.store(false, std::memory_order_release);",
+		"Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=",
+		// (1) The re-arm inside the runner does the same.
+		"int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);",
+		"if (reArmRc != xlretSuccess) {",
+		"Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("xll_main.cpp ribbon OnTime retry missing %q", want)
+		}
+	}
+
+	// The pre-fix arm site: a bare fire-and-forget call whose rc was dropped.
+	if strings.Contains(src, "        xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);\n") {
+		t.Errorf("xll_main.cpp still discards the arm rc from ScheduleOnTimeMacro; " +
+			"a rejected arm would kill the retry chain silently")
+	}
+	// The counter must not live inside the macro body as a local static.
+	retryIdx := strings.Index(src, `__stdcall __xllgen_RibbonConnectRetry()`)
+	if retryIdx < 0 {
+		t.Fatalf("__xllgen_RibbonConnectRetry not found in the ribbon render")
+	}
+	if strings.Contains(src[retryIdx:], "static std::atomic<int>") {
+		t.Errorf("__xllgen_RibbonConnectRetry still declares a function-local static counter; " +
+			"two xlAutoOpen-armed chains would share it (double rate, half budget each)")
+	}
+}
+
+// TestOnTimeMacroNameExportsMatchHeaderLiterals is the drift guard for the
+// OnTime macro NAMES (item 2e, 2026-07-26).
+//
+// Each OnTime-scheduled macro name exists in TWO places that must agree exactly:
+//
+//	include/xll_deferred_commands.h : the L"…" literal returned by the
+//	                                  *MacroName() accessor, which is what
+//	                                  xlcOnTime and xlfRegister are handed;
+//	templates/xll_main.cpp.tmpl     : the exported C symbol Excel resolves the
+//	                                  registered procedure against.
+//
+// Nothing structurally couples them. If either side is renamed alone, the C++
+// still compiles (the accessor is just a string), every generator test that
+// greps for its own hard-coded name still passes, and the ONLY symptom is a
+// runtime "cannot resolve ON.TIME macro" — i.e. the ribbon tab (or the deferred
+// calc-end command drain) silently never runs. This test derives the expected
+// export from the header literal instead of restating it, so a rename on either
+// side fails here.
+func TestOnTimeMacroNameExportsMatchHeaderLiterals(t *testing.T) {
+	t.Parallel()
+	src := renderCppMain(t, ribbonConnectCfg())
+
+	for _, tc := range []struct {
+		accessor string
+		// whether the export is emitted only for ribbon-enabled renders
+		ribbonOnly bool
+	}{
+		{"RibbonConnectRetryMacroName", true},
+		{"DeferredRunnerMacroName", false},
+	} {
+		t.Run(tc.accessor, func(t *testing.T) {
+			lit := onTimeMacroNameLiteral(t, tc.accessor)
+			wantExport := `extern "C" __declspec(dllexport) short __stdcall ` + lit + `()`
+			if !strings.Contains(src, wantExport) {
+				t.Errorf("%s() returns L%q but xll_main.cpp exports no matching symbol.\n"+
+					"expected to find: %s\n"+
+					"The exported symbol and the header literal have DRIFTED: the C++ still "+
+					"compiles and the generator tests still pass, but Excel cannot resolve the "+
+					"ON.TIME macro at runtime.", tc.accessor, lit, wantExport)
+			}
+			// The registration must go through the accessor, never a re-typed literal.
+			if !strings.Contains(src, "xll::"+tc.accessor+"()") {
+				t.Errorf("xll_main.cpp must reference xll::%s() (single source of truth), "+
+					"not a re-typed macro-name literal", tc.accessor)
+			}
+			if strings.Contains(src, `L"`+lit+`"`) {
+				t.Errorf("xll_main.cpp re-types the macro-name literal L%q instead of calling "+
+					"xll::%s(); that is the drift this test exists to prevent", lit, tc.accessor)
+			}
+		})
+	}
+}
+
+// onTimeMacroNameLiteral extracts the L"…" literal returned by an inline
+// *MacroName() accessor in the embedded include/xll_deferred_commands.h.
+func onTimeMacroNameLiteral(t *testing.T, accessor string) string {
+	t.Helper()
+	m, err := assets.Assets()
+	if err != nil {
+		t.Fatalf("assets.Assets(): %v", err)
+	}
+	hdr, ok := m["include/xll_deferred_commands.h"]
+	if !ok {
+		t.Fatalf("embedded include/xll_deferred_commands.h not found in assets")
+	}
+	re := regexp.MustCompile(`inline const wchar_t\* ` + regexp.QuoteMeta(accessor) +
+		`\(\)\s*\{\s*return\s+L"([^"]+)";`)
+	mm := re.FindStringSubmatch(hdr)
+	if mm == nil {
+		t.Fatalf("xll_deferred_commands.h: could not find the inline %s() accessor and its L\"…\" literal; "+
+			"the single-source-of-truth macro name must stay in that exact shape (the template's "+
+			"exported symbol is cross-checked against it)", accessor)
+	}
+	return mm[1]
 }
 
 // TestRibbonAddinFirstClickRetry is the Bug 2 regression: the ribbon onAction

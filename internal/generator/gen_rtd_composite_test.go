@@ -106,6 +106,85 @@ func TestGenCpp_RtdOnceComposite_ShipOrdering(t *testing.T) {
 	}
 }
 
+// TestGenCpp_RtdOnceComposite_BuildAfterCacheLookup pins the stronger property
+// TestGenCpp_RtdOnceComposite_ShipOrdering only half-covers: not just the SHIP
+// but the whole payload BUILD (the converter call + the SetRefCacheRequest
+// serialization) must sit after the once-cache early-return.
+//
+// Why it matters: serializing a composite argument is O(payload) — protocol::Grid
+// is one union table PER CELL, so a 10k-cell grid argument costs hundreds of
+// microseconds to milliseconds — and on a memoize/TTL hit the wrapper returns
+// the cached value WITHOUT calling xlfRtd, so all of it was thrown away. Only
+// the content-hash TOKEN is genuinely needed before the lookup (it is what makes
+// the once-key content-addressed). A single rtd-once function is rendered here
+// so the marker indices are unambiguous.
+func TestGenCpp_RtdOnceComposite_BuildAfterCacheLookup(t *testing.T) {
+	t.Parallel()
+	cfg := rtdCompositeCfg()
+	cfg.Functions = []config.Function{{
+		Name:   "SumGridOnce",
+		Mode:   "rtd-once",
+		Return: "float",
+		Args:   []config.Arg{{Name: "g", Type: "grid"}},
+	}}
+	content := renderCppMain(t, cfg)
+
+	tokIdx := strings.Index(content, "xll::ContentHashToken('g', g)")
+	hitIdx := strings.Index(content, "TryGetResult(onceKey, &cached)")
+	buildIdx := strings.Index(content, "xll::ConvertGridArg(g, rcb, &rcOk)")
+	reqIdx := strings.Index(content, "protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny)")
+	shipIdx := strings.Index(content, "xll::SendRefCachePayloadOnce(")
+	if tokIdx < 0 || hitIdx < 0 || buildIdx < 0 || reqIdx < 0 || shipIdx < 0 {
+		t.Fatalf("rtd-once composite render missing markers (tok=%d hit=%d build=%d req=%d ship=%d)",
+			tokIdx, hitIdx, buildIdx, reqIdx, shipIdx)
+	}
+	// The token must still be computed BEFORE the lookup (it feeds the key).
+	if !(tokIdx < hitIdx) {
+		t.Errorf("the content-hash token must be computed before the once-cache lookup (tok=%d hit=%d) — the once-key is built from the topic strings", tokIdx, hitIdx)
+	}
+	// The payload build must be AFTER it.
+	for _, m := range []struct {
+		name string
+		idx  int
+	}{{"ConvertGridArg", buildIdx}, {"CreateSetRefCacheRequest", reqIdx}, {"SendRefCachePayloadOnce", shipIdx}} {
+		if m.idx < hitIdx {
+			t.Errorf("%s (idx=%d) must be emitted AFTER the once-cache TryGetResult early-return (idx=%d) — an eager build is fully discarded on a memoize/TTL hit", m.name, m.idx, hitIdx)
+		}
+	}
+	// And no refPayload staging vector should survive: the build now happens at
+	// the ship site, so the whole-buffer copy into a std::vector is gone.
+	if strings.Contains(content, "refPayload") {
+		t.Errorf("rtd-once must no longer stage the payload in a refPayload vector — build directly at the ship site:\n%s", content)
+	}
+}
+
+// TestGenCpp_RtdComposite_SkipBuildWhenAlreadyShipped: plain rtd has no
+// once-cache to branch on, so the wasted-build guard is a peek at the same
+// g_sentRefCache the ship dedups on. Without it, N cells sharing one range each
+// serialize the whole grid and N-1 of those buffers are dropped inside
+// SendRefCachePayloadOnce.
+func TestGenCpp_RtdComposite_SkipBuildWhenAlreadyShipped(t *testing.T) {
+	t.Parallel()
+	content := renderCppMain(t, rtdCompositeCfg())
+
+	for _, want := range []string{
+		"std::lock_guard<std::mutex> rcLock(g_refCacheMutex);",
+		"g_sentRefCache.find(tok1) != g_sentRefCache.end();",
+		"if (!rcAlreadySent1) {",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("xll_main.cpp (plain rtd composite arg) missing already-shipped guard %q", want)
+		}
+	}
+
+	// The guard must precede the builder, or it guards nothing.
+	guardIdx := strings.Index(content, "rcAlreadySent1 = g_sentRefCache.find(tok1)")
+	buildIdx := strings.Index(content, "ConvertRange(r, rcb)")
+	if guardIdx < 0 || buildIdx < 0 || guardIdx > buildIdx {
+		t.Errorf("the already-shipped peek must precede the payload build (guard=%d build=%d)", guardIdx, buildIdx)
+	}
+}
+
 // TestGenCpp_RtdComposite_FP12Hash: a numgrid arg uses the FP12 overload of the
 // content-hash helper and the NumGrid converter.
 func TestGenCpp_RtdComposite_FP12Hash(t *testing.T) {

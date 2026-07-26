@@ -137,12 +137,27 @@ static void ScheduleDeferredRunner() {
 // C-API cancel, so it has no serial to capture).
 int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds) {
     try {
+        // Unload self-gate (§20 discipline). This is a PUBLIC, general-purpose API
+        // in the header, so it must not depend on every present and future caller
+        // remembering to gate: issuing an Excel C-API command while the add-in is
+        // tearing down is exactly the class of call §20 forbids, and a schedule
+        // placed during teardown can only ever resolve to a leaked OnTime dispatch.
+        // Both current callers already gate; this makes the guarantee STRUCTURAL
+        // and local to the API rather than an unenforced caller contract.
+        if (xll::g_isUnloading.load(std::memory_order_acquire)) return xlretFailed;
         if (!macroName) return xlretFailed;
         ScopedXLOPER12Result xNow;
         int nowRc = xll::CallExcel(xlfNow, xNow);
         if (nowRc != xlretSuccess || (xNow.get()->xltype & xltypeNum) == 0) {
-            xll::LogInfo(std::string("ScheduleOnTimeMacro: xlfNow rc=") +
-                         std::to_string(nowRc) + " (" + XlretName(nowRc) + ")");
+            // Log the returned xltype ALONGSIDE rc. When xlfNow SUCCEEDS but hands
+            // back a non-numeric operand, nowRc is 0 and a bare
+            // "rc=0 (xlretSuccess)" reads as if the call worked — the xltype is the
+            // only thing that distinguishes the two failure shapes. WARN, not INFO:
+            // the macro was NOT scheduled and the caller's chain is now broken.
+            xll::LogWarn(std::string("ScheduleOnTimeMacro: xlfNow rc=") +
+                         std::to_string(nowRc) + " (" + XlretName(nowRc) + ")" +
+                         " xltype=" + std::to_string(xNow.get()->xltype) +
+                         " — macro NOT scheduled");
             return nowRc != xlretSuccess ? nowRc : xlretFailed;
         }
         // Excel serial time is in DAYS; convert the second-granularity delay.
@@ -151,8 +166,12 @@ int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds) {
         ScopedXLOPER12 xWhen(when);
         int rc = xll::CallExcel(xlcOnTime, nullptr, xWhen.get(), macroName);
         if (rc != xlretSuccess) {
-            xll::LogInfo(std::string("ScheduleOnTimeMacro: xlcOnTime rc=") +
-                         std::to_string(rc) + " (" + XlretName(rc) + ")");
+            // WARN, not INFO: a rejected arm means the caller's self-re-arming
+            // chain (e.g. the ribbon-connect retry) silently DIES here. Callers
+            // must inspect the returned rc; this line is the operator-visible half.
+            xll::LogWarn(std::string("ScheduleOnTimeMacro: xlcOnTime rc=") +
+                         std::to_string(rc) + " (" + XlretName(rc) + ")" +
+                         " — macro NOT scheduled");
         }
         return rc;
     } catch (...) {

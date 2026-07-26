@@ -4126,7 +4126,25 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
         
         std::string tok1 = xll::ContentHashToken('g', g);
         
+        // Already shipped this cycle? SendRefCachePayloadOnce dedups on the
+        // token, so for N cells sharing one range only the FIRST actually
+        // sends — but without this pre-check all N still pay the BUILD, which
+        // is O(payload) (protocol::Grid is one union table per cell). Peek at
+        // the same g_sentRefCache/g_refCacheMutex pair SendRefCachePayloadOnce
+        // consults and skip the build entirely on a repeat.
+        //
+        // Racing another calc thread is benign in both directions: a present
+        // entry means the payload is KNOWN-DELIVERED (the map is written only
+        // after a successful ack, and cleared only at CalculationEnded), and a
+        // missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent1 = false;
         {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent1 = g_sentRefCache.find(tok1) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent1) {
             // Build a SetRefCacheRequest{ key=token, val=Any(payload) } and
             // ship it ONCE per cycle (SendRefCachePayloadOnce dedups on the
             // token) BEFORE xlfRtd so the server has the payload cached before
@@ -4165,7 +4183,25 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
         
         std::string tok2 = xll::ContentHashTokenFP12(ng);
         
+        // Already shipped this cycle? SendRefCachePayloadOnce dedups on the
+        // token, so for N cells sharing one range only the FIRST actually
+        // sends — but without this pre-check all N still pay the BUILD, which
+        // is O(payload) (protocol::Grid is one union table per cell). Peek at
+        // the same g_sentRefCache/g_refCacheMutex pair SendRefCachePayloadOnce
+        // consults and skip the build entirely on a repeat.
+        //
+        // Racing another calc thread is benign in both directions: a present
+        // entry means the payload is KNOWN-DELIVERED (the map is written only
+        // after a successful ack, and cleared only at CalculationEnded), and a
+        // missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent2 = false;
         {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent2 = g_sentRefCache.find(tok2) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent2) {
             // Build a SetRefCacheRequest{ key=token, val=Any(payload) } and
             // ship it ONCE per cycle (SendRefCachePayloadOnce dedups on the
             // token) BEFORE xlfRtd so the server has the payload cached before
@@ -4261,7 +4297,25 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
         
         std::string tok1 = xll::ContentHashToken('r', r);
         
+        // Already shipped this cycle? SendRefCachePayloadOnce dedups on the
+        // token, so for N cells sharing one range only the FIRST actually
+        // sends — but without this pre-check all N still pay the BUILD, which
+        // is O(payload) (protocol::Grid is one union table per cell). Peek at
+        // the same g_sentRefCache/g_refCacheMutex pair SendRefCachePayloadOnce
+        // consults and skip the build entirely on a repeat.
+        //
+        // Racing another calc thread is benign in both directions: a present
+        // entry means the payload is KNOWN-DELIVERED (the map is written only
+        // after a successful ack, and cleared only at CalculationEnded), and a
+        // missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent1 = false;
         {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent1 = g_sentRefCache.find(tok1) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent1) {
             // Build a SetRefCacheRequest{ key=token, val=Any(payload) } and
             // ship it ONCE per cycle (SendRefCachePayloadOnce dedups on the
             // token) BEFORE xlfRtd so the server has the payload cached before
@@ -4300,7 +4354,25 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
         
         std::string tok2 = xll::ContentHashToken('a', a);
         
+        // Already shipped this cycle? SendRefCachePayloadOnce dedups on the
+        // token, so for N cells sharing one range only the FIRST actually
+        // sends — but without this pre-check all N still pay the BUILD, which
+        // is O(payload) (protocol::Grid is one union table per cell). Peek at
+        // the same g_sentRefCache/g_refCacheMutex pair SendRefCachePayloadOnce
+        // consults and skip the build entirely on a repeat.
+        //
+        // Racing another calc thread is benign in both directions: a present
+        // entry means the payload is KNOWN-DELIVERED (the map is written only
+        // after a successful ack, and cleared only at CalculationEnded), and a
+        // missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent2 = false;
         {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent2 = g_sentRefCache.find(tok2) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent2) {
             // Build a SetRefCacheRequest{ key=token, val=Any(payload) } and
             // ship it ONCE per cycle (SendRefCachePayloadOnce dedups on the
             // token) BEFORE xlfRtd so the server has the payload cached before
@@ -4434,11 +4506,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceScalar(int32_t i, doub
         
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     
     {
         static thread_local XLOPER12 xRes;
@@ -4568,11 +4649,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
         
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     
     {
         static thread_local XLOPER12 xRes;
@@ -4701,11 +4791,20 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
         
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     
     {
         static thread_local XLOPER12 xRes;
@@ -4779,9 +4878,11 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
     
     std::wstring t1;
     
-    // Composite-arg payloads, built now (for the content hash that goes into
-    // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
-    std::vector<uint8_t> refPayload1;
+    // Composite-arg content-hash token. Only the TOKEN is computed here — it
+    // feeds the once-key, so it is needed before the cache lookup. The PAYLOAD
+    // (ConvertGridArg/ConvertRange/... + the SetRefCacheRequest serialization)
+    // is built and shipped only on a cache MISS, in the block below the
+    // TryGetResult early-return.
     std::string refTok1;
     
     {
@@ -4794,34 +4895,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
         
         refTok1 = xll::ContentHashToken('g', g);
         
-        {
-            flatbuffers::FlatBufferBuilder rcb(1024);
-            auto rcKey = rcb.CreateString(refTok1);
-            bool rcOk = true;
-            
-            auto rcInner = xll::ConvertGridArg(g, rcb, &rcOk);
-            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
-            
-            if (!rcOk) {
-                // Coerce failed: leave refPayload empty — the ship step below
-                // skips empty payloads and the Go dispatch surfaces an explicit
-                // miss error instead of a silent degenerate grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload for token " + refTok1);
-            } else {
-                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-                rcb.Finish(rcReq);
-                refPayload1.assign(rcb.GetBufferPointer(), rcb.GetBufferPointer() + rcb.GetSize());
-            }
-        }
         t1 = StringToWString(refTok1);
         
     }
     
     std::wstring t2;
     
-    // Composite-arg payloads, built now (for the content hash that goes into
-    // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
-    std::vector<uint8_t> refPayload2;
+    // Composite-arg content-hash token. Only the TOKEN is computed here — it
+    // feeds the once-key, so it is needed before the cache lookup. The PAYLOAD
+    // (ConvertGridArg/ConvertRange/... + the SetRefCacheRequest serialization)
+    // is built and shipped only on a cache MISS, in the block below the
+    // TryGetResult early-return.
     std::string refTok2;
     
     {
@@ -4834,34 +4918,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
         
         refTok2 = xll::ContentHashTokenFP12(ng);
         
-        {
-            flatbuffers::FlatBufferBuilder rcb(1024);
-            auto rcKey = rcb.CreateString(refTok2);
-            bool rcOk = true;
-            
-            auto rcInner = ConvertNumGrid(ng, rcb);
-            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
-            
-            if (!rcOk) {
-                // Coerce failed: leave refPayload empty — the ship step below
-                // skips empty payloads and the Go dispatch surfaces an explicit
-                // miss error instead of a silent degenerate grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload for token " + refTok2);
-            } else {
-                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-                rcb.Finish(rcReq);
-                refPayload2.assign(rcb.GetBufferPointer(), rcb.GetBufferPointer() + rcb.GetSize());
-            }
-        }
         t2 = StringToWString(refTok2);
         
     }
     
     std::wstring t3;
     
-    // Composite-arg payloads, built now (for the content hash that goes into
-    // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
-    std::vector<uint8_t> refPayload3;
+    // Composite-arg content-hash token. Only the TOKEN is computed here — it
+    // feeds the once-key, so it is needed before the cache lookup. The PAYLOAD
+    // (ConvertGridArg/ConvertRange/... + the SetRefCacheRequest serialization)
+    // is built and shipped only on a cache MISS, in the block below the
+    // TryGetResult early-return.
     std::string refTok3;
     
     {
@@ -4874,34 +4941,17 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
         
         refTok3 = xll::ContentHashToken('r', r);
         
-        {
-            flatbuffers::FlatBufferBuilder rcb(1024);
-            auto rcKey = rcb.CreateString(refTok3);
-            bool rcOk = true;
-            
-            auto rcInner = ConvertRange(r, rcb);
-            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
-            
-            if (!rcOk) {
-                // Coerce failed: leave refPayload empty — the ship step below
-                // skips empty payloads and the Go dispatch surfaces an explicit
-                // miss error instead of a silent degenerate grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload for token " + refTok3);
-            } else {
-                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-                rcb.Finish(rcReq);
-                refPayload3.assign(rcb.GetBufferPointer(), rcb.GetBufferPointer() + rcb.GetSize());
-            }
-        }
         t3 = StringToWString(refTok3);
         
     }
     
     std::wstring t4;
     
-    // Composite-arg payloads, built now (for the content hash that goes into
-    // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
-    std::vector<uint8_t> refPayload4;
+    // Composite-arg content-hash token. Only the TOKEN is computed here — it
+    // feeds the once-key, so it is needed before the cache lookup. The PAYLOAD
+    // (ConvertGridArg/ConvertRange/... + the SetRefCacheRequest serialization)
+    // is built and shipped only on a cache MISS, in the block below the
+    // TryGetResult early-return.
     std::string refTok4;
     
     {
@@ -4914,24 +4964,6 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
         
         refTok4 = xll::ContentHashToken('a', a);
         
-        {
-            flatbuffers::FlatBufferBuilder rcb(1024);
-            auto rcKey = rcb.CreateString(refTok4);
-            bool rcOk = true;
-            
-            auto rcAny = ConvertAny(a, rcb);
-            
-            if (!rcOk) {
-                // Coerce failed: leave refPayload empty — the ship step below
-                // skips empty payloads and the Go dispatch surfaces an explicit
-                // miss error instead of a silent degenerate grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload for token " + refTok4);
-            } else {
-                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-                rcb.Finish(rcReq);
-                refPayload4.assign(rcb.GetBufferPointer(), rcb.GetBufferPointer() + rcb.GetSize());
-            }
-        }
         t4 = StringToWString(refTok4);
         
     }
@@ -4954,33 +4986,109 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
         
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     
-    if (!refPayload1.empty()) {
-        if (!xll::SendRefCachePayloadOnce(refTok1, refPayload1.data(), refPayload1.size())) {
-            SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok1);
+    {
+        flatbuffers::FlatBufferBuilder rcb(1024);
+        auto rcKey = rcb.CreateString(refTok1);
+        bool rcOk = true;
+        
+        auto rcInner = xll::ConvertGridArg(g, rcb, &rcOk);
+        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
+        
+        if (!rcOk) {
+            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
+            // a degenerate payload under this token; the Go dispatch will miss
+            // and push an explicit error to the topic instead of silently
+            // handing the handler an empty grid.
+            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok1);
+        } else {
+            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+            rcb.Finish(rcReq);
+            if (!xll::SendRefCachePayloadOnce(refTok1, rcb.GetBufferPointer(), rcb.GetSize())) {
+                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok1);
+            }
         }
     }
     
-    if (!refPayload2.empty()) {
-        if (!xll::SendRefCachePayloadOnce(refTok2, refPayload2.data(), refPayload2.size())) {
-            SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok2);
+    {
+        flatbuffers::FlatBufferBuilder rcb(1024);
+        auto rcKey = rcb.CreateString(refTok2);
+        bool rcOk = true;
+        
+        auto rcInner = ConvertNumGrid(ng, rcb);
+        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
+        
+        if (!rcOk) {
+            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
+            // a degenerate payload under this token; the Go dispatch will miss
+            // and push an explicit error to the topic instead of silently
+            // handing the handler an empty grid.
+            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok2);
+        } else {
+            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+            rcb.Finish(rcReq);
+            if (!xll::SendRefCachePayloadOnce(refTok2, rcb.GetBufferPointer(), rcb.GetSize())) {
+                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok2);
+            }
         }
     }
     
-    if (!refPayload3.empty()) {
-        if (!xll::SendRefCachePayloadOnce(refTok3, refPayload3.data(), refPayload3.size())) {
-            SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok3);
+    {
+        flatbuffers::FlatBufferBuilder rcb(1024);
+        auto rcKey = rcb.CreateString(refTok3);
+        bool rcOk = true;
+        
+        auto rcInner = ConvertRange(r, rcb);
+        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
+        
+        if (!rcOk) {
+            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
+            // a degenerate payload under this token; the Go dispatch will miss
+            // and push an explicit error to the topic instead of silently
+            // handing the handler an empty grid.
+            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok3);
+        } else {
+            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+            rcb.Finish(rcReq);
+            if (!xll::SendRefCachePayloadOnce(refTok3, rcb.GetBufferPointer(), rcb.GetSize())) {
+                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok3);
+            }
         }
     }
     
-    if (!refPayload4.empty()) {
-        if (!xll::SendRefCachePayloadOnce(refTok4, refPayload4.data(), refPayload4.size())) {
-            SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok4);
+    {
+        flatbuffers::FlatBufferBuilder rcb(1024);
+        auto rcKey = rcb.CreateString(refTok4);
+        bool rcOk = true;
+        
+        auto rcAny = ConvertAny(a, rcb);
+        
+        if (!rcOk) {
+            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
+            // a degenerate payload under this token; the Go dispatch will miss
+            // and push an explicit error to the topic instead of silently
+            // handing the handler an empty grid.
+            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok4);
+        } else {
+            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+            rcb.Finish(rcReq);
+            if (!xll::SendRefCachePayloadOnce(refTok4, rcb.GetBufferPointer(), rcb.GetSize())) {
+                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok4);
+            }
         }
     }
     
@@ -5085,11 +5193,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceMemoize(int32_t i) {
         
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     
     {
         static thread_local XLOPER12 xRes;
@@ -5192,11 +5309,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceTTL(int32_t i) {
         
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     
     {
         static thread_local XLOPER12 xRes;

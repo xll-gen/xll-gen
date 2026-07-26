@@ -124,3 +124,124 @@ func TestRtdOnceRegistryTransientRetention(t *testing.T) {
 			"re-served for an extra recalc cycle when CalculationEnded beats DisconnectData")
 	}
 }
+
+// TestOnTimeMacroNameLiterals pins the two OnTime macro-name literals in
+// include/xll_deferred_commands.h (drift guard, item 2e / 2026-07-26).
+//
+// These accessors are the SINGLE SOURCE OF TRUTH shared by three consumers: the
+// template's xlfRegister call, its xlcOnTime schedule/re-arm, and the exported
+// C symbol Excel resolves the registered procedure against. Nothing structurally
+// couples the string to the export — rename one side and the C++ still compiles,
+// every name-grepping generator test still passes, and the only symptom is a
+// runtime "cannot resolve ON.TIME macro": the ribbon tab never appears, or the
+// deferred calc-end command drain never runs.
+//
+// This test pins the literals themselves AND the exact accessor shape that
+// internal/generator's TestOnTimeMacroNameExportsMatchHeaderLiterals parses to
+// derive the expected export symbol. Reshaping the accessor (e.g. to a constexpr
+// variable) must update that parser too, so it fails here first.
+func TestOnTimeMacroNameLiterals(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	src, ok := m["include/xll_deferred_commands.h"]
+	if !ok {
+		t.Fatalf("embedded include/xll_deferred_commands.h not found in assets")
+	}
+	for _, tc := range []struct{ accessor, literal string }{
+		{"DeferredRunnerMacroName", "__xllgen_RunDeferredCalcEnd"},
+		{"RibbonConnectRetryMacroName", "__xllgen_RibbonConnectRetry"},
+	} {
+		decl := "inline const wchar_t* " + tc.accessor + "() {"
+		if !strings.Contains(src, decl) {
+			t.Errorf("xll_deferred_commands.h missing the %q accessor in its pinned shape (%q); "+
+				"the generator's export cross-check parses exactly this shape", tc.accessor, decl)
+			continue
+		}
+		body := src[strings.Index(src, decl)+len(decl):]
+		end := strings.Index(body, "}")
+		if end < 0 {
+			t.Fatalf("%s(): unterminated body", tc.accessor)
+		}
+		want := `return L"` + tc.literal + `";`
+		if !strings.Contains(body[:end], want) {
+			t.Errorf("%s() must return L%q (got body %q). The exported C symbol in "+
+				"internal/templates/xll_main.cpp.tmpl is matched against this literal; a "+
+				"one-sided rename is invisible to the compiler and to every generator test, "+
+				"and shows up only as an unresolvable ON.TIME macro at runtime.",
+				tc.accessor, tc.literal, strings.TrimSpace(body[:end]))
+		}
+	}
+}
+
+// TestScheduleOnTimeMacroGuards pins three hardening fixes on the generic
+// xlcOnTime scheduler in src/xll_deferred_commands.cpp (2026-07-26):
+//
+//  1. UNLOAD SELF-GATE (§20). ScheduleOnTimeMacro is exported from the header as
+//     general-purpose API. Both of today's callers gate on g_isUnloading, but the
+//     function itself did not — so the "never issue an Excel C-API command during
+//     teardown" rule rested on an unenforced caller contract. A schedule placed
+//     during teardown can only ever become a leaked OnTime dispatch. The gate is
+//     now structural and local to the API.
+//
+//  2. FAILURE LOGS ARE WARN, NOT INFO. A rejected xlcOnTime silently kills any
+//     self-re-arming chain built on this helper (the ribbon-connect retry is
+//     exactly that), so it is an operator-visible event, not a debug note.
+//
+//  3. The "xlfNow succeeded but returned a non-numeric operand" branch logged
+//     `nowRc` — which is 0 there — rendering as "rc=0 (xlretSuccess)" and reading
+//     as if the call had worked. The returned xltype is logged alongside it,
+//     because that is the only thing distinguishing the two failure shapes.
+func TestScheduleOnTimeMacroGuards(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	src, ok := m["src/xll_deferred_commands.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_deferred_commands.cpp not found in assets")
+	}
+	idx := strings.Index(src, "int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds) {")
+	if idx < 0 {
+		t.Fatalf("ScheduleOnTimeMacro not found in xll_deferred_commands.cpp")
+	}
+	end := strings.Index(src[idx:], "\nvoid DeferCalcEndCommands(")
+	if end < 0 {
+		t.Fatalf("could not delimit the ScheduleOnTimeMacro body")
+	}
+	body := src[idx : idx+end]
+
+	// (1) The unload gate must be the FIRST thing the body does — before any
+	//     Excel C-API call (xlfNow is already a C-API call).
+	gate := "if (xll::g_isUnloading.load(std::memory_order_acquire)) return xlretFailed;"
+	if !strings.Contains(body, gate) {
+		t.Errorf("ScheduleOnTimeMacro is missing its own §20 unload self-gate (%q); "+
+			"as public API it must not be able to place an Excel C-API command during "+
+			"teardown just because a caller forgot to gate", gate)
+	} else if gi, ni := strings.Index(body, gate), strings.Index(body, "xll::CallExcel(xlfNow"); ni >= 0 && gi > ni {
+		t.Errorf("ScheduleOnTimeMacro's unload gate comes AFTER the xlfNow C-API call; "+
+			"it must precede every Excel call (gate@%d, xlfNow@%d)", gi, ni)
+	}
+
+	// (2) Both failure paths warn; neither may be INFO.
+	if strings.Contains(body, "xll::LogInfo(") {
+		t.Errorf("ScheduleOnTimeMacro still logs a scheduling failure at INFO; a rejected " +
+			"arm silently ends the caller's re-arm chain and must be LogWarn")
+	}
+	for _, want := range []string{
+		`xll::LogWarn(std::string("ScheduleOnTimeMacro: xlfNow rc=")`,
+		`xll::LogWarn(std::string("ScheduleOnTimeMacro: xlcOnTime rc=")`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("ScheduleOnTimeMacro missing warn-level failure log %q", want)
+		}
+	}
+
+	// (3) The xlfNow branch reports the xltype, so rc=0 cannot be misread as success.
+	if !strings.Contains(body, `" xltype=" + std::to_string(xNow.get()->xltype)`) {
+		t.Errorf("ScheduleOnTimeMacro's xlfNow failure log omits the returned xltype; when " +
+			"xlfNow SUCCEEDS but returns a non-numeric operand the line reads " +
+			"\"rc=0 (xlretSuccess)\" and is actively misleading")
+	}
+}

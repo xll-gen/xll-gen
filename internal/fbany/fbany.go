@@ -367,6 +367,74 @@ func buildUintOrNumCell(b *flatbuffers.Builder, v uint64) (flatbuffers.UOffsetT,
 	return buildNumCell(b, float64(v)), protocol.ScalarValueNum
 }
 
+// Per-cell encoded-size constants for the grid builders, used to pre-size a
+// FlatBuffers builder so a large grid does not pay the doubling-realloc ladder
+// (each doubling copies the whole buffer, so the cost is O(payload) on top of
+// the serialization itself).
+//
+// These are MEASURED averages of the encoded form, not upper bounds — a
+// pre-size only has to land in the right order of magnitude to collapse the
+// realloc ladder, and overshooting wastes memory on every call:
+//
+//   - AnyGridBytesPerCell: a [][]any cell is a Scalar table wrapping a
+//     union member (Int/Num/Bool/Str/Nil/Date) plus its vtable and the
+//     data-vector slot. Measured ~28 B/cell on a mixed grid; 32 is the
+//     next power of two above that, so a typical grid finishes without a
+//     single grow. (24 was tried and is an UNDER-estimate: the last
+//     doubling still fires on a 1000x1000 grid and the win drops to zero.)
+//   - NumGridBytesPerCell: a [][]float64 cell is one raw float64 in a dense
+//     vector — exactly 8 bytes, no per-cell table.
+const (
+	AnyGridBytesPerCell = 32
+	NumGridBytesPerCell = 8
+)
+
+// gridBuilderOverhead covers everything outside the cell payload: the root
+// table, the Any union wrapper, the key string, vtables and FlatBuffers
+// alignment padding. Also the floor for a degenerate/oversized geometry, where
+// we fall back to letting the builder grow as it always did.
+const gridBuilderOverhead = 512
+
+// maxGridBuilderHint clamps the pre-size. The hint is derived from
+// caller-supplied dimensions, and ValidateGridDims only rejects a cell count
+// above MaxInt32 — which at 32 B/cell would ask for a 64 GiB allocation BEFORE
+// the validation runs. Clamping keeps a hostile/buggy geometry from turning a
+// clean "grid too large" error into an OOM. 256 MiB matches
+// server.DefaultMaxChunkBufferBytes, the largest payload the wire accepts
+// anyway.
+const maxGridBuilderHint = 256 << 20
+
+// GridBuilderSize returns an initial flatbuffers.Builder capacity for
+// serializing v at bytesPerCell (AnyGridBytesPerCell / NumGridBytesPerCell).
+// It is a pure allocation HINT: the encoded output is byte-identical whatever
+// capacity the builder starts with (pinned by
+// server.TestBuildRtdOnceGridResult_PresizedBytesIdentical), so callers may
+// pass any value and this may be tuned freely.
+//
+// Degenerate geometry (empty grid, zero-width rows, a cell count past the
+// int32 limit ValidateGridDims enforces) returns just gridBuilderOverhead —
+// those inputs are about to be rejected by the builder anyway.
+//
+// CO-CHANGE (AGENTS.md §18.4): when the marshalling fragments move into
+// internal/generator's typeRegistry (backlog R22 remainder ③), these per-cell
+// figures belong on TypeInfo.BytesPerCell, not here.
+func GridBuilderSize[T any](v [][]T, bytesPerCell int) int {
+	rows := len(v)
+	if rows == 0 {
+		return gridBuilderOverhead
+	}
+	cols := len(v[0])
+	cells := uint64(rows) * uint64(cols)
+	if cells == 0 || cells > math.MaxInt32 {
+		return gridBuilderOverhead
+	}
+	size := cells * uint64(bytesPerCell)
+	if size > maxGridBuilderHint {
+		return maxGridBuilderHint
+	}
+	return int(size) + gridBuilderOverhead
+}
+
 // BuildGrid deep-copies a row-major Go [][]any into a protocol.Grid table and
 // returns the Grid offset. The grid must be rectangular and non-empty (see
 // ValidateGridDims). Each cell is serialized via buildScalarCell. The data

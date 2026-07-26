@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -398,6 +400,147 @@ func TestBuildRtdOnceGridResult_Errors(t *testing.T) {
 	}
 	if _, err := BuildRtdOnceGridResult("k", [][]float64{}); err == nil {
 		t.Error("empty numgrid: want error")
+	}
+}
+
+// legacyBuildRtdOnceGridResult is a verbatim copy of BuildRtdOnceGridResult as
+// it stood before the builder was pre-sized (a fixed 1 KiB initial buffer). It
+// is the byte-identity oracle for TestBuildRtdOnceGridResult_PresizedBytesIdentical:
+// the FlatBuffers builder's initial capacity must be a pure allocation hint —
+// the encoded bytes may not depend on it.
+func legacyBuildRtdOnceGridResult(key string, v any) ([]byte, error) {
+	b := flatbuffers.NewBuilder(1024)
+
+	var gridOff flatbuffers.UOffsetT
+	var tag protocol.AnyValue
+	var err error
+
+	switch g := v.(type) {
+	case [][]any:
+		gridOff, err = fbany.BuildGrid(b, g)
+		tag = protocol.AnyValueGrid
+	case [][]float64:
+		gridOff, err = fbany.BuildNumGrid(b, g)
+		tag = protocol.AnyValueNumGrid
+	default:
+		return nil, fmt.Errorf("server.BuildRtdOnceGridResult: unsupported result type %T (want [][]any or [][]float64)", v)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("server.BuildRtdOnceGridResult: %w", err)
+	}
+
+	protocol.AnyStart(b)
+	protocol.AnyAddValType(b, tag)
+	protocol.AnyAddVal(b, gridOff)
+	anyOff := protocol.AnyEnd(b)
+
+	keyOff := b.CreateString(key)
+
+	protocol.RtdOnceGridResultStart(b)
+	protocol.RtdOnceGridResultAddKey(b, keyOff)
+	protocol.RtdOnceGridResultAddValue(b, anyOff)
+	root := protocol.RtdOnceGridResultEnd(b)
+	b.Finish(root)
+
+	return b.FinishedBytes(), nil
+}
+
+// benchAnyGrid builds a rows x cols [][]any with a mix of cell kinds (the
+// realistic rtd-once grid shape: numbers with occasional labels/flags).
+func benchAnyGrid(rows, cols int) [][]any {
+	g := make([][]any, rows)
+	for i := range g {
+		g[i] = make([]any, cols)
+		for j := range g[i] {
+			switch (i + j) % 4 {
+			case 0:
+				g[i][j] = float64(i*cols + j)
+			case 1:
+				g[i][j] = int32(i*cols + j)
+			case 2:
+				g[i][j] = "cell"
+			default:
+				g[i][j] = (i+j)%8 == 3
+			}
+		}
+	}
+	return g
+}
+
+func benchNumGrid(rows, cols int) [][]float64 {
+	g := make([][]float64, rows)
+	for i := range g {
+		g[i] = make([]float64, cols)
+		for j := range g[i] {
+			g[i][j] = float64(i*cols + j)
+		}
+	}
+	return g
+}
+
+// TestBuildRtdOnceGridResult_PresizedBytesIdentical pins the load-bearing
+// property of the pre-sizing change: the builder's initial capacity is an
+// allocation hint only, so the FINISHED bytes must be identical to what the old
+// fixed-1-KiB builder produced. If this ever fails, the pre-size is changing the
+// wire form and the C++ RtdOnceGridRegistry consumer is at risk.
+func TestBuildRtdOnceGridResult_PresizedBytesIdentical(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		val  any
+	}{
+		{"grid_1x1", "K", [][]any{{1.0}}},
+		{"grid_mixed_2x2", "BDH\x1f AAPL \x1f 30", [][]any{{int32(10), "hi"}, {false, 2.5}}},
+		{"grid_7x13", "k7x13", benchAnyGrid(7, 13)},
+		{"grid_100x100", "k100", benchAnyGrid(100, 100)},
+		{"numgrid_1x1", "K", [][]float64{{1}}},
+		{"numgrid_3x2", "BDS\x1f IBM ", [][]float64{{1, 2}, {3, 4}, {5, 6}}},
+		{"numgrid_100x100", "k100", benchNumGrid(100, 100)},
+		{"numgrid_257x63", "k257", benchNumGrid(257, 63)},
+		{"empty_key", "", benchAnyGrid(3, 3)},
+		{"long_key", strings.Repeat("topic\x1f", 200), benchNumGrid(4, 4)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := legacyBuildRtdOnceGridResult(tc.key, tc.val)
+			if err != nil {
+				t.Fatalf("legacy build: %v", err)
+			}
+			got, err := BuildRtdOnceGridResult(tc.key, tc.val)
+			if err != nil {
+				t.Fatalf("BuildRtdOnceGridResult: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("pre-sized output differs from the fixed-1KiB build: len %d vs %d", len(got), len(want))
+			}
+		})
+	}
+}
+
+func BenchmarkBuildRtdOnceGridResult(b *testing.B) {
+	sizes := []struct {
+		name string
+		n    int
+	}{{"10x10", 10}, {"100x100", 100}, {"1000x1000", 1000}}
+	for _, s := range sizes {
+		g := benchAnyGrid(s.n, s.n)
+		b.Run("any_"+s.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := BuildRtdOnceGridResult("key", g); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		ng := benchNumGrid(s.n, s.n)
+		b.Run("num_"+s.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := BuildRtdOnceGridResult("key", ng); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

@@ -130,7 +130,17 @@ inline const wchar_t* RibbonConnectRetryMacroName() {
 // silent. Reads the current serial time via xlfNow, adds delaySeconds (Excel
 // serial time is in DAYS; delaySeconds <= 0 runs the macro ASAP), and issues
 // xlcOnTime(when, macroName). Returns the Excel12 xlret STATUS (xlretSuccess ==
-// scheduled); a non-success rc is logged with its decoded name. NEVER throws.
+// scheduled); a non-success rc is logged at WARN with its decoded name (a
+// rejected arm silently kills any self-re-arming chain, so it is never INFO).
+// NEVER throws.
+//
+// CALLERS MUST INSPECT THE RETURN VALUE. Discarding it turns a rejected arm into
+// a silently dead chain that is indistinguishable from "still waiting".
+//
+// UNLOAD SELF-GATE (§20): returns xlretFailed WITHOUT touching Excel when
+// xll::g_isUnloading is set. This is structural, not a caller contract — the
+// function is public API and must not be able to place a C-API command during
+// teardown even if a future caller forgets its own gate.
 //
 // CONTEXT CONTRACT (LOAD-BEARING, AGENTS.md §23.6 HIGH #2): MUST be called from
 // a VALID command/macro context — xlAutoOpen, or an Excel-dispatched macro

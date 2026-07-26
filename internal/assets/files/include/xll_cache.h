@@ -109,6 +109,14 @@ private:
     // (RefreshIterativeCalcMode) and unconditional
     // (ForceRefreshIterativeCalcMode) entry points. A failed or
     // unrecognized answer leaves the gate at its previous value.
+    //
+    // SCOPE: GET.DOCUMENT(15) reports the ACTIVE workbook's setting, but
+    // iterativeCalc_ is one PROCESS-WIDE flag, so with several workbooks open
+    // the gate tracks whichever happened to be active at the last query. Not a
+    // correctness problem in either direction: Excel's Iteration setting is
+    // effectively application-global (Application.Iteration), and the gate can
+    // only ever DISABLE an optimization — a false positive costs a re-coerce
+    // per pass, a false negative is the pre-gate behavior for one cycle.
     void QueryIterativeCalcMode();
 
     CacheManager() = default;

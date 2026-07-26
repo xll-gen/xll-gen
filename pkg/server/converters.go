@@ -141,8 +141,16 @@ func BuildNumGridFromGo(b *flatbuffers.Builder, v [][]float64) (flatbuffers.UOff
 // branching on the declared return type. A nil/empty/malformed grid (or any
 // other type) returns an error so RunOnceGrid routes it through the error path
 // (the cell shows the message instead of a corrupt/empty spill).
+// The builder is PRE-SIZED from the grid's dimensions rather than started at a
+// fixed 1 KiB. This is the only non-pooled FlatBuffers builder on a payload-sized
+// path (the async batcher and pkg/chunk builders are pooled and amortize their
+// growth across calls), so every rtd-once grid used to walk the whole
+// doubling-realloc ladder from 1 KiB, copying the entire buffer at each step —
+// O(payload) of pure memmove on top of the serialization. The initial capacity
+// is a pure allocation hint; the finished bytes are unchanged (pinned by
+// TestBuildRtdOnceGridResult_PresizedBytesIdentical). See fbany.GridBuilderSize.
 func BuildRtdOnceGridResult(key string, v any) ([]byte, error) {
-	b := flatbuffers.NewBuilder(1024)
+	var b *flatbuffers.Builder
 
 	var gridOff flatbuffers.UOffsetT
 	var tag protocol.AnyValue
@@ -150,9 +158,11 @@ func BuildRtdOnceGridResult(key string, v any) ([]byte, error) {
 
 	switch g := v.(type) {
 	case [][]any:
+		b = flatbuffers.NewBuilder(fbany.GridBuilderSize(g, fbany.AnyGridBytesPerCell))
 		gridOff, err = fbany.BuildGrid(b, g)
 		tag = protocol.AnyValueGrid
 	case [][]float64:
+		b = flatbuffers.NewBuilder(fbany.GridBuilderSize(g, fbany.NumGridBytesPerCell))
 		gridOff, err = fbany.BuildNumGrid(b, g)
 		tag = protocol.AnyValueNumGrid
 	default:

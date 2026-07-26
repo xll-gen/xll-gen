@@ -168,13 +168,26 @@ server:
   # chunk: (optional) — tune the runtime ChunkManager.
   #   Omit the block to keep defaults: 256 MiB cap, 30s sweep, 60s idle TTL,
   #   1024 concurrent transfers.
+  #   DIRECTION: these knobs tune the HOST -> GUEST reassembler only (chunks the
+  #   XLL sends to the Go server). The GUEST -> HOST direction has a separate
+  #   reassembler inside the XLL whose limits are compile-time constants and are
+  #   NOT configurable; it is hand-kept at the same default numbers, so lowering
+  #   these values makes the two directions asymmetric.
   # chunk:
   #   max_buffer_bytes: 134217728    # 128 MiB cap on ONE transfer's reassembly
   #   cleanup_interval: "30s"        # Sweep cadence
   #   buffer_ttl: "60s"              # Idle window before eviction
-  #   max_concurrent_transfers: 1024 # Cap on in-flight partial transfers
-  #                                  # (aggregate guard; at the cap the manager
-  #                                  # prunes stale buffers, then refuses)
+  #   max_concurrent_transfers: 1024 # Cap on the NUMBER of in-flight partial
+  #                                  # transfers; at the cap the manager prunes
+  #                                  # stale buffers, then refuses.
+  #                                  # NOT an aggregate-byte guard: the two caps
+  #                                  # MULTIPLY, so the worst-case resident
+  #                                  # footprint is max_buffer_bytes x
+  #                                  # max_concurrent_transfers (256 GiB at the
+  #                                  # defaults), and a peer that touches each
+  #                                  # transfer within buffer_ttl keeps pruning
+  #                                  # from reclaiming anything. Lower
+  #                                  # max_buffer_bytes for a real byte ceiling.
 
 # Real-Time Data (RTD) Server Configuration
 rtd:

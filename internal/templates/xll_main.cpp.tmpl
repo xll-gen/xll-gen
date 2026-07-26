@@ -693,10 +693,62 @@ static std::atomic<bool> g_ribbonRegistered{false};
 // (connect success, give-up, budget exhaustion, or g_isUnloading), never by a
 // C-API cancel, so it adds NO new teardown-cancellation surface (§20/§23).
 // Bounded so an idle no-workbook Excel cannot retry forever.
-static constexpr int    kRibbonRetryMaxAttempts = 30;   // ~60s of retries
-static constexpr double kRibbonRetryIntervalSec = 2.0;  // spacing between attempts
+//
+// TWO BUDGETS, because the retry has TWO distinct failure classes and they have
+// completely different expected durations (MED fix, 2026-07-26):
+//
+//   * PRODUCTIVE failure — the Application object IS reachable (an EXCEL7 window
+//     exists) but COMAddIns Connect was rejected. That is a real fault; polling
+//     it for minutes helps nobody, so it keeps the original tight budget.
+//   * "noApp" — no Application object yet, i.e. Excel is sitting empty and the
+//     user simply has not opened a workbook. That is NOT a failure at all;
+//     TryConnectRibbon has always deliberately declined to charge it against its
+//     own give-up budget (see the `if (noApp)` early return below). The retry
+//     runner used to charge it anyway, so an empty Excel burned all 30 attempts
+//     in 60 s — and the very scenario this retry exists for (empty Excel +
+//     bounce: off, user opens a manual-calc / no-formula workbook ~90 s later)
+//     found the budget already spent AND no calc-end to fall back on. The noApp
+//     class therefore gets its own, far longer, time-shaped budget.
+//
+// The noApp budget stays responsive for the first ~30 s (a workbook opened right
+// after startup gets the tab within ~2 s) and then relaxes to a 10 s poll so a
+// long idle wait costs ~6 dispatches/minute instead of 30. Total noApp window:
+// 15*2 s + 60*10 s = 630 s (~10.5 min). It is deliberately FINITE — an add-in
+// that polls Excel forever is its own defect (§23) — so an Excel left empty for
+// longer than that gives up and falls back to calc-end only. See AGENTS.md §3
+// for the documented residual hole.
+static constexpr int    kRibbonRetryMaxAttempts       = 30;   // productive attempts (~60 s @ 2.0 s)
+static constexpr double kRibbonRetryIntervalSec       = 2.0;  // spacing while progress is possible
+static constexpr int    kRibbonRetryNoAppFastAttempts = 15;   // first ~30 s of "no workbook yet" stay at 2.0 s
+static constexpr double kRibbonRetryNoAppIdleSec      = 10.0; // …then relax the poll
+static constexpr int    kRibbonRetryNoAppMaxAttempts  = 75;   // hard stop: 15*2 s + 60*10 s = 630 s
 
-static bool TryConnectRibbon(const char* phase, bool allowBounce = false) {
+// Retry-chain state at FILE SCOPE (MED fix, 2026-07-26). These were function-local
+// statics inside __xllgen_RibbonConnectRetry's SEH __try block. Two problems with
+// that: (1) a second xlAutoOpen in the same process generation (probe-unload-reuse,
+// or add-in disable→enable without a DLL unload) while still unconnected armed a
+// SECOND self-re-arming chain sharing the same counter — halving the effective
+// budget and doubling the dispatch rate; (2) a function-local static's guard
+// variable is initialized inside an SEH __try scope, which is exactly the kind of
+// hidden non-trivial construction the XLL_SAFE_BLOCK discipline avoids. File-scope
+// atomics with constant initializers have neither problem.
+//
+// g_ribbonRetryArmed is a START-ONCE latch, not a liveness flag: the CAS at the
+// xlAutoOpen arm site means at most ONE chain ever exists. It is cleared only when
+// the xlcOnTime schedule itself was REJECTED (nothing is in flight, so a later
+// xlAutoOpen may legitimately try again); the terminal states (connected, gave up,
+// budget exhausted) leave it latched so nothing can restart an already-decided chain.
+static std::atomic<bool> g_ribbonRetryArmed{false};       // start-once latch for the chain
+static std::atomic<int>  g_ribbonRetryAttempts{0};        // productive attempts consumed
+static std::atomic<int>  g_ribbonRetryNoAppAttempts{0};   // "no workbook yet" attempts consumed
+
+// pNoApp (optional out): set true IFF the attempt failed ONLY because no
+// Application object is reachable yet (no workbook open). Callers that own a
+// retry budget MUST NOT charge such an attempt against a connect-failure budget
+// — nothing was attempted, there was nothing to attempt against. Always written
+// (false on every other exit) so a caller never reads a stale value.
+static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* pNoApp = nullptr) {
+    if (pNoApp) *pNoApp = false;
     if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return true;
     if (g_isUnloading.load(std::memory_order_acquire)) return false;
 
@@ -760,10 +812,16 @@ static bool TryConnectRibbon(const char* phase, bool allowBounce = false) {
     }
 
     // Still no Application object (only reachable if the bounce failed, or on a
-    // calc-end retry before a workbook exists): the user simply hasn't opened a
-    // workbook. Do NOT consume the give-up budget — the defensive calc-end
-    // fallback retries until a workbook appears.
-    if (noApp) return false;
+    // calc-end / OnTime retry before a workbook exists): the user simply hasn't
+    // opened a workbook. Do NOT consume the give-up budget — the defensive
+    // calc-end fallback and the OnTime retry keep trying until a workbook
+    // appears. Report the class outward so the OnTime runner can honor the same
+    // rule with ITS budget (it used to charge these, exhausting ~60 s of retries
+    // against an empty Excel).
+    if (noApp) {
+        if (pNoApp) *pNoApp = true;
+        return false;
+    }
 
     // Real connect failure (Application reachable but Connect rejected): bound
     // it so a pathological host doesn't retry forever.
@@ -1213,10 +1271,25 @@ start_worker:
     // for xlc* (§23.6 HIGH #2), and every re-arm runs from the retry macro's own
     // dispatch (also a command context). No-op once connected/gave-up
     // (g_ribbonConnectState != 0). See __xllgen_RibbonConnectRetry / AGENTS.md §3.
+    //
+    // The g_ribbonRetryArmed CAS makes this START-ONCE: a second xlAutoOpen in the
+    // same process generation must not start a second chain against the same
+    // counters. The schedule rc is INSPECTED, not discarded — a rejected arm means
+    // the whole chain never starts, and silently degrading to "calc-end only"
+    // without a log is how this stays invisible until a user reports a missing tab.
     XLL_SAFE_BLOCK_BEGIN
+        bool retryExpected = false;
         if (!g_isUnloading.load(std::memory_order_acquire) &&
-            g_ribbonConnectState.load(std::memory_order_acquire) == 0) {
-            xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);
+            g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&
+            g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {
+            int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);
+            if (armRc != xlretSuccess) {
+                // Nothing is in flight — un-latch so a later xlAutoOpen may retry.
+                g_ribbonRetryArmed.store(false, std::memory_order_release);
+                SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=" +
+                              std::to_string(armRc) + "); falling back to the calc-end retry only, so the "
+                              "ribbon tab may be delayed until the first recalculation.");
+            }
         }
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
@@ -1338,8 +1411,11 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
 // accepted here (contrast the COM-event teardown context, which Excel rejects
 // with xlretInvXlfn — §23.6 HIGH #2). TERMINATION IS BY STATE GATE / SELF-ABORT,
 // never a C-API cancel: this stops (no re-arm) once connected, once
-// TryConnectRibbon gives up (g_ribbonConnectState != 0), after
-// kRibbonRetryMaxAttempts, or on g_isUnloading. A leaked schedule that fires
+// TryConnectRibbon gives up (g_ribbonConnectState != 0), when EITHER bounded
+// budget is exhausted (kRibbonRetryMaxAttempts for productive attempts,
+// kRibbonRetryNoAppMaxAttempts for "no workbook open yet" attempts — see the
+// two-budget rationale at the constants), when the re-arm itself is rejected,
+// or on g_isUnloading. A leaked schedule that fires
 // post-unload no-ops on the g_isUnloading gate, and Excel un-registers the macro
 // on unload — so no new teardown-cancellation path is added (§20/§23 surface
 // unchanged). The exported symbol name MUST match
@@ -1350,16 +1426,43 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
         if (g_isUnloading.load(std::memory_order_acquire)) return 1;
         // Idempotent connect attempt (no bounce on retries: a workbook, if any,
         // already exists; the bounce is only for the xlAutoOpen no-workbook case).
-        TryConnectRibbon("ontime retry");
+        // noApp distinguishes "no workbook open yet" (not a failure — do not charge
+        // the connect-failure budget) from a real rejected Connect.
+        bool retryNoApp = false;
+        TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryNoApp);
         // Stop once the connect resolves — connected (1) or gave-up (2).
         if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;
-        // Still pending: re-arm up to the bounded budget, then stop.
-        static std::atomic<int> s_retryAttempts{0};
-        if (s_retryAttempts.fetch_add(1) + 1 >= kRibbonRetryMaxAttempts) {
-            SAFE_LOG_WARN("Ribbon: OnTime connect retry exhausted its bounded budget; the calc-end fallback remains the only trigger.");
-            return 1;
+
+        // Still pending: charge the attempt to the budget matching its CLASS, then
+        // re-arm at the matching spacing. Charging noApp to the productive budget
+        // is what made an empty Excel burn all 30 attempts in 60 s and miss the
+        // workbook the user opened afterwards (MED fix, 2026-07-26).
+        double nextDelaySec = kRibbonRetryIntervalSec;
+        if (retryNoApp) {
+            int n = g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;
+            if (n >= kRibbonRetryNoAppMaxAttempts) {
+                SAFE_LOG_WARN("Ribbon: OnTime connect retry gave up waiting for a workbook to be opened "
+                              "(no Application object for the full bounded window); the calc-end fallback "
+                              "remains the only trigger.");
+                return 1;
+            }
+            if (n >= kRibbonRetryNoAppFastAttempts) nextDelaySec = kRibbonRetryNoAppIdleSec;
+        } else {
+            int n = g_ribbonRetryAttempts.fetch_add(1) + 1;
+            if (n >= kRibbonRetryMaxAttempts) {
+                SAFE_LOG_WARN("Ribbon: OnTime connect retry exhausted its bounded budget; the calc-end fallback remains the only trigger.");
+                return 1;
+            }
         }
-        xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);
+        // Inspect the re-arm rc: a rejected xlcOnTime silently ENDS the chain, so
+        // it must be visible in the log rather than looking like "still retrying".
+        int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);
+        if (reArmRc != xlretSuccess) {
+            g_ribbonRetryArmed.store(false, std::memory_order_release);
+            SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=" +
+                          std::to_string(reArmRc) + "); the retry chain ENDS here and the calc-end "
+                          "fallback remains the only trigger.");
+        }
     XLL_SAFE_BLOCK_END(0)
     return 1;
 }
@@ -1458,7 +1561,25 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{else}}
         std::string tok{{add $j 1}} = xll::ContentHashToken('a', {{.Name}});
         {{end}}
+        // Already shipped this cycle? SendRefCachePayloadOnce dedups on the
+        // token, so for N cells sharing one range only the FIRST actually
+        // sends — but without this pre-check all N still pay the BUILD, which
+        // is O(payload) (protocol::Grid is one union table per cell). Peek at
+        // the same g_sentRefCache/g_refCacheMutex pair SendRefCachePayloadOnce
+        // consults and skip the build entirely on a repeat.
+        //
+        // Racing another calc thread is benign in both directions: a present
+        // entry means the payload is KNOWN-DELIVERED (the map is written only
+        // after a successful ack, and cleared only at CalculationEnded), and a
+        // missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent{{add $j 1}} = false;
         {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent{{add $j 1}} = g_sentRefCache.find(tok{{add $j 1}}) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent{{add $j 1}}) {
             // Build a SetRefCacheRequest{ key=token, val=Any(payload) } and
             // ship it ONCE per cycle (SendRefCachePayloadOnce dedups on the
             // token) BEFORE xlfRtd so the server has the payload cached before
@@ -1545,9 +1666,11 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     {{range $j, $arg := .Args}}
     std::wstring t{{add $j 1}};
     {{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string") (ne .Type "date")}}
-    // Composite-arg payloads, built now (for the content hash that goes into
-    // the once-key) but SHIPPED only on a cache miss (just before xlfRtd).
-    std::vector<uint8_t> refPayload{{add $j 1}};
+    // Composite-arg content-hash token. Only the TOKEN is computed here — it
+    // feeds the once-key, so it is needed before the cache lookup. The PAYLOAD
+    // (ConvertGridArg/ConvertRange/... + the SetRefCacheRequest serialization)
+    // is built and shipped only on a cache MISS, in the block below the
+    // TryGetResult early-return.
     std::string refTok{{add $j 1}};
     {{end}}
     {
@@ -1598,33 +1721,6 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{else}}
         refTok{{add $j 1}} = xll::ContentHashToken('a', {{.Name}});
         {{end}}
-        {
-            flatbuffers::FlatBufferBuilder rcb(1024);
-            auto rcKey = rcb.CreateString(refTok{{add $j 1}});
-            bool rcOk = true;
-            {{if eq .Type "grid"}}
-            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
-            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
-            {{else if eq .Type "numgrid"}}
-            auto rcInner = ConvertNumGrid({{.Name}}, rcb);
-            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
-            {{else if eq .Type "range"}}
-            auto rcInner = ConvertRange({{.Name}}, rcb);
-            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
-            {{else}}
-            auto rcAny = ConvertAny({{.Name}}, rcb);
-            {{end}}
-            if (!rcOk) {
-                // Coerce failed: leave refPayload empty — the ship step below
-                // skips empty payloads and the Go dispatch surfaces an explicit
-                // miss error instead of a silent degenerate grid.
-                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: composite arg coerce failed; skipping payload for token " + refTok{{add $j 1}});
-            } else {
-                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-                rcb.Finish(rcReq);
-                refPayload{{add $j 1}}.assign(rcb.GetBufferPointer(), rcb.GetBufferPointer() + rcb.GetSize());
-            }
-        }
         t{{add $j 1}} = StringToWString(refTok{{add $j 1}});
         {{end}}
     }
@@ -1671,15 +1767,49 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         {{end}}
     }
 
-    // 2. Cache miss: ship any composite-arg payloads (once per cycle) so the
-    //    server has them cached BEFORE ConnectData fires the handler, then
-    //    issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
+    // 2. Cache miss: BUILD and ship any composite-arg payloads (once per cycle)
+    //    so the server has them cached BEFORE ConnectData fires the handler,
+    //    then issue xlfRtd. ConnectData returns #GETTING_DATA for this rtd-once
     //    topic (it recognizes the function name and substitutes the placeholder
     //    for the plain-rtd "Connecting..." BSTR).
+    //
+    //    The build lives HERE, not up with the token: serializing a composite
+    //    argument is O(payload) — a protocol::Grid is one union table PER CELL,
+    //    so a 10k-cell grid costs hundreds of microseconds to milliseconds —
+    //    and on a memoize / TTL hit the wrapper returns above without ever
+    //    calling xlfRtd, so every byte of that work was discarded. Only the
+    //    TOKEN (a streaming FNV-1a over the coerced values) is needed before
+    //    the lookup, because it is what makes the once-key content-addressed.
+    //    Do NOT hoist this back into the topic-building loop.
     {{range $j, $arg := .Args}}{{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string") (ne .Type "date")}}
-    if (!refPayload{{add $j 1}}.empty()) {
-        if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, refPayload{{add $j 1}}.data(), refPayload{{add $j 1}}.size())) {
-            SAFE_LOG_WARN("rtd-once {{$fn.Name}}: failed to ship composite arg payload for token " + refTok{{add $j 1}});
+    {
+        flatbuffers::FlatBufferBuilder rcb(1024);
+        auto rcKey = rcb.CreateString(refTok{{add $j 1}});
+        bool rcOk = true;
+        {{if eq .Type "grid"}}
+        auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
+        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
+        {{else if eq .Type "numgrid"}}
+        auto rcInner = ConvertNumGrid({{.Name}}, rcb);
+        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
+        {{else if eq .Type "range"}}
+        auto rcInner = ConvertRange({{.Name}}, rcb);
+        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
+        {{else}}
+        auto rcAny = ConvertAny({{.Name}}, rcb);
+        {{end}}
+        if (!rcOk) {
+            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
+            // a degenerate payload under this token; the Go dispatch will miss
+            // and push an explicit error to the topic instead of silently
+            // handing the handler an empty grid.
+            SAFE_LOG_WARN("rtd-once {{$fn.Name}}: composite arg coerce failed; skipping payload ship for token " + refTok{{add $j 1}});
+        } else {
+            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+            rcb.Finish(rcReq);
+            if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, rcb.GetBufferPointer(), rcb.GetSize())) {
+                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: failed to ship composite arg payload for token " + refTok{{add $j 1}});
+            }
         }
     }
     {{end}}{{end}}

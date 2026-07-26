@@ -29,13 +29,21 @@ const DefaultChunkBufferTTL = 60 * time.Second
 // DefaultMaxConcurrentTransfers bounds how many partially-reassembled inbound
 // transfers may be resident at once.
 //
-// MaxChunkBufferBytes caps ONE transfer; without a count bound the aggregate is
-// still unbounded (256 MiB x N). Before this bound existed, the only reclaim
-// was the TTL sweep, so a peer opening transfers it never finishes could pile
-// up buffers for a whole sweep period + TTL (worst case ~90 s at the defaults)
-// with no ceiling. rtd-once grid makes that a realistic pressure path rather
-// than a theoretical one: every topic draws a fresh transfer id, so a large RTD
-// grid connecting many topics at once opens many concurrent transfers.
+// This is a COUNT bound, NOT an aggregate-byte bound — the two caps MULTIPLY.
+// At the defaults the worst-case resident footprint is
+// MaxChunkBufferBytes x MaxConcurrentTransfers = 256 MiB x 1024 = 256 GiB, and
+// the TTL sweep does not cap it either: a peer that dribbles one chunk per
+// transfer inside ChunkBufferTTL keeps every buffer's LastAccess fresh, so
+// nothing is ever pruned. What the count bound actually buys is a bound on the
+// NUMBER of transfers a peer can have open, which is what keeps the map (and
+// the sweep) from growing without limit; before it existed the only reclaim was
+// the TTL sweep, so a peer opening transfers it never finishes piled up buffers
+// for a whole sweep period + TTL (~90 s at the defaults) with no ceiling at
+// all. Deployments that need a real byte ceiling must lower
+// MaxChunkBufferBytes: the product is the number to reason about, not either
+// factor alone. rtd-once grid makes the pressure path realistic rather than
+// theoretical: every topic draws a fresh transfer id, so a large RTD grid
+// connecting many topics at once opens many concurrent transfers.
 //
 // 1024 mirrors shm's maxConcurrentStreams (SPECIFICATION.md §3.3.4). The
 // reclaim mechanism is explicitly implementation-defined there; we use the
@@ -44,6 +52,15 @@ const DefaultChunkBufferTTL = 60 * time.Second
 // transfer to admit a new one just moves the failure onto an innocent peer.
 // Override with ChunkManager.MaxConcurrentTransfers / ChunkManagerConfig, or
 // xll.yaml `server.chunk.max_concurrent_transfers`.
+//
+// DIRECTION (AGENTS.md §18.6): this bound — and every other `server.chunk`
+// knob — governs the HOST->GUEST inbound reassembler ONLY (chunks the C++ XLL
+// sends to this Go server). The GUEST->HOST direction has its OWN, INDEPENDENT
+// reassembler in internal/assets/files/src/xll_worker.cpp whose limits
+// (kMaxChunkTotalSize, kMaxPartialMessages, kChunkStaleTtl) are compile-time
+// constants with no template/YAML wiring. The two are deliberately kept at the
+// same NUMBERS so the wire behaves symmetrically, but tuning `server.chunk`
+// moves only this side.
 const DefaultMaxConcurrentTransfers = 1024
 
 // DefaultMaxPoisonedTransfers bounds the poison set (see ChunkManager.poisoned).
@@ -270,10 +287,15 @@ func (cm *ChunkManager) effectiveMaxConcurrentTransfers() int {
 // (AGENTS.md §23, Cache Visibility Discipline).
 //
 // The per-transfer byte cap is only half the bound: opening a NEW transfer also
-// has to fit under MaxConcurrentTransfers, or the aggregate footprint is
+// has to fit under MaxConcurrentTransfers, or the number of resident buffers is
 // unbounded no matter how small each transfer is. At the bound we prune stale
 // buffers and, if that frees nothing, refuse the same way (no insert, error
-// returned) — see DefaultMaxConcurrentTransfers.
+// returned).
+//
+// The two caps bound the transfer COUNT and the per-transfer SIZE — they do NOT
+// compose into an aggregate-byte guard; they MULTIPLY (256 GiB at the defaults,
+// and a peer that keeps each transfer fresh inside the TTL defeats pruning too).
+// See DefaultMaxConcurrentTransfers.
 func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, error) {
 	if total <= 0 {
 		return nil, fmt.Errorf("xll-gen/server: refusing chunk buffer allocation: non-positive total=%d (id=%#x)", total, id)
@@ -296,6 +318,18 @@ func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, erro
 		// buffer would wedge the transfer until the TTL sweep evicts it,
 		// because the new chunks' offsets/total no longer match. Reset to a
 		// fresh buffer sized for the new total. See IMPROVEMENT_BACKLOG.md §3.
+		//
+		// INTENTIONAL ASYMMETRY vs the C++ mirror (AGENTS.md §18.6): the
+		// guest->host reassembler in xll_worker.cpp has NO such reset — it
+		// keeps the FIRST totalSize for the life of the entry, so the same
+		// re-open is measured against the stale total by its bounds check and
+		// the transfer is DISCARDED (and poisoned) instead of restarted. Same
+		// wire sequence, opposite outcome: recovered here, refused there. This
+		// is a known divergence, deliberately left as-is — symmetrizing it is a
+		// separate change and would have to pick which behavior is the contract
+		// (the C++ side's refusal is arguably the stricter/more correct one; the
+		// Go side's reset is more forgiving of a producer restart). Do NOT
+		// "fix" one side in isolation.
 		log.Warn("ChunkManager: chunk buffer total mismatch on reuse; resetting buffer",
 			"id", id, "oldTotal", buf.TotalSize, "newTotal", total)
 		reuse = false

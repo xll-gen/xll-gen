@@ -212,6 +212,21 @@ Message IDs are distributed across multiple definitions and must match exactly.
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
 **Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
 
+#### 18.6.1 Chunk reassembly — two independent reassemblers, and their deliberate asymmetries
+
+The chunk co-change pair (`internal/assets/files/src/xll_worker.cpp` ↔ `pkg/server/manager.go` + `pkg/server/handlers.go`) is a **mirror of rules, not a shared mechanism**. They are two reassemblers running in **opposite directions**, and the word "mirrors" in either file's comments must be read that way:
+
+* **Go (`ChunkManager` / `HandleChunk`)** reassembles **host → guest** chunks: what the C++ XLL sends to the Go server.
+* **C++ (`g_partialMessages` / `HandleChunk`)** reassembles **guest → host** chunks: async batch responses and rtd-once grid results arriving at the XLL.
+
+**Tunability is one-sided.** `xll.yaml` `server.chunk` (`max_buffer_bytes`, `max_concurrent_transfers`, `cleanup_interval`, `buffer_ttl`) configures the **Go/host→guest** side only. The C++ twins (`kMaxChunkTotalSize`, `kMaxPartialMessages`, `kChunkStaleTtl`) are **compile-time constants with no template or YAML wiring**. They are hand-kept at the same default numbers so the wire behaves the same in both directions; a project that lowers the Go knobs is asymmetric by construction. Wiring the C++ side through the template is a possible future change, not a current guarantee.
+
+**Cap semantics — the two caps MULTIPLY.** `MaxChunkBufferBytes`/`kMaxChunkTotalSize` caps ONE transfer; `MaxConcurrentTransfers`/`kMaxPartialMessages` caps the transfer COUNT. Neither is an aggregate-byte guard, and their combination is not one either: worst-case resident footprint is `MaxBufferBytes × MaxConcurrentTransfers` = **256 GiB at the defaults**. The TTL sweep does not rescue that — a peer that pushes one chunk per transfer inside `ChunkBufferTTL` keeps every buffer's `LastAccess` fresh, so nothing is prunable. A real byte ceiling requires lowering `max_buffer_bytes`. Do not describe the count bound as an "aggregate guard" (that wording was corrected 2026-07-26 in `manager.go`, `xll_worker.cpp` and `README.md`).
+
+**Intentional asymmetry — total-size mismatch on transfer-id reuse.** Go's `GetChunkBuffer`, on finding a live buffer whose `TotalSize` differs from the arriving chunk's declared total, logs a warning and **replaces the buffer in place**, letting the re-opened transfer proceed. The C++ side has **no such reset**: `PartialMessage` keeps the FIRST `totalSize` for the life of the entry, so the re-open's chunks are bounds-checked against the stale total, hit the out-of-bounds path, and the transfer is **discarded and poisoned**. Same wire sequence, opposite outcome — recovered by the guest, refused by the host. This divergence is **known and deliberately left as-is**; symmetrizing it means first deciding which behavior is the contract (the C++ refusal is the stricter reading; the Go reset is the more forgiving one for a producer restart) and is a separate change. **Never align one side in isolation.**
+
+**TOCTOU between `chunkMutex` and `buf.Mutex` is benign (documented, not a bug).** `GetChunkBuffer` releases `chunkMutex` before `HandleChunk` takes `buf.Mutex`, so a concurrent TTL sweep or rejection can unlink the buffer this call still writes into. That wastes a write and can make two goroutines report different outcomes for the same transfer, but it cannot corrupt data: a rejected segment is never copied, and the segments that DID land are disjoint and in-bounds by the `ClaimSegment` contract, so `Received == TotalSize` still implies exact coverage of `[0, TotalSize)`. Do NOT widen the locking to "fix" it — holding `chunkMutex` across `buf.Mutex` serializes every concurrent transfer and creates a lock-ordering hazard with `PoisonTransfer`.
+
 ### 18.7 Configuration System
 The configuration structure is coupled with the generator templates.
 1.  **Definition**: `internal/config/config.go` defines the `Config` struct and validation logic.
@@ -998,8 +1013,14 @@ directly and skip default application):
   highest-risk hook point (`WorkbookBeforeClose`) while keeping the ribbon connected
   at startup. Cost: a blank Book1 stays open (classic empty-start Excel behavior).
 - **`off`** — never bounce (no `xlcNew` at all); the COMAddIns connect defers to the
-  calc-end fallback, so the ribbon tab appears when the first workbook opens. The
+  post-load retries, so the ribbon tab appears when the first workbook opens. The
   escape hatch when even scratch-workbook *creation* (`NewWorkbook` hooks) is hostile.
+  Two retries cover this mode: the calc-end fallback (fires only if the book actually
+  recalculates) and the bounded `xlcOnTime` connect retry armed at `xlAutoOpen`
+  (§23.6 "§3"), which covers the manual-calc / no-formula book. The OnTime retry's
+  "waiting for a workbook" window is finite (~10.5 min) — see the §3 FOLLOW-UP entry
+  for the accepted residual hole and the still-unproven `xlcOnTime`-accepted-at-
+  `xlAutoOpen`-with-no-workbook assumption.
 
 Pinned by `gen_ribbon_bounce_test.go` (keep-open/off shapes, unset≡full) and
 `config_test.go` (value validation).
@@ -1227,14 +1248,25 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
   3. **C++ had no `total_size == 0` guard** (Go's `GetChunkBuffer` refuses `total <= 0`). `resize(0)` satisfies the `0 == 0` completion test immediately and hands `GetRoot<BatchAsyncResponse>` a **nullptr** from `buffer.data()` → access violation inside Excel. Unreachable from an honest Go producer, but this is the wire; closed for reject-path symmetry.
   Regressions: `pkg/server/manager_test.go::TestChunkManager_ZeroLengthSegmentRejected` and `::TestChunkManager_RejectedTransferIsPoisoned` (per-id scope, TTL expiry, resource-refusal must NOT poison) — FAIL-before confirmed by neutering both guards (6 failing sub-cases); plus regtest mock-host cases **16c** (rejection is final: neither a mid-stream continuation nor a from-scratch re-open may be acked), **16d** (poison is per-id), **16e** (empty data vector refused).
 * **OPEN (product decision, NOT a runtime bug) — a user-declared `CalculationCanceled` event never reaches the Go handler.** `internal/templates/xll_main.cpp.tmpl`'s named-event stub (`{{else}}` branch, "Currently not fully implemented for named events") only logs, so `MSG_CALCULATION_CANCELED` (132) is never sent and the whole Go chain — `HandleCalculationCanceled` → `OnCalculationCanceled` (`server.go.tmpl`, `interface.go.tmpl`, documented in `README.md`/`TUTORIAL.md`) — is dead code in generated projects; only `internal/regtest/testdata/mock_host.cpp` case 13 exercises it. **This is NOT a cache-correctness issue** — Excel fires `CalculationCanceled` and then `CalculationEnded` 2–6 ms later, so the caches are already cleared (§19.4). Wiring 132 is therefore a semantics change, not a fix: it would fire both `OnCalculationCanceled` and `OnCalculationEnded` for one interrupted cycle and let `HandleCalculationCanceled`'s `CommandBatcher.Clear()` drop commands scheduled during that cycle just before the Ended flush. Decide the intended contract (does a cancelled cycle discard scheduled commands?) before implementing, and keep the C++/Go RefCache clears on the SAME event so `g_sentRefCache` and the Go `RefCache` cannot diverge.
-* **OPEN (LOW, deferred from the 2026-07-26 pre-release C++ review).** Deliberately NOT fixed in that pass — all documentation/coverage polish, none change runtime behavior:
-  * `GetChunkBuffer`'s doc comment says the concurrent-transfer bound keeps the "aggregate footprint" bounded; strictly it bounds the transfer COUNT (`MaxConcurrentTransfers × MaxChunkBufferBytes` is the actual ceiling). Reword.
-  * `kMaxChunkTotalSize` / `kMaxPartialMessages` are compile-time constants in C++ while the Go twins are `xll.yaml`-tunable (`server.chunk`). Document the asymmetry (or wire the C++ side through the template).
-  * The total-mismatch-on-reuse reset exists only on the Go side (`GetChunkBuffer`); C++ keeps the first `totalSize` for the life of the entry. Record it in the §18.6 co-change anchor as an intentional asymmetry.
-  * `HandleChunk`'s TOCTOU note: `GetChunkBuffer` releases `chunkMutex` before `buf.Mutex` is taken, so a concurrent TTL sweep can evict the buffer this call still holds a pointer to. Benign (the writer finishes into a now-unreachable buffer), but undocumented.
+* **DONE (2026-07-26) — MED: `BuildRtdOnceGridResult` started every grid on a fixed 1 KiB FlatBuffers builder.** `pkg/server/converters.go`'s rtd-once grid serializer (`internal/templates/server.go.tmpl`'s only caller) allocated `flatbuffers.NewBuilder(1024)` regardless of the grid's size, so every large result walked the whole doubling-realloc ladder from 1 KiB — each doubling copies the entire buffer, i.e. **O(payload) of pure memmove on top of the serialization**. It is the only NON-POOLED builder on a payload-sized path (the async batcher, `pkg/chunk` and `pkg/pool` builders are pooled and amortize their growth), so nothing else absorbed it. **Fix:** pre-size from the grid geometry via the new `fbany.GridBuilderSize(v, bytesPerCell)` + `fbany.AnyGridBytesPerCell` / `fbany.NumGridBytesPerCell`.
+  * **The per-cell constants are MEASURED, and 24 is wrong.** A `[][]any` cell (a `Scalar` table + union member + vtable + vector slot) encodes at **~28 B/cell**, so the intuitive `rows*cols*24+512` is an UNDER-estimate: the last doubling still fires at 1000×1000 and the win collapses to zero. `AnyGridBytesPerCell = 32` (next power of two above the measurement) is what actually removes the ladder. `[][]float64` is exactly 8 B/cell (dense doubles, no per-cell table) and `rows*cols*8+512` is effectively optimal (82,000 B/op against an 80,080 B payload).
+  * **Measured (Ryzen 9 3900X, `-benchtime 200x -count=3`, best of 3):** numgrid 100×100 **−48% ns / −82% B/op** (18→4 allocs); numgrid 1000×1000 **−32% ns / −71% B/op** (30→4); any 100×100 **−23% ns / −80% B/op** (25→7); any 1000×1000 **−68% B/op**, 37→7 allocs, ns within noise (the per-cell table building dominates at that size). Tiny grids are unaffected (a 10×10 numgrid's 1,312 B hint is a ~180 B overshoot vs the old 1,024 default).
+  * **Safety:** the initial capacity is a pure allocation HINT — `FinishedBytes()` is byte-identical whatever it is. Pinned by `pkg/server/converters_test.go::TestBuildRtdOnceGridResult_PresizedBytesIdentical`, which diffs against a verbatim copy of the old fixed-1-KiB function over 10 shapes. `GridBuilderSize` also CLAMPS (degenerate geometry → 512; anything over 256 MiB → 256 MiB) so a hostile `rows*cols` near the int32 limit `ValidateGridDims` rejects cannot turn a clean error into a 64 GiB allocation.
+  * **CO-CHANGE (§18.4):** if the R22 remainder ③ (moving the marshalling fragments into `internal/generator`'s `typeRegistry`) is ever picked up, these per-cell figures belong on **`TypeInfo.BytesPerCell`**, not in `internal/fbany`. Noted at both the constant and the `GridBuilderSize` doc comment.
+  * **Reviewed and NOT applied elsewhere:** `fbany.BuildGrid`'s `cellOffsets` is already `make(..., 0, rows*cols)` and measures a scale-invariant ~0.4% of the function, and `fbany`'s builders are all CALLER-SUPPLIED — pre-sizing can only happen at a creation site, and every other creation site is pooled/reused, so there is no second application of this fix to make.
+* **DONE (2026-07-26) — MED: rtd/rtd-once built composite-argument payloads eagerly, before the cache lookup that discards them.** In `internal/templates/xll_main.cpp.tmpl` the rtd-once wrapper built the full `SetRefCacheRequest` (`ConvertGridArg`/`ConvertRange`/… + `rcb.Finish` + a whole-buffer `refPayload.assign` copy) inside the topic-string loop — i.e. BEFORE `MakeRtdOnceKey` + `TryGetResult`. On a memoize / `memoize_ttl` hit the wrapper returns the cached value **without calling `xlfRtd`**, so all of that work was thrown away. `protocol::Grid` is one union table PER CELL, so a 10k-cell grid argument is hundreds of microseconds to milliseconds of pure waste per hit. **Fix:** only the content-hash TOKEN stays in the topic loop (it is what makes the once-key content-addressed); the build now happens in the cache-MISS branch, directly at the ship site — which also deletes the `std::vector<uint8_t> refPayload` staging copy.
+  * **Plain rtd** has no cache branch to move into: the dedup lives inside `SendRefCachePayloadOnce` (the per-cycle `g_sentRefCache` token set), so 100 cells sharing one range each SERIALIZED the grid and 99 of those buffers were dropped at the ship. The wrapper now peeks at `g_sentRefCache` under `g_refCacheMutex` (both already exported from `xll_ipc.h`) and skips the build on a repeat. Racing is benign both ways: a present entry means the payload is known-delivered (written only after a successful ack, cleared only at `CalculationEnded`), and a missed entry just re-enters `SendRefCachePayloadOnce`, which re-checks under the same mutex and no-ops. Never a lost ship.
+  * **Do NOT double-count the win.** The hit path still pays `ContentHashToken`'s coerce + hash (already ~90× cheaper since the 2026-07-25 streaming FNV-1a), so the realized saving is roughly HALF the composite-argument overhead, not all of it. Scalar-only rtd/rtd-once functions gain nothing (no block is emitted for them).
+  * **Verification:** the `xlCoerce` round-trip saving is not measurable without Excel; the justification is the mechanical certainty of the removed work. Placement is pinned by `internal/generator/gen_rtd_composite_test.go::TestGenCpp_RtdOnceComposite_BuildAfterCacheLookup` (token before the lookup, converter + `CreateSetRefCacheRequest` + ship all after it, and no `refPayload` left) and `::TestGenCpp_RtdComposite_SkipBuildWhenAlreadyShipped`. `internal/generator/testdata/golden/xll_main.cpp.golden` regenerated (`UPDATE_GOLDEN=1`; +243/−117, every hunk inside the RTD/rtd-once wrapper bodies). The `cmd` C++ compile gate fixture (`cppCompileGateYaml`) gained `rtd` + `rtd-once` functions with `grid`/`range`/`numgrid`/`any` arguments — **no gate compiled the composite-argument wrapper before**, so a scope error in this move would have shipped.
+* **(LOW, from the 2026-07-26 pre-release C++ review) — documentation accuracy batch, DONE 2026-07-26.** All five documentation items below are now written down; none changed runtime behavior. The substance lives in **§18.6.1** (the chunk-reassembler anchor) — read that, not this list:
+  * **DONE** — `GetChunkBuffer` / `DefaultMaxConcurrentTransfers` no longer claim an "aggregate footprint" bound. Corrected in `pkg/server/manager.go`, `internal/assets/files/src/xll_worker.cpp` (`kMaxPartialMessages`) and `README.md`: it is a COUNT bound, the two caps MULTIPLY (256 GiB worst case at the defaults), and TTL pruning is defeated by a peer that keeps each transfer fresh.
+  * **DONE** — the C++ caps (`kMaxChunkTotalSize`/`kMaxPartialMessages`/`kChunkStaleTtl`) being compile-time while the Go twins are `xll.yaml`-tunable is now documented as a **direction** fact, not just a tunability gap: `server.chunk` moves the host→guest (Go) reassembler only; guest→host is a separate reassembler with hardcoded limits. Wiring the C++ side through the template remains an open OPTION, not a plan.
+  * **DONE** — the total-mismatch-on-reuse divergence (Go resets in place and continues; C++ keeps the first `totalSize`, so the re-open is discarded + poisoned) is recorded in §18.6.1 as an **intentional asymmetry**, with comments on both sides. Symmetrizing it is a separate change.
+  * **DONE** — `HandleChunk`'s `chunkMutex`→`buf.Mutex` TOCTOU is documented at the call site with the reason it is safe (rejected segments are never written; the surviving segments are disjoint + in-bounds, so an exact `Received == TotalSize` still means complete coverage — only the OBSERVED outcome can differ) plus an explicit "do not widen the locking" note.
+  * **DONE** — `QueryIterativeCalcMode`'s header comment now states the scope: `GET.DOCUMENT(15)` reads the ACTIVE workbook while `iterativeCalc_` is process-global. Practically irrelevant (`Application.Iteration` is effectively app-global) and worst case is a lost optimization, never a wrong value.
+* **OPEN (LOW, still deferred from the same review):**
   * No offline C++ test for the segment/overlap logic — `xll_worker.cpp` is only covered through the cmake gates and the regtest mock host. An offline g++ harness like `cache_native_test.cpp` would make the reject matrix cheap to test.
   * No RTD F9 smoke case in `internal/smoketest`.
-  * `RefreshIterativeCalcMode` reads `GET.DOCUMENT(15)`, which is the ACTIVE workbook's iteration setting; with several workbooks open the gate tracks whichever is active. Note the scope in the header (the gate can only ever disable an optimization, so a mismatch is not a correctness issue).
   * Doxygen coverage of the new CacheManager/chunk entry points.
 * `internal/regtest`: regression tests bind to Excel via COM (`internal/regtest/runner.go`). Add a short doc note explaining how to run them on a fresh Windows machine (which Excel SKUs work, what registry entries are needed).
 * Follow-ups uncovered during the stabilization pass:
@@ -1462,8 +1494,9 @@ already deleted.**
     its own Excel-dispatched macro dispatch (also a valid command context) — never from a COM-event
     context, so it never hits the `xlretInvXlfn` wall. **Termination is by STATE GATE / SELF-ABORT, not
     a C-API cancel:** stops (no re-arm) once connected, once `TryConnectRibbon` gives up
-    (`g_ribbonConnectState != 0`), after `kRibbonRetryMaxAttempts` (30, ~60 s at
-    `kRibbonRetryIntervalSec = 2.0`), or on `g_isUnloading`. A leaked schedule that fires post-unload
+    (`g_ribbonConnectState != 0`), when a bounded attempt budget is exhausted (originally a single
+    `kRibbonRetryMaxAttempts` = 30 at `kRibbonRetryIntervalSec` = 2.0 s ≈ 60 s — **superseded by the
+    two-budget split below**), or on `g_isUnloading`. A leaked schedule that fires post-unload
     no-ops on the `g_isUnloading` gate and Excel un-registers the macro on unload — so **NO new
     teardown-cancellation path is added** (§20/§23 surface unchanged). The calc-end fallback is KEPT
     (belt-and-braces for the workbook-already-recalculating case). Reuses the deferred-commands
@@ -1481,6 +1514,86 @@ already deleted.**
     compile+link the emitted retry under MinGW. Golden updated (`xll_main.cpp.golden`: whitespace only,
     since the golden fixture has the ribbon disabled). Runtime C++ asset + template (not `DllMain`
     graceful-path logic) — confirm with `xll-cpp-reviewer` before commit.
+  - **§3 FOLLOW-UP (2026-07-26) — retry budget split + arm-path hardening. DONE.** Post-ship review of
+    the above found that the retry **still did not fix its own target scenario**, plus four smaller
+    defects on the arm path.
+    - **MED #1 — `noApp` attempts consumed the whole 30-attempt budget.** `TryConnectRibbon` has always
+      deliberately declined to charge a "no `Application` object yet" attempt against its OWN give-up
+      budget (`if (noApp) return false;` — that state is not a failure, the user simply has not opened
+      a workbook). The retry runner did not make that distinction and charged every attempt to the
+      single 30-attempt budget. So: empty Excel + `ribbon.bounce: off` → the retry polled 30× over 60 s
+      against no workbook and stopped; the user opened a manual-calc / no-formula workbook at t≈90 s →
+      budget already spent AND calc-end never fires for such a book → **ribbon tab still delayed
+      indefinitely**. The scenario §3 was written for was not actually fixed (the "fills the gap"
+      wording above was correspondingly overstated for the empty-start case).
+      **Chosen fix: (a) — expose `bool* pNoApp` from `TryConnectRibbon` and give the `noApp` class its
+      own budget.** Rejected (b) (blanket rebudget to 10 s × 30) because it (i) conflates the two
+      failure classes, so a genuinely broken host — `Application` reachable, `Connect` rejected — would
+      be hammered for 5 minutes instead of 60 s, (ii) costs up to 10 s of ribbon-tab latency after the
+      workbook finally opens, and (iii) leaves the *accounting* bug in place, which is the actual
+      defect: `TryConnectRibbon`'s documented intent already said noApp must not be charged; the runner
+      was the site violating it. (b)'s good idea — a *time*-shaped rather than count-shaped budget — is
+      kept for the noApp class only. Shape: productive attempts keep `kRibbonRetryMaxAttempts` = 30 @
+      `kRibbonRetryIntervalSec` = 2.0 s; noApp attempts get `kRibbonRetryNoAppFastAttempts` = 15 @ 2.0 s
+      (stay responsive for the first ~30 s so a workbook opened right after startup gets the tab within
+      ~2 s), then relax to `kRibbonRetryNoAppIdleSec` = 10.0 s up to `kRibbonRetryNoAppMaxAttempts` = 75
+      → **630 s (~10.5 min) total noApp window**, ~6 dispatches/min while idle.
+      **RESIDUAL HOLE (accepted, deliberate):** the noApp window is FINITE. An Excel left empty for
+      longer than ~10.5 min and *then* given a manual-calc / no-formula workbook still gets no ribbon
+      tab until something recalculates. This is accepted over an unbounded poll — an add-in that polls
+      the host forever is its own defect — and the user-visible escape hatches are unchanged
+      (`ribbon.bounce: full`/`keep-open` connect at load; any recalculation fires the calc-end
+      fallback; reloading the add-in re-arms).
+    - **MED #2(a) — `ScheduleOnTimeMacro` had no self-gate.** It is exported as general-purpose API but
+      relied on every caller remembering to check `g_isUnloading`; a schedule placed during teardown can
+      only ever become a leaked OnTime dispatch. Now gates itself
+      (`if (xll::g_isUnloading.load(acquire)) return xlretFailed;`) before any C-API call — structural,
+      per §20, rather than an unenforced caller contract. Both existing callers keep their own gate.
+    - **MED #2(b) — arm rc was discarded / logged too quietly.** A rejected `xlcOnTime` silently kills
+      the self-re-arming chain. Non-success rc in `ScheduleOnTimeMacro` is now `LogWarn` (was `LogInfo`),
+      and BOTH arm sites (`xlAutoOpen` initial arm, runner re-arm) capture the rc and emit a
+      `SAFE_LOG_WARN` naming the consequence ("falling back to the calc-end retry only").
+    - **MED #2(c) — misleading log.** The "xlfNow succeeded but returned a non-numeric operand" branch
+      printed `nowRc` (= 0 there), rendering as `rc=0 (xlretSuccess)`. It now prints the returned
+      `xltype` alongside, which is the only thing distinguishing the two failure shapes.
+    - **MED #2(d) — shared counter across two chains.** `s_retryAttempts` was a function-local static
+      inside `__xllgen_RibbonConnectRetry`'s SEH `__try`. A second `xlAutoOpen` in the same process
+      generation (probe-unload-reuse, add-in disable→enable without a DLL unload) while still
+      unconnected armed a SECOND chain sharing it — double dispatch rate, half the budget each. Counters
+      moved to file scope (`g_ribbonRetryAttempts`, `g_ribbonRetryNoAppAttempts`) next to
+      `g_ribbonConnectState`, and `g_ribbonRetryArmed` is a **start-once CAS latch** at the arm site.
+      The latch is cleared ONLY when the `xlcOnTime` itself was rejected (nothing in flight, so a later
+      `xlAutoOpen` may legitimately try again); terminal states (connected / gave up / budget exhausted)
+      leave it latched so nothing restarts an already-decided chain.
+    - **MED #2(e) — no cross-check between the export symbol and the header literal.** The macro name
+      lives in `xll_deferred_commands.h`'s `*MacroName()` accessor AND as an exported C symbol in
+      `xll_main.cpp.tmpl`, with nothing structurally coupling them: a one-sided rename compiles, passes
+      every name-grepping generator test, and shows up only at runtime as an unresolvable ON.TIME macro
+      (no ribbon tab / no deferred command drain). Now guarded from both ends, for BOTH macros
+      (`__xllgen_RibbonConnectRetry` and the mirrored `__xllgen_RunDeferredCalcEnd`).
+    - **Files:** `internal/templates/xll_main.cpp.tmpl`,
+      `internal/assets/files/src/xll_deferred_commands.cpp`,
+      `internal/assets/files/include/xll_deferred_commands.h`.
+    - **Regression:** `internal/generator/gen_ribbon_connect_test.go::TestXllMainRibbonRetryNoAppBudget`
+      (budget separation, per-class spacing, hard stops, pre-fix single-counter shape absent),
+      `::TestXllMainRibbonRetryArmRcAndSingleChain` (file-scope state, start-once CAS, both arm sites
+      inspect the rc), `::TestOnTimeMacroNameExportsMatchHeaderLiterals` (derives the expected export
+      from the header literal instead of restating it), and
+      `internal/assets/assets_test.go::TestScheduleOnTimeMacroGuards` (unload gate precedes `xlfNow`,
+      warn-level failure logs, `xltype` in the `xlfNow` branch) +
+      `::TestOnTimeMacroNameLiterals`. FAIL-before / PASS-after verified against a clean HEAD checkout;
+      the drift guard additionally mutation-tested by renaming the header literal alone.
+      **Golden: NO update needed** — every hunk is inside `{{if .Ribbon.Enabled}}` and the golden fixture
+      leaves `Ribbon` unset (verified by applying only these hunks to a clean HEAD and running
+      `TestGolden`). `cmd/cpp_compile_gate_bounce_test.go` full/keep-open/off all compile+link.
+    - **NOT YET PROVEN ON REAL EXCEL (open):** the only state in which the `xlAutoOpen` arm is actually
+      reached is `ribbon.bounce: off` **with zero workbooks open**. Whether `xlcOnTime` is ACCEPTED in
+      that exact state is still unverified — the existing empirical proof (§23.6 HIGH #2) was taken in a
+      calc-end context with a workbook open, and `xlAutoOpen`-with-no-workbook is a different context.
+      If Excel rejects it there, the MED #2(b) warn now makes the failure visible instead of silent, but
+      the retry would never start. **To close:** real Excel, `bounce: off`, empty start — confirm the
+      native log shows NO `ScheduleOnTimeMacro: xlcOnTime rc=` line and DOES show
+      `Ribbon: COM add-in connected (ontime retry)` after opening a workbook.
 
 **Stage 4 (2026-06-17) — SHIPPED. Deferred destructive teardown (Phase 1 / Phase 2 split). Ghost CLEARED.**
 

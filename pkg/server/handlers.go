@@ -77,6 +77,28 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 		return 0, shm.MsgTypeSystemError
 	}
 
+	// LOCK HANDOFF, and why the gap between the two locks is safe.
+	//
+	// GetChunkBuffer takes and RELEASES cm.chunkMutex before this function takes
+	// buf.Mutex, so between the two a concurrent goroutine can (a) have the TTL
+	// sweep evict this exact buffer from chunkCache, or (b) reject/poison the
+	// transfer and drop it. Either way we still hold a live *ChunkBuffer pointer
+	// and will finish writing into it — into an object no longer reachable from
+	// the map. That wastes the write; it cannot corrupt anything, because the
+	// buffer is self-contained and every field is guarded by buf.Mutex.
+	//
+	// The same reasoning covers the reject-vs-dispatch race that looks scarier
+	// than it is: a segment refused for overlap (below) is never copied into
+	// buf.Data, so it contributes nothing to Received. The segments that DID
+	// land are, by the ClaimSegment contract, disjoint and in-bounds — so if
+	// their lengths sum to TotalSize, coverage of [0, TotalSize) is exact and
+	// the dispatched payload is complete. A racing rejection can therefore make
+	// the OBSERVED outcome differ (one goroutine sees SYSTEM_ERROR while
+	// another completes and dispatches the same transfer) but can never hand a
+	// consumer a partially-written buffer. No lock widening is needed; do not
+	// "fix" this by holding chunkMutex across buf.Mutex (that would serialize
+	// every concurrent transfer behind one lock, and introduce a lock-ordering
+	// hazard with PoisonTransfer, which takes chunkMutex on its own).
 	buf, err := h.ChunkManager.GetChunkBuffer(id, total)
 	if err != nil {
 		// Wire-supplied total was non-positive or exceeded

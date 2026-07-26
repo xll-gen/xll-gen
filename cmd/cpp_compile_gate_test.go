@@ -23,6 +23,12 @@ import (
 //   - rtd-once grid    -> LPXLOPER12 / Q (control; must stay byte-identical)
 //   - rtd-once scalar  -> LPXLOPER12 / Q (control)
 //   - sync numgrid     -> FP12* / K% (the reference convention rtd-once mirrors)
+//   - rtd / rtd-once with COMPOSITE args (grid/range/numgrid/any) -> the
+//     content-hash payload path (§19.3). Added because no gate compiled it: the
+//     rtd-once payload build was moved from the topic loop into the cache-miss
+//     branch (it is fully discarded on a memoize hit) and the plain-rtd build
+//     gained a g_sentRefCache already-shipped peek, and neither the golden nor
+//     the marker tests can catch a C++ scope/compile error in that code.
 const cppCompileGateYaml = `project:
   name: "cpp_gate"
   version: "0.1.0"
@@ -54,6 +60,14 @@ functions:
   - name: "SyncNumGrid"
     args: [{name: "g", type: "numgrid"}]
     return: "numgrid"
+  - name: "RtdComposite"
+    mode: "rtd"
+    args: [{name: "g", type: "grid"}, {name: "r", type: "range"}, {name: "ng", type: "numgrid"}, {name: "a", type: "any"}]
+    return: "float"
+  - name: "OnceComposite"
+    mode: "rtd-once"
+    args: [{name: "g", type: "grid"}, {name: "r", type: "range"}, {name: "ng", type: "numgrid"}, {name: "a", type: "any"}]
+    return: "float"
 `
 
 // repoRootForCppGate returns the xll-gen repo working tree (one dir above cmd).

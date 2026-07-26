@@ -37,6 +37,19 @@ std::thread g_workerThread;
 //
 // CO-CHANGE ANCHOR (§18.6 style): this mirrors the Go-side reassembler in
 // pkg/server/manager.go (ChunkBuffer) + pkg/server/handlers.go (HandleChunk).
+//
+// "Mirrors" means SAME RULES, not same object: these are two INDEPENDENT
+// reassemblers running in OPPOSITE DIRECTIONS. This one handles GUEST->HOST
+// chunks (the Go server's async batch responses and rtd-once grid results
+// arriving at the XLL); the Go one handles HOST->GUEST chunks (requests the XLL
+// sends to the server). Nothing is shared at runtime, and the tuning story is
+// NOT symmetric: the Go side's limits are `xll.yaml` `server.chunk` knobs
+// (max_buffer_bytes / max_concurrent_transfers / cleanup_interval / buffer_ttl),
+// while the constants below are COMPILE-TIME and have no template or YAML
+// wiring — setting `server.chunk` in a project does NOT move this direction's
+// caps. They are hand-kept at the same numbers so the wire behaves the same
+// either way; a project that lowers the Go caps ends up asymmetric by design.
+//
 // Keep the two in lockstep:
 //   - receivedSegments here    <->  ChunkBuffer.Segments + ClaimSegment
 //   - kMaxChunkTotalSize       <->  server.DefaultMaxChunkBufferBytes (256 MiB)
@@ -47,6 +60,16 @@ std::thread g_workerThread;
 //                                   IsPoisoned (pkg/server/manager.go)
 //   - every reject path returns SYSTEM_ERROR <-> handlers.go's
 //     shm.MsgTypeSystemError returns
+// One rule is deliberately NOT mirrored — TOTAL-SIZE MISMATCH ON ID REUSE:
+// Go's GetChunkBuffer, on finding a live buffer whose TotalSize differs from the
+// arriving chunk's total, logs a warning and REPLACES the buffer in place so the
+// re-opened transfer proceeds. This side has no such reset: `pm` keeps the
+// FIRST totalSize for the life of the entry, so the re-open's chunks are
+// bounds-checked against the stale total, trip the out-of-bounds path, and the
+// transfer is discarded AND poisoned. The same wire sequence therefore succeeds
+// against the Go guest and fails here. INTENTIONAL, and left alone on purpose:
+// symmetrizing it means deciding which behavior is the contract, which is a
+// separate change. Do not "align" one side without the other (§18.6).
 // The offset type matches protocol::Chunk::offset() / total_size(), which the
 // FlatBuffers schema (protocol.fbs) declares as uint32.
 struct PartialMessage {
@@ -125,9 +148,13 @@ static constexpr size_t kMaxPoisonedTransfers = 1024;
 static constexpr uint64_t kMaxChunkTotalSize = 256ull * 1024 * 1024;
 
 // Upper bound on the NUMBER of partially-reassembled transfers held at once.
-// kMaxChunkTotalSize caps ONE transfer; without a count bound the aggregate is
-// still unbounded, and the only reclaim was the 60 s staleness sweep that runs
-// every 10 s. Mirrors server.DefaultMaxConcurrentTransfers and shm's
+// kMaxChunkTotalSize caps ONE transfer; without a count bound the number of
+// resident buffers is unbounded, and the only reclaim was the 60 s staleness
+// sweep that runs every 10 s. Note the two caps do NOT compose into an
+// aggregate-byte guard — they MULTIPLY: 256 MiB x 1024 = 256 GiB worst case,
+// and a producer that touches each transfer inside kChunkStaleTtl keeps the
+// sweep from reclaiming anything. What this bounds is the transfer COUNT.
+// Mirrors server.DefaultMaxConcurrentTransfers and shm's
 // maxConcurrentStreams (SPECIFICATION.md §3.3.4). Reclaim policy matches shm's
 // C++ StreamReassembler::Handle: at the bound, prune stale entries first and
 // only refuse if that frees nothing (no LRU eviction — dropping a live transfer
