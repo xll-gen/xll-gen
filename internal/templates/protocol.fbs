@@ -133,6 +133,18 @@ table RtdDisconnectRequest {
 table RtdUpdate {
   topic_id: int;
   val: Any;
+  // True when `val` is an ERROR value (handler error, ctx cancellation, or a
+  // composite-arg resolve miss) rather than a completed result. The C++ RTD
+  // consumer STILL stores `val` via RtdOnceRegistry::StoreResult — but as a
+  // TRANSIENT entry whose retention is forced to `once` semantics, overriding
+  // memoize / memoize_ttl, so the error is readable for the one recalc that
+  // paints it and is reclaimed on the next cycle (the handler then re-runs).
+  // Do NOT "optimize" this into skipping the store: the rtd-once wrapper only
+  // returns a value on a registry HIT, and the topic stays connected, so a
+  // skipped store wedges the cell at #GETTING_DATA forever with no re-run.
+  // Added as a trailing table field (default false) for wire back-compat.
+  // See xll-gen AGENTS.md §19.3 ("the trap").
+  is_error: bool = false;
 }
 
 table BatchRtdUpdate {

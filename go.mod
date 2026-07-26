@@ -9,7 +9,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/xll-gen/shm v0.8.11
 	github.com/xll-gen/sugar v0.8.8
-	github.com/xll-gen/types v0.2.18
+	github.com/xll-gen/types v0.2.19
 	golang.org/x/sys v0.33.0
 	gopkg.in/yaml.v3 v3.0.1
 )
