@@ -482,6 +482,8 @@ start_worker:
     }
 
     
+
+    
     // Command names must be set before any command proc or ribbon callback
     // can run (set-before-connect contract, see com/ribbon_addin.h). This must
     // precede the xlfRegister loop below: once Cmd_<Name> is registered, a
@@ -1599,6 +1601,8 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
     XLL_SAFE_BLOCK_END(0)
     return 1;
 }
+
+
 
 // User Functions
 

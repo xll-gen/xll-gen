@@ -152,6 +152,94 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	}
 }
 
+// TestXllMainRibbonOnTimeConnectRetry pins the bounded xlcOnTime connect-retry
+// (AGENTS.md §3). Before this, when the ribbon did not connect at load
+// (ribbon.bounce: off, or a bounce that failed) the ONLY remaining trigger was
+// TryConnectRibbon("calc end") — which never fires for a workbook that is open
+// but never recalculates (manual calc mode / no-formula book), so the ribbon
+// tab was delayed indefinitely. The fix arms a bounded, state-gated
+// xlcOnTime retry macro (__xllgen_RibbonConnectRetry) from xlAutoOpen (a valid
+// command context) that re-arms from its OWN Excel-dispatched macro context and
+// self-aborts (no C-API cancel) on connect/give-up/budget/unload — so it adds no
+// new teardown-cancellation surface (§20/§23; the schedule/cancel-from-event
+// wall is §23.6 HIGH #2).
+//
+// Runs the marker set against BOTH the default (full) render and the off render:
+// off is the mode most in need of the retry (it never bounces at all), and the
+// cpp_compile_gate_bounce_test.go off case proves the emitted retry compiles.
+func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
+	t.Parallel()
+
+	offCfg := ribbonConnectCfg()
+	offCfg.Ribbon.Bounce = "off"
+
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"default", ribbonConnectCfg()},
+		{"off", offCfg},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := renderCppMain(t, tc.cfg)
+			for _, want := range []string{
+				// The bounded budget constants exist (name + count/spacing).
+				"kRibbonRetryMaxAttempts = 30",
+				"kRibbonRetryIntervalSec = 2.0",
+				// The retry macro is exported with the shared single-source name.
+				`extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry()`,
+				"xll::RibbonConnectRetryMacroName()",
+				// The runner retries the connect (no bounce on retries).
+				`TryConnectRibbon("ontime retry");`,
+				// Self-abort on unload BEFORE touching Excel (no re-arm on unload).
+				"if (g_isUnloading.load(std::memory_order_acquire)) return 1;",
+				// Stops once the connect resolves (connected/gave-up).
+				"if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;",
+				// Bounded re-arm through the reused asset scheduler.
+				"s_retryAttempts.fetch_add(1) + 1 >= kRibbonRetryMaxAttempts",
+				"xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);",
+				// The macro is registered (macroType=2) so xlcOnTime can target it.
+				"Failed to register ribbon-connect OnTime retry macro.",
+				// xlAutoOpen arms the first retry ONLY when not yet connected.
+				"g_ribbonConnectState.load(std::memory_order_acquire) == 0) {",
+			} {
+				if !strings.Contains(src, want) {
+					t.Errorf("[%s] xll_main.cpp (ribbon) missing %q", tc.name, want)
+				}
+			}
+
+			// Termination must be state-gated self-abort, NOT an xlcOnTime cancel
+			// from the retry path (a cancel from a COM-event context is rejected
+			// with xlretInvXlfn — §23.6 HIGH #2 — and adds teardown surface §20).
+			if strings.Contains(src, "CancelDeferredRunner") {
+				t.Errorf("[%s] ribbon retry must not wire an xlcOnTime cancel; termination is by state-gate self-abort (§3/§23.6)", tc.name)
+			}
+		})
+	}
+
+	// Negative: ribbon-disabled render must not emit the retry macro/name.
+	noRibbon := &config.Config{
+		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
+		Functions: []config.Function{
+			{Name: "Sum", Return: "int", Args: []config.Arg{{Name: "a", Type: "int"}}},
+		},
+		Server: config.ServerConfig{
+			Timeout: "2s",
+			Launch:  &config.LaunchConfig{Enabled: new(bool)},
+		},
+	}
+	noRibbonSrc := renderCppMain(t, noRibbon)
+	for _, gone := range []string{
+		"__xllgen_RibbonConnectRetry",
+		"RibbonConnectRetryMacroName",
+		"kRibbonRetryMaxAttempts",
+	} {
+		if strings.Contains(noRibbonSrc, gone) {
+			t.Errorf("ribbon-disabled render must not emit %q", gone)
+		}
+	}
+}
+
 // TestRibbonAddinFirstClickRetry is the Bug 2 regression: the ribbon onAction
 // dispatch (SendCommandInvoke) is fire-and-forget. A click can land in the
 // window between the server process being launched (xlAutoOpen) and the Go

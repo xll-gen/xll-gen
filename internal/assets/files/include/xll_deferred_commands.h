@@ -116,6 +116,31 @@ inline const wchar_t* DeferredRunnerMacroName() {
     return L"__xllgen_RunDeferredCalcEnd";
 }
 
+// The registered ribbon-connect OnTime retry macro name (AGENTS.md §3). Single
+// source of truth shared by the template's xlfRegister call, its xlcOnTime
+// re-arm inside the runner, and the initial arm in xlAutoOpen, so they cannot
+// drift. Mirrors DeferredRunnerMacroName(). The exported C symbol
+// (__xllgen_RibbonConnectRetry, in the template) must match this literal.
+inline const wchar_t* RibbonConnectRetryMacroName() {
+    return L"__xllgen_RibbonConnectRetry";
+}
+
+// Generic xlcOnTime scheduler for a registered macro, reusing this TU's xlret
+// decoding (XlretName) so a scheduling failure is diagnosable rather than
+// silent. Reads the current serial time via xlfNow, adds delaySeconds (Excel
+// serial time is in DAYS; delaySeconds <= 0 runs the macro ASAP), and issues
+// xlcOnTime(when, macroName). Returns the Excel12 xlret STATUS (xlretSuccess ==
+// scheduled); a non-success rc is logged with its decoded name. NEVER throws.
+//
+// CONTEXT CONTRACT (LOAD-BEARING, AGENTS.md §23.6 HIGH #2): MUST be called from
+// a VALID command/macro context — xlAutoOpen, or an Excel-dispatched macro
+// (e.g. the retry macro re-arming itself). From a COM-event context (add-in
+// OnConnection / OnBeginShutdown) Excel REJECTS xlc* with xlretInvXlfn, so the
+// ribbon-connect bounded retry (§3) arms only from xlAutoOpen and re-arms only
+// from its own macro dispatch, and it terminates by state-gate self-abort — it
+// never issues an xlcOnTime cancel from an event context.
+int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds);
+
 // Called from HandleCalculationEnded (STA thread, inside the event): copies the
 // MSG_CALCULATION_ENDED response into the queue (if it carries commands) and
 // schedules the runner macro via xlcOnTime so the cell writes happen OUTSIDE

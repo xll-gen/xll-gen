@@ -130,6 +130,36 @@ static void ScheduleDeferredRunner() {
     }
 }
 
+// Generic xlcOnTime scheduler (AGENTS.md §3). See the header for the full
+// context contract. Kept separate from ScheduleDeferredRunner because it must
+// NOT touch the deferred-queue arm flag or the g_lastOnTimeSerial/g_onTimeArmed
+// cancel-tracking state (the ribbon retry terminates by self-abort, never by a
+// C-API cancel, so it has no serial to capture).
+int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds) {
+    try {
+        if (!macroName) return xlretFailed;
+        ScopedXLOPER12Result xNow;
+        int nowRc = xll::CallExcel(xlfNow, xNow);
+        if (nowRc != xlretSuccess || (xNow.get()->xltype & xltypeNum) == 0) {
+            xll::LogInfo(std::string("ScheduleOnTimeMacro: xlfNow rc=") +
+                         std::to_string(nowRc) + " (" + XlretName(nowRc) + ")");
+            return nowRc != xlretSuccess ? nowRc : xlretFailed;
+        }
+        // Excel serial time is in DAYS; convert the second-granularity delay.
+        double when = xNow.get()->val.num +
+                      (delaySeconds > 0.0 ? delaySeconds / 86400.0 : 0.0);
+        ScopedXLOPER12 xWhen(when);
+        int rc = xll::CallExcel(xlcOnTime, nullptr, xWhen.get(), macroName);
+        if (rc != xlretSuccess) {
+            xll::LogInfo(std::string("ScheduleOnTimeMacro: xlcOnTime rc=") +
+                         std::to_string(rc) + " (" + XlretName(rc) + ")");
+        }
+        return rc;
+    } catch (...) {
+        return xlretFailed;
+    }
+}
+
 void DeferCalcEndCommands(std::vector<uint8_t>&& respBuf) {
     try {
         const bool haveBuf = !respBuf.empty();
