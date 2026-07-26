@@ -3,16 +3,30 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <functional>
+#include <type_traits>
 #include "types/xlcall.h"
 // converters.h pulls in flatbuffers + protocol_generated.h, giving us
 // flatbuffers::Offset<protocol::Grid> and ConvertGrid for ConvertGridArg below.
 #include "types/converters.h"
 
 // Parallel Hashmap
-// We use the parallel_flat_hash_map for thread-safe concurrent access.
+//
+// The maps below use the `_m` ("mutex") aliases — `parallel_flat_hash_map_m<K,V,...>`
+// is `parallel_flat_hash_map<K,V,Hash,Eq,Alloc,N,std::mutex>` — so each of the
+// 2**N submaps carries its OWN std::mutex and every phmap entry point
+// (`if_contains`, `insert_or_assign`, `clear`, ...) locks the submap it touches.
+// This is LOAD-BEARING, not cosmetic: phmap's 7th template parameter defaults to
+// `phmap::NullMutex` ("use std::mutex to enable internal locks" —
+// `parallel_hashmap/phmap_fwd_decl.h`), i.e. a map spelled with only <K,V> does
+// NO locking at all. Cache-enabled functions are registered thread-safe (`$`),
+// so Excel's multi-threaded recalculation calls Get/Put concurrently from
+// several calculation threads — with NullMutex that is a real data race.
+// The `_m` aliases keep N at its default 4 (16 submaps), so lock granularity /
+// footprint are unchanged versus the previous (unlocked) spelling.
 #pragma warning(push)
 #pragma warning(disable: 4100 4127) // Disable warnings from external lib
 #include <parallel_hashmap/phmap.h>
@@ -36,10 +50,14 @@ public:
     // Store in cache.
     void Put(const std::string& key, const std::vector<uint8_t>& data, const CacheConfig& config);
 
-    // Get or Compute hash for a Range reference.
+    // Get or Compute the content hash of a Range reference.
     // If the reference (Sheet + Rect) is already in the RefCache (for this cycle), returns the cached hash.
     // Otherwise, invokes the callback to compute the hash and stores it.
-    std::string GetOrComputeRefHash(const XLOPER12* pRef, std::function<std::string(const XLOPER12*)> computeFn);
+    // A multi-rect xltypeRef folds its per-rect hashes through ONE continuous
+    // FNV-1a stream (order-sensitive, full avalanche) rather than concatenating
+    // text, so the result is a constant-size digest regardless of rect count.
+    // computeFn is invoked with NO map lock held (it may call back into Excel).
+    uint64_t GetOrComputeRefHash(const XLOPER12* pRef, const std::function<uint64_t(const XLOPER12*)>& computeFn);
 
     // Clear the Ref cache (call on CalculationEnded)
     void ClearRefCache();
@@ -56,8 +74,22 @@ private:
     };
 
     // Main result cache
-    // Key: Function Signature + serialized args
-    phmap::parallel_flat_hash_map<std::string, CacheEntry> cache_;
+    // Key: "<funcName>#<16 hex digits>" (see MakeCacheKey) — CONSTANT size, so
+    // hashing/comparing a key is O(1) instead of O(argument content).
+    phmap::parallel_flat_hash_map_m<std::string, CacheEntry> cache_;
+
+    // Compile-time regression gate for the locking above. `_m` and the plain
+    // spelling differ ONLY in the Mutex template argument, so if someone
+    // "simplifies" this back to `parallel_flat_hash_map<std::string, CacheEntry>`
+    // the two types become identical and this fires. Reverting the alias silently
+    // reinstates phmap::NullMutex — i.e. an unsynchronized map read and written
+    // from several Excel calculation threads (verified to corrupt the map: an 8
+    // thread Get/Put stress trips phmap's own `i < capacity_` assertion).
+    static_assert(!std::is_same<decltype(cache_),
+                                phmap::parallel_flat_hash_map<std::string, CacheEntry>>::value,
+                  "cache_ must keep the _m (std::mutex) alias: the plain "
+                  "parallel_flat_hash_map spelling defaults to phmap::NullMutex, "
+                  "which performs NO locking");
 
     // Ref content hash cache (Cycle scoped)
     // Key: SheetID + Rect
@@ -77,29 +109,80 @@ private:
 
     struct RefKeyHash {
         size_t operator()(const RefKey& k) const {
-            size_t h = 17;
-            h = h * 31 + k.sheetId;
-            h = h * 31 + k.rwFirst;
-            h = h * 31 + k.rwLast;
-            h = h * 31 + k.colFirst;
-            h = h * 31 + k.colLast;
-            return h;
+            uint64_t h = 17;
+            h = h * 31 + (uint64_t)k.sheetId;
+            h = h * 31 + (uint64_t)(uint32_t)k.rwFirst;
+            h = h * 31 + (uint64_t)(uint32_t)k.rwLast;
+            h = h * 31 + (uint64_t)(uint32_t)k.colFirst;
+            h = h * 31 + (uint64_t)(uint32_t)k.colLast;
+            // splitmix64 finalizer. The polynomial above leaves most of its
+            // entropy in the HIGH bits (sheetId is scaled by 31^4) while phmap
+            // picks the submap from bits 8..31 (`subidx()`) and the control byte
+            // from bits 7..14 — so without a finalizer whole sheets funnel into
+            // one submap. That was merely a bucket imbalance while the map was
+            // unlocked; now that each submap owns a std::mutex it would also be
+            // lock contention across calculation threads.
+            h ^= h >> 30; h *= 0xbf58476d1ce4e5b9ULL;
+            h ^= h >> 27; h *= 0x94d049bb133111ebULL;
+            h ^= h >> 31;
+            return (size_t)h;
         }
     };
 
-    phmap::parallel_flat_hash_map<RefKey, std::string, RefKeyHash> refCache_;
+    phmap::parallel_flat_hash_map_m<RefKey, uint64_t, RefKeyHash> refCache_;
+
+    // Same gate as for cache_ above. The RefCache is populated from the
+    // thread-safe (`$`) UDF wrappers too, so it needs real locking as much as the
+    // result cache does.
+    static_assert(!std::is_same<decltype(refCache_),
+                                phmap::parallel_flat_hash_map<RefKey, uint64_t, RefKeyHash>>::value,
+                  "refCache_ must keep the _m (std::mutex) alias: the plain "
+                  "parallel_flat_hash_map spelling defaults to phmap::NullMutex, "
+                  "which performs NO locking");
 };
 
-// Helper to generate key for a function call
+// MakeCacheKey builds the result-cache key for one call. The key is
+// "<funcName>#<16 hex digits>": a CONSTANT-SIZE digest of (funcName, arg count,
+// per-arg content) rather than the full serialization of every argument. The
+// funcName prefix is kept so keys stay greppable in logs AND so two different
+// functions can never share a key even under a digest collision.
+//
+// Reference args (xltypeRef/xltypeSRef) route through
+// CacheManager::GetOrComputeRefHash so a range hashed once in a calculation
+// cycle is not re-coerced for every call that mentions it.
+//
+// Callers may append their own suffixes (the generated wrapper appends
+// "|numgrid:<token>" for FP12 args, which cannot enter the LPXLOPER12 vector).
 std::string MakeCacheKey(const std::string& funcName, const std::vector<LPXLOPER12>& args);
 
-// Helper to serialize an XLOPER12 to a string (for caching)
+// HashXLOPERInto streams an XLOPER12's CONTENT through an existing FNV-1a digest
+// and returns the updated digest. It allocates nothing and never materializes an
+// intermediate string: every field is fed as a one-byte type tag plus its raw
+// little-endian bytes (doubles as their 8 IEEE-754 bytes, strings as a uint32
+// length plus the raw UTF-16 code units). xltypeRef/xltypeSRef are coerced to
+// their cell VALUES first (xlCoerce -> xltypeMulti), so the digest tracks CONTENT
+// rather than reference coordinates; a coercion failure folds in the reference
+// IDENTITY instead so two distinct failing refs still hash apart.
+//
+// The one-byte tags are part of the on-wire cache-key/topic-token identity:
+// changing one invalidates every in-memory cache entry and every RTD topic.
+uint64_t HashXLOPERInto(uint64_t seed, const XLOPER12* px);
+
+// HashXLOPERContent is HashXLOPERInto seeded with the FNV-1a offset basis.
+uint64_t HashXLOPERContent(const XLOPER12* px);
+
+// SerializeXLOPER renders an XLOPER12 as a human-readable string.
+//
+// DIAGNOSTICS ONLY — it is deliberately NOT on the cache-key / RTD-token path
+// any more (see HashXLOPERInto, which hashes the same content without
+// allocating). Keep the two in agreement about which fields are significant, but
+// note that only HashXLOPERInto defines cache identity.
 std::string SerializeXLOPER(const XLOPER12* px);
 
 // ContentHashToken computes a deterministic, content-addressed RTD topic token
 // for a composite argument (grid / range / any XLOPER12). The XLOPER12's value
-// is serialized (refs are coerced to their cell values via SerializeXLOPER) and
-// FNV-1a hashed; the result is "h:<typeTag><hex>". Identical content always
+// is streamed through FNV-1a by HashXLOPERInto (refs are coerced to their cell
+// values first); the result is "h:<typeTag><hex>". Identical content always
 // produces the same token (so the same grid maps to the same RTD topic and
 // edited content produces a fresh token → fresh compute). Used by the rtd /
 // rtd-once wrappers for the content-hash payload path (AGENTS.md §19.3).
