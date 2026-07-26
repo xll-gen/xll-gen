@@ -8,7 +8,10 @@ import (
 	"testing"
 )
 
-// fakeSender records every SendUpdate call. It can also be told to fail.
+// fakeSender records every SendUpdate/SendErrorUpdate call. It can also be told
+// to fail. The isError field distinguishes which method delivered the value, so
+// tests can assert that errors route through SendErrorUpdate (is_error=true) and
+// completed results through SendUpdate (is_error=false).
 type fakeSender struct {
 	mu      sync.Mutex
 	calls   []fakeSend
@@ -18,12 +21,20 @@ type fakeSender struct {
 type fakeSend struct {
 	topicID int32
 	value   any
+	isError bool
 }
 
 func (f *fakeSender) SendUpdate(topicID int32, value any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fakeSend{topicID: topicID, value: value})
+	f.calls = append(f.calls, fakeSend{topicID: topicID, value: value, isError: false})
+	return f.sendErr
+}
+
+func (f *fakeSender) SendErrorUpdate(topicID int32, value any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fakeSend{topicID: topicID, value: value, isError: true})
 	return f.sendErr
 }
 
@@ -60,6 +71,9 @@ func TestRunOnce_PushesResultExactlyOnce(t *testing.T) {
 	if calls[0].value != 42.0 {
 		t.Errorf("value = %v, want 42.0", calls[0].value)
 	}
+	if calls[0].isError {
+		t.Errorf("a completed result must be delivered via SendUpdate (is_error=false), got is_error=true")
+	}
 }
 
 // TestRunOnce_HandlerErrorPushesString: a handler error is delivered as its
@@ -85,6 +99,12 @@ func TestRunOnce_HandlerErrorPushesString(t *testing.T) {
 	}
 	if s, ok := calls[0].value.(string); !ok || s != "boom: upstream timeout" {
 		t.Errorf("value = %v, want error string \"boom: upstream timeout\"", calls[0].value)
+	}
+	// The core fix: a handler error MUST be flagged is_error=true so the C++
+	// consumer skips memoizing it as the one-shot result (would otherwise stick
+	// until XLL reload). This assertion FAILS against the old SendUpdate routing.
+	if !calls[0].isError {
+		t.Errorf("a handler error must be delivered via SendErrorUpdate (is_error=true), got is_error=false")
 	}
 }
 
@@ -115,6 +135,9 @@ func TestRunOnce_ContextAlreadyCancelled(t *testing.T) {
 	if s, ok := calls[0].value.(string); !ok || s != context.Canceled.Error() {
 		t.Errorf("value = %v, want %q", calls[0].value, context.Canceled.Error())
 	}
+	if !calls[0].isError {
+		t.Errorf("a ctx-cancellation push must use SendErrorUpdate (is_error=true), got is_error=false")
+	}
 }
 
 // TestRunOnce_HandlerObservesCancellation: a handler that returns ctx.Err()
@@ -139,6 +162,9 @@ func TestRunOnce_HandlerObservesCancellation(t *testing.T) {
 	}
 	if s, ok := calls[0].value.(string); !ok || s != context.Canceled.Error() {
 		t.Errorf("value = %v, want %q", calls[0].value, context.Canceled.Error())
+	}
+	if !calls[0].isError {
+		t.Errorf("a mid-flight cancellation error must use SendErrorUpdate (is_error=true), got is_error=false")
 	}
 }
 
@@ -188,6 +214,7 @@ type gridEvent struct {
 	payload []byte // for "grid"
 	topicID int32  // for "update"
 	value   any    // for "update"
+	isError bool   // for "update": true if delivered via SendErrorUpdate
 }
 
 func (f *fakeGridSender) SendOnceGrid(key string, payload []byte) error {
@@ -201,7 +228,14 @@ func (f *fakeGridSender) SendOnceGrid(key string, payload []byte) error {
 func (f *fakeGridSender) SendUpdate(topicID int32, value any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.events = append(f.events, gridEvent{kind: "update", topicID: topicID, value: value})
+	f.events = append(f.events, gridEvent{kind: "update", topicID: topicID, value: value, isError: false})
+	return f.updateErr
+}
+
+func (f *fakeGridSender) SendErrorUpdate(topicID int32, value any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, gridEvent{kind: "update", topicID: topicID, value: value, isError: true})
 	return f.updateErr
 }
 
@@ -255,6 +289,9 @@ func TestRunOnceGrid_SuccessShipsGridThenReadiness(t *testing.T) {
 	if _, ok := ev[1].value.(string); !ok {
 		t.Errorf("readiness token must be a string, got %T (%v)", ev[1].value, ev[1].value)
 	}
+	if ev[1].isError {
+		t.Errorf("a successful readiness token must use SendUpdate (is_error=false), got is_error=true")
+	}
 }
 
 // TestRunOnceGrid_SendOnceGridErrorPushesErrorNoToken: if SendOnceGrid fails,
@@ -283,6 +320,9 @@ func TestRunOnceGrid_SendOnceGridErrorPushesErrorNoToken(t *testing.T) {
 	s, ok := ev[1].value.(string)
 	if !ok || s != "host stalled on grid" {
 		t.Errorf("update value = %v, want error string %q", ev[1].value, "host stalled on grid")
+	}
+	if !ev[1].isError {
+		t.Errorf("a SendOnceGrid failure must use SendErrorUpdate (is_error=true), got is_error=false")
 	}
 }
 
@@ -313,6 +353,9 @@ func TestRunOnceGrid_RunErrorNeverShipsGrid(t *testing.T) {
 	s, ok := ev[0].value.(string)
 	if !ok || s != "serialize failed: jagged grid" {
 		t.Errorf("update value = %v, want error string", ev[0].value)
+	}
+	if !ev[0].isError {
+		t.Errorf("a handler/serialize error must use SendErrorUpdate (is_error=true), got is_error=false")
 	}
 }
 
@@ -387,5 +430,8 @@ func TestRunOnceGrid_ContextAlreadyCancelled(t *testing.T) {
 	}
 	if s, ok := ev[0].value.(string); !ok || s != context.Canceled.Error() {
 		t.Errorf("value = %v, want %q", ev[0].value, context.Canceled.Error())
+	}
+	if !ev[0].isError {
+		t.Errorf("a ctx-cancellation push must use SendErrorUpdate (is_error=true), got is_error=false")
 	}
 }

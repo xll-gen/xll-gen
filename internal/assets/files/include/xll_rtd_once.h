@@ -106,8 +106,18 @@ inline LPXLOPER12 RtdOnceResultToXLOPER12(const VARIANT& v) {
     }
 }
 
-// RtdOnceRegistry holds the completed one-shot results plus the bookkeeping to
-// know which RTD topics belong to rtd-once functions. Single global instance.
+// RtdOnceRegistry holds the one-shot results plus the bookkeeping to know which
+// RTD topics belong to rtd-once functions. Single global instance.
+//
+// Entries come in two flavours:
+//   * NORMAL   — a completed handler result. Retention follows the function's
+//                declared lifecycle (once / memoize_ttl / memoize).
+//   * TRANSIENT — an ERROR value pushed in place of a result (handler error,
+//                ctx cancellation, composite-arg resolve miss;
+//                RtdUpdate.is_error=true). Stored so the cell actually PAINTS
+//                the error instead of sticking at the loading placeholder, but
+//                retained as if the function were plain `once`, regardless of
+//                memoize / memoize_ttl. See StoreResult / ClearNonMemoized.
 class RtdOnceRegistry {
 public:
     static RtdOnceRegistry& Instance() {
@@ -168,11 +178,28 @@ public:
         return true;
     }
 
-    // Stores the completed value for a key (called from ProcessRtdUpdate for
-    // rtd-once topics). Takes a copy of the VARIANT and stamps it with a
-    // monotonic tick (GetTickCount64, NEVER wall-clock) so memoize_ttl expiry
-    // can be evaluated on read and at calc-end.
-    void StoreResult(const std::wstring& key, const VARIANT& value) {
+    // Stores the value for a key (called from ProcessRtdUpdate for rtd-once
+    // topics). Takes a copy of the VARIANT and stamps it with a monotonic tick
+    // (GetTickCount64, NEVER wall-clock) so memoize_ttl expiry can be evaluated
+    // on read and at calc-end.
+    //
+    // transient=true marks the value as an ERROR pushed in place of a result
+    // (RtdUpdate.is_error). Such a value MUST STILL BE STORED: the scalar
+    // rtd-once wrapper returns a value ONLY on a TryGetResult HIT — on a miss it
+    // calls xlfRtd, DISCARDS the synchronous result and returns the loading
+    // placeholder (xll_main.cpp.tmpl) — so not storing would make every later
+    // recalc miss and re-paint the placeholder while the topic stays connected;
+    // ConnectData would never re-fire, the one-shot handler would never re-run,
+    // and the cell would be stuck at #GETTING_DATA (the very failure mode the
+    // LIVENESS GUARD note on ClearNonMemoized describes).
+    //
+    // What `transient` changes is RETENTION, not storage: the entry is reclaimed
+    // like a plain `once` entry no matter what the function declares, so
+    // memoize:true cannot freeze an error until XLL reload and memoize_ttl
+    // cannot freeze it for the TTL window (see ClearNonMemoized/TryGetResult).
+    // A re-store always re-stamps the flag, so a later completed result
+    // promotes the entry back to normal retention.
+    void StoreResult(const std::wstring& key, const VARIANT& value, bool transient = false) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_results.find(key);
         if (it == m_results.end()) {
@@ -180,25 +207,41 @@ public:
             VariantInit(&e.value);
             VariantCopy(&e.value, const_cast<VARIANT*>(&value));
             e.storedTick = GetTickCount64();
+            e.transient = transient;
             m_results.emplace(key, std::move(e));
         } else {
             VariantClear(&it->second.value);
             VariantCopy(&it->second.value, const_cast<VARIANT*>(&value));
             it->second.storedTick = GetTickCount64();
+            it->second.transient = transient;
         }
     }
 
-    // Returns true and copies the completed value into `out` if present and not
+    // Returns true and copies the stored value into `out` if present and not
     // expired. memoize_ttl expiry is evaluated HERE (read time): if the entry's
     // function declares a TTL, the key has NO live topic, and the entry's age
     // exceeds the TTL, the entry is erased and a miss is reported — the wrapper
     // then re-issues xlfRtd to recompute fresh. The liveness guard is preserved:
     // an entry whose key still has a connected topic is NEVER expired here (same
     // stuck-at-#GETTING_DATA race as ClearNonMemoized; see AGENTS.md §19.3).
+    //
+    // TRANSIENT entries expire the same way with a zero TTL: readable while the
+    // topic that produced them is still connected (that is the one recalc the
+    // error push triggers, where the cell must actually paint the error), a MISS
+    // afterwards. This read-side rule is the twin of ClearNonMemoized's
+    // transient rule and covers the DisconnectData/CalculationEnded ordering
+    // window: if CalculationEnded fires BEFORE DisconnectData, the liveness
+    // guard keeps the entry and the *next* recalc would otherwise re-serve the
+    // stale error for one extra cycle instead of recomputing.
     bool TryGetResult(const std::wstring& key, VARIANT* out) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_results.find(key);
         if (it == m_results.end()) return false;
+        if (it->second.transient && !KeyHasLiveTopic(key)) {
+            VariantClear(&it->second.value);
+            m_results.erase(it);
+            return false;
+        }
         std::wstring fn = FuncNameOfKey(key);
         auto ttlIt = m_ttlNames.find(fn);
         if (ttlIt != m_ttlNames.end() && !KeyHasLiveTopic(key)) {
@@ -216,12 +259,19 @@ public:
         return true;
     }
 
-    // Clears completed results on CalculationEnded so the next user-initiated
+    // Clears stored results on CalculationEnded so the next user-initiated
     // recalc recomputes (F9 semantics). Per-function granularity is keyed off
     // the first key segment (the function name). The rtd-once lifecycle triad:
     //   * once (default):   erase if no live topic.
     //   * memoize_ttl:      erase if no live topic AND expired (age > ttl).
     //   * memoize:true:     never erase (retained until process teardown).
+    // TRANSIENT entries (errors) OVERRIDE all three and are treated as `once`:
+    // erase as soon as the topic is gone. An error is never a memoizable
+    // result — retaining it would pin the cell on the error until XLL reload
+    // (memoize:true) or for the whole TTL window (memoize_ttl), and because the
+    // one-shot handler only re-runs on a fresh ConnectData, the user would have
+    // no way to retry. Erasing turns the next recalc into a cache miss →
+    // xlfRtd → new topic → handler re-runs.
     //
     // LIVENESS GUARD: a result whose key still has a connected topic (a live
     // topicID->key mapping) is NEVER cleared here. Without this, a
@@ -244,7 +294,11 @@ public:
             bool live = liveKeys.count(it->first) != 0;
             bool erase = false;
             if (!live) {
-                if (m_memoizeNames.count(fn) != 0) {
+                if (it->second.transient) {
+                    // TRANSIENT (error) — treated as `once` REGARDLESS of the
+                    // function's memoize / memoize_ttl policy.
+                    erase = true;
+                } else if (m_memoizeNames.count(fn) != 0) {
                     // memoize:true — never erase.
                     erase = false;
                 } else {
@@ -268,14 +322,17 @@ public:
     }
 
 private:
-    // A completed one-shot result plus the monotonic tick it was stored at
-    // (for memoize_ttl expiry). Copying is deleted: a copy would alias the
-    // VARIANT (and its BSTR) and invite a double VariantClear. Moves are
-    // byte-wise; the registry alone manages the VARIANT's lifetime
-    // (StoreResult / TryGetResult / ClearNonMemoized).
+    // A stored one-shot value plus the monotonic tick it was stored at (for
+    // memoize_ttl expiry) and whether it is TRANSIENT (an error pushed in place
+    // of a result — retention is forced to `once` semantics; see StoreResult).
+    // Copying is deleted: a copy would alias the VARIANT (and its BSTR) and
+    // invite a double VariantClear. Moves are byte-wise; the registry alone
+    // manages the VARIANT's lifetime (StoreResult / TryGetResult /
+    // ClearNonMemoized).
     struct Entry {
         VARIANT value;
         ULONGLONG storedTick = 0;
+        bool transient = false;
         Entry() = default;
         Entry(Entry&&) = default;
         Entry& operator=(Entry&&) = default;

@@ -108,13 +108,14 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         }
     }
 
-    // rtd-once: this update is, by construction, the single final value for a
-    // one-shot topic. Cache it under the topic's key so the next time Excel
-    // recalcs the cell, the XLL wrapper returns the value directly (without
-    // re-issuing xlfRtd), which drops the RTD reference and lets Excel tear
-    // the topic down. Lookups/inserts are no-ops for plain rtd topics (the
-    // topicID was never registered in the rtd-once registry). See AGENTS.md
-    // §19.3.
+    // rtd-once: this update is, by construction, the single value a one-shot
+    // topic ever delivers — either the completed result or an error pushed in
+    // its place (see ERROR GATE below). Cache it under the topic's key so the
+    // next time Excel recalcs the cell, the XLL wrapper returns the value
+    // directly (without re-issuing xlfRtd), which drops the RTD reference and
+    // lets Excel tear the topic down. Lookups/inserts are no-ops for plain rtd
+    // topics (the topicID was never registered in the rtd-once registry). See
+    // AGENTS.md §19.3.
     //
     // GRID-ONCE GATE: a grid-returning rtd-once topic is registered in
     // RtdOnceGridRegistry (NOT RtdOnceRegistry); its grid payload arrives
@@ -125,6 +126,35 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     // scalar instead of pulling the grid bytes. Detect grid-once topics by
     // their presence in the grid registry's topic map and skip the scalar
     // StoreResult; the NotifyUpdate path is unchanged for both.
+    //
+    // ERROR GATE: is_error=true marks this update as an ERROR value (handler
+    // error, ctx cancellation, or a composite-arg resolve miss) rather than a
+    // completed one-shot result. The value is STILL stored — it is stored as
+    // TRANSIENT.
+    //
+    // Storing is MANDATORY, not optional. The scalar rtd-once wrapper returns a
+    // value ONLY on a TryGetResult HIT; on a miss it calls xlfRtd, DISCARDS the
+    // synchronous result and returns the loading placeholder
+    // (xll_main.cpp.tmpl). So skipping StoreResult for an error would make every
+    // subsequent recalc miss and re-paint the placeholder, while the topic stays
+    // CONNECTED — ConnectData never re-fires, the one-shot handler never
+    // re-runs, and the cell is stuck at #GETTING_DATA indefinitely (exactly the
+    // failure mode xll_rtd_once.h's LIVENESS GUARD note describes).
+    //
+    // `transient` governs RETENTION, not storage: RtdOnceRegistry reclaims a
+    // transient entry as if the function were plain `once`, whatever it declared,
+    // so memoize:true cannot freeze the error until XLL reload and memoize_ttl
+    // cannot freeze it for the TTL window. Net effect: the error string paints in
+    // the cell for one calc cycle, ClearNonMemoized reclaims it once the topic
+    // disconnects, and the next recalc re-issues xlfRtd → new topic →
+    // ConnectData → handler runs again.
+    //
+    // SCOPE — scalar rtd-once only. A grid/numgrid rtd-once topic is registered
+    // in RtdOnceGridRegistry and its wrapper reads ONLY that registry, so an
+    // is_error update never surfaces as cell text there (the grid wrapper keeps
+    // returning the loading placeholder / an empty 0x0 FP12). That is
+    // pre-existing behavior, unchanged here; carrying error entries into the grid
+    // registry is a separate follow-up (AGENTS.md §19.3).
     {
         std::wstring gridKey;
         bool isGridOnce =
@@ -132,7 +162,8 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
         if (!isGridOnce) {
             std::wstring onceKey;
             if (xll::RtdOnceRegistry::Instance().KeyForTopic(topicID, onceKey)) {
-                xll::RtdOnceRegistry::Instance().StoreResult(onceKey, v);
+                xll::RtdOnceRegistry::Instance().StoreResult(
+                    onceKey, v, /*transient=*/update->is_error());
             }
         }
     }

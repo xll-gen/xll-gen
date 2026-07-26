@@ -11,8 +11,14 @@ import (
 
 // updateSender is the minimal surface RunOnce needs to push a result back to a
 // single RTD topic. *RtdManager satisfies it; tests inject a fake.
+//
+// SendUpdate pushes a COMPLETED value (memoizable); SendErrorUpdate pushes an
+// ERROR value (is_error=true → the C++ consumer caches it as TRANSIENT: the cell
+// paints the error, but memoize/memoize_ttl retention is bypassed so the next
+// recalc re-runs the handler). See AGENTS.md §19.3.
 type updateSender interface {
 	SendUpdate(topicID int32, value any) error
+	SendErrorUpdate(topicID int32, value any) error
 }
 
 // Compile-time assertion that *RtdManager implements updateSender.
@@ -23,12 +29,14 @@ var _ updateSender = (*RtdManager)(nil)
 // topic and pushes the single result back via mgr.SendUpdate(topicID, ...).
 //
 // The handler `fn` has the same shape as a sync handler — it takes a context
-// and returns (value, error). On success the value is pushed as-is (the
-// RtdManager maps it onto the protocol.Any union, identical to the sync/async
-// `any`-return path). On error, the error STRING is pushed as the value so the
-// cell shows something actionable instead of staying stuck at #GETTING_DATA;
-// this mirrors how the C++ RTD path surfaces unconvertible values and is the
-// best fidelity available given RtdUpdate carries no dedicated error channel.
+// and returns (value, error). On success the value is pushed as-is via
+// SendUpdate (the RtdManager maps it onto the protocol.Any union, identical to
+// the sync/async `any`-return path). On error, the error STRING is pushed via
+// SendErrorUpdate (RtdUpdate.is_error=true) so the cell shows something
+// actionable instead of staying stuck at #GETTING_DATA — and the C++ consumer
+// caches it as TRANSIENT, so the error is visible for one calc cycle but is
+// never frozen by memoize/memoize_ttl as the completed result (the bug this
+// routing fixes; see AGENTS.md §19.3).
 //
 // RunOnce is deliberately synchronous: callers (HandleRtdConnect's onConnect
 // dispatch) already run it in a panic-recovered goroutine, so RunOnce does not
@@ -52,15 +60,16 @@ func RunOnce(ctx context.Context, mgr updateSender, topicID int32, fn func(conte
 	// meaningfully.
 	if err := ctx.Err(); err != nil {
 		log.Warn("rtd.RunOnce: context already done before handler", "topicID", topicID, "err", err)
-		return mgr.SendUpdate(topicID, err.Error())
+		return mgr.SendErrorUpdate(topicID, err.Error())
 	}
 
 	value, err := fn(ctx)
 	if err != nil {
 		log.Error("rtd.RunOnce: handler returned error", "topicID", topicID, "err", err)
-		// Push the error string as the topic value so the cell stops showing
-		// #GETTING_DATA and surfaces the failure.
-		return mgr.SendUpdate(topicID, err.Error())
+		// Push the error string as the topic value (is_error=true) so the cell
+		// stops showing #GETTING_DATA and surfaces the failure, cached only as a
+		// TRANSIENT entry so memoize/memoize_ttl cannot freeze it.
+		return mgr.SendErrorUpdate(topicID, err.Error())
 	}
 
 	return mgr.SendUpdate(topicID, value)
@@ -73,6 +82,7 @@ func RunOnce(ctx context.Context, mgr updateSender, topicID int32, fn func(conte
 type gridSender interface {
 	SendOnceGrid(key string, payload []byte) error
 	SendUpdate(topicID int32, value any) error
+	SendErrorUpdate(topicID int32, value any) error
 }
 
 // Compile-time assertion that *RtdManager implements gridSender.
@@ -146,23 +156,30 @@ func RunOnceGrid(ctx context.Context, mgr gridSender, topicID int32, onceKey str
 	// cancellation reason rather than executing work that cannot be delivered.
 	if err := ctx.Err(); err != nil {
 		log.Warn("rtd.RunOnceGrid: context already done before handler", "topicID", topicID, "err", err)
-		return mgr.SendUpdate(topicID, err.Error())
+		return mgr.SendErrorUpdate(topicID, err.Error())
 	}
 
 	payload, err := run(ctx)
 	if err != nil {
 		log.Error("rtd.RunOnceGrid: handler returned error", "topicID", topicID, "err", err)
-		// Push the error string as the topic value; never ship a grid.
-		return mgr.SendUpdate(topicID, err.Error())
+		// Push the error string as the topic value (is_error=true); never ship a
+		// grid, and never let the error be retained past this calc cycle.
+		// NOTE (grid scope): the grid-once wrapper reads only
+		// RtdOnceGridRegistry, so this error does NOT become the cell's text —
+		// the cell keeps the loading placeholder / empty 0x0 FP12. The flag
+		// still matters for correctness of the scalar registry (which never
+		// stores grid-once topics) and for the logs. Surfacing grid-once errors
+		// in the cell is a follow-up (AGENTS.md §19.3).
+		return mgr.SendErrorUpdate(topicID, err.Error())
 	}
 
 	// Deliver the grid to the host and wait for the ACK BEFORE signaling
 	// readiness (see the ordering note above).
 	if err := mgr.SendOnceGrid(onceKey, payload); err != nil {
 		log.Error("rtd.RunOnceGrid: SendOnceGrid failed", "topicID", topicID, "onceKey", onceKey, "err", err)
-		// The grid never landed; surface the error and do NOT push a fresh
-		// readiness token (a recalc would just miss the absent grid).
-		return mgr.SendUpdate(topicID, err.Error())
+		// The grid never landed; surface the error (is_error=true) and do NOT
+		// push a fresh readiness token (a recalc would just miss the absent grid).
+		return mgr.SendErrorUpdate(topicID, err.Error())
 	}
 
 	// Grid is delivered+acked: now trigger the recalc that re-enters the

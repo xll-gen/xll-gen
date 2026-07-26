@@ -149,9 +149,10 @@ func TestGenGo_RtdComposite_Dispatch(t *testing.T) {
 		// rtd-once grid arg resolution + typed handler call inside RunOnce.
 		"server.ResolveGridArg(refCache, args[1])",
 		"return handler.SumGridOnce(ctx , rarg_g)",
-		// missing-hash pushes a clear value (never hangs at #GETTING_DATA).
-		"rtd.GlobalRtd.SendUpdate(topicID, rerr_r.Error())",
-		"rtd.GlobalRtd.SendUpdate(topicID, rerr_g.Error())",
+		// missing-hash pushes a clear ERROR value (never hangs at #GETTING_DATA,
+		// and is_error=true so the miss is not memoized as a result).
+		"rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_r.Error())",
+		"rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_g.Error())",
 	} {
 		if !strings.Contains(srv, want) {
 			t.Errorf("server.go (composite RTD dispatch) missing %q:\n%s", want, srv)
