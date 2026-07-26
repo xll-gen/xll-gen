@@ -412,7 +412,26 @@ the per-cycle ref-cache infrastructure end to end:
    the same `A1:B2` serialized as a grid (values) vs a range (coordinates) is a
    different payload, so the tag keeps each (content, target-type) pair on its
    own topic and RefCache entry — without it a grid arg's payload could satisfy
-   a range arg's lookup with the wrong union type. For `grid` args the wrapper
+   a range arg's lookup with the wrong union type.
+   **The tag also SELECTS the digest, and it must cover everything the payload it
+   keys carries** (HIGH, fixed 2026-07-26): `g`/`n` payloads are cell VALUES, so
+   they hash values only and two equal-valued ranges correctly share one topic and
+   one ship; `r`/`a` payloads are COORDINATES (`ConvertRange`, and `ConvertAny` of
+   a reference also emits a `Range`), so they use
+   `HashXLOPERContentWithRefIdentity`, which folds the sheet id + rect table into
+   the same FNV-1a stream **ahead of** the coerced values. Hashing values alone
+   there gave two DISTINCT ranges holding the same numbers ONE token →
+   `SendRefCachePayloadOnce` deduped the second ship → `ResolveRangeArg` handed the
+   handler the FIRST range's coordinates (silent wrong answer). Identity is folded
+   *in addition to* the values, never instead: the value part is what keeps
+   "edited cell → new token → new topic → fresh compute" alive; a coordinates-only
+   digest would freeze such a topic across edits. Same reasoning applies to
+   `MakeCacheKey`, which digests EVERY reference arg with the identity-folding
+   variant — it cannot see the declared arg type, and over-discriminating a `grid`
+   arg only costs a cache miss whereas under-discriminating a `range` arg returns
+   the wrong answer. Regression: `internal/assets/testdata/cache_native_test.cpp`
+   (`TestRefIdentityInToken`) + `cache_cpp_test.go`
+   (`TestRefIdentityFoldedForCoordinatePayloads`). For `grid` args the wrapper
    uses `xll::ConvertGridArg` (coerces the `U`-passed reference to cell values
    before `ConvertGrid`, which only understands `xltypeMulti`). It then builds a
    `protocol::SetRefCacheRequest{ key=token, val=Any(payload) }` via the

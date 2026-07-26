@@ -68,7 +68,10 @@ enum : unsigned char {
     kTagRefVal  = 'R',  // xltypeRef/SRef successfully coerced to cell VALUES
     kTagMulti   = 'A',  // an inline xltypeMulti value array
     kTagRefErr  = 'X',  // coercion failed -> reference IDENTITY folded in
-    kTagSRefErr = 'x',  // ...for the xltypeSRef shape
+    kTagRefIdent= 'i',  // reference IDENTITY folded AHEAD of the value digest
+    kTagMRef    = 'm',  // ...identity of the xltypeRef shape (idSheet + rects)
+    kTagSRefErr = 'x',  // ...identity of the xltypeSRef shape (one rect, no sheet)
+    kTagNoIdent = 'o',  // ...a reference carrying no usable coordinates
     kTagUnknown = '?',  // anything else (xltype folded in)
     kTagDepth   = '!',  // recursion cap hit
 };
@@ -81,12 +84,23 @@ constexpr int kMaxHashDepth = 16;
 
 uint64_t HashXLOPERIntoDepth(uint64_t h, const XLOPER12* px, int depth);
 
-// Folds the coordinates that IDENTIFY a reference (used when xlCoerce fails, so
-// two DISTINCT failing refs still hash apart instead of collapsing onto one RTD
-// topic + one RefCache entry — reviewer HIGH, 2026-06-12).
-uint64_t HashRefIdentity(uint64_t h, const XLOPER12* px, DWORD ty) {
-    h = Fnv1aByte(h, kTagRefErr);
+// Streams the coordinates that IDENTIFY a reference — the sheet id plus the rect
+// table — into an existing digest. Emits NO leading tag: each caller prefixes its
+// own so the "coerce failed" stream and the "identity + values" stream (below)
+// can never alias.
+//
+// The two reference SHAPES are deliberately distinguished, because they carry
+// different information (the same distinction GetOrComputeRefHash makes):
+//   * xltypeRef  — idSheet + an ARRAY of rects (multi-area). All of it is folded,
+//                  in order, so a 2-area ref cannot alias a differently split
+//                  pair covering the same cells.
+//   * xltypeSRef — ONE rect and NO sheet id (Excel passes this shape for a
+//                  same-sheet reference), so only the rect exists to fold.
+// A ref with no usable coordinates (xltypeRef with a null lpmref) folds a
+// distinct marker rather than nothing, so it cannot alias "identity absent".
+uint64_t HashRefIdentityFields(uint64_t h, const XLOPER12* px, DWORD ty) {
     if (ty == xltypeRef && px->val.mref.lpmref) {
+        h = Fnv1aByte(h, kTagMRef);
         h = Fnv1aU64(h, (uint64_t)px->val.mref.idSheet);
         const XLMREF12* m = px->val.mref.lpmref;
         h = Fnv1aU32(h, (uint32_t)m->count);
@@ -100,8 +114,18 @@ uint64_t HashRefIdentity(uint64_t h, const XLOPER12* px, DWORD ty) {
         const XLREF12& r = px->val.sref.ref;
         const int32_t rect[4] = { r.rwFirst, r.rwLast, r.colFirst, r.colLast };
         h = Fnv1aUpdate(h, rect, sizeof(rect));
+    } else {
+        h = Fnv1aByte(h, kTagNoIdent);
     }
     return h;
+}
+
+// Folds the reference identity under the "coercion failed" tag, so two DISTINCT
+// failing refs still hash apart instead of collapsing onto one RTD topic + one
+// RefCache entry (reviewer HIGH, 2026-06-12).
+uint64_t HashRefIdentity(uint64_t h, const XLOPER12* px, DWORD ty) {
+    h = Fnv1aByte(h, kTagRefErr);
+    return HashRefIdentityFields(h, px, ty);
 }
 
 uint64_t HashXLOPERIntoDepth(uint64_t h, const XLOPER12* px, int depth) {
@@ -222,6 +246,25 @@ uint64_t HashXLOPERInto(uint64_t seed, const XLOPER12* px) {
 
 uint64_t HashXLOPERContent(const XLOPER12* px) {
     return HashXLOPERIntoDepth(kFnvBasis, px, 0);
+}
+
+uint64_t HashXLOPERWithRefIdentity(uint64_t seed, const XLOPER12* px) {
+    if (!px) return Fnv1aByte(seed, kTagNull);
+    const DWORD ty = px->xltype & ~(xlbitXLFree | xlbitDLLFree);
+    uint64_t h = seed;
+    if (ty == xltypeRef || ty == xltypeSRef) {
+        // Identity FIRST, then the value stream, all in ONE continuous FNV-1a
+        // digest (never xor-combined — see the note on the primitives above).
+        h = Fnv1aByte(h, kTagRefIdent);
+        h = HashRefIdentityFields(h, px, ty);
+    }
+    // Non-references stream byte-identically to HashXLOPERInto: an inline value
+    // array has no identity to fold, so the two entry points agree there.
+    return HashXLOPERIntoDepth(h, px, 0);
+}
+
+uint64_t HashXLOPERContentWithRefIdentity(const XLOPER12* px) {
+    return HashXLOPERWithRefIdentity(kFnvBasis, px);
 }
 
 CacheManager& CacheManager::Instance() {
@@ -481,7 +524,29 @@ std::string ContentHashToken(char typeTag, const XLOPER12* px) {
     // reference coordinates: editing a cell inside a range arg changes the digest
     // → changes the token → a fresh RTD topic. No intermediate string is
     // materialized (a 100x100 grid used to cost 10k stringstreams + 10k strings).
-    return FormatHashToken(typeTag, HashXLOPERContent(px));
+    //
+    // The typeTag names the WIRE-PAYLOAD SHAPE (AGENTS.md §19.3), and the digest
+    // MUST cover everything that payload carries — the token is the only key the
+    // payload is shipped and looked up under (SendRefCachePayloadOnce dedups on
+    // it; the Go RefCache is keyed by it):
+    //   'g' grid / 'n' numgrid → payload is the CELL VALUES (ConvertGridArg /
+    //       ConvertNumGrid). Coordinates are absent from the payload, so they
+    //       stay out of the digest: two equal-valued ranges are the same payload
+    //       and correctly share one topic + one ship ("same grid → same topic").
+    //   'r' range / 'a' any-of-a-reference → payload is the COORDINATES
+    //       (ConvertRange, and ConvertAny of a ref also emits a Range: sheet
+    //       name + rect table). A value-only digest gave two DISTINCT ranges
+    //       holding equal numbers the SAME token, so the second ship was deduped
+    //       away and the Go side resolved the FIRST range's coordinates for the
+    //       second argument — a silent wrong answer (reviewer HIGH, 2026-07-26).
+    //       Identity is folded IN ADDITION to the values, not instead of them:
+    //       the values keep "edited cell → new token → new topic → fresh
+    //       compute" alive, which is the RTD freshness contract of §19.3 (a
+    //       coordinates-only digest would freeze such a topic across edits).
+    const bool coordinatePayload = (typeTag == 'r' || typeTag == 'a');
+    const uint64_t h = coordinatePayload ? HashXLOPERContentWithRefIdentity(px)
+                                         : HashXLOPERContent(px);
+    return FormatHashToken(typeTag, h);
 }
 
 std::string ContentHashTokenFP12(const FP12* fp) {
@@ -549,8 +614,23 @@ std::string MakeCacheKey(const std::string& funcName, const std::vector<LPXLOPER
             // Route references through the per-cycle RefCache so a range that
             // several cached calls share is coerced (and hashed) once per
             // calculation cycle instead of once per call.
+            //
+            // HashXLOPERContentWithRefIdentity (not HashXLOPERContent): a `range`
+            // or `any` argument ships its COORDINATES on the wire (ConvertRange /
+            // ConvertAny), so a value-only key let a cached call on A1:A10 be
+            // served the result computed for C1:C10 whenever the two columns held
+            // the same numbers — the cache-key twin of the RTD topic-token defect
+            // documented in ContentHashToken above.
+            //
+            // MakeCacheKey cannot see the DECLARED argument type (the generated
+            // wrapper pushes grid/range/any into one LPXLOPER12 vector), so the
+            // identity is folded for EVERY reference argument. The trade is
+            // deliberate and one-directional: for a `grid` arg this
+            // over-discriminates (two equal-valued ranges miss each other's cache
+            // entry and recompute — a perf loss), whereas under-discriminating a
+            // `range` arg returns the WRONG ANSWER.
             const uint64_t refHash = CacheManager::Instance().GetOrComputeRefHash(
-                arg, [](const XLOPER12* pRef) { return HashXLOPERContent(pRef); });
+                arg, [](const XLOPER12* pRef) { return HashXLOPERContentWithRefIdentity(pRef); });
             h = Fnv1aByte(h, kTagRefVal);
             h = Fnv1aU64(h, refHash);
         } else {

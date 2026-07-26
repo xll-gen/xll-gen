@@ -117,9 +117,12 @@ func TestCacheHashPathIsAllocationFree(t *testing.T) {
 			t.Errorf("xll_cache.h does not declare %q", want)
 		}
 	}
-	if !strings.Contains(src, "return FormatHashToken(typeTag, HashXLOPERContent(px));") {
-		t.Errorf("ContentHashToken must hash the XLOPER12 directly (FormatHashToken(typeTag, " +
-			"HashXLOPERContent(px))) rather than materializing SerializeXLOPER's string first")
+	if !strings.Contains(src, "return FormatHashToken(typeTag, h);") ||
+		!strings.Contains(src, "HashXLOPERContentWithRefIdentity(px)") ||
+		!strings.Contains(src, ": HashXLOPERContent(px);") {
+		t.Errorf("ContentHashToken must hash the XLOPER12 directly (FormatHashToken over " +
+			"HashXLOPERContent / HashXLOPERContentWithRefIdentity) rather than materializing " +
+			"SerializeXLOPER's string first")
 	}
 
 	// Defect 2 of the perf item: the key must be a constant-size digest, not the
@@ -182,6 +185,77 @@ func TestGetOrComputeRefHashHashesNonRefArgs(t *testing.T) {
 		t.Errorf("GetOrComputeRefHash must hash a non-xltypeRef argument directly " +
 			"(`if (refTy != xltypeRef) return computeFn(pRef);`) — it just skips the " +
 			"per-(sheet,rect) RefCache, it must not skip the hash")
+	}
+}
+
+// TestRefIdentityFoldedForCoordinatePayloads pins that the digest keying a
+// COORDINATE-shaped payload folds the reference identity.
+//
+// Regression it pins (HIGH, 2026-07-26): a `range` RTD argument's topic token was
+// ContentHashToken('r', px), which coerced the reference and hashed only the CELL
+// VALUES — but the payload shipped under that token is ConvertRange(px), i.e. the
+// SHEET ID + RECT TABLE. Two DISTINCT ranges holding the same numbers therefore
+// produced the SAME token, xll::SendRefCachePayloadOnce (xll_ipc.cpp) deduped the
+// second ship on its per-cycle g_sentRefCache set, and pkg/server's
+// ResolveRangeArg handed the handler the FIRST range's coordinates for the second
+// argument — a silent wrong answer. The 'r' tag could not help: the digest never
+// looked at coordinates at all. MakeCacheKey had the same defect for cached
+// sync/async functions taking a `range`/`any` argument.
+//
+// The fix folds identity ONLY where the payload is coordinate-shaped ('r', 'a',
+// and every reference arg in MakeCacheKey, which cannot see the declared type);
+// 'g'/'n' payloads are cell values and stay purely content-addressed so
+// AGENTS.md §19.3's "same grid -> same topic" dedup survives.
+func TestRefIdentityFoldedForCoordinatePayloads(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	src, ok := m["src/xll_cache.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_cache.cpp not found in assets")
+	}
+	hdr, ok := m["include/xll_cache.h"]
+	if !ok {
+		t.Fatalf("embedded include/xll_cache.h not found in assets")
+	}
+	code := stripLineComments(src)
+
+	for _, want := range []string{
+		"uint64_t HashXLOPERWithRefIdentity(uint64_t seed, const XLOPER12* px)",
+		"uint64_t HashXLOPERContentWithRefIdentity(const XLOPER12* px)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("xll_cache.cpp missing the identity-folding digest entry point %q", want)
+		}
+		if !strings.Contains(hdr, strings.TrimSuffix(want, ")")) {
+			t.Errorf("xll_cache.h does not declare %q", want)
+		}
+	}
+
+	// The tag -> digest selection must stay: 'r' (Range) and 'a' (ConvertAny of a
+	// reference also emits a Range) ship COORDINATES.
+	if !strings.Contains(code, "(typeTag == 'r' || typeTag == 'a')") {
+		t.Errorf("ContentHashToken must select the identity-folding digest for the " +
+			"coordinate-shaped payload tags ('r' range, 'a' any-of-a-reference): without " +
+			"it two distinct ranges holding the same values share one topic token and the " +
+			"second payload is deduped away")
+	}
+
+	// MakeCacheKey's RefCache computeFn must use the identity-folding digest too.
+	if !strings.Contains(code, "return HashXLOPERContentWithRefIdentity(pRef); }") {
+		t.Errorf("MakeCacheKey must digest reference args with HashXLOPERContentWithRefIdentity: " +
+			"a `range`/`any` arg ships its COORDINATES, so a value-only key serves the result " +
+			"computed for a different range whenever two ranges hold the same values")
+	}
+
+	// ...and the identity fold must cover BOTH reference shapes: xltypeRef carries
+	// (idSheet, rect table), xltypeSRef carries a single rect and NO sheet id.
+	if !strings.Contains(code, "uint64_t HashRefIdentityFields(uint64_t h, const XLOPER12* px, DWORD ty)") ||
+		!strings.Contains(code, "h = Fnv1aU64(h, (uint64_t)px->val.mref.idSheet);") ||
+		!strings.Contains(code, "const XLREF12& r = px->val.sref.ref;") {
+		t.Errorf("the reference-identity fold must handle xltypeRef (idSheet + rect array) " +
+			"and xltypeSRef (one rect, no sheet id) distinctly")
 	}
 }
 

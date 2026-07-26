@@ -505,6 +505,25 @@ static void TestRefArgs() {
     std::string two = xll::MakeCacheKey("F", {&refTwoRects.op});
     Check(one != two, "a 1-rect ref and a 2-rect ref hash apart");
 
+    // Same rect COUNT, different rects, IDENTICAL cell values (the stub coerces
+    // every ref to coercedA). A `range`/`any` argument ships COORDINATES on the
+    // wire (types' ConvertRange -> sheet + rect table), so a value-only key made
+    // a cached call on A1:B2 serve the result computed for F6:F7. MakeCacheKey
+    // cannot see the declared argument type, so it folds the reference IDENTITY
+    // for every ref arg — over-discriminating a `grid` arg (extra miss) instead
+    // of under-discriminating a `range` arg (wrong answer).
+    xll::CacheManager::Instance().ClearRefCache();
+    Check(xll::MakeCacheKey("F", {&ref.op}) != xll::MakeCacheKey("F", {&refOther.op}),
+          "MakeCacheKey separates two same-valued xltypeRefs at different rects");
+    XLOPER12 srefOtherRect = SRef(5, 6, 5, 6);
+    Check(xll::MakeCacheKey("F", {&sref}) != xll::MakeCacheKey("F", {&srefOtherRect}),
+          "MakeCacheKey separates two same-valued xltypeSRefs at different rects");
+    RefHolder refOtherSheet(0x9999, {Rect(0, 1, 0, 1)});
+    Check(xll::MakeCacheKey("F", {&ref.op}) != xll::MakeCacheKey("F", {&refOtherSheet.op}),
+          "MakeCacheKey separates the same rect on two different sheets");
+    Check(xll::MakeCacheKey("F", {&ref.op}) != xll::MakeCacheKey("F", {&sref}),
+          "MakeCacheKey separates an xltypeRef from an xltypeSRef");
+
     // Coerce failure folds in the reference IDENTITY, so two distinct failing
     // refs must not collapse onto one topic/entry.
     xll::CacheManager::Instance().ClearRefCache();
@@ -517,6 +536,78 @@ static void TestRefArgs() {
     Check(f1 != f2, "distinct failing xltypeRefs hash apart");
     Check(f3 != f4, "distinct failing xltypeSRefs hash apart");
     Check(f1 != f3, "a failing Ref and a failing SRef hash apart");
+    g_coerceResult = &coercedA;
+    xll::CacheManager::Instance().ClearRefCache();
+}
+
+// ---------------------------------------------------------------------------
+// 4b. RTD topic tokens: the digest must match the WIRE PAYLOAD the typeTag names
+// ---------------------------------------------------------------------------
+//
+// Regression pinned here (HIGH, 2026-07-25 → fixed 2026-07-26): for a `range`
+// argument the topic token was `ContentHashToken('r', px)`, which coerced the
+// reference and hashed the CELL VALUES — but the payload shipped under that
+// token is `ConvertRange(px)`, i.e. the SHEET ID + RECT TABLE. Two DISTINCT
+// ranges holding the same values therefore produced the SAME token, so
+// SendRefCachePayloadOnce deduped the second ship and the Go side resolved the
+// FIRST range's coordinates for the second argument — a silent wrong answer.
+// The `'r'` tag did not help: the digest never looked at coordinates at all.
+//
+// The fix folds the reference IDENTITY into the digest for the COORDINATE-shaped
+// payloads ('r' = Range, 'a' = Any-of-a-ref, which ConvertAny also emits as a
+// Range) while leaving the VALUE-shaped payloads ('g' grid, 'n' numgrid)
+// content-addressed as AGENTS.md §19.3 documents.
+static void TestRefIdentityInToken() {
+    XLOPER12 cellsA[2] = {Num(1.0), Num(2.0)};
+    XLOPER12 coercedA = Multi(1, 2, cellsA);
+    // Every reference below coerces to the SAME values, which is exactly the
+    // "two columns hold the same numbers" collision the defect describes.
+    g_coerceResult = &coercedA;
+    xll::CacheManager::Instance().ClearRefCache();
+
+    RefHolder rA(0x1234, {Rect(0, 9, 0, 0)});                    // Sheet1!A1:A10
+    RefHolder rB(0x1234, {Rect(0, 9, 2, 2)});                    // Sheet1!C1:C10
+    RefHolder rOtherSheet(0x5678, {Rect(0, 9, 0, 0)});           // Sheet2!A1:A10
+    RefHolder rSplit(0x1234, {Rect(0, 4, 0, 0), Rect(5, 9, 0, 0)}); // same cells, 2 areas
+    XLOPER12 sA = SRef(0, 9, 0, 0);
+    XLOPER12 sB = SRef(0, 9, 2, 2);
+
+    Check(xll::ContentHashToken('r', &rA.op) != xll::ContentHashToken('r', &rB.op),
+          "'r' token separates two same-valued ranges at different rects");
+    Check(xll::ContentHashToken('r', &rA.op) != xll::ContentHashToken('r', &rOtherSheet.op),
+          "'r' token separates the same rect on two different sheets");
+    Check(xll::ContentHashToken('r', &rA.op) != xll::ContentHashToken('r', &rSplit.op),
+          "'r' token separates a 1-area ref from a 2-area ref covering the same cells");
+    Check(xll::ContentHashToken('r', &sA) != xll::ContentHashToken('r', &sB),
+          "'r' token separates two same-valued xltypeSRefs at different rects");
+    Check(xll::ContentHashToken('r', &rA.op) != xll::ContentHashToken('r', &sA),
+          "'r' token separates an xltypeRef from an xltypeSRef (no idSheet)");
+    Check(xll::ContentHashToken('a', &rA.op) != xll::ContentHashToken('a', &rB.op),
+          "'a' token separates two same-valued ranges (ConvertAny ships a Range too)");
+    Check(xll::ContentHashToken('r', &rA.op) == xll::ContentHashToken('r', &rA.op),
+          "'r' token is deterministic for one reference");
+
+    // ...and the VALUES stay in the digest, so editing a cell INSIDE the range
+    // yields a new token -> a new RTD topic -> a fresh compute (§19.3). A
+    // coordinates-only digest would freeze the topic across edits.
+    std::string beforeEdit = xll::ContentHashToken('r', &rA.op);
+    XLOPER12 cellsB[2] = {Num(1.0), Num(99.0)};
+    XLOPER12 coercedB = Multi(1, 2, cellsB);
+    g_coerceResult = &coercedB;
+    Check(xll::ContentHashToken('r', &rA.op) != beforeEdit,
+          "'r' token still tracks the range's cell VALUES (edit -> new topic)");
+    g_coerceResult = &coercedA;
+    Check(xll::ContentHashToken('r', &rA.op) == beforeEdit,
+          "'r' token returns to its old value when the cells do");
+
+    // The VALUE-shaped payloads must NOT fold identity: a grid arg ships cell
+    // values, so two equal-valued ranges are the SAME payload and must share one
+    // topic + one RefCache entry (the documented "same grid -> same topic").
+    Check(xll::ContentHashToken('g', &rA.op) == xll::ContentHashToken('g', &rB.op),
+          "'g' token stays purely content-addressed (same values -> same topic)");
+    Check(xll::ContentHashToken('g', &rA.op) != xll::ContentHashToken('r', &rA.op),
+          "typeTag still namespaces the value digest from the identity digest");
+
     g_coerceResult = &coercedA;
     xll::CacheManager::Instance().ClearRefCache();
 }
@@ -748,6 +839,7 @@ int main(int argc, char** argv) {
     TestFP12Token();
     TestMakeCacheKey();
     TestRefArgs();
+    TestRefIdentityInToken();
     TestConcurrentGetPut();
     TestConcurrentRefHash();
 

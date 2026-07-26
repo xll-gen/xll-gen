@@ -149,7 +149,9 @@ private:
 //
 // Reference args (xltypeRef/xltypeSRef) route through
 // CacheManager::GetOrComputeRefHash so a range hashed once in a calculation
-// cycle is not re-coerced for every call that mentions it.
+// cycle is not re-coerced for every call that mentions it, and are digested with
+// HashXLOPERContentWithRefIdentity — the key must separate two same-valued
+// ranges because a `range`/`any` argument ships its COORDINATES to the handler.
 //
 // Callers may append their own suffixes (the generated wrapper appends
 // "|numgrid:<token>" for FP12 args, which cannot enter the LPXLOPER12 vector).
@@ -170,6 +172,28 @@ uint64_t HashXLOPERInto(uint64_t seed, const XLOPER12* px);
 
 // HashXLOPERContent is HashXLOPERInto seeded with the FNV-1a offset basis.
 uint64_t HashXLOPERContent(const XLOPER12* px);
+
+// HashXLOPERWithRefIdentity is HashXLOPERInto plus the reference IDENTITY: for an
+// xltypeRef/xltypeSRef it folds the sheet id (xltypeRef only — an xltypeSRef
+// carries no sheet) and the rect table into the SAME continuous FNV-1a stream
+// AHEAD of the coerced cell values. A non-reference streams byte-identically to
+// HashXLOPERInto (an inline value array has no identity to fold).
+//
+// Use this wherever the digest keys a payload that carries COORDINATES — a
+// `range` argument (types' ConvertRange emits sheet + rect table) or an `any`
+// argument holding a reference (ConvertAny emits a Range for those). Hashing
+// only the coerced VALUES there let two DISTINCT ranges holding the same numbers
+// share one token/key, so the second payload was deduped away and the consumer
+// resolved the FIRST range's coordinates (reviewer HIGH, 2026-07-26).
+//
+// Identity is folded IN ADDITION to the values, never instead of them: the value
+// part keeps "edited cell -> new digest -> new RTD topic -> fresh compute" alive
+// (AGENTS.md §19.3), which a coordinates-only digest would break.
+uint64_t HashXLOPERWithRefIdentity(uint64_t seed, const XLOPER12* px);
+
+// HashXLOPERContentWithRefIdentity is HashXLOPERWithRefIdentity seeded with the
+// FNV-1a offset basis.
+uint64_t HashXLOPERContentWithRefIdentity(const XLOPER12* px);
 
 // SerializeXLOPER renders an XLOPER12 as a human-readable string.
 //
@@ -193,6 +217,18 @@ std::string SerializeXLOPER(const XLOPER12* px);
 // to the same token and one cell's payload would satisfy the other's lookup
 // with the wrong union type. The tag keeps each (content, target-type) pair on
 // its own topic and its own RefCache entry.
+//
+// The tag also SELECTS the digest, because the digest must cover everything the
+// payload it keys carries:
+//   'g' / 'n' → payload is the cell VALUES → HashXLOPERContent (coordinates are
+//               not in the payload, so two equal-valued ranges correctly share
+//               one topic and one ship).
+//   'r' / 'a' → payload is the COORDINATES (ConvertRange; ConvertAny of a ref
+//               emits a Range too) → HashXLOPERContentWithRefIdentity, which
+//               folds sheet + rects on top of the values. Without it two
+//               distinct ranges holding the same numbers produced one token,
+//               SendRefCachePayloadOnce skipped the second ship, and the handler
+//               received the FIRST range's coordinates.
 std::string ContentHashToken(char typeTag, const XLOPER12* px);
 
 // ContentHashTokenFP12 is the FP12* (numgrid) overload of ContentHashToken: it
