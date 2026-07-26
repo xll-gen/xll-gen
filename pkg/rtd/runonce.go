@@ -164,12 +164,15 @@ func RunOnceGrid(ctx context.Context, mgr gridSender, topicID int32, onceKey str
 		log.Error("rtd.RunOnceGrid: handler returned error", "topicID", topicID, "err", err)
 		// Push the error string as the topic value (is_error=true); never ship a
 		// grid, and never let the error be retained past this calc cycle.
-		// NOTE (grid scope): the grid-once wrapper reads only
-		// RtdOnceGridRegistry, so this error does NOT become the cell's text —
-		// the cell keeps the loading placeholder / empty 0x0 FP12. The flag
-		// still matters for correctness of the scalar registry (which never
-		// stores grid-once topics) and for the logs. Surfacing grid-once errors
-		// in the cell is a follow-up (AGENTS.md §19.3).
+		// GRID ROUTING (host side, 2026-07-26): ProcessRtdUpdate recognizes the
+		// topic as grid-once and stores this message in RtdOnceGridRegistry as a
+		// TRANSIENT entry rather than in the scalar registry. The wrapper then
+		// takes the HIT path — a `grid` cell paints this text, a `numgrid` cell
+		// paints the empty 0x0 FP12 its ABI limits it to (text goes to the log) —
+		// and, because a hit means no xlfRtd, the topic disconnects, the transient
+		// entry is reclaimed like a plain `once` entry, and the next recalc
+		// re-runs the handler. is_error is what makes that reclaim bypass
+		// memoize/memoize_ttl. See AGENTS.md §19.3.
 		return mgr.SendErrorUpdate(topicID, err.Error())
 	}
 

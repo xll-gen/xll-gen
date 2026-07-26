@@ -56,8 +56,14 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 
 	for _, want := range []string{
 		// The retryable connect helper exists and threads allowBounce + the
-		// noApp out-param (see TestXllMainRibbonRetryNoAppBudget).
-		"static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* pNoApp = nullptr)",
+		// outcome-class out-param (see TestXllMainRibbonRetryNoAppBudget and
+		// TestXllMainRibbonRetryUnattemptedNotCharged).
+		"static bool TryConnectRibbon(const char* phase, bool allowBounce = false,",
+		"RibbonAttempt* pOutcome = nullptr) {",
+		// …and the outcome classes are an enum class (a bool cannot express the
+		// third, UNCHARGEABLE class).
+		"enum class RibbonAttempt {",
+		"kNotAttempted = 0,",
 		// The temp-workbook bounce helper exists.
 		"static IDispatch* GetExcelApplicationOrBounce()",
 		// It uses the verified xlc* command opcodes via xll::CallExcel.
@@ -87,7 +93,7 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		// and is REPORTED to the caller so the OnTime retry can honor the same rule.
 		"bool noApp = false;",
 		"if (noApp) {",
-		"if (pNoApp) *pNoApp = true;",
+		"if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;",
 		// Calc-end retries the connect as a defensive fallback (no bounce).
 		`TryConnectRibbon("calc end");`,
 		// The connect state is a single atomic guard (pending/connected/gave-up).
@@ -194,7 +200,7 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 				`extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry()`,
 				"xll::RibbonConnectRetryMacroName()",
 				// The runner retries the connect (no bounce on retries).
-				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryNoApp);`,
+				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
 				// Self-abort on unload BEFORE touching Excel (no re-arm on unload).
 				"if (g_isUnloading.load(std::memory_order_acquire)) return 1;",
 				// Stops once the connect resolves (connected/gave-up).
@@ -293,10 +299,10 @@ func TestXllMainRibbonRetryNoAppBudget(t *testing.T) {
 				"g_ribbonRetryNoAppAttempts",
 				"g_ribbonRetryAttempts",
 				// The runner asks TryConnectRibbon which class the failure was.
-				"bool retryNoApp = false;",
-				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryNoApp);`,
+				"RibbonAttempt retryOutcome = RibbonAttempt::kNotAttempted;",
+				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
 				// …and branches on it before charging anything.
-				"if (retryNoApp) {",
+				"if (retryOutcome == RibbonAttempt::kNoApp) {",
 				"g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;",
 				"if (n >= kRibbonRetryNoAppMaxAttempts) {",
 				// The poll relaxes once the fast window is spent (still bounded).
@@ -330,6 +336,99 @@ func TestXllMainRibbonRetryNoAppBudget(t *testing.T) {
 			}
 			if strings.Contains(src, "for (;;)") || strings.Contains(src, "while (true)") {
 				t.Errorf("[%s] the ribbon retry must never spin unbounded", tc.name)
+			}
+		})
+	}
+}
+
+// TestXllMainRibbonRetryUnattemptedNotCharged is the LOW regression for the
+// LAST unbilled-attempt accounting hole (2026-07-26, same defect class as the
+// noApp split above, one branch further out).
+//
+// TryConnectRibbon has two exits that return BEFORE ever calling
+// SetRibbonConnected — i.e. before touching COM at all:
+//
+//	1. the g_isUnloading bail (unreachable from the OnTime runner, which gates on
+//	   the same flag first);
+//	2. the STA RE-ENTRANCY bail (s_inConnect CAS failure) — very much reachable:
+//	   the COMAddIns Connect and the temp-workbook bounce both PUMP the STA
+//	   message loop, so Excel can dispatch a queued OnTime macro while a connect
+//	   is mid-flight; that dispatch re-enters TryConnectRibbon on the same thread
+//	   and is turned away.
+//
+// Before the fix both exits reported themselves as an ordinary failure (pNoApp
+// left false), so the runner charged one of its 30 productive attempts for a
+// connect that never happened. The fix replaces the bool out-param with an
+// explicit outcome CLASS; only kRejected is chargeable, kNoApp goes to the noApp
+// budget, and kNotAttempted charges NOTHING.
+func TestXllMainRibbonRetryUnattemptedNotCharged(t *testing.T) {
+	t.Parallel()
+
+	offCfg := ribbonConnectCfg()
+	offCfg.Ribbon.Bounce = "off"
+
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{"default", ribbonConnectCfg()},
+		{"off", offCfg},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := renderCppMain(t, tc.cfg)
+
+			for _, want := range []string{
+				// The three-way (four-way with kConnected) outcome class exists…
+				"enum class RibbonAttempt {",
+				"kNotAttempted = 0,",
+				"kNoApp,",
+				"kRejected,",
+				"kConnected,",
+				// …TryConnectRibbon defaults the out-param to kNotAttempted, so an
+				// exit that forgets to classify itself is UNCHARGED, never
+				// mis-charged.
+				"if (pOutcome) *pOutcome = RibbonAttempt::kNotAttempted;",
+				"if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;",
+				"if (pOutcome) *pOutcome = RibbonAttempt::kRejected;",
+				"if (pOutcome) *pOutcome = RibbonAttempt::kConnected;",
+				// …and the runner charges the productive budget ONLY for kRejected.
+				"} else if (retryOutcome == RibbonAttempt::kRejected) {",
+				"g_ribbonRetryAttempts.fetch_add(1) + 1;",
+			} {
+				if !strings.Contains(src, want) {
+					t.Errorf("[%s] xll_main.cpp ribbon retry missing %q", tc.name, want)
+				}
+			}
+
+			// The pre-fix shape: an `else` that charges the productive budget for
+			// EVERY non-noApp outcome, including the never-attempted ones.
+			if strings.Contains(src, "if (retryNoApp) {") || strings.Contains(src, "bool retryNoApp = false;") {
+				t.Errorf("[%s] the runner still uses the bool noApp out-param; a re-entrancy bail "+
+					"(nothing attempted) is then billed to the 30-attempt productive budget", tc.name)
+			}
+
+			// kRejected must be classified at the site that actually RAN the
+			// Connect: after SetRibbonConnected returned false and after the noApp
+			// early-return. Anything earlier would re-introduce the mis-billing.
+			connectIdx := strings.Index(src, "if (SetRibbonConnected(true, &noApp, allowBounce)) {")
+			noAppIdx := strings.Index(src, "if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;")
+			rejectedIdx := strings.Index(src, "if (pOutcome) *pOutcome = RibbonAttempt::kRejected;")
+			reentryIdx := strings.Index(src, "if (!s_inConnect.compare_exchange_strong(expected, true)) return false;")
+			if connectIdx < 0 || noAppIdx < 0 || rejectedIdx < 0 || reentryIdx < 0 {
+				t.Fatalf("[%s] missing markers (connect=%d noApp=%d rejected=%d reentry=%d)",
+					tc.name, connectIdx, noAppIdx, rejectedIdx, reentryIdx)
+			}
+			if !(reentryIdx < connectIdx && connectIdx < noAppIdx && noAppIdx < rejectedIdx) {
+				t.Errorf("[%s] outcome classification is out of order (reentry=%d connect=%d noApp=%d rejected=%d): "+
+					"kRejected must only be reported after an actual SetRibbonConnected attempt",
+					tc.name, reentryIdx, connectIdx, noAppIdx, rejectedIdx)
+			}
+			// The re-entrancy bail must NOT classify itself as anything but the
+			// default: no assignment may sit between the CAS and the guard object.
+			between := src[reentryIdx:connectIdx]
+			if strings.Contains(between, "*pOutcome = RibbonAttempt::kRejected") ||
+				strings.Contains(between, "*pOutcome = RibbonAttempt::kNoApp") {
+				t.Errorf("[%s] the STA re-entrancy bail must stay kNotAttempted (charge nothing)", tc.name)
 			}
 		})
 	}

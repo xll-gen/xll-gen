@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -8,11 +9,56 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/log"
 )
 
+// The three admission refusals GetChunkBuffer can return, as sentinels.
+//
+// They exist so a caller can tell WHICH bound was hit without matching on
+// message text — which is what lets internal/assets' chunk gate replay one
+// shared case table through this reassembler and through the C++ mirror's
+// ChunkAdmission verdicts (RefusedZeroTotal / RefusedTotalTooLarge /
+// RefusedTooManyTransfers). HandleChunk itself only needs "refused", but the
+// mirror check needs the reason, and a prose-matched reason would drift.
+//
+// None of them poisons the transfer id: all three insert no buffer (so there is
+// nothing to resurrect) and are transient in principle, so a later retry may
+// legitimately succeed. See ChunkManager.poisoned.
+var (
+	// ErrChunkTotalNonPositive: the wire-supplied total was <= 0. Mirrors the
+	// C++ ChunkAdmission::RefusedZeroTotal (total_size is uint32 on the wire, so
+	// "non-positive" is reachable only as zero).
+	ErrChunkTotalNonPositive = errors.New("xll-gen/server: chunk total is non-positive")
+	// ErrChunkTotalTooLarge: the declared total exceeds MaxChunkBufferBytes.
+	// Mirrors ChunkAdmission::RefusedTotalTooLarge.
+	ErrChunkTotalTooLarge = errors.New("xll-gen/server: chunk total exceeds the per-transfer cap")
+	// ErrTooManyChunkTransfers: MaxConcurrentTransfers is reached and pruning
+	// stale buffers freed nothing. Mirrors ChunkAdmission::RefusedTooManyTransfers.
+	ErrTooManyChunkTransfers = errors.New("xll-gen/server: too many concurrent chunk transfers")
+)
+
 // DefaultMaxChunkBufferBytes caps the per-transfer reassembly buffer that
 // ChunkManager will allocate in response to a wire-supplied TotalSize. The
 // wire-supplied size is attacker-controllable, so an unbounded allocation
 // path is a DoS vector. 256 MiB is a sane ceiling for any Excel UDF payload.
 // Override with ChunkManager.MaxChunkBufferBytes (or the constructor option).
+//
+// THREE 256 MiB NUMBERS, AND THEY ARE NOT ONE CONSTANT IN "LOCKSTEP" (the
+// wording this comment used to imply). Be precise about which is which:
+//
+//   - THIS one is the DEFAULT of a per-project knob (`xll.yaml`
+//     `server.chunk.max_buffer_bytes`) for the HOST->GUEST reassembler, i.e.
+//     what this Go server will accept FROM the XLL.
+//   - kMaxChunkTotalSize (internal/assets/files/include/xll_worker.h) is the
+//     GUEST->HOST receiver's cap, FIXED at compile time with no YAML or
+//     template wiring. Lowering the Go knob does NOT move it.
+//   - chunk.MaxTransferBytes (pkg/chunk) is the GUEST->HOST *sender's* cap. It
+//     must track kMaxChunkTotalSize, and it is hard-coded because a sender
+//     cannot learn the receiver's constant: nothing on the wire negotiates a
+//     reassembly cap.
+//
+// A project that lowers `server.chunk.max_buffer_bytes` is therefore asymmetric
+// BY CONSTRUCTION, and it also creates the mirror image of the defect
+// chunk.MaxTransferBytes fixes: the C++ host->guest sender has no knowledge of
+// the lowered Go cap and will happily push a transfer this server refuses.
+// See AGENTS.md §18.6.1.
 const DefaultMaxChunkBufferBytes int64 = 256 << 20
 
 // DefaultCleanupInterval is how often the ChunkManager sweep loop scans for
@@ -133,6 +179,22 @@ type ChunkManager struct {
 	// DefaultMaxConcurrentTransfers.
 	MaxConcurrentTransfers int
 
+	// MaxPoisonedTransfers bounds the poison set. Zero/negative means
+	// DefaultMaxPoisonedTransfers. Not exposed through xll.yaml — it is a
+	// field so the C++ mirror's configurable twin (xll::ChunkRegistry's
+	// maxPoisoned) can be driven from the same shared case table with a
+	// three-entry map instead of a 1024-entry one.
+	MaxPoisonedTransfers int
+
+	// Clock, when non-nil, replaces time.Now for EVERY time decision this
+	// manager makes (buffer LastAccess stamps, TTL expiry, poison timestamps
+	// and their expiry). Production leaves it nil. It is captured through
+	// ChunkManagerConfig rather than set afterwards because the cleanup
+	// goroutine starts inside the constructor and would otherwise race a
+	// later assignment. The periodic sweep's TICKER is unaffected — only the
+	// timestamps it compares are.
+	Clock func() time.Time
+
 	// stop signals the cleanup goroutine to exit. Closed exactly once by
 	// Close(); closeOnce makes Close idempotent so a double-shutdown (e.g.
 	// a deferred Close plus an explicit one on a teardown path) does not
@@ -163,6 +225,12 @@ type ChunkManagerConfig struct {
 	CleanupInterval        time.Duration
 	BufferTTL              time.Duration
 	MaxConcurrentTransfers int
+	// MaxPoisonedTransfers bounds the poison set (no YAML wiring; see the
+	// ChunkManager field).
+	MaxPoisonedTransfers int
+	// Clock overrides time.Now for every TTL decision. Test-only; see the
+	// ChunkManager field.
+	Clock func() time.Time
 }
 
 // NewChunkManagerFromConfig builds a ChunkManager with all settings captured
@@ -182,6 +250,8 @@ func NewChunkManagerFromConfig(c ChunkManagerConfig) *ChunkManager {
 		CleanupInterval:        c.CleanupInterval,
 		ChunkBufferTTL:         c.BufferTTL,
 		MaxConcurrentTransfers: c.MaxConcurrentTransfers,
+		MaxPoisonedTransfers:   c.MaxPoisonedTransfers,
+		Clock:                  c.Clock,
 		stop:                   make(chan struct{}),
 	}
 	go cm.cleanupLoop()
@@ -199,7 +269,7 @@ func (cm *ChunkManager) cleanupLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			cm.runCleanupOnce(time.Now(), ttl)
+			cm.runCleanupOnce(cm.now(), ttl)
 		case <-cm.stop:
 			return
 		}
@@ -215,6 +285,41 @@ func (cm *ChunkManager) Close() {
 	cm.closeOnce.Do(func() {
 		close(cm.stop)
 	})
+}
+
+// now returns the manager's notion of the current time: Clock when set,
+// time.Now otherwise. Every TTL decision in this file goes through it so the
+// mirror gate can drive expiry deterministically instead of sleeping.
+func (cm *ChunkManager) now() time.Time {
+	if cm.Clock != nil {
+		return cm.Clock()
+	}
+	return time.Now()
+}
+
+// Sweep runs one cleanup pass immediately, using the manager's clock and TTL —
+// the same pass the background ticker performs. Exported so a caller (or the
+// mirror gate, which drives the C++ CleanupStaleChunks twin) can force the
+// reclaim rather than wait out CleanupInterval.
+func (cm *ChunkManager) Sweep() {
+	cm.runCleanupOnce(cm.now(), cm.effectiveTTL())
+}
+
+// TransferCount reports how many partially-reassembled inbound transfers are
+// resident. Mirrors xll::ChunkRegistry::transferCount.
+func (cm *ChunkManager) TransferCount() int {
+	cm.chunkMutex.Lock()
+	defer cm.chunkMutex.Unlock()
+	return len(cm.chunkCache)
+}
+
+// PoisonedCount reports how many transfer ids are currently recorded as refused
+// for a protocol violation (expired-but-unswept entries included, exactly like
+// the C++ mirror's poisonCount). Mirrors xll::ChunkRegistry::poisonCount.
+func (cm *ChunkManager) PoisonedCount() int {
+	cm.chunkMutex.Lock()
+	defer cm.chunkMutex.Unlock()
+	return len(cm.poisoned)
 }
 
 // runCleanupOnce performs a single cleanup sweep, evicting any buffers whose
@@ -276,6 +381,15 @@ func (cm *ChunkManager) effectiveMaxConcurrentTransfers() int {
 	return DefaultMaxConcurrentTransfers
 }
 
+// effectiveMaxPoisonedTransfers resolves the configured poison-set bound,
+// falling back to DefaultMaxPoisonedTransfers for the zero value.
+func (cm *ChunkManager) effectiveMaxPoisonedTransfers() int {
+	if cm.MaxPoisonedTransfers > 0 {
+		return cm.MaxPoisonedTransfers
+	}
+	return DefaultMaxPoisonedTransfers
+}
+
 // GetChunkBuffer returns the per-id reassembly buffer, allocating it on first
 // touch. The wire-supplied `total` is the only thing telling us how big the
 // payload will be, so it MUST be bounded: a malicious or corrupt producer
@@ -298,14 +412,14 @@ func (cm *ChunkManager) effectiveMaxConcurrentTransfers() int {
 // See DefaultMaxConcurrentTransfers.
 func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, error) {
 	if total <= 0 {
-		return nil, fmt.Errorf("xll-gen/server: refusing chunk buffer allocation: non-positive total=%d (id=%#x)", total, id)
+		return nil, fmt.Errorf("%w: refusing chunk buffer allocation: total=%d (id=%#x)", ErrChunkTotalNonPositive, total, id)
 	}
 	maxBytes := cm.MaxChunkBufferBytes
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxChunkBufferBytes
 	}
 	if int64(total) > maxBytes {
-		return nil, fmt.Errorf("xll-gen/server: refusing chunk buffer allocation: total=%d exceeds max=%d (id=%#x)", total, maxBytes, id)
+		return nil, fmt.Errorf("%w: refusing chunk buffer allocation: total=%d exceeds max=%d (id=%#x)", ErrChunkTotalTooLarge, total, maxBytes, id)
 	}
 
 	cm.chunkMutex.Lock()
@@ -344,22 +458,22 @@ func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, erro
 				// Prune first: at the bound, buffers abandoned by a peer that
 				// stopped mid-transfer are exactly what we want to reclaim,
 				// and the periodic sweep may be up to CleanupInterval away.
-				cm.pruneStaleChunkBuffersLocked(time.Now(), cm.effectiveTTL())
+				cm.pruneStaleChunkBuffersLocked(cm.now(), cm.effectiveTTL())
 				if len(cm.chunkCache) >= maxTransfers {
 					n := len(cm.chunkCache)
 					cm.chunkMutex.Unlock()
-					return nil, fmt.Errorf("xll-gen/server: refusing chunk buffer allocation: %d concurrent transfers already in flight (max=%d) (id=%#x)", n, maxTransfers, id)
+					return nil, fmt.Errorf("%w: refusing chunk buffer allocation: %d concurrent transfers already in flight (max=%d) (id=%#x)", ErrTooManyChunkTransfers, n, maxTransfers, id)
 				}
 			}
 		}
 		buf = &ChunkBuffer{
 			Data:       make([]byte, total),
 			TotalSize:  total,
-			LastAccess: time.Now(),
+			LastAccess: cm.now(),
 		}
 		cm.chunkCache[id] = buf
 	}
-	buf.LastAccess = time.Now()
+	buf.LastAccess = cm.now()
 	cm.chunkMutex.Unlock()
 	return buf, nil
 }
@@ -376,15 +490,16 @@ func (cm *ChunkManager) RemoveChunkBuffer(id uint64) {
 // only; RemoveChunkBuffer stays the plain (completion / resource-refusal)
 // removal.
 func (cm *ChunkManager) PoisonTransfer(id uint64) {
-	now := time.Now()
+	now := cm.now()
 	cm.chunkMutex.Lock()
 	delete(cm.chunkCache, id)
 	if cm.poisoned == nil {
 		cm.poisoned = make(map[uint64]time.Time)
 	}
-	if len(cm.poisoned) >= DefaultMaxPoisonedTransfers {
+	maxPoisoned := cm.effectiveMaxPoisonedTransfers()
+	if len(cm.poisoned) >= maxPoisoned {
 		cm.pruneStaleChunkBuffersLocked(now, cm.effectiveTTL())
-		if len(cm.poisoned) >= DefaultMaxPoisonedTransfers {
+		if len(cm.poisoned) >= maxPoisoned {
 			// Still full of live entries: evict the oldest. The poison set is a
 			// fail-fast accelerator, not a correctness invariant — losing an
 			// entry only restores the old resurrect-until-TTL behavior for that
@@ -414,7 +529,7 @@ func (cm *ChunkManager) IsPoisoned(id uint64) bool {
 	if !ok {
 		return false
 	}
-	if time.Since(at) > cm.effectiveTTL() {
+	if cm.now().Sub(at) > cm.effectiveTTL() {
 		delete(cm.poisoned, id)
 		return false
 	}

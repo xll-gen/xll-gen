@@ -11,10 +11,11 @@
 // rtd-once mechanism this mirrors.
 //
 // This registry is the byte-buffer twin of RtdOnceRegistry (xll_rtd_once.h): it
-// copies that registry's mutex discipline, topic bookkeeping, and the
-// once/memoize_ttl/memoize lifecycle triad EXACTLY, but stores
-// std::vector<uint8_t> payloads instead of VARIANTs. It keeps its OWN topic map
-// (m_topicToKey) independent of the scalar registry.
+// copies that registry's mutex discipline, topic bookkeeping, the
+// once/memoize_ttl/memoize lifecycle triad AND the TRANSIENT (error) entry
+// semantics EXACTLY, but stores std::vector<uint8_t> payloads instead of
+// VARIANTs. It keeps its OWN topic map (m_topicToKey) independent of the scalar
+// registry.
 //
 // This header is included by the generated xll_main.cpp only when the project
 // declares at least one grid-returning rtd-once function (and RTD is therefore
@@ -38,9 +39,46 @@
 
 namespace xll {
 
+// Outcome of a RtdOnceGridRegistry::TryGet. An entry is EITHER a completed grid
+// payload OR a TRANSIENT error, and the two must never be confused:
+//   * a bool "hit" plus an out-string could not tell a kError entry whose
+//     message happens to be empty from a kResult entry holding zero bytes, and
+//     flatbuffers::GetRoot over zero bytes is undefined behaviour;
+//   * kMiss is the ONLY outcome that may lead the wrapper to (re-)issue xlfRtd.
+//     Returning kMiss for an error would re-issue xlfRtd against a topic that is
+//     still CONNECTED, so ConnectData would never re-fire, the one-shot handler
+//     would never re-run, and the cell would be stuck at the loading placeholder
+//     forever — the exact trap AGENTS.md §19.3 documents for the scalar path.
+// enum class (not a plain enum) so a stale `if (TryGet(...))` fails to compile
+// instead of silently treating kMiss as false and kError as true.
+enum class OnceGridLookup {
+    kMiss = 0, // no entry (absent, expired, or a reclaimed transient error)
+    kResult,   // completed payload: `out` holds the serialized RtdOnceGridResult
+    kError,    // transient error: `errOut` holds the message the handler failed with
+};
+
 // RtdOnceGridRegistry holds the completed one-shot grid payloads (serialized
 // protocol::Any bytes) plus the bookkeeping to know which RTD topics belong to
 // grid-returning rtd-once functions. Single global instance.
+//
+// Entries come in two flavours, mirroring the scalar RtdOnceRegistry:
+//   * NORMAL    — a completed grid payload delivered guest->host via
+//                 MSG_RTD_ONCE_GRID. Retention follows the function's declared
+//                 lifecycle (once / memoize_ttl / memoize).
+//   * TRANSIENT — an ERROR pushed in place of a result (handler error, ctx
+//                 cancellation, composite-arg resolve miss, SendOnceGrid
+//                 failure). It arrives as an RtdUpdate with is_error=true and is
+//                 routed here by ProcessRtdUpdate (xll_rtd.cpp) instead of into
+//                 the scalar registry, because the grid-once wrapper reads ONLY
+//                 this registry. Stored so the cell paints something diagnosable
+//                 (grid: the message text; numgrid: an empty 0x0 FP12 — the FP12
+//                 ABI cannot carry text or a cell error — plus the message in the
+//                 log) and, crucially, so the wrapper takes the HIT path and does
+//                 NOT re-issue xlfRtd: the cell then drops its RTD reference,
+//                 Excel disconnects the topic, the transient entry is reclaimed
+//                 as if the function were plain `once` (whatever it declared),
+//                 and the next recalc re-runs the handler. See StoreError /
+//                 ClearNonMemoized / TryGet and AGENTS.md §19.3.
 class RtdOnceGridRegistry {
 public:
     static RtdOnceGridRegistry& Instance() {
@@ -106,6 +144,11 @@ public:
     // protocol::Any the wrapper will later feed to GridToXLOPER12/NumGridToFP12)
     // and stamps a monotonic tick (GetTickCount64, NEVER wall-clock) so
     // memoize_ttl expiry can be evaluated on read and at calc-end.
+    //
+    // A completed payload always PROMOTES the entry back to normal retention:
+    // the transient flag is re-stamped false and any previous error text is
+    // dropped, so a retry that succeeds is memoized exactly like a first-try
+    // success (twin of RtdOnceRegistry::StoreResult's re-stamp).
     void Store(const std::wstring& key, const uint8_t* data, size_t len) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_results.find(key);
@@ -116,34 +159,88 @@ public:
             m_results.emplace(key, std::move(e));
         } else {
             it->second.bytes.assign(data, data + len);
+            it->second.errorText.clear();
+            it->second.transient = false;
             it->second.storedTick = GetTickCount64();
         }
     }
 
-    // Returns true and copies the stored payload into `out` if present and not
-    // expired. memoize_ttl expiry is evaluated HERE (read time): if the entry's
+    // Stores an ERROR for a key as a TRANSIENT entry (called from
+    // ProcessRtdUpdate when an RtdUpdate for a grid-once topic carries
+    // is_error=true). There is no grid to store — `bytes` is cleared — but the
+    // entry MUST exist, for the same reason the scalar path stores its errors:
+    // the grid-once wrapper puts a value in the cell only on a TryGet HIT, so
+    // with no entry every recalc misses, re-issues xlfRtd against the STILL
+    // CONNECTED topic, re-paints the loading placeholder, and the cell can never
+    // recover (ConnectData never re-fires, so the one-shot handler never
+    // re-runs).
+    //
+    // `transient` governs RETENTION, not storage: the entry is reclaimed like a
+    // plain `once` entry no matter what the function declared, so memoize:true
+    // cannot freeze the error until XLL reload and memoize_ttl cannot freeze it
+    // for the TTL window (see ClearNonMemoized / TryGet).
+    void StoreError(const std::wstring& key, const std::wstring& text) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_results.find(key);
+        if (it == m_results.end()) {
+            Entry e;
+            e.errorText = text;
+            e.transient = true;
+            e.storedTick = GetTickCount64();
+            m_results.emplace(key, std::move(e));
+        } else {
+            it->second.bytes.clear();
+            it->second.errorText = text;
+            it->second.transient = true;
+            it->second.storedTick = GetTickCount64();
+        }
+    }
+
+    // Looks the key up and reports which KIND of entry (if any) is there:
+    // kResult copies the stored payload into `out`, kError copies the message
+    // into `errOut` (and clears `out`), kMiss means the wrapper must issue
+    // xlfRtd. memoize_ttl expiry is evaluated HERE (read time): if the entry's
     // function declares a TTL, the key has NO live topic, and the entry's age
     // exceeds the TTL, the entry is erased and a miss is reported — the wrapper
     // then re-issues xlfRtd to recompute fresh. The liveness guard is preserved:
     // an entry whose key still has a connected topic is NEVER expired here (same
     // stuck-at-#GETTING_DATA race as ClearNonMemoized; see AGENTS.md §19.3).
-    bool TryGet(const std::wstring& key, std::vector<uint8_t>* out) {
+    //
+    // TRANSIENT (error) entries expire the same way with a ZERO TTL: readable
+    // while the topic that produced them is still connected — that is the one
+    // recalc in which the cell must paint the failure — and a MISS afterwards.
+    // This read-side rule is the twin of ClearNonMemoized's transient rule and
+    // covers the DisconnectData/CalculationEnded ordering window: if
+    // CalculationEnded fires BEFORE DisconnectData the liveness guard keeps the
+    // entry, and without this rule the *next* recalc would re-serve the stale
+    // error for one extra cycle instead of recomputing.
+    OnceGridLookup TryGet(const std::wstring& key, std::vector<uint8_t>* out,
+                          std::wstring* errOut = nullptr) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_results.find(key);
-        if (it == m_results.end()) return false;
+        if (it == m_results.end()) return OnceGridLookup::kMiss;
+        if (it->second.transient && !KeyHasLiveTopic(key)) {
+            m_results.erase(it);
+            return OnceGridLookup::kMiss;
+        }
         std::wstring fn = FuncNameOfKey(key);
         auto ttlIt = m_ttlNames.find(fn);
         if (ttlIt != m_ttlNames.end() && !KeyHasLiveTopic(key)) {
             ULONGLONG age = GetTickCount64() - it->second.storedTick;
             if (age > ttlIt->second) {
                 m_results.erase(it);
-                return false;
+                return OnceGridLookup::kMiss;
             }
+        }
+        if (it->second.transient) {
+            if (out) out->clear();
+            if (errOut) *errOut = it->second.errorText;
+            return OnceGridLookup::kError;
         }
         if (out) {
             *out = it->second.bytes;
         }
-        return true;
+        return OnceGridLookup::kResult;
     }
 
     // Clears completed payloads on CalculationEnded so the next user-initiated
@@ -152,6 +249,13 @@ public:
     //   * once (default):   erase if no live topic.
     //   * memoize_ttl:      erase if no live topic AND expired (age > ttl).
     //   * memoize:true:     never erase (retained until process teardown).
+    // TRANSIENT entries (errors) OVERRIDE all three and are treated as `once`:
+    // erase as soon as the topic is gone. An error is never a memoizable result
+    // — retaining it would pin the cell on the failure until XLL reload
+    // (memoize:true) or for the whole TTL window (memoize_ttl), and because the
+    // one-shot handler only re-runs on a fresh ConnectData the user would have no
+    // way to retry. Erasing turns the next recalc into a cache miss -> xlfRtd ->
+    // new topic -> handler re-runs.
     //
     // LIVENESS GUARD: a payload whose key still has a connected topic (a live
     // topicID->key mapping) is NEVER cleared here. Without this, a
@@ -174,7 +278,11 @@ public:
             bool live = liveKeys.count(it->first) != 0;
             bool erase = false;
             if (!live) {
-                if (m_memoizeNames.count(fn) != 0) {
+                if (it->second.transient) {
+                    // TRANSIENT (error) — treated as `once` REGARDLESS of the
+                    // function's memoize / memoize_ttl policy.
+                    erase = true;
+                } else if (m_memoizeNames.count(fn) != 0) {
                     // memoize:true — never erase.
                     erase = false;
                 } else {
@@ -197,14 +305,19 @@ public:
     }
 
 private:
-    // A completed one-shot grid payload (serialized protocol::Any bytes) plus
-    // the monotonic tick it was stored at (for memoize_ttl expiry). Unlike the
-    // scalar registry's VARIANT Entry, std::vector<uint8_t> owns its storage and
-    // copies/moves safely, so the default special members are correct and no
-    // copy/move is deleted.
+    // A one-shot grid entry: EITHER a completed payload (serialized
+    // RtdOnceGridResult bytes, transient=false) OR a TRANSIENT error message
+    // (bytes empty, errorText set, transient=true), plus the monotonic tick it
+    // was stored at (for memoize_ttl expiry). The two are discriminated by
+    // `transient`, never by "bytes is empty" — see OnceGridLookup. Unlike the
+    // scalar registry's VARIANT Entry, std::vector<uint8_t>/std::wstring own
+    // their storage and copy/move safely, so the default special members are
+    // correct and no copy/move is deleted.
     struct Entry {
         std::vector<uint8_t> bytes;
+        std::wstring errorText;
         ULONGLONG storedTick = 0;
+        bool transient = false;
     };
 
     // Extracts the leading function-name segment from a key built by

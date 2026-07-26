@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -238,6 +239,81 @@ func TestSender_RetryPolicy(t *testing.T) {
 	})
 }
 
+// TestSender_TransferTooLarge pins the SENDER-side per-transfer cap.
+//
+// The receiver in this direction (the XLL's HandleChunk) refuses any transfer
+// whose declared total_size exceeds its compile-time 256 MiB kMaxChunkTotalSize.
+// With no sender-side bound the split loop pushed the frames anyway: the host
+// refused the FIRST one, the retry ladder absorbed every SYSTEM_ERROR, and the
+// transfer died leaving whatever waited on it (an async handle, an RTD one-shot)
+// hanging until its own timeout. The refusal must therefore happen BEFORE any
+// frame is emitted and must be recognizable (errors.Is) so callers can turn it
+// into a visible failure instead of a retry.
+//
+// MaxTotalBytes is overridden here so the test does not have to materialize
+// 256 MiB; the production value is asserted by TestMaxTransferBytes below.
+func TestSender_TransferTooLarge(t *testing.T) {
+	t.Run("over the cap sends nothing", func(t *testing.T) {
+		var frames int
+		send := func([]byte) error { frames++; return nil }
+		s := &Sender{ChunkSize: 100, MaxTotalBytes: 1000}
+		err := s.Send(make([]byte, 1001), 0x99, 138, send, NoRetry)
+		if !errors.Is(err, ErrTransferTooLarge) {
+			t.Fatalf("err = %v, want ErrTransferTooLarge", err)
+		}
+		if frames != 0 {
+			t.Fatalf("%d frames were sent; an over-cap transfer must be refused before the first frame", frames)
+		}
+		// The message has to name both numbers: it is the only diagnostic the
+		// operator gets for a payload the host will never accept.
+		if !strings.Contains(err.Error(), "1001") || !strings.Contains(err.Error(), "1000") {
+			t.Errorf("error %q must report the payload size and the cap", err)
+		}
+	})
+
+	t.Run("exactly at the cap is sent", func(t *testing.T) {
+		var got int
+		send := func(frame []byte) error {
+			ch := protocol.GetRootAsChunk(append([]byte(nil), frame...), 0)
+			got += ch.DataLength()
+			return nil
+		}
+		s := &Sender{ChunkSize: 100, MaxTotalBytes: 1000}
+		if err := s.Send(make([]byte, 1000), 0x99, 138, send, NoRetry); err != nil {
+			t.Fatalf("a payload exactly at the cap must be accepted: %v", err)
+		}
+		if got != 1000 {
+			t.Fatalf("delivered %d bytes, want 1000", got)
+		}
+	})
+
+	t.Run("zero MaxTotalBytes means the default", func(t *testing.T) {
+		s := &Sender{ChunkSize: 100}
+		if s.maxTotalBytes() != MaxTransferBytes {
+			t.Fatalf("maxTotalBytes() = %d, want MaxTransferBytes (%d)", s.maxTotalBytes(), MaxTransferBytes)
+		}
+	})
+}
+
+// TestMaxTransferBytes pins the number itself.
+//
+// It is 256 MiB because that is what the C++ receiver compiles in
+// (kMaxChunkTotalSize in internal/assets/files/src/xll_worker.cpp). The sender
+// CANNOT discover that value: it has no template or YAML wiring, and nothing on
+// the wire negotiates a reassembly cap — so the constant is a deliberate,
+// documented duplicate rather than a derived value. internal/assets'
+// TestChunkReceiverCapsMatchGoConstants checks the C++ source still says 256 MiB.
+func TestMaxTransferBytes(t *testing.T) {
+	if MaxTransferBytes != 256*1024*1024 {
+		t.Fatalf("MaxTransferBytes = %d, want 256 MiB", MaxTransferBytes)
+	}
+	// It must also be representable in the wire field it bounds:
+	// protocol.Chunk.total_size is uint32.
+	if uint64(MaxTransferBytes) > uint64(^uint32(0)) {
+		t.Fatalf("MaxTransferBytes does not fit protocol.Chunk.total_size (uint32)")
+	}
+}
+
 // TestDefaultChunkSize pins the single-source constant AND the geometry it is
 // derived from. Both pkg/server and pkg/rtd alias this.
 //
@@ -320,6 +396,65 @@ func TestBudget(t *testing.T) {
 				t.Fatalf("Budget(%d) = %d, want %d", c.bufCap, got, c.want)
 			}
 		})
+	}
+}
+
+// sizerStub reports a fixed request-buffer capacity, standing in for
+// *shm.Client (which pkg/chunk, a leaf, must not import).
+type sizerStub struct{ n int }
+
+func (s sizerStub) MaxRequestSize() int { return s.n }
+
+// noSizer is a client that predates the shm >= v0.8.15 accessor, or a test stub
+// that simply does not care: GuestBudget must degrade, not panic.
+type noSizer struct{}
+
+// TestGuestBudget covers the guest->host budget shared by pkg/server's async
+// batch flush and pkg/rtd's one-shot grid.
+//
+// The two invariants worth pinning: (a) it is Budget(capacity), so the
+// protocol.Chunk framing overhead is deducted EXACTLY ONCE — MaxRequestSize is
+// raw capacity and deducts nothing itself, and shm's own 24-byte stream
+// ChunkHeader never applies because xll-gen does not use shm streams; (b)
+// "unknown" (0, per shm's docstring for a nil / not-connected client) means the
+// conservative DefaultChunkSize, NOT Budget(0) == 1, which would shred every
+// transfer into one-byte frames.
+func TestGuestBudget(t *testing.T) {
+	cases := []struct {
+		name   string
+		client any
+		want   int
+	}{
+		{"real 512 KiB request buffer", sizerStub{HalfSlotSize}, DefaultChunkSize},
+		{"1 MiB buffer caps at default", sizerStub{SlotPayloadSize}, DefaultChunkSize},
+		{"128 KiB buffer scales down", sizerStub{128 << 10}, 128<<10 - FramingOverhead},
+		{"unknown (0) falls back, not Budget(0)", sizerStub{0}, DefaultChunkSize},
+		{"negative falls back", sizerStub{-1}, DefaultChunkSize},
+		{"client without the accessor falls back", noSizer{}, DefaultChunkSize},
+		{"nil client falls back", nil, DefaultChunkSize},
+		{"typed-nil accessor-less client falls back", (*noSizer)(nil), DefaultChunkSize},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := GuestBudget(c.client); got != c.want {
+				t.Fatalf("GuestBudget(%v) = %d, want %d", c.client, got, c.want)
+			}
+		})
+	}
+}
+
+// TestGuestBudgetMatchesBudgetOfTheProbedCapacity is the arithmetic half of the
+// "the accessor changed nothing" guarantee: for every capacity, GuestBudget is
+// exactly what the retired AcquireGuestSlot/len(RequestBuffer())/Release probe
+// fed into Budget. The real-client half (that MaxRequestSize() equals what the
+// probe measured on a live segment) lives in
+// pkg/server.TestRealShmClient_MaxRequestSizeMatchesTheSlotProbe.
+func TestGuestBudgetMatchesBudgetOfTheProbedCapacity(t *testing.T) {
+	for _, capacity := range []int{1, FramingOverhead, FramingOverhead + 1, 4096, 64 << 10, HalfSlotSize, SlotPayloadSize, 64 << 20} {
+		if got, want := GuestBudget(sizerStub{capacity}), Budget(capacity); got != want {
+			t.Errorf("capacity %d: GuestBudget = %d, but the old probe would have yielded Budget(%d) = %d",
+				capacity, got, capacity, want)
+		}
 	}
 }
 

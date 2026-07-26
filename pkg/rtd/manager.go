@@ -19,7 +19,8 @@ import (
 
 // onceGridChunkSize is the FALLBACK per-chunk payload byte budget for a chunked
 // guest->host RtdOnceGrid transfer AND the fallback single-slot threshold, used
-// when the real request-buffer capacity cannot be probed. It is an alias of the
+// when the real request-buffer capacity is unknown (chunk.GuestBudget returns
+// exactly this value in that case). It is an alias of the
 // single source of truth, pkg/chunk.DefaultChunkSize, rather than a hand-copied
 // literal: pkg/chunk is a leaf, so pkg/rtd can import it despite the
 // pkg/server->pkg/rtd cycle (NewSystemHandler takes rtd.GlobalRtd) that
@@ -59,44 +60,18 @@ type chunkSender interface {
 	SendGuestCall(data []byte, msgType shm.MsgType) ([]byte, error)
 }
 
-// guestSlotAcquirer is the shm surface needed to learn the real guest->host
-// request-buffer capacity. *shm.Client satisfies it; the test stubs do not, so
-// they transparently fall back to the conservative constant.
-type guestSlotAcquirer interface {
-	AcquireGuestSlot() (*shm.GuestSlot, error)
-}
-
-// guestRequestBudget returns the per-chunk / single-slot payload budget for a
-// guest->host send over client, derived from the ACTUAL request-buffer capacity
-// shm published for this SHM segment (slot payload / 2, see pkg/chunk).
+// The per-chunk / single-slot budget itself is chunk.GuestBudget — the ONE
+// implementation, shared with pkg/server's async-batch path. Both sites used to
+// carry a hand-mirrored slot probe (AcquireGuestSlot/Release just to measure
+// len(slot.RequestBuffer())) because the pkg/server->pkg/rtd import cycle kept
+// them apart; shm >= v0.8.15's read-only MaxRequestSize accessor shrank the
+// logic to something a leaf can host, so the mirror is gone.
 //
-// shm exposes that capacity only through AcquireGuestSlot().RequestBuffer() —
-// there is no read-only accessor on *shm.Client — so the probe briefly claims
-// and immediately releases one guest slot. No Send is issued, so the host never
-// observes the slot; Release CASes it straight back to SlotFree. The probe is
-// non-blocking (AcquireGuestSlot makes a single pass and errors out if all guest
-// slots are busy) and runs once per one-shot grid, so the cost is negligible.
-//
-// On any failure — including a client that is not an *shm.Client, e.g. the test
-// stubs — it falls back to onceGridChunkSize (= chunk.DefaultChunkSize), which
-// is correct for the 1 MiB slot payload the generated host configures. Mirrored
-// by pkg/server.guestRequestBudget; keep the two in sync (AGENTS.md §18.4).
-func guestRequestBudget(client rtdClient) int {
-	acq, ok := client.(guestSlotAcquirer)
-	if !ok {
-		return onceGridChunkSize
-	}
-	slot, err := acq.AcquireGuestSlot()
-	if err != nil || slot == nil {
-		return onceGridChunkSize
-	}
-	capacity := len(slot.RequestBuffer())
-	slot.Release()
-	if capacity <= 0 {
-		return onceGridChunkSize
-	}
-	return chunk.Budget(capacity)
-}
+// rtdClient itself deliberately does NOT require MaxRequestSize: the byte-
+// identity stubs in the SendUpdate tests would have to grow a method they have
+// no use for, and GuestBudget already answers onceGridChunkSize for anything
+// that cannot report a capacity. The production client IS checked, here:
+var _ chunk.MaxRequestSizer = (*shm.Client)(nil)
 
 // connectCancel records the cancel func for one in-flight RTD connect handler,
 // tagged with a per-registration generation. The generation makes the registry
@@ -353,7 +328,7 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}, isError bool
 // it back out when the readiness recalc re-enters.
 //
 // Transport mirrors the async-batch guest->host path (pkg/server.async_batcher).
-// budget is guestRequestBudget(client) — the REAL shm request-buffer capacity
+// budget is chunk.GuestBudget(client) — the REAL shm request-buffer capacity
 // minus framing, never a guessed constant:
 //   - payload <= budget: one slot, tagged MsgRtdOnceGrid, which the host worker
 //     dispatches directly to ProcessRtdOnceGrid.
@@ -383,7 +358,7 @@ func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
 	// branches below, so the single-slot threshold and the chunk split boundary
 	// can never disagree (they did before: a 512..950 KiB grid was sent whole
 	// and rejected by shm as "data too large").
-	budget := guestRequestBudget(client)
+	budget := chunk.GuestBudget(client)
 
 	// Single-slot fast path: the whole RtdOnceGridResult fits in one request
 	// buffer. The host worker recognizes MsgRtdOnceGrid directly.

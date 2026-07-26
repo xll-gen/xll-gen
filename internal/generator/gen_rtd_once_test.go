@@ -362,7 +362,8 @@ func TestGenCpp_RtdOnceGrid(t *testing.T) {
 		`xll::RtdOnceGridRegistry::Instance().SetFunctionNames(`,
 		`xll::RtdOnceRegistry::Instance().SetFunctionNames(`,
 		// The BDH (grid) wrapper pulls cached bytes and spills via GridToXLOPER12.
-		"xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes)",
+		"xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes, &gerr);",
+		"if (glk == xll::OnceGridLookup::kResult) {",
 		"flatbuffers::GetRoot<protocol::RtdOnceGridResult>(gbytes.data())",
 		"any->val_as_Grid()",
 		"GridToXLOPER12(gr)",

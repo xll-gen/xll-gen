@@ -119,13 +119,28 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     //
     // GRID-ONCE GATE: a grid-returning rtd-once topic is registered in
     // RtdOnceGridRegistry (NOT RtdOnceRegistry); its grid payload arrives
-    // separately via MSG_RTD_ONCE_GRID, not through the RTD value. The RTD
-    // update here is only the readiness signal that triggers the cell recalc
-    // (the NotifyUpdate below). For such topics we MUST NOT also cache the
-    // scalar RTD value — doing so would make the wrapper return the readiness
-    // scalar instead of pulling the grid bytes. Detect grid-once topics by
-    // their presence in the grid registry's topic map and skip the scalar
-    // StoreResult; the NotifyUpdate path is unchanged for both.
+    // separately via MSG_RTD_ONCE_GRID, not through the RTD value. On the
+    // SUCCESS path the RTD update here is only the readiness signal that
+    // triggers the cell recalc (the NotifyUpdate below). For such topics we MUST
+    // NOT cache the scalar RTD value in the scalar registry — doing so would
+    // make the wrapper return the readiness scalar instead of pulling the grid
+    // bytes; and the grid-once wrapper reads ONLY the grid registry anyway.
+    // Detect grid-once topics by their presence in the grid registry's topic map
+    // and route them there; the NotifyUpdate path is unchanged for both.
+    //
+    // On the ERROR path (is_error=true) the update is NOT a readiness signal —
+    // no grid was ever shipped (rtd.RunOnceGrid pushes SendErrorUpdate and
+    // deliberately skips the readiness token). It carries the failure MESSAGE,
+    // and it is the only thing that will ever arrive for this topic. It is
+    // therefore stored in the GRID registry as a TRANSIENT error entry so the
+    // wrapper takes the HIT path: a `grid` cell paints the message text, a
+    // `numgrid` cell paints the empty 0x0 FP12 the FP12 ABI limits it to (plus
+    // the message in the log), and — because a hit means the wrapper does NOT
+    // re-issue xlfRtd — the cell drops its RTD reference, Excel disconnects the
+    // topic, ClearNonMemoized reclaims the transient entry (bypassing
+    // memoize/memoize_ttl exactly as on the scalar path) and the next recalc
+    // re-runs the handler. Before this, a grid-once failure left the cell frozen
+    // on the loading placeholder forever with no self-heal (AGENTS.md §19.3).
     //
     // ERROR GATE: is_error=true marks this update as an ERROR value (handler
     // error, ctx cancellation, or a composite-arg resolve miss) rather than a
@@ -149,17 +164,31 @@ void ProcessRtdUpdate(const protocol::RtdUpdate* update) {
     // disconnects, and the next recalc re-issues xlfRtd → new topic →
     // ConnectData → handler runs again.
     //
-    // SCOPE — scalar rtd-once only. A grid/numgrid rtd-once topic is registered
-    // in RtdOnceGridRegistry and its wrapper reads ONLY that registry, so an
-    // is_error update never surfaces as cell text there (the grid wrapper keeps
-    // returning the loading placeholder / an empty 0x0 FP12). That is
-    // pre-existing behavior, unchanged here; carrying error entries into the grid
-    // registry is a separate follow-up (AGENTS.md §19.3).
     {
         std::wstring gridKey;
         bool isGridOnce =
             xll::RtdOnceGridRegistry::Instance().KeyForTopic(topicID, gridKey);
-        if (!isGridOnce) {
+        if (isGridOnce) {
+            if (update->is_error()) {
+                // Recover the message from the VARIANT built above. rtd.RunOnce*
+                // always pushes err.Error() as a Str, so this is a VT_BSTR; the
+                // fallback covers a malformed/unsupported error value so the cell
+                // still gets SOMETHING diagnosable rather than an empty string
+                // (an empty message is indistinguishable from "no message" for a
+                // user staring at a cell).
+                std::wstring errText;
+                if (v.vt == VT_BSTR && v.bstrVal) {
+                    errText.assign(v.bstrVal, SysStringLen(v.bstrVal));
+                }
+                if (errText.empty()) {
+                    errText = L"#ERROR: rtd-once handler failed (no message)";
+                }
+                xll::RtdOnceGridRegistry::Instance().StoreError(gridKey, errText);
+            }
+            // Success: nothing to store here — the grid itself already landed via
+            // MSG_RTD_ONCE_GRID (ProcessRtdOnceGrid) and this update is only the
+            // readiness token that drives the recalc below.
+        } else {
             std::wstring onceKey;
             if (xll::RtdOnceRegistry::Instance().KeyForTopic(topicID, onceKey)) {
                 xll::RtdOnceRegistry::Instance().StoreResult(

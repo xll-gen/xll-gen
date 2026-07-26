@@ -312,8 +312,8 @@ func reassemble(t *testing.T, msgs []receivedMsg, wantMsgType uint32) []byte {
 
 // TestRealShmClient_RequestBufferIsHalfTheSlot is the ground truth the whole
 // defect turns on, measured against a real segment rather than assumed: the
-// guest's request buffer is payloadSize/2, and the probe used by both
-// guest->host sites reports a budget that fits it.
+// guest's request buffer is payloadSize/2, and the budget used by both
+// guest->host sites fits it.
 func TestRealShmClient_RequestBufferIsHalfTheSlot(t *testing.T) {
 	host := newFakeShmHost(t, chunk.SlotPayloadSize)
 	defer host.Close()
@@ -330,12 +330,109 @@ func TestRealShmClient_RequestBufferIsHalfTheSlot(t *testing.T) {
 		t.Fatalf("real request buffer = %d bytes, want %d (payloadSize %d / 2)",
 			capacity, chunk.HalfSlotSize, chunk.SlotPayloadSize)
 	}
-	if got := guestRequestBudget(client); got != chunk.DefaultChunkSize {
-		t.Fatalf("guestRequestBudget = %d, want %d", got, chunk.DefaultChunkSize)
+	if got := chunk.GuestBudget(client); got != chunk.DefaultChunkSize {
+		t.Fatalf("chunk.GuestBudget = %d, want %d", got, chunk.DefaultChunkSize)
 	}
 	// The defect in one line: the old constant does not fit this buffer.
 	if 950*1024 <= capacity {
 		t.Fatalf("premise broken: the old 950 KiB chunk size fits a %d-byte request buffer", capacity)
+	}
+}
+
+// TestRealShmClient_MaxRequestSizeMatchesTheSlotProbe is the migration guard for
+// dropping the claim-and-Release slot probe in favour of shm >= v0.8.15's
+// read-only Client.MaxRequestSize().
+//
+// Both guest->host sites used to learn their budget by acquiring a guest slot,
+// reading len(slot.RequestBuffer()) and immediately releasing it. The accessor is
+// supposed to be the SAME number by construction — shm derives the request
+// buffer and the accessor from one respOffset-reqOffset — but "supposed to" is
+// exactly what a real-segment test is for: if the two ever diverged, every
+// chunked transfer would resize silently and the 2026-07-25 P0 (frames rejected
+// as "data too large", whole batches lost behind one log line) would come back.
+//
+// Both slot geometries are checked, so the equality cannot be an accident of the
+// default 1 MiB payload.
+func TestRealShmClient_MaxRequestSizeMatchesTheSlotProbe(t *testing.T) {
+	for _, slotPayload := range []uint32{chunk.SlotPayloadSize, 256 << 10} {
+		t.Run(fmt.Sprintf("%dKiB", slotPayload>>10), func(t *testing.T) {
+			host := newFakeShmHost(t, slotPayload)
+			defer host.Close()
+			client := host.connect(t)
+
+			// The retired probe, verbatim.
+			slot, err := client.AcquireGuestSlot()
+			if err != nil {
+				t.Fatalf("AcquireGuestSlot: %v", err)
+			}
+			probed := len(slot.RequestBuffer())
+			slot.Release()
+
+			if got := client.MaxRequestSize(); got != probed {
+				t.Fatalf("MaxRequestSize() = %d, but the slot probe measured %d — "+
+					"the accessor must report exactly len(GuestSlot.RequestBuffer())", got, probed)
+			}
+			// ...and therefore the derived budget is unchanged too. Framing is
+			// deducted ONCE (our protocol.Chunk frame); MaxRequestSize is raw
+			// capacity and shm's own 24B stream ChunkHeader does not apply here,
+			// because xll-gen never uses shm's StreamSender.
+			if got, want := chunk.GuestBudget(client), chunk.Budget(probed); got != want {
+				t.Fatalf("chunk.GuestBudget = %d, want %d (= Budget(probe)) — budget drifted across the accessor switch", got, want)
+			}
+		})
+	}
+}
+
+// TestRealShmClient_BudgetIsAvailableWithEveryGuestSlotBusy is the capability the
+// probe never had. AcquireGuestSlot makes ONE non-blocking pass, so with all
+// fakeGuestSlots claimed the old probe failed and silently returned the
+// compiled-in chunk.DefaultChunkSize — the wrong budget on any segment whose
+// hostCfg.payloadSize is not 1 MiB, and precisely under load, when flushes are
+// biggest. MaxRequestSize reads geometry, so it is unaffected.
+func TestRealShmClient_BudgetIsAvailableWithEveryGuestSlotBusy(t *testing.T) {
+	const smallPayload = 256 << 10
+	host := newFakeShmHost(t, smallPayload)
+	defer host.Close()
+	client := host.connect(t)
+
+	want := chunk.Budget(smallPayload / 2)
+	if got := chunk.GuestBudget(client); got != want {
+		t.Fatalf("baseline budget = %d, want %d", got, want)
+	}
+
+	held := make([]*shm.GuestSlot, 0, fakeGuestSlots)
+	for {
+		slot, err := client.AcquireGuestSlot()
+		if err != nil || slot == nil {
+			break
+		}
+		held = append(held, slot)
+	}
+	if len(held) == 0 {
+		t.Fatal("could not claim a single guest slot; the premise of this test is unmet")
+	}
+	defer func() {
+		for _, s := range held {
+			s.Release()
+		}
+	}()
+
+	if got := chunk.GuestBudget(client); got != want {
+		t.Fatalf("budget with all %d guest slots held = %d, want %d (the accessor must not need a free slot)",
+			len(held), got, want)
+	}
+}
+
+// TestRealShmClient_BudgetFallsBackWhenUnknown pins the surviving fallback path.
+// shm answers 0 for a nil / not-connected client ("unknown"), and its accessor is
+// nil-receiver safe, so neither shape may panic and both must yield the
+// conservative default.
+func TestRealShmClient_BudgetFallsBackWhenUnknown(t *testing.T) {
+	if got := chunk.GuestBudget((*shm.Client)(nil)); got != chunk.DefaultChunkSize {
+		t.Errorf("typed-nil *shm.Client budget = %d, want the conservative %d", got, chunk.DefaultChunkSize)
+	}
+	if got := chunk.GuestBudget(nil); got != chunk.DefaultChunkSize {
+		t.Errorf("nil client budget = %d, want the conservative %d", got, chunk.DefaultChunkSize)
 	}
 }
 
@@ -363,7 +460,7 @@ func TestRealShmClient_OldChunkSizeIsRejected(t *testing.T) {
 	}
 
 	// And the fixed budget goes through on the very same client.
-	frame = chunk.BuildFrame(b, payload[:guestRequestBudget(client)], 0xABCD, len(payload), 0, MsgBatchAsyncResponse)
+	frame = chunk.BuildFrame(b, payload[:chunk.GuestBudget(client)], 0xABCD, len(payload), 0, MsgBatchAsyncResponse)
 	if _, err := client.SendGuestCall(frame, MsgChunk); err != nil {
 		t.Fatalf("fixed budget must be accepted, got: %v", err)
 	}
@@ -378,7 +475,7 @@ func TestRealShmClient_SendChunkedAsync(t *testing.T) {
 	host := newFakeShmHost(t, chunk.SlotPayloadSize)
 	defer host.Close()
 	client := host.connect(t)
-	budget := guestRequestBudget(client)
+	budget := chunk.GuestBudget(client)
 
 	for _, size := range []int{512 << 10, 1 << 20, 3 << 20} {
 		t.Run(fmt.Sprintf("%dKiB", size>>10), func(t *testing.T) {
@@ -513,9 +610,9 @@ func TestRealShmClient_BudgetAdaptsToSmallerSlot(t *testing.T) {
 	client := host.connect(t)
 
 	wantCap := smallPayload / 2
-	budget := guestRequestBudget(client)
+	budget := chunk.GuestBudget(client)
 	if budget != wantCap-chunk.FramingOverhead {
-		t.Fatalf("guestRequestBudget = %d, want %d (%d-byte request buffer - framing)", budget, wantCap-chunk.FramingOverhead, wantCap)
+		t.Fatalf("chunk.GuestBudget = %d, want %d (%d-byte request buffer - framing)", budget, wantCap-chunk.FramingOverhead, wantCap)
 	}
 	if budget >= chunk.DefaultChunkSize {
 		t.Fatalf("budget %d did not scale below the default %d", budget, chunk.DefaultChunkSize)

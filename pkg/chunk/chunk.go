@@ -22,6 +22,7 @@
 package chunk
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,7 +85,45 @@ const (
 	// geometry hardcoded above, while Budget adapts to a project that
 	// configures a different hostCfg.payloadSize.
 	DefaultChunkSize = HalfSlotSize - FramingOverhead
+
+	// MaxTransferBytes is the largest TOTAL payload one chunked guest->host
+	// transfer may carry — the SENDER-side twin of the receiver's per-transfer
+	// cap. A payload over it is refused BEFORE the first frame goes out
+	// (Sender.Send returns ErrTransferTooLarge).
+	//
+	// WHY A HARD-CODED CONSTANT, AND WHY THIS NUMBER. The receiver in this
+	// direction is the C++ XLL's HandleChunk
+	// (internal/assets/files/src/xll_worker.cpp), which refuses any frame whose
+	// declared total_size exceeds its compile-time kMaxChunkTotalSize = 256 MiB.
+	// The sender CANNOT LEARN that value at runtime: kMaxChunkTotalSize has no
+	// template or YAML wiring (AGENTS.md §18.6.1 "Tunability is one-sided"), and
+	// the shm handshake carries slot geometry only — nothing negotiates a
+	// reassembly cap. So the only options are "guess conservatively" and "guess
+	// the same number the receiver compiles in"; this is the latter, pinned by
+	// TestMaxTransferBytesMatchesReceiverCap and by the C++-side
+	// `kMaxChunkTotalSize` marker test in internal/assets.
+	//
+	// NOT the same knob as pkg/server.DefaultMaxChunkBufferBytes. That constant
+	// is the default for the GO reassembler, which runs in the OPPOSITE
+	// direction (host->guest) and IS tunable per project via xll.yaml
+	// `server.chunk.max_buffer_bytes`. The two numbers are equal today by hand,
+	// not by construction — do not describe them as one value in "lockstep", and
+	// do not derive one from the other.
+	//
+	// Without this guard an oversized transfer was pushed frame by frame, every
+	// frame refused by the host with SYSTEM_ERROR, every refusal absorbed by the
+	// AsyncRetry ladder, and the transfer abandoned with nothing but a log line —
+	// while the Excel cells waiting on it stayed at #GETTING_DATA forever.
+	MaxTransferBytes = 256 << 20
 )
+
+// ErrTransferTooLarge is returned by Sender.Send for a payload larger than the
+// effective per-transfer cap (Sender.MaxTotalBytes, default MaxTransferBytes).
+// It is a SENDER-side refusal: no frame is emitted, so the receiver never sees
+// the transfer at all. Callers must turn it into a diagnosable failure for
+// whatever is waiting on the payload (an error result for an async handle, a
+// failed RTD one-shot) — retrying an unchanged payload can never succeed.
+var ErrTransferTooLarge = errors.New("chunk: transfer exceeds the receiver's maximum total size")
 
 // Budget returns the per-chunk payload size that is guaranteed to fit a buffer
 // of bufCap bytes once framed, capped at DefaultChunkSize and floored at 1.
@@ -103,6 +142,57 @@ func Budget(bufCap int) int {
 		budget = 1
 	}
 	return budget
+}
+
+// MaxRequestSizer is the shm surface needed to learn the REAL guest->host
+// request-buffer capacity. *shm.Client and *shm.DirectGuest satisfy it
+// (shm >= v0.8.15); test stubs deliberately do not, so they fall back to the
+// conservative default.
+//
+// It lives here, in the leaf, rather than in pkg/server or pkg/rtd because BOTH
+// of those need it and pkg/server imports pkg/rtd (NewSystemHandler) — the same
+// cycle that already forced DefaultChunkSize, transferid.New and BuildFrame down
+// into leaves. See the package doc and AGENTS.md §18.4.
+type MaxRequestSizer interface {
+	// MaxRequestSize reports the byte capacity of one slot's request buffer,
+	// or 0 when it is unknown (nil / not connected).
+	MaxRequestSize() int
+}
+
+// GuestBudget returns the per-chunk / single-slot payload budget for a
+// guest->host send over client, derived from the ACTUAL request-buffer capacity
+// shm published for this SHM segment (slot payload / 2, see the geometry note
+// above).
+//
+// It is a PURE READ of geometry fixed at connect time: shm's MaxRequestSize
+// claims no slot and writes no shared memory. It replaced a probe that had to
+// AcquireGuestSlot()/Release() just to measure len(slot.RequestBuffer()); the
+// value is identical by construction, because shm derives both from the same
+// respOffset-reqOffset (shm/go/direct.go NewDirectGuest).
+//
+// FRAMING IS DEDUCTED EXACTLY ONCE. MaxRequestSize is the RAW capacity — shm
+// subtracts nothing, including its own 24-byte streaming ChunkHeader (that one
+// is StreamSender's business, and xll-gen does not use shm streams). The only
+// header on this wire is our own protocol.Chunk frame, so Budget's single
+// FramingOverhead subtraction is the whole deduction.
+//
+// The parameter is `any` so a caller holding a narrower interface (pkg/rtd's
+// rtdClient, which only needs SendGuestCallWithTimeout) can pass it without a
+// local type assertion. A client that does not implement MaxRequestSizer, and a
+// capacity of 0 ("unknown" — nil or not-connected, per shm's docstring), both
+// fall back to DefaultChunkSize, which is correct for the 1 MiB slot payload the
+// generated host configures. Calling this with a typed-nil *shm.Client is safe:
+// shm's accessor is nil-receiver safe and answers 0.
+func GuestBudget(client any) int {
+	sizer, ok := client.(MaxRequestSizer)
+	if !ok {
+		return DefaultChunkSize
+	}
+	capacity := sizer.MaxRequestSize()
+	if capacity <= 0 {
+		return DefaultChunkSize
+	}
+	return Budget(capacity)
 }
 
 // fileIdentifier is the 4-byte FlatBuffers file identifier on every Chunk
@@ -201,6 +291,12 @@ type Sender struct {
 	// fresh builder is allocated on first use. Callers that pool builders pass
 	// their own to avoid per-transfer allocation.
 	Builder *flatbuffers.Builder
+	// MaxTotalBytes is the largest payload this Sender will transmit. Zero
+	// means MaxTransferBytes. It exists as a field ONLY so tests can exercise
+	// the refusal without materializing a 256 MiB payload; production callers
+	// leave it zero, because the real bound is a property of the receiver, not
+	// of the call site.
+	MaxTotalBytes int
 }
 
 // chunkSize returns the effective per-chunk budget.
@@ -209,6 +305,14 @@ func (s *Sender) chunkSize() int {
 		return s.ChunkSize
 	}
 	return DefaultChunkSize
+}
+
+// maxTotalBytes returns the effective per-transfer cap.
+func (s *Sender) maxTotalBytes() int {
+	if s.MaxTotalBytes > 0 {
+		return s.MaxTotalBytes
+	}
+	return MaxTransferBytes
 }
 
 // Send splits payload into protocol.Chunk frames of at most ChunkSize bytes each
@@ -224,9 +328,21 @@ func (s *Sender) chunkSize() int {
 //
 // An empty payload sends zero frames and returns nil. Callers that treat empty
 // as an error must check before calling.
+//
+// A payload larger than the effective per-transfer cap (MaxTotalBytes, default
+// MaxTransferBytes) is refused UP FRONT with ErrTransferTooLarge and NO frame
+// is sent. That refusal is not an optimization: the receiver rejects the first
+// frame on its declared total_size, the retry ladder absorbs every rejection,
+// and the transfer dies with only a log line while whatever is waiting on the
+// payload waits forever. Splitting cannot fix a single payload that is over the
+// cap — the cap is on ONE transfer's total_size, not on one frame — so the
+// caller must convert this error into a visible failure.
 func (s *Sender) Send(payload []byte, transferID uint64, msgType uint32, send SendFunc, policy RetryPolicy) error {
 	if len(payload) == 0 {
 		return nil
+	}
+	if max := s.maxTotalBytes(); len(payload) > max {
+		return fmt.Errorf("%w: %d bytes > %d (id %#x)", ErrTransferTooLarge, len(payload), max, transferID)
 	}
 	if s.Builder == nil {
 		s.Builder = flatbuffers.NewBuilder(1024)

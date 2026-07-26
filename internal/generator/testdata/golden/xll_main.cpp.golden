@@ -4632,9 +4632,31 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
         // the SYNC grid path: a null pointer flows straight into the converter,
         // which yields the same error/empty result it produces for a null
         // resp->result() (GridToXLOPER12 -> #VALUE!, NumGridToFP12 -> 0x0).
+        //
+        // kError is a HIT, not a miss: the one-shot handler failed and the error
+        // arrived as an RtdUpdate(is_error=true), stored as a TRANSIENT entry.
+        // Returning here (instead of falling through to xlfRtd) is what makes the
+        // failure recoverable — the cell drops its RTD reference, Excel
+        // disconnects the topic, the transient entry is reclaimed like a plain
+        // `once` entry whatever the function declared, and the next recalc
+        // re-runs the handler. Falling through would re-issue xlfRtd against the
+        // still-connected topic and wedge the cell forever (AGENTS.md §19.3).
         {
             std::vector<uint8_t> gbytes;
-            if (xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes)) {
+            std::wstring gerr;
+            xll::OnceGridLookup glk =
+                xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes, &gerr);
+            if (glk == xll::OnceGridLookup::kError) {
+                
+                // grid returns LPXLOPER12 (Q), so the message itself can go in
+                // the cell — same paint as a scalar rtd-once failure. Excel owns
+                // nothing here: NewExcelString is DLL-owned (xlbitDLLFree) and
+                // reclaimed by xlAutoFree12.
+                SAFE_LOG_WARN("rtd-once OnceGrid: one-shot handler failed: " + WideToUtf8(gerr));
+                return NewExcelString(gerr);
+                
+            }
+            if (glk == xll::OnceGridLookup::kResult) {
                 auto* r = flatbuffers::GetRoot<protocol::RtdOnceGridResult>(gbytes.data());
                 const protocol::Any* any = r ? r->value() : nullptr;
                 
@@ -4777,9 +4799,31 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
         // the SYNC grid path: a null pointer flows straight into the converter,
         // which yields the same error/empty result it produces for a null
         // resp->result() (GridToXLOPER12 -> #VALUE!, NumGridToFP12 -> 0x0).
+        //
+        // kError is a HIT, not a miss: the one-shot handler failed and the error
+        // arrived as an RtdUpdate(is_error=true), stored as a TRANSIENT entry.
+        // Returning here (instead of falling through to xlfRtd) is what makes the
+        // failure recoverable — the cell drops its RTD reference, Excel
+        // disconnects the topic, the transient entry is reclaimed like a plain
+        // `once` entry whatever the function declared, and the next recalc
+        // re-runs the handler. Falling through would re-issue xlfRtd against the
+        // still-connected topic and wedge the cell forever (AGENTS.md §19.3).
         {
             std::vector<uint8_t> gbytes;
-            if (xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes)) {
+            std::wstring gerr;
+            xll::OnceGridLookup glk =
+                xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes, &gerr);
+            if (glk == xll::OnceGridLookup::kError) {
+                
+                // FP12 (K%) can carry neither text nor a cell error, so the cell
+                // shows the same empty 0x0 FP12 as the loading placeholder — the
+                // message goes to the log, which is the only diagnosable channel
+                // this ABI leaves. The win here is the SELF-HEAL above.
+                SAFE_LOG_WARN("rtd-once OnceNumGrid: one-shot handler failed: " + WideToUtf8(gerr));
+                return NumGridToFP12(nullptr);
+                
+            }
+            if (glk == xll::OnceGridLookup::kResult) {
                 auto* r = flatbuffers::GetRoot<protocol::RtdOnceGridResult>(gbytes.data());
                 const protocol::Any* any = r ? r->value() : nullptr;
                 
@@ -5002,92 +5046,164 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
     //    Do NOT hoist this back into the topic-building loop.
     
     {
-        flatbuffers::FlatBufferBuilder rcb(1024);
-        auto rcKey = rcb.CreateString(refTok1);
-        bool rcOk = true;
-        
-        auto rcInner = xll::ConvertGridArg(g, rcb, &rcOk);
-        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
-        
-        if (!rcOk) {
-            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
-            // a degenerate payload under this token; the Go dispatch will miss
-            // and push an explicit error to the topic instead of silently
-            // handing the handler an empty grid.
-            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok1);
-        } else {
-            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-            rcb.Finish(rcReq);
-            if (!xll::SendRefCachePayloadOnce(refTok1, rcb.GetBufferPointer(), rcb.GetSize())) {
-                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok1);
+        // Already shipped this cycle? Identical peek to the plain-rtd branch
+        // above, and it matters MORE here: on the FIRST calc pass every one of
+        // the N cells sharing one grid MISSES the once-cache, so all N reach
+        // this build and SendRefCachePayloadOnce throws N-1 of the buffers away.
+        // The build is O(payload) (protocol::Grid is one union table per cell).
+        //
+        // Racing another calc thread is benign in both directions: an entry is
+        // written only after a successful ack, so PRESENT == known-delivered,
+        // and a missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent1 = false;
+        {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent1 = g_sentRefCache.find(refTok1) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent1) {
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(refTok1);
+            bool rcOk = true;
+            
+            auto rcInner = xll::ConvertGridArg(g, rcb, &rcOk);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
+            
+            if (!rcOk) {
+                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
+                // ship a degenerate payload under this token; the Go dispatch
+                // will miss and push an explicit error to the topic instead of
+                // silently handing the handler an empty grid.
+                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok1);
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                if (!xll::SendRefCachePayloadOnce(refTok1, rcb.GetBufferPointer(), rcb.GetSize())) {
+                    SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok1);
+                }
             }
         }
     }
     
     {
-        flatbuffers::FlatBufferBuilder rcb(1024);
-        auto rcKey = rcb.CreateString(refTok2);
-        bool rcOk = true;
-        
-        auto rcInner = ConvertNumGrid(ng, rcb);
-        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
-        
-        if (!rcOk) {
-            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
-            // a degenerate payload under this token; the Go dispatch will miss
-            // and push an explicit error to the topic instead of silently
-            // handing the handler an empty grid.
-            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok2);
-        } else {
-            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-            rcb.Finish(rcReq);
-            if (!xll::SendRefCachePayloadOnce(refTok2, rcb.GetBufferPointer(), rcb.GetSize())) {
-                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok2);
+        // Already shipped this cycle? Identical peek to the plain-rtd branch
+        // above, and it matters MORE here: on the FIRST calc pass every one of
+        // the N cells sharing one grid MISSES the once-cache, so all N reach
+        // this build and SendRefCachePayloadOnce throws N-1 of the buffers away.
+        // The build is O(payload) (protocol::Grid is one union table per cell).
+        //
+        // Racing another calc thread is benign in both directions: an entry is
+        // written only after a successful ack, so PRESENT == known-delivered,
+        // and a missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent2 = false;
+        {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent2 = g_sentRefCache.find(refTok2) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent2) {
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(refTok2);
+            bool rcOk = true;
+            
+            auto rcInner = ConvertNumGrid(ng, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
+            
+            if (!rcOk) {
+                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
+                // ship a degenerate payload under this token; the Go dispatch
+                // will miss and push an explicit error to the topic instead of
+                // silently handing the handler an empty grid.
+                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok2);
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                if (!xll::SendRefCachePayloadOnce(refTok2, rcb.GetBufferPointer(), rcb.GetSize())) {
+                    SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok2);
+                }
             }
         }
     }
     
     {
-        flatbuffers::FlatBufferBuilder rcb(1024);
-        auto rcKey = rcb.CreateString(refTok3);
-        bool rcOk = true;
-        
-        auto rcInner = ConvertRange(r, rcb);
-        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
-        
-        if (!rcOk) {
-            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
-            // a degenerate payload under this token; the Go dispatch will miss
-            // and push an explicit error to the topic instead of silently
-            // handing the handler an empty grid.
-            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok3);
-        } else {
-            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-            rcb.Finish(rcReq);
-            if (!xll::SendRefCachePayloadOnce(refTok3, rcb.GetBufferPointer(), rcb.GetSize())) {
-                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok3);
+        // Already shipped this cycle? Identical peek to the plain-rtd branch
+        // above, and it matters MORE here: on the FIRST calc pass every one of
+        // the N cells sharing one grid MISSES the once-cache, so all N reach
+        // this build and SendRefCachePayloadOnce throws N-1 of the buffers away.
+        // The build is O(payload) (protocol::Grid is one union table per cell).
+        //
+        // Racing another calc thread is benign in both directions: an entry is
+        // written only after a successful ack, so PRESENT == known-delivered,
+        // and a missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent3 = false;
+        {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent3 = g_sentRefCache.find(refTok3) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent3) {
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(refTok3);
+            bool rcOk = true;
+            
+            auto rcInner = ConvertRange(r, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
+            
+            if (!rcOk) {
+                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
+                // ship a degenerate payload under this token; the Go dispatch
+                // will miss and push an explicit error to the topic instead of
+                // silently handing the handler an empty grid.
+                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok3);
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                if (!xll::SendRefCachePayloadOnce(refTok3, rcb.GetBufferPointer(), rcb.GetSize())) {
+                    SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok3);
+                }
             }
         }
     }
     
     {
-        flatbuffers::FlatBufferBuilder rcb(1024);
-        auto rcKey = rcb.CreateString(refTok4);
-        bool rcOk = true;
-        
-        auto rcAny = ConvertAny(a, rcb);
-        
-        if (!rcOk) {
-            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
-            // a degenerate payload under this token; the Go dispatch will miss
-            // and push an explicit error to the topic instead of silently
-            // handing the handler an empty grid.
-            SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok4);
-        } else {
-            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-            rcb.Finish(rcReq);
-            if (!xll::SendRefCachePayloadOnce(refTok4, rcb.GetBufferPointer(), rcb.GetSize())) {
-                SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok4);
+        // Already shipped this cycle? Identical peek to the plain-rtd branch
+        // above, and it matters MORE here: on the FIRST calc pass every one of
+        // the N cells sharing one grid MISSES the once-cache, so all N reach
+        // this build and SendRefCachePayloadOnce throws N-1 of the buffers away.
+        // The build is O(payload) (protocol::Grid is one union table per cell).
+        //
+        // Racing another calc thread is benign in both directions: an entry is
+        // written only after a successful ack, so PRESENT == known-delivered,
+        // and a missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent4 = false;
+        {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent4 = g_sentRefCache.find(refTok4) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent4) {
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(refTok4);
+            bool rcOk = true;
+            
+            auto rcAny = ConvertAny(a, rcb);
+            
+            if (!rcOk) {
+                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
+                // ship a degenerate payload under this token; the Go dispatch
+                // will miss and push an explicit error to the topic instead of
+                // silently handing the handler an empty grid.
+                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok4);
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                if (!xll::SendRefCachePayloadOnce(refTok4, rcb.GetBufferPointer(), rcb.GetSize())) {
+                    SAFE_LOG_WARN("rtd-once OnceComposite: failed to ship composite arg payload for token " + refTok4);
+                }
             }
         }
     }

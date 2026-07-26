@@ -185,6 +185,66 @@ func TestGenCpp_RtdComposite_SkipBuildWhenAlreadyShipped(t *testing.T) {
 	}
 }
 
+// TestGenCpp_RtdOnceComposite_SkipBuildWhenAlreadyShipped is the rtd-once twin
+// of the plain-rtd guard above. v0.8.35 added the g_sentRefCache peek to plain
+// rtd only; rtd-once kept building unconditionally on a once-cache miss.
+//
+// Why that matters MORE here, not less: the once-cache is what usually spares
+// rtd-once the work, but on the FIRST calc pass it is EMPTY. So N cells sharing
+// one grid all miss the once-cache, all N reach the payload build, all N
+// serialize the whole grid (protocol::Grid is one union table per cell), and
+// SendRefCachePayloadOnce drops N-1 of the buffers on its token dedup. The peek
+// is the same `{ lock_guard; find; }` the plain-rtd branch uses, with the same
+// safety argument: entries are written only after a successful ack, so PRESENT
+// means known-delivered, and a miss just falls through to the ship, which
+// re-checks under the same mutex.
+func TestGenCpp_RtdOnceComposite_SkipBuildWhenAlreadyShipped(t *testing.T) {
+	t.Parallel()
+	cfg := rtdCompositeCfg()
+	cfg.Functions = []config.Function{{
+		Name:   "SumGridOnce",
+		Mode:   "rtd-once",
+		Return: "float",
+		Args:   []config.Arg{{Name: "g", Type: "grid"}},
+	}}
+	content := renderCppMain(t, cfg)
+
+	for _, want := range []string{
+		"std::lock_guard<std::mutex> rcLock(g_refCacheMutex);",
+		"g_sentRefCache.find(refTok1) != g_sentRefCache.end();",
+		"if (!rcAlreadySent1) {",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("xll_main.cpp (rtd-once composite arg) missing already-shipped guard %q", want)
+		}
+	}
+
+	// Ordering: cache lookup -> peek -> build -> ship. The peek must sit AFTER
+	// the once-cache early-return (a memoize hit must not even peek) and BEFORE
+	// the builder (or it guards nothing).
+	hitIdx := strings.Index(content, "TryGetResult(onceKey, &cached)")
+	peekIdx := strings.Index(content, "rcAlreadySent1 = g_sentRefCache.find(refTok1)")
+	buildIdx := strings.Index(content, "xll::ConvertGridArg(g, rcb, &rcOk)")
+	shipIdx := strings.Index(content, "xll::SendRefCachePayloadOnce(")
+	if hitIdx < 0 || peekIdx < 0 || buildIdx < 0 || shipIdx < 0 {
+		t.Fatalf("rtd-once composite render missing markers (hit=%d peek=%d build=%d ship=%d)",
+			hitIdx, peekIdx, buildIdx, shipIdx)
+	}
+	if !(hitIdx < peekIdx && peekIdx < buildIdx && buildIdx < shipIdx) {
+		t.Errorf("rtd-once already-shipped peek must sit between the once-cache lookup and the payload build "+
+			"(hit=%d peek=%d build=%d ship=%d)", hitIdx, peekIdx, buildIdx, shipIdx)
+	}
+
+	// The FlatBufferBuilder itself must be INSIDE the guard: constructing it
+	// (1024-byte arena) is part of the work the peek exists to skip.
+	guardBodyIdx := strings.Index(content, "if (!rcAlreadySent1) {")
+	builderIdx := strings.Index(content, "flatbuffers::FlatBufferBuilder rcb(1024);")
+	if builderIdx < guardBodyIdx {
+		t.Errorf("the rtd-once payload FlatBufferBuilder (idx=%d) must be constructed inside the "+
+			"already-shipped guard (idx=%d), not before it", builderIdx, guardBodyIdx)
+	}
+}
+
 // TestGenCpp_RtdComposite_FP12Hash: a numgrid arg uses the FP12 overload of the
 // content-hash helper and the NumGrid converter.
 func TestGenCpp_RtdComposite_FP12Hash(t *testing.T) {

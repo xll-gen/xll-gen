@@ -742,13 +742,48 @@ static std::atomic<bool> g_ribbonRetryArmed{false};       // start-once latch fo
 static std::atomic<int>  g_ribbonRetryAttempts{0};        // productive attempts consumed
 static std::atomic<int>  g_ribbonRetryNoAppAttempts{0};   // "no workbook yet" attempts consumed
 
-// pNoApp (optional out): set true IFF the attempt failed ONLY because no
-// Application object is reachable yet (no workbook open). Callers that own a
-// retry budget MUST NOT charge such an attempt against a connect-failure budget
-// — nothing was attempted, there was nothing to attempt against. Always written
-// (false on every other exit) so a caller never reads a stale value.
-static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* pNoApp = nullptr) {
-    if (pNoApp) *pNoApp = false;
+// Outcome CLASS of one TryConnectRibbon call. The bool return only says
+// "connected or not"; a caller that owns a retry budget needs to know WHICH KIND
+// of not, because only ONE of them is a chargeable failure:
+//
+//   * kConnected    — done; the state gate stops the chain.
+//   * kRejected     — the COMAddIns Connect ran and was REJECTED. The only class
+//                     a connect-failure budget may charge.
+//   * kNoApp        — the Connect was SKIPPED: no Application object yet (Excel
+//                     is empty). Not a failure; charged to the separate, much
+//                     longer noApp budget (see the constants above).
+//   * kNotAttempted — we returned WITHOUT EVER REACHING SetRibbonConnected: the
+//                     unload bail, or the STA re-entrancy bail (an Excel callback
+//                     dispatched while a Connect/bounce is pumping the message
+//                     loop re-enters this function on the same thread and the
+//                     s_inConnect CAS turns it away). Nothing was attempted, so
+//                     NOTHING may be charged — this is the same accounting defect
+//                     as the 2026-07-26 noApp fix, one branch further out: a
+//                     queued OnTime macro dispatched mid-pump used to burn one of
+//                     the 30 productive attempts without ever touching COM.
+//                     Deliberately given NO budget of its own: it can only occur
+//                     while an OUTER attempt is in flight on this same STA
+//                     thread, so it is self-limiting — the outer call either
+//                     resolves the state (chain stops) or returns a real,
+//                     chargeable outcome that the next dispatch observes.
+//
+// The one-time registration failures (steps 1-3) also skip SetRibbonConnected but
+// latch g_ribbonConnectState=2, so the caller's state gate short-circuits before
+// the class is ever consulted; they report kNotAttempted for the same reason.
+//
+// enum class, so a caller cannot accidentally treat the class as a bool.
+enum class RibbonAttempt {
+    kNotAttempted = 0, // never reached the COMAddIns Connect — charge NOTHING
+    kNoApp,            // Connect skipped: no Application object yet
+    kRejected,         // Connect attempted and rejected — the chargeable class
+    kConnected,        // Connect succeeded
+};
+
+// pOutcome (optional out): the attempt's class (above). Always written on every
+// exit, so a caller never reads a stale value.
+static bool TryConnectRibbon(const char* phase, bool allowBounce = false,
+                             RibbonAttempt* pOutcome = nullptr) {
+    if (pOutcome) *pOutcome = RibbonAttempt::kNotAttempted;
     if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return true;
     if (g_isUnloading.load(std::memory_order_acquire)) return false;
 
@@ -758,6 +793,9 @@ static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* 
     // function on the SAME thread while a connect is mid-flight — reaching a
     // second concurrent COMAddIns…Connect. Single STA thread, so this is
     // re-entrancy, not a data race; bail out (still "pending") if already inside.
+    //
+    // This exit stays kNotAttempted: an OnTime retry dispatched from inside the
+    // outer connect's message pump must not pay for a connect it never made.
     static std::atomic<bool> s_inConnect{false};
     bool expected = false;
     if (!s_inConnect.compare_exchange_strong(expected, true)) return false;
@@ -806,6 +844,7 @@ static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* 
     //    is open, so this normally succeeds on the very first attempt.
     bool noApp = false;
     if (SetRibbonConnected(true, &noApp, allowBounce)) {
+        if (pOutcome) *pOutcome = RibbonAttempt::kConnected;
         g_ribbonConnectState.store(1, std::memory_order_release);
         SAFE_LOG_INFO(std::string("Ribbon: COM add-in connected (") + phase + ").");
         return true;
@@ -819,12 +858,13 @@ static bool TryConnectRibbon(const char* phase, bool allowBounce = false, bool* 
     // rule with ITS budget (it used to charge these, exhausting ~60 s of retries
     // against an empty Excel).
     if (noApp) {
-        if (pNoApp) *pNoApp = true;
+        if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;
         return false;
     }
 
     // Real connect failure (Application reachable but Connect rejected): bound
     // it so a pathological host doesn't retry forever.
+    if (pOutcome) *pOutcome = RibbonAttempt::kRejected;
     static std::atomic<int> s_attempts{0};
     if (s_attempts.fetch_add(1) + 1 >= 60) {
         g_ribbonConnectState.store(2, std::memory_order_release);
@@ -1446,10 +1486,9 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
         if (g_isUnloading.load(std::memory_order_acquire)) return 1;
         // Idempotent connect attempt (no bounce on retries: a workbook, if any,
         // already exists; the bounce is only for the xlAutoOpen no-workbook case).
-        // noApp distinguishes "no workbook open yet" (not a failure — do not charge
-        // the connect-failure budget) from a real rejected Connect.
-        bool retryNoApp = false;
-        TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryNoApp);
+        // The outcome CLASS decides which budget (if any) pays for this dispatch.
+        RibbonAttempt retryOutcome = RibbonAttempt::kNotAttempted;
+        TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);
         // Stop once the connect resolves — connected (1) or gave-up (2).
         if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;
 
@@ -1457,8 +1496,18 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
         // re-arm at the matching spacing. Charging noApp to the productive budget
         // is what made an empty Excel burn all 30 attempts in 60 s and miss the
         // workbook the user opened afterwards (MED fix, 2026-07-26).
+        //
+        // kNotAttempted charges NOTHING and simply re-arms at the productive
+        // spacing: TryConnectRibbon bailed before touching COM (STA re-entrancy —
+        // Excel dispatched this macro while an outer connect/bounce was pumping
+        // the message loop). Billing that to the productive budget is the same
+        // accounting defect as the noApp one, one branch further out: an attempt
+        // that never happened must not shrink the window for the attempts that
+        // will. It cannot spin unbounded — it requires an outer attempt in flight
+        // on this same STA thread, and when that returns the next dispatch gets a
+        // real, chargeable outcome (or the state gate above stops the chain).
         double nextDelaySec = kRibbonRetryIntervalSec;
-        if (retryNoApp) {
+        if (retryOutcome == RibbonAttempt::kNoApp) {
             int n = g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;
             if (n >= kRibbonRetryNoAppMaxAttempts) {
                 SAFE_LOG_WARN("Ribbon: OnTime connect retry gave up waiting for a workbook to be opened "
@@ -1467,12 +1516,15 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
                 return 1;
             }
             if (n >= kRibbonRetryNoAppFastAttempts) nextDelaySec = kRibbonRetryNoAppIdleSec;
-        } else {
+        } else if (retryOutcome == RibbonAttempt::kRejected) {
             int n = g_ribbonRetryAttempts.fetch_add(1) + 1;
             if (n >= kRibbonRetryMaxAttempts) {
                 SAFE_LOG_WARN("Ribbon: OnTime connect retry exhausted its bounded budget; the calc-end fallback remains the only trigger.");
                 return 1;
             }
+        } else {
+            SAFE_LOG_DEBUG("Ribbon: OnTime connect retry re-entered while a connect was in flight; "
+                           "no budget charged (nothing was attempted).");
         }
         // Inspect the re-arm rc: a rejected xlcOnTime silently ENDS the chain, so
         // it must be visible in the log rather than looking like "still retrying".
@@ -1758,9 +1810,38 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         // the SYNC grid path: a null pointer flows straight into the converter,
         // which yields the same error/empty result it produces for a null
         // resp->result() (GridToXLOPER12 -> #VALUE!, NumGridToFP12 -> 0x0).
+        //
+        // kError is a HIT, not a miss: the one-shot handler failed and the error
+        // arrived as an RtdUpdate(is_error=true), stored as a TRANSIENT entry.
+        // Returning here (instead of falling through to xlfRtd) is what makes the
+        // failure recoverable — the cell drops its RTD reference, Excel
+        // disconnects the topic, the transient entry is reclaimed like a plain
+        // `once` entry whatever the function declared, and the next recalc
+        // re-runs the handler. Falling through would re-issue xlfRtd against the
+        // still-connected topic and wedge the cell forever (AGENTS.md §19.3).
         {
             std::vector<uint8_t> gbytes;
-            if (xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes)) {
+            std::wstring gerr;
+            xll::OnceGridLookup glk =
+                xll::RtdOnceGridRegistry::Instance().TryGet(onceKey, &gbytes, &gerr);
+            if (glk == xll::OnceGridLookup::kError) {
+                {{if eq .Return "numgrid"}}
+                // FP12 (K%) can carry neither text nor a cell error, so the cell
+                // shows the same empty 0x0 FP12 as the loading placeholder — the
+                // message goes to the log, which is the only diagnosable channel
+                // this ABI leaves. The win here is the SELF-HEAL above.
+                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: one-shot handler failed: " + WideToUtf8(gerr));
+                return NumGridToFP12(nullptr);
+                {{else}}
+                // grid returns LPXLOPER12 (Q), so the message itself can go in
+                // the cell — same paint as a scalar rtd-once failure. Excel owns
+                // nothing here: NewExcelString is DLL-owned (xlbitDLLFree) and
+                // reclaimed by xlAutoFree12.
+                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: one-shot handler failed: " + WideToUtf8(gerr));
+                return NewExcelString(gerr);
+                {{end}}
+            }
+            if (glk == xll::OnceGridLookup::kResult) {
                 auto* r = flatbuffers::GetRoot<protocol::RtdOnceGridResult>(gbytes.data());
                 const protocol::Any* any = r ? r->value() : nullptr;
                 {{if eq .Return "numgrid"}}
@@ -1803,32 +1884,50 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     //    Do NOT hoist this back into the topic-building loop.
     {{range $j, $arg := .Args}}{{if and (ne .Type "int") (ne .Type "float") (ne .Type "bool") (ne .Type "string") (ne .Type "date")}}
     {
-        flatbuffers::FlatBufferBuilder rcb(1024);
-        auto rcKey = rcb.CreateString(refTok{{add $j 1}});
-        bool rcOk = true;
-        {{if eq .Type "grid"}}
-        auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
-        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
-        {{else if eq .Type "numgrid"}}
-        auto rcInner = ConvertNumGrid({{.Name}}, rcb);
-        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
-        {{else if eq .Type "range"}}
-        auto rcInner = ConvertRange({{.Name}}, rcb);
-        auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
-        {{else}}
-        auto rcAny = ConvertAny({{.Name}}, rcb);
-        {{end}}
-        if (!rcOk) {
-            // Coerce of the reference failed (xlretUncalced etc.) — do NOT ship
-            // a degenerate payload under this token; the Go dispatch will miss
-            // and push an explicit error to the topic instead of silently
-            // handing the handler an empty grid.
-            SAFE_LOG_WARN("rtd-once {{$fn.Name}}: composite arg coerce failed; skipping payload ship for token " + refTok{{add $j 1}});
-        } else {
-            auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
-            rcb.Finish(rcReq);
-            if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, rcb.GetBufferPointer(), rcb.GetSize())) {
-                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: failed to ship composite arg payload for token " + refTok{{add $j 1}});
+        // Already shipped this cycle? Identical peek to the plain-rtd branch
+        // above, and it matters MORE here: on the FIRST calc pass every one of
+        // the N cells sharing one grid MISSES the once-cache, so all N reach
+        // this build and SendRefCachePayloadOnce throws N-1 of the buffers away.
+        // The build is O(payload) (protocol::Grid is one union table per cell).
+        //
+        // Racing another calc thread is benign in both directions: an entry is
+        // written only after a successful ack, so PRESENT == known-delivered,
+        // and a missed entry just means we build and hand it to
+        // SendRefCachePayloadOnce, which re-checks under the same mutex and
+        // no-ops. Never a lost ship.
+        bool rcAlreadySent{{add $j 1}} = false;
+        {
+            std::lock_guard<std::mutex> rcLock(g_refCacheMutex);
+            rcAlreadySent{{add $j 1}} = g_sentRefCache.find(refTok{{add $j 1}}) != g_sentRefCache.end();
+        }
+        if (!rcAlreadySent{{add $j 1}}) {
+            flatbuffers::FlatBufferBuilder rcb(1024);
+            auto rcKey = rcb.CreateString(refTok{{add $j 1}});
+            bool rcOk = true;
+            {{if eq .Type "grid"}}
+            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
+            {{else if eq .Type "numgrid"}}
+            auto rcInner = ConvertNumGrid({{.Name}}, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
+            {{else if eq .Type "range"}}
+            auto rcInner = ConvertRange({{.Name}}, rcb);
+            auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
+            {{else}}
+            auto rcAny = ConvertAny({{.Name}}, rcb);
+            {{end}}
+            if (!rcOk) {
+                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
+                // ship a degenerate payload under this token; the Go dispatch
+                // will miss and push an explicit error to the topic instead of
+                // silently handing the handler an empty grid.
+                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: composite arg coerce failed; skipping payload ship for token " + refTok{{add $j 1}});
+            } else {
+                auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
+                rcb.Finish(rcReq);
+                if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, rcb.GetBufferPointer(), rcb.GetSize())) {
+                    SAFE_LOG_WARN("rtd-once {{$fn.Name}}: failed to ship composite arg payload for token " + refTok{{add $j 1}});
+                }
             }
         }
     }

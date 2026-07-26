@@ -173,6 +173,10 @@ server:
   #   reassembler inside the XLL whose limits are compile-time constants and are
   #   NOT configurable; it is hand-kept at the same default numbers, so lowering
   #   these values makes the two directions asymmetric.
+  #   The 256 MiB guest->host limit also bounds what ONE async/RTD result can
+  #   deliver (~8M cells for a grid). A batch that crosses it is split; a SINGLE
+  #   result that alone crosses it cannot be split, so the cell receives an
+  #   explanatory error string instead of waiting forever.
   # chunk:
   #   max_buffer_bytes: 134217728    # 128 MiB cap on ONE transfer's reassembly
   #   cleanup_interval: "30s"        # Sweep cadence

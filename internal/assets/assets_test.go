@@ -60,15 +60,104 @@ func TestRtdUpdateErrorStoresTransient(t *testing.T) {
 			"(`/*transient=*/update->is_error()`); routing it into the call GUARD instead " +
 			"leaves the cell permanently stuck at #GETTING_DATA")
 	}
-	// The only gate left on StoreResult is the grid-once one.
-	if !strings.Contains(src, "if (!isGridOnce) {") {
-		t.Errorf("xll_rtd.cpp StoreResult must be gated ONLY by !isGridOnce; " +
+	// The only gate left on the SCALAR StoreResult is the grid-once split: a
+	// grid-once topic is routed to RtdOnceGridRegistry instead (StoreError),
+	// every other topic stores unconditionally.
+	if !strings.Contains(src, "if (isGridOnce) {") || !strings.Contains(src, "} else {") {
+		t.Errorf("xll_rtd.cpp StoreResult must be gated ONLY by the isGridOnce routing split; " +
 			"an extra error term would resurrect the stuck-at-#GETTING_DATA regression")
 	}
 	if strings.Contains(src, "!isGridOnce && !isError") {
 		t.Errorf("xll_rtd.cpp still skips StoreResult for is_error updates " +
 			"(`!isGridOnce && !isError`): the cell would stick at #GETTING_DATA forever " +
 			"because the topic stays connected and ConnectData never re-fires")
+	}
+	// The grid-once branch must not be a silent drop: an is_error update for a
+	// grid-once topic is the ONLY thing that topic will ever deliver, so it has to
+	// land in the grid registry as a transient error. Dropping it leaves the cell
+	// frozen on the loading placeholder with no self-heal (the pre-2026-07-26
+	// behavior AGENTS.md §19.3 documented as an open follow-up).
+	if !strings.Contains(src, "RtdOnceGridRegistry::Instance().StoreError(gridKey, errText)") {
+		t.Errorf("xll_rtd.cpp must route an is_error update for a GRID-once topic into " +
+			"RtdOnceGridRegistry::StoreError; without it the grid/numgrid cell keeps the " +
+			"loading placeholder forever and never retries")
+	}
+	if !strings.Contains(src, "if (update->is_error()) {") {
+		t.Errorf("xll_rtd.cpp grid-once branch must key the error store off update->is_error(); " +
+			"storing the readiness token as an error would mask the delivered grid")
+	}
+}
+
+// TestRtdOnceGridRegistryTransientRetention is the grid twin of
+// TestRtdOnceRegistryTransientRetention: it pins the TRANSIENT (error) entry
+// contract in the grid registry header. The behavioral proof is
+// TestRtdOnceGridRegistryErrorBehavior (a real compile+run of the header); this
+// marker test is the cheap always-on guard that the override branch exists at
+// all, and that neither expiry path lost it.
+func TestRtdOnceGridRegistryTransientRetention(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	src, ok := m["include/xll_rtd_once_grid.h"]
+	if !ok {
+		t.Fatalf("embedded include/xll_rtd_once_grid.h not found in assets")
+	}
+	for _, want := range []string{
+		// The lookup is three-valued: a bool cannot distinguish "error" from
+		// "zero-byte payload", and GetRoot over zero bytes is UB.
+		"enum class OnceGridLookup {",
+		"kMiss = 0,",
+		"kResult,",
+		"kError,",
+		"void StoreError(const std::wstring& key, const std::wstring& text)",
+		"OnceGridLookup TryGet(const std::wstring& key, std::vector<uint8_t>* out,",
+		"bool transient = false;",
+		"std::wstring errorText;",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("xll_rtd_once_grid.h missing %q", want)
+		}
+	}
+	// ClearNonMemoized: the transient check must come BEFORE the memoize /
+	// memoize_ttl branches, otherwise memoize:true wins and the error sticks.
+	clearIdx := strings.Index(src, "void ClearNonMemoized()")
+	if clearIdx < 0 {
+		t.Fatalf("xll_rtd_once_grid.h ClearNonMemoized not found")
+	}
+	body := src[clearIdx:]
+	transIdx := strings.Index(body, "it->second.transient")
+	memoIdx := strings.Index(body, "m_memoizeNames.count(fn)")
+	if transIdx < 0 {
+		t.Fatalf("ClearNonMemoized does not consult Entry::transient; a memoize:true " +
+			"grid function would freeze a transient error until XLL reload")
+	}
+	if memoIdx < 0 {
+		t.Fatalf("ClearNonMemoized no longer consults m_memoizeNames")
+	}
+	if transIdx > memoIdx {
+		t.Errorf("ClearNonMemoized checks m_memoizeNames before Entry::transient; the " +
+			"transient override must come FIRST or memoize:true keeps the error forever")
+	}
+	// TryGet: read-side transient miss once the topic is gone.
+	getIdx := strings.Index(src, "OnceGridLookup TryGet(")
+	if getIdx < 0 {
+		t.Fatalf("xll_rtd_once_grid.h TryGet not found")
+	}
+	if !strings.Contains(src[getIdx:], "it->second.transient && !KeyHasLiveTopic(key)") {
+		t.Errorf("TryGet must report a MISS for a transient entry whose topic is gone " +
+			"(`it->second.transient && !KeyHasLiveTopic(key)`), else a stale error is " +
+			"re-served for an extra recalc cycle when CalculationEnded beats DisconnectData")
+	}
+	// Store must PROMOTE: a completed payload landing over a transient error
+	// restores normal (memoize/ttl) retention.
+	storeIdx := strings.Index(src, "void Store(const std::wstring& key, const uint8_t* data, size_t len)")
+	if storeIdx < 0 {
+		t.Fatalf("xll_rtd_once_grid.h Store not found")
+	}
+	if !strings.Contains(src[storeIdx:storeIdx+1400], "it->second.transient = false;") {
+		t.Errorf("Store must re-stamp transient=false; a retry that SUCCEEDS would otherwise " +
+			"keep being reclaimed as if it were still the error")
 	}
 }
 
