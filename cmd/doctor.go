@@ -17,9 +17,15 @@ import (
 
 // Minimum tool versions xll-gen requires. Reported as a FAIL by `doctor` when a
 // present-but-too-old tool is detected.
+//
+// minCMakeVersion MUST track the `cmake_minimum_required(VERSION ...)` in
+// internal/templates/CMakeLists.txt.tmpl. doctor's contract is "block before the
+// build does"; a lower gate here reports green and then hands the user CMake's
+// own hard error at configure time, without xll-gen's remediation hint.
+// TestDoctorCMakeMinMatchesTemplate fails if the two drift.
 const (
 	minGoVersion    = "1.24"
-	minCMakeVersion = "3.24"
+	minCMakeVersion = "3.28"
 )
 
 // doctorCmd represents the doctor command.

@@ -43,7 +43,7 @@ func TestParseVersion(t *testing.T) {
 }
 
 // TestVersionAtLeast pins the doctor version-gating decision for Go (>=1.24) and
-// CMake (>=3.24), including the "unparseable degrades, does not FAIL" contract.
+// CMake (>=3.28), including the "unparseable degrades, does not FAIL" contract.
 func TestVersionAtLeast(t *testing.T) {
 	cases := []struct {
 		got, min   string
@@ -56,10 +56,11 @@ func TestVersionAtLeast(t *testing.T) {
 		{"go1.25.0", minGoVersion, true, true},
 		{"go1.23.9", minGoVersion, false, true},
 		{"go1.21", minGoVersion, false, true},
-		// CMake gating (min 3.24).
-		{"3.24.0", minCMakeVersion, true, true},
+		// CMake gating (min 3.28 — the generated CMakeLists' own floor).
+		{"3.28.0", minCMakeVersion, true, true},
 		{"3.30.2", minCMakeVersion, true, true},
-		{"3.23.5", minCMakeVersion, false, true},
+		{"3.27.9", minCMakeVersion, false, true},
+		{"3.24.0", minCMakeVersion, false, true},
 		{"2.8.12", minCMakeVersion, false, true},
 		// Unparseable version -> parsed=false (caller warns, does not fail).
 		{"unknown", minGoVersion, false, false},

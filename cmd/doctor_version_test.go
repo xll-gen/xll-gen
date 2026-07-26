@@ -86,6 +86,39 @@ func TestRegtestCMakePinsMatchVersions(t *testing.T) {
 	}
 }
 
+// TestDoctorCMakeMinMatchesTemplate guards doctor's CMake floor against the
+// floor the generated project actually demands. `doctor` exists to block BEFORE
+// the build does; when minCMakeVersion sits below the template's
+// cmake_minimum_required, doctor reports a green checkmark and the user meets
+// CMake's own "CMake 3.28 or higher is required" at configure time instead —
+// without the winget remediation line xll-gen authored for exactly that case.
+//
+// doctor may gate HIGHER than the template (a future generator feature could
+// need a newer CMake before the template is bumped), never lower.
+func TestDoctorCMakeMinMatchesTemplate(t *testing.T) {
+	tmplPath := filepath.Join("..", "internal", "templates", "CMakeLists.txt.tmpl")
+	data, err := os.ReadFile(tmplPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?m)^\s*cmake_minimum_required\s*\(\s*VERSION\s+([0-9]+(?:\.[0-9]+)*)`)
+	m := re.FindStringSubmatch(string(data))
+	if len(m) < 2 {
+		t.Fatalf("could not find cmake_minimum_required in %s", tmplPath)
+	}
+	tmplMin := m[1]
+
+	want, wantOK := parseVersion(tmplMin)
+	got, gotOK := parseVersion(minCMakeVersion)
+	if !wantOK || !gotOK {
+		t.Fatalf("unparseable versions: template %q (ok=%v), doctor %q (ok=%v)", tmplMin, wantOK, minCMakeVersion, gotOK)
+	}
+	if compareVersions(got, want) < 0 {
+		t.Errorf("doctor minCMakeVersion = %q but %s requires %q — doctor would report green on a CMake the build then rejects (AGENTS.md §18.2)",
+			minCMakeVersion, tmplPath, tmplMin)
+	}
+}
+
 // TestFlatbuffersVersion_TypesProvenance cross-checks that the flatc
 // version recorded in the upstream `types` module matches the version
 // xll-gen pins. A skew here means `types` was bumped without
