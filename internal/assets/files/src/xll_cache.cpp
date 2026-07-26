@@ -661,28 +661,132 @@ std::string ContentHashTokenFP12(const FP12* fp) {
     return FormatHashToken('n', h);
 }
 
-flatbuffers::Offset<protocol::Grid> ConvertGridArg(const XLOPER12* op, flatbuffers::FlatBufferBuilder& builder, bool* coerceOk) {
-    if (coerceOk) *coerceOk = true;
-    if (!op) return ConvertGrid(const_cast<LPXLOPER12>(op), builder);
+const char* GridArgStatusText(GridArgStatus s) {
+    switch (s) {
+        case GridArgStatus::kOk:           return "ok";
+        case GridArgStatus::kCoerceFailed: return "xlCoerce failed";
+        case GridArgStatus::kNotAnArray:   return "xlCoerce did not yield a cell array "
+                                                  "(multi-area or otherwise unflattenable reference)";
+        case GridArgStatus::kMultiArea:    return "multi-area (union) reference — a grid is one rectangle";
+        case GridArgStatus::kTooLarge:     return "reference area exceeds the grid-argument cell limit";
+    }
+    return "unknown";
+}
+
+namespace {
+
+// Cells covered by one rectangle. XLREF12's bounds are INCLUSIVE and Excel's
+// grid maxes out at 2^20 rows x 2^14 columns, so the product cannot overflow
+// 64 bits; an inverted/degenerate rect contributes nothing.
+uint64_t RectCells(const XLREF12& r) {
+    if (r.rwLast < r.rwFirst || r.colLast < r.colFirst) return 0;
+    const uint64_t rows = (uint64_t)(int64_t)(r.rwLast - r.rwFirst) + 1;
+    const uint64_t cols = (uint64_t)(int64_t)(r.colLast - r.colFirst) + 1;
+    return rows * cols;
+}
+
+} // namespace
+
+void MeasureRefArg(const XLOPER12* op, uint64_t* outCells, uint32_t* outAreas) {
+    uint64_t cells = 0;
+    uint32_t areas = 0;
+    if (op) {
+        const DWORD ty = op->xltype & ~(xlbitXLFree | xlbitDLLFree);
+        if ((ty & xltypeRef) && op->val.mref.lpmref) {
+            // xltypeRef: idSheet + a TABLE of rects. More than one rect is a
+            // union reference.
+            const XLMREF12* m = op->val.mref.lpmref;
+            areas = (uint32_t)m->count;
+            for (WORD i = 0; i < m->count; ++i) cells += RectCells(m->reftbl[i]);
+        } else if (ty & xltypeSRef) {
+            // xltypeSRef: exactly ONE rect and no sheet id — the shape Excel
+            // passes for a same-sheet reference, and the one a whole-column
+            // reference ($P:$R -> 1,048,576 x 3) arrives as.
+            areas = 1;
+            cells = RectCells(op->val.sref.ref);
+        }
+    }
+    if (outCells) *outCells = cells;
+    if (outAreas) *outAreas = areas;
+}
+
+flatbuffers::Offset<protocol::Grid> ConvertGridArg(const XLOPER12* op,
+                                                   flatbuffers::FlatBufferBuilder& builder,
+                                                   GridArgStatus* status,
+                                                   uint64_t maxCells) {
+    if (status) *status = GridArgStatus::kOk;
+
+    // Every refusal returns the SAME well-formed empty grid. The caller checks
+    // the status and never ships it; returning a valid offset (rather than a
+    // default-constructed one) keeps the builder's invariants intact whatever
+    // the caller does next.
+    auto refuse = [&](GridArgStatus s) {
+        if (status) *status = s;
+        return protocol::CreateGrid(builder, 0, 0, 0);
+    };
+
+    // types' ConvertGrid dereferences its argument unconditionally (inside a
+    // catch(...) that a null deref does not raise), so a null must not reach it.
+    if (!op) return refuse(GridArgStatus::kNotAnArray);
+
+    const DWORD ty = op->xltype & ~(xlbitXLFree | xlbitDLLFree);
 
     // A grid arg passed as a range reference must be coerced to its cell
     // VALUES before ConvertGrid (which only understands xltypeMulti). Mirrors
     // HashXLOPERInto's ref handling above.
-    if (op->xltype & (xltypeRef | xltypeSRef)) {
+    if (ty & (xltypeRef | xltypeSRef)) {
+        uint64_t cells = 0;
+        uint32_t areas = 0;
+        MeasureRefArg(op, &cells, &areas);
+
+        // (a) Union reference. Refused STRUCTURALLY, before Excel is asked:
+        // xlCoerce cannot produce the union, and whatever it does return would
+        // be interpreted as data. See GridArgStatus::kMultiArea.
+        if (areas > 1) return refuse(GridArgStatus::kMultiArea);
+
+        // (b) Over-large reference. This check is the whole point of doing the
+        // measurement up front: =SumGrid($P:$R) is ~3.1M cells, and merely
+        // ASKING Excel to coerce that is ~100 MB of XLOPER12 before we ever get
+        // to serialize it. Refuse without allocating anything.
+        if (cells > maxCells) return refuse(GridArgStatus::kTooLarge);
+
         XLOPER12 xVal;
+        xVal.xltype = 0;
         XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = xltypeMulti;
-        if (xll::CallExcel(xlCoerce, &xVal, op, &xType) == xlretSuccess) {
-            auto off = ConvertGrid(&xVal, builder);
-            xll::CallExcel(xlFree, nullptr, &xVal);
-            return off;
+        if (xll::CallExcel(xlCoerce, &xVal, op, &xType) != xlretSuccess) {
+            // Coerce failed (xlretUncalced etc.): signal the caller so the
+            // wrapper SKIPS shipping a payload entirely — the Go dispatch then
+            // misses the token and pushes an explicit error to the topic,
+            // instead of the handler silently receiving a degenerate 1x1 grid
+            // (reviewer MED, 2026-06-12).
+            return refuse(GridArgStatus::kCoerceFailed);
         }
-        // Coerce failed (xlretUncalced etc.): signal the caller so the wrapper
-        // SKIPS shipping a payload entirely — the Go dispatch then misses the
-        // token and pushes an explicit error to the topic, instead of the
-        // handler silently receiving a degenerate 1x1 grid (reviewer MED,
-        // 2026-06-12). The fall-through below still returns a valid offset so
-        // legacy callers without the out-param keep compiling/working.
-        if (coerceOk) *coerceOk = false;
+
+        // xlCoerce answered SUCCESS — but did it answer with what we asked for?
+        // Anything other than xltypeMulti (an xltypeErr #VALUE! for a shape
+        // Excel will not flatten, most commonly) must NOT reach ConvertGrid:
+        // ConvertGrid's non-multi fall-through wraps it as a 1x1 grid, the
+        // handler sums it to 0, and the user gets a WRONG NUMBER with no error
+        // anywhere. Refuse instead.
+        const DWORD vt = xVal.xltype & ~(xlbitXLFree | xlbitDLLFree);
+        if (vt != xltypeMulti) {
+            xll::CallExcel(xlFree, nullptr, &xVal);
+            return refuse(GridArgStatus::kNotAnArray);
+        }
+
+        auto off = ConvertGrid(&xVal, builder);
+        xll::CallExcel(xlFree, nullptr, &xVal);
+        return off;
+    }
+
+    // Not a reference. An array LITERAL ({1,2;3,4}) already arrives as
+    // xltypeMulti and a scalar as itself; both go straight to ConvertGrid. The
+    // literal is bounded by the same cap — it reaches the same fixed-size SHM
+    // arena, and Excel is not the only possible producer of one.
+    if (ty == xltypeMulti) {
+        const uint64_t cells = (uint64_t)(uint32_t)op->val.array.rows *
+                               (uint64_t)(uint32_t)op->val.array.columns;
+        if (cells > maxCells) return refuse(GridArgStatus::kTooLarge);
     }
     return ConvertGrid(const_cast<LPXLOPER12>(op), builder);
 }

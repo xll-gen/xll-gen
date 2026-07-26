@@ -988,6 +988,134 @@ of silently shipping another dead handler.
    probe must use an edit/F9 trigger, or it will "prove" that the events never
    fire.
 
+### 19.5 Reference arguments: the request arena is the real bound (2026-07-26)
+
+A `grid`/`range`/`any` argument is registered `U` (§19.2), so Excel hands the
+wrapper **whatever reference the user typed** — a whole column, a union, a
+cross-sheet range. Two defects on that path were reproduced against the SHIPPED
+showcase build (Excel 16.0.20131.20154, caching disabled — the stock artifact):
+
+```
+=SumGrid($P$1:$R$10)                -> 2805      (control, 3/3)
+=SumGrid($P:$R)                     -> Excel PROCESS DEATH   (3/3, and 5/5 in the original report)
+=SumGrid(($P$1:$R$5,$P$6:$R$10))    -> 0, silently, no error (3/3)
+```
+
+**The crash mechanism is the ALLOCATOR, not the size of the coerce.** A sync/
+async request is built **directly into the slot's request buffer** — `SHMAllocator`
+over `slot.GetReqBuffer()` / `slot.GetMaxReqSize()`, 512 KiB with the stock slot
+geometry — and there is **no chunking in the host→guest ARGUMENT direction**.
+`flatbuffers::Allocator` has **no failure channel**: its base
+`reallocate_downward` calls `allocate(new_size)` and then `memcpy_downward`
+**unconditionally**. `SHMAllocator::allocate` returned `nullptr` past capacity,
+so an over-capacity request did not fail — it memcpy'd into a near-null address
+and took the Excel process with it.
+
+That is why the cliff sits far below "3.1 million cells". Measured on the stock
+build, one formula per Excel instance:
+
+| grid argument | cells | outcome (pre-fix) |
+| --- | --- | --- |
+| `$P$1:$DK$100` (100×100) | 10,000 | 10000 ✔ |
+| `$P$1:$EI$120` (120×120) | 14,400 | 14400 ✔ |
+| `$P$1:$FC$140` (140×140) | 19,600 | **process death** |
+| `$P$1:$HG$200` (200×200) | 40,000 | **process death** |
+| `$P:$P` / `$P:$R` | 1.0M / 3.1M | **process death** |
+
+19.6k cells × the measured **~28 B/cell** for a `protocol::Grid` (`Scalar` table
++ union member + vtable + vector slot, §23.3) ≈ 549 KB — i.e. the cliff is
+exactly where the payload stops fitting 512 KiB. **The differing fault
+signatures across reproductions** (`ucrtbase.dll 0xc0000005` vs `KERNELBASE.dll
+0xe0000002`) are consistent with this: the near-null `memcpy` faults in the CRT,
+while the pathological end additionally makes Excel materialize ~100 MB of
+`XLOPER12`, which can fail earlier and differently.
+
+**The fix is two layers, and only the first one is the cure:**
+
+1. **`SHMAllocator` never returns `nullptr` into flatbuffers** (`include/SHMAllocator.h`).
+   An over-capacity request is served from the **heap** and latched in a sticky
+   `Overflowed()` flag; the caller refuses the call before `Send`. This is the
+   root-cause fix — it converts *every* arena overflow (grids, long string args,
+   an invalid slot whose `GetMaxReqSize()` is 0, any future arg type) from
+   process death into `#VALUE!` plus a log line.
+   **Contract: EVERY site that builds into a slot arena and sends MUST check
+   `allocator.Overflowed()` between `Finish()` and `Send()`.** The overflow bytes
+   are on the heap, so sending would publish a length that does not describe the
+   shared memory — worse than the crash. The four sites are the generated UDF
+   wrapper (`xll_main.cpp.tmpl`), `ribbon_addin.cpp` `SendCommandInvoke`, and
+   `xll_rtd.cpp` `ConnectData` + `DisconnectData`. Gated by
+   `internal/assets/gridarg_cpp_test.go::TestSlotArenaSendersCheckOverflow`,
+   which counts `SHMAllocator allocator(` against `allocator.Overflowed()` per
+   file — it caught the `DisconnectData` site that was missed on the first pass.
+   (`regtest_main.cpp.tmpl` is NOT such a site: it uses flatbuffers' 4-arg
+   caller-supplied-buffer constructor with the default heap allocator.)
+2. **`xll::kMaxGridArgCells` (16384) is DEFENSE IN DEPTH, not the cure.** With
+   layer 1 in place a whole-column argument is already survivable; the bound
+   exists so the pathological case is refused *cheaply* — before `xlCoerce` is
+   asked to materialize ~100 MB of `XLOPER12` for an answer that is going to be
+   thrown away. 16384 sits just under the ~18.7k cells a 512 KiB slot can hold,
+   so everything that worked before still works and everything that used to
+   crash now returns `#VALUE!`. It is a PRE-FILTER, not a guarantee: 16k
+   string-valued cells still will not fit, which is precisely why layer 1 has to
+   exist. **Deliberately not wired to `xll.yaml`** — the only defensible value is
+   a function of the SHM slot geometry, which the config surface does not
+   expose, so a user-supplied cell count could not be validated against
+   anything. Same posture as the C++ chunk-receiver caps (§18.6.1).
+
+**Multi-area (union) references are refused, not summed.** `xlCoerce` cannot
+produce "the union" of `(A1:B2,D1:E2)`; it answers **success with an error
+value**, and `ConvertGrid`'s non-`xltypeMulti` fall-through wrapped that as a
+1×1 grid the handler read as data and summed to **0**. For a financial add-in a
+silent wrong answer is worse than a crash. Two independent guards now stop it:
+
+* **structural** — `xltypeRef` with `lpmref->count > 1` is refused
+  (`GridArgStatus::kMultiArea`) **before Excel is asked**, so the diagnosis does
+  not depend on how `xlCoerce` chooses to fail. Confirmed to be the guard that
+  actually fires: Excel passes a same-sheet union as `xltypeRef` with `count==2`
+  (native log: `SumGrid: grid arg g rejected: multi-area (union) reference`).
+* **post-coerce** — the result must be the `xltypeMulti` that was requested;
+  anything else is `kNotAnArray`. This is the belt-and-braces that catches every
+  other "success, but not what you asked for" answer.
+
+`ConvertGridArg`'s out-param is therefore an **enum** (`xll::GridArgStatus`), not
+a `bool`: a boolean could only ever say "coerce failed", including for the two
+refusals that never call Excel. The generated wrapper logs
+`GridArgStatusText(...)` and returns `#VALUE!` (sync), `xlAsyncReturn(#VALUE!)`
+(async), or SKIPS the RTD payload ship (rtd / rtd-once content-hash path — see
+§19.3; shipping a refusal's empty grid under a content-hash token would poison
+the Go `RefCache` for every other cell using that range).
+
+**Note on `range`/`any` args:** they are NOT affected by either defect. Their
+payload is COORDINATES (`ConvertRange` emits the full rect table, so a union is
+represented natively and a whole column costs 16 bytes), not values. Only `grid`
+flattens to cell values, and only `numgrid` (FP12, built by Excel itself) shares
+the arena-size exposure — which layer 1 now covers.
+
+**Regressions:** `internal/assets/testdata/gridarg_native_test.cpp` +
+`internal/assets/gridarg_cpp_test.go::TestGridArgNativeBehavior` (offline g++
+gate, stubbed `Excel12v`; 40 checks: `MeasureRefArg` shapes, the contiguous
+control, oversized-refused-without-coercing, union-refused-structurally,
+coerce-error-is-not-a-1×1-grid, and the allocator overflow). FAIL-before is
+mechanical, not asserted: neutering the allocator makes the harness exit
+`0xc0000005`; neutering the two union guards yields 5 failures; neutering the
+cell bound yields 6. Plus the always-on markers
+`TestSHMAllocatorNeverReturnsNullIntoFlatbuffers`, `TestGridArgGuardsDeclared`,
+`TestGridArgRefusalReachesTheCell`, `TestSlotArenaSendersCheckOverflow`, and the
+updated `internal/generator` markers (`TestGenCpp_ArgMarshalling`,
+`TestGenCpp_AsyncGridArgCoerces`, `gen_rtd_composite_test.go`).
+
+**Was NOT the defect (checked, do not re-report).** The report that accompanied
+this work also claimed `CacheManager::GetOrComputeRefHash` fails to arm the
+iterative-calculation gate for same-sheet (`xltypeSRef`) ranges, because
+`refPathUsed_.store(true)` sits after `if (refTy != xltypeRef) return
+computeFn(pRef);`. The code reads that way, but it is **correct as written**:
+`refPathUsed_` exists solely to decide whether calc end pays for the
+`GET.DOCUMENT(15)` round-trip that gates the **RefCache memoization**, and an
+`xltypeSRef` argument never enters `refCache_` at all (only an `xltypeRef`
+carries the `(idSheet, rect)` key material — §22 "Confirmed-Correct Decisions").
+There is nothing to gate on that path, so arming the flag there would only add
+an Excel round-trip per cycle. `GetOrComputeRefHash` was left untouched.
+
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
 
 Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry points, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for actual use. This also applies when an Add-in is disabled or forcefully unloaded while background threads are running.
@@ -1204,8 +1332,9 @@ directly and skip default application):
   recalculates) and the bounded `xlcOnTime` connect retry armed at `xlAutoOpen`
   (§23.6 "§3"), which covers the manual-calc / no-formula book. The OnTime retry's
   "waiting for a workbook" window is finite (~10.5 min) — see the §3 FOLLOW-UP entry
-  for the accepted residual hole and the still-unproven `xlcOnTime`-accepted-at-
-  `xlAutoOpen`-with-no-workbook assumption.
+  for the accepted residual hole. The `xlcOnTime`-at-`xlAutoOpen`-with-no-workbook step
+  is no longer an assumption: it was proven accepted AND dispatched on real Excel
+  (2026-07-26 probe, 3/3 chained dispatches — see the §3 FOLLOW-UP entry).
 
 Pinned by `gen_ribbon_bounce_test.go` (keep-open/off shapes, unset≡full) and
 `config_test.go` (value validation).
@@ -1384,6 +1513,35 @@ external boundaries), a raw `operator[]` over independently-mutable state, or a
 real initialization-order window. Local provability is necessary but never
 sufficient.
 
+### Final §6 migration (2026-07-26) — the workspace backlog's list is retired
+
+The two entries below were the last ones still living only in the workspace
+`IMPROVEMENT_BACKLOG.md` §6. That section is now retired, so this file is the
+sole home for xll-gen's do-not-re-propose decisions.
+
+* **The sync/async `any` argument's RefCache-MISS fallback (pass-through) is
+  intended, test-pinned behavior** (adversarial verification 2026-07-23,
+  REFUTED). A production XLL always serializes sync/async `any` INLINE —
+  `ConvertAny` has no RefCache-emitting case — so there is no miss to "fix". A
+  review that reports the fallback as a correctness hole has mistaken the RTD
+  composite-arg path (which does use content-hash tokens) for the sync/async
+  one. Do not re-report.
+* **The rtd-once GRID path was never part of the error-memoize-sticking class**
+  (verified 2026-07-23). The grid-once gate in `xll_rtd.cpp` bypasses the scalar
+  `StoreResult` entirely, and `RtdOnceGridRegistry` stored only successful
+  `MSG_RTD_ONCE_GRID` payloads; only the SCALAR path ever participated in that
+  bug. Do not re-report the grid path for error-memoize sticking.
+  **SCOPE — read this before citing the bullet (2026-07-26):** it says the grid
+  path is not part of *that specific* class. It does **not** say the grid path
+  had no error handling defect. A different one existed and was fixed in
+  v0.8.37: a failing one-shot grid handler had nowhere to put its message, so
+  the failure was dropped and the wrapper fell through to re-issue `xlfRtd`
+  against an already-connected topic, wedging the cell at the loading
+  placeholder forever. `StoreError` + transient entries + `OnceGridLookup` fixed
+  it, verified on real Excel by
+  `xll-gen-showcase/tools/verify-gridonce-error-uia.ps1` (4/4). Treat the
+  original bullet as narrow, not as a blanket "the grid path is fine".
+
 ## 23. Known Improvement Backlog
 
 These came out of a code review on 2026-05-16. Address them as part of normal work; do not block on a dedicated epic.
@@ -1468,6 +1626,8 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
   * `MaxChunkBufferBytes` is currently only mutable through code (`ChunkManager` field or `NewChunkManagerWithMax`). Plumb it through `xll.yaml` → `internal/config` so deployments can tune it without rebuilds. Co-change cluster: pairs with the §23.2 cleanup-tick/TTL promotion.
   * **DONE (2026-05-17, xll-gen v0.3.8 / shm v0.6.0):** local `MsgSystemError` sentinel in `pkg/server/types.go` removed; `pkg/server/handlers.go` and `pkg/server/manager_test.go` now use `shm.MsgTypeSystemError` directly. shm exported the constant in v0.6.0 alongside the streaming API.
   * Wire `Chunk` schema (in `types/`) does not carry an explicit `total_chunks` field; dedup is keyed on offset (unique per chunk on first transmission) which is sufficient given chunk size is sender-controlled and offsets do not overlap. If a future change introduces variable-sized chunks within a transfer, revisit and key on `(offset, length)` or add an explicit chunk-index field.
+* **DONE (2026-07-26) — HIGH + MED: a reference argument could kill Excel, or return a silently wrong number.** Full write-up in **§19.5**; the short version is that the sync/async request is built straight into the slot's 512 KiB request buffer, `flatbuffers::Allocator` has no failure channel, and `SHMAllocator::allocate` answered `nullptr` past capacity — which `Allocator::reallocate_downward` then `memcpy`'d into. The measured cliff on the shipped showcase was ~19.6k grid cells (120×120 fine, 140×140 dead), i.e. the `~28 B/cell` payload against 512 KiB — **not** "3.1M cells is too much for `xlCoerce`", which is why the two reported reproductions of `=SumGrid($P:$R)` showed different faulting modules. Fixed by making the allocator serve over-capacity requests from the heap behind a sticky `Overflowed()` latch that every slot-arena sender now checks between `Finish()` and `Send()` (4 sites, gated by `TestSlotArenaSendersCheckOverflow` — which caught the one that was missed). `xll::kMaxGridArgCells` (16384, compile-time, deliberately not YAML-wired) is the cheap pre-filter on top, so the pathological case never makes Excel materialize ~100 MB of `XLOPER12`. Separately, a multi-area (union) reference — `=SumGrid(($P$1:$R$5,$P$6:$R$10))` returned **0** while the contiguous equivalent returned 2805 — is now refused structurally before `xlCoerce`, with a post-coerce "did you actually answer `xltypeMulti`?" check behind it; `ConvertGridArg`'s out-param became `xll::GridArgStatus` so the log names WHICH refusal fired. Real Excel, 3 rounds each: `$P:$R` process death → `#VALUE!`; union `0` → `#VALUE!`; control `$P$1:$R$10` 2805 → 2805.
+  * **Still open (LOW, deliberate):** the refusal is all-or-nothing. A user who legitimately wants to hand a handler more than ~16k cells has no path today — host→guest ARGUMENT chunking does not exist (only guest→host results are chunked, §18.6.1). Adding it is a protocol-level change (`shm-protocol-guardian` + `cross-repo-coordinator`), not a runtime fix. Until then `#VALUE!` plus the `SumGrid: grid arg g rejected: reference area exceeds the grid-argument cell limit` log line is the contract.
 
 ### 23.3.1 Real-Excel verification (2026-06-12, smoke + spill + rtd-once pass)
 
@@ -1781,14 +1941,28 @@ already deleted.**
       **Golden: NO update needed** — every hunk is inside `{{if .Ribbon.Enabled}}` and the golden fixture
       leaves `Ribbon` unset (verified by applying only these hunks to a clean HEAD and running
       `TestGolden`). `cmd/cpp_compile_gate_bounce_test.go` full/keep-open/off all compile+link.
-    - **NOT YET PROVEN ON REAL EXCEL (open):** the only state in which the `xlAutoOpen` arm is actually
-      reached is `ribbon.bounce: off` **with zero workbooks open**. Whether `xlcOnTime` is ACCEPTED in
-      that exact state is still unverified — the existing empirical proof (§23.6 HIGH #2) was taken in a
-      calc-end context with a workbook open, and `xlAutoOpen`-with-no-workbook is a different context.
-      If Excel rejects it there, the MED #2(b) warn now makes the failure visible instead of silent, but
-      the retry would never start. **To close:** real Excel, `bounce: off`, empty start — confirm the
-      native log shows NO `ScheduleOnTimeMacro: xlcOnTime rc=` line and DOES show
-      `Ribbon: COM add-in connected (ontime retry)` after opening a workbook.
+    - **PROVEN ON REAL EXCEL (2026-07-26) — the `xlAutoOpen` arm works with zero workbooks open.**
+      The only state in which the `xlAutoOpen` arm is actually reached is `ribbon.bounce: off` **with
+      zero workbooks open**, and the prior empirical proof (§23.6 HIGH #2) had been taken in a calc-end
+      context with a workbook open — a different context, so acceptance there did not transfer. Closed
+      with a purpose-built probe XLL (MSVC, raw `Excel12`, mirroring `ScheduleOnTimeMacro`'s exact call
+      shape: `xlfNow` → `+delay/86400` → `xlcOnTime(when, macro)`), loaded via `RegisterXLL` into an
+      Excel started with **no workbook**. Result, empty start:
+      `DOCUMENTS → err 42` (`#N/A` = zero documents, so the state is proven, not assumed) ·
+      `xlfNow rc=0 xltype=0x1 (xltypeNum)` · **`xlcOnTime rc=0 res=BOOL 1` (ACCEPTED)** ·
+      **`FIRED` at +2.5 s (DISPATCHED)** · re-arm issued from inside the fired macro also accepted and
+      dispatched, **3/3 chained dispatches**, all on the same STA thread as `xlAutoOpen`. The control run
+      (one workbook open before `RegisterXLL`, `DOCUMENTS → multi 1x1`) behaved identically, which is
+      what validates the `err 42` reading rather than leaving it as inference. So neither acceptance nor
+      dispatch is workbook-gated, and the MED #2(b) warn path is a genuine last resort rather than the
+      expected case. Two incidental observations: dispatch latency ran ~2.0–2.5 s for a +2.0 s schedule
+      (Excel rounds to its own OnTime tick — budget accounting should not assume exact spacing), and the
+      fired macro runs on the main STA thread, which is what the runner already assumes.
+      **Still not covered:** the "accepted, then silently DROPPED by Excel" case that the start-once
+      latch cannot recover from (queue clear / workbook close / another add-in's `Application.OnTime`
+      cancel). That is a different failure mode from rejection and remains unproven in both directions;
+      the latch trade-off documented above stands, and code change is still not recommended without a
+      repro.
   - **§3 FOLLOW-UP #2 (2026-07-26) — the last unbilled-attempt hole. DONE (LOW).** Same defect class as
     MED #1, one branch further out: `TryConnectRibbon` has TWO exits that return before ever calling
     `SetRibbonConnected` — the `g_isUnloading` bail (unreachable from the runner, which gates on the

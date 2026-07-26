@@ -106,6 +106,16 @@ namespace xll { namespace ribbon {
                 auto req = protocol::CreateCommandInvokeRequest(builder, nameOff, ctrlOff);
                 builder.Finish(req);
 
+                // The request lives in the slot's fixed-size arena. An
+                // over-capacity build is served from the heap and latched (see
+                // SHMAllocator) — those bytes are not in shared memory, so
+                // sending would ship garbage. Unreachable for a command name
+                // in practice; the check is what keeps that true.
+                if (allocator.Overflowed()) {
+                    xll::LogWarn("CommandInvoke dropped (request exceeds the SHM slot): " + commandNameUtf8);
+                    return;
+                }
+
                 if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
 
                 auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_COMMAND_INVOKE, kAttemptTimeoutMs);

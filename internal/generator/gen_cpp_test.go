@@ -347,7 +347,7 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 	// unaffected (range/any ship coordinates by design; FP12 numgrid is not a
 	// reference type at the wrapper boundary).
 	for _, want := range []string{
-		"xll::ConvertGridArg(g, builder, &gridCoerceOk0)",
+		"xll::ConvertGridArg(g, builder, &gridStatus0)",
 		"ConvertNumGrid(ng, builder)",
 		"ConvertRange(r, builder)",
 		"ConvertAny(v, builder)",
@@ -359,12 +359,26 @@ func TestGenCpp_ArgMarshalling(t *testing.T) {
 
 	// The sync `grid` arg path MUST NOT regress to plain ConvertGrid-on-ref
 	// (the empty-grid bug). Assert the coercing converter is the one wired in
-	// for the grid arg and that a coerce-failure guard is emitted.
+	// for the grid arg and that a REFUSAL guard is emitted.
 	if strings.Contains(content, "ConvertGrid(g, builder)") {
 		t.Errorf("sync grid arg regressed to plain ConvertGrid(g, builder); a `U`-registered ref yields an empty 1x1 grid — must use xll::ConvertGridArg")
 	}
-	if !strings.Contains(content, "if (!gridCoerceOk0)") {
-		t.Errorf("sync grid arg must emit a coerce-failure guard (if (!gridCoerceOk0)) returning the error sentinel, not a silent degenerate grid")
+	if !strings.Contains(content, "if (gridStatus0 != xll::GridArgStatus::kOk) {") {
+		t.Errorf("sync grid arg must emit the ConvertGridArg refusal guard " +
+			"(if (gridStatus0 != xll::GridArgStatus::kOk)) returning the error sentinel, " +
+			"not a silent degenerate grid")
+	}
+	// The refusal reason must reach the log. A bare boolean could only ever say
+	// "coerce failed" — including for the two refusals that never call Excel
+	// (a multi-area union, an over-large area), which is how the whole-column
+	// crash and the union wrong-answer stayed undiagnosed.
+	if strings.Contains(content, "gridCoerceOk0") {
+		t.Errorf("sync grid arg still uses the bool coerceOk plumbing; the wrapper must " +
+			"carry xll::GridArgStatus so the log names WHICH refusal fired")
+	}
+	if !strings.Contains(content, "xll::GridArgStatusText(gridStatus0)") {
+		t.Errorf("the grid-arg refusal must log xll::GridArgStatusText(...) so the reason " +
+			"is diagnosable from the native log")
 	}
 
 	// Must NOT regress to the old undeclared helper names.
@@ -419,16 +433,17 @@ func TestGenCpp_AsyncGridArgCoerces(t *testing.T) {
 
 	content := renderCppMain(t, cfg)
 
-	if !strings.Contains(content, "xll::ConvertGridArg(g, builder, &gridCoerceOk0)") {
+	if !strings.Contains(content, "xll::ConvertGridArg(g, builder, &gridStatus0)") {
 		t.Errorf("async grid arg must marshal through xll::ConvertGridArg (ref-coercing), not plain ConvertGrid")
 	}
 	if strings.Contains(content, "ConvertGrid(g, builder)") {
 		t.Errorf("async grid arg regressed to plain ConvertGrid(g, builder) — empty-grid bug")
 	}
 	// Async coerce-failure path: signal via xlAsyncReturn, then return (void).
-	idx := strings.Index(content, "if (!gridCoerceOk0)")
+	idx := strings.Index(content, "if (gridStatus0 != xll::GridArgStatus::kOk) {")
 	if idx < 0 {
-		t.Fatalf("async grid arg missing coerce-failure guard (if (!gridCoerceOk0))")
+		t.Fatalf("async grid arg missing the ConvertGridArg refusal guard " +
+			"(if (gridStatus0 != xll::GridArgStatus::kOk))")
 	}
 	// Examine the guard body window.
 	window := content[idx:min(len(content), idx+900)]

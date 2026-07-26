@@ -61,7 +61,7 @@ func TestGenCpp_RtdComposite_Wrapper(t *testing.T) {
 		// with the coerce-failure out-param so a failed coerce SKIPS the ship)
 		// wrapped in Any::Grid.
 		"xll::ContentHashToken('g', g)",
-		"xll::ConvertGridArg(g, rcb, &rcOk)",
+		"xll::ConvertGridArg(g, rcb, &rcStatus)",
 		"protocol::AnyValue::Grid",
 		// SetRefCacheRequest build + once-per-cycle ship, gated on rcOk so a
 		// degenerate payload is never shipped under a real token.
@@ -131,7 +131,7 @@ func TestGenCpp_RtdOnceComposite_BuildAfterCacheLookup(t *testing.T) {
 
 	tokIdx := strings.Index(content, "xll::ContentHashToken('g', g)")
 	hitIdx := strings.Index(content, "TryGetResult(onceKey, &cached)")
-	buildIdx := strings.Index(content, "xll::ConvertGridArg(g, rcb, &rcOk)")
+	buildIdx := strings.Index(content, "xll::ConvertGridArg(g, rcb, &rcStatus)")
 	reqIdx := strings.Index(content, "protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny)")
 	shipIdx := strings.Index(content, "xll::SendRefCachePayloadOnce(")
 	if tokIdx < 0 || hitIdx < 0 || buildIdx < 0 || reqIdx < 0 || shipIdx < 0 {
@@ -224,7 +224,7 @@ func TestGenCpp_RtdOnceComposite_SkipBuildWhenAlreadyShipped(t *testing.T) {
 	// the builder (or it guards nothing).
 	hitIdx := strings.Index(content, "TryGetResult(onceKey, &cached)")
 	peekIdx := strings.Index(content, "rcAlreadySent1 = g_sentRefCache.find(refTok1)")
-	buildIdx := strings.Index(content, "xll::ConvertGridArg(g, rcb, &rcOk)")
+	buildIdx := strings.Index(content, "xll::ConvertGridArg(g, rcb, &rcStatus)")
 	shipIdx := strings.Index(content, "xll::SendRefCachePayloadOnce(")
 	if hitIdx < 0 || peekIdx < 0 || buildIdx < 0 || shipIdx < 0 {
 		t.Fatalf("rtd-once composite render missing markers (hit=%d peek=%d build=%d ship=%d)",

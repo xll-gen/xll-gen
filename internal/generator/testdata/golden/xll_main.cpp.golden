@@ -1742,6 +1742,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncStr: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
+
     
     // Sync Send
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)140, 2000);
@@ -1888,6 +1903,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncInt: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -2038,6 +2068,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncFloat: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
+
     
     // Sync Send
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)142, 2000);
@@ -2186,6 +2231,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncBool: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -2337,6 +2397,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncAny: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
+
     
     // Sync Send
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)144, 2000);
@@ -2472,15 +2547,22 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     // to its cell VALUES first (mirrors the rtd/rtd-once content-hash path).
     // An array LITERAL ({1,2;3,4}) already arrives as xltypeMulti and passes
     // through unchanged.
-    bool gridCoerceOk0 = true;
-    auto arg0 = xll::ConvertGridArg(g, builder, &gridCoerceOk0);
-    if (!gridCoerceOk0) {
-        // xlCoerce failed (xlretUncalced mid-calc, cross-sheet restriction, …).
-        // Do NOT ship a degenerate 1x1 Nil grid — surface the same error the
+    //
+    // ConvertGridArg also REFUSES the two reference shapes a grid cannot carry,
+    // both of which used to reach the user as a crash or a wrong number:
+    //   * over kMaxGridArgCells — =SumGrid($P:$R) is ~3.1M cells; coercing that
+    //     and serializing it into the fixed-size slot arena killed Excel.
+    //   * a multi-area union — =SumGrid((A1:B2,D1:E2)); xlCoerce cannot flatten
+    //     it, and the error it answers with used to be wrapped as a 1x1 grid
+    //     that the handler summed to 0.
+    xll::GridArgStatus gridStatus0 = xll::GridArgStatus::kOk;
+    auto arg0 = xll::ConvertGridArg(g, builder, &gridStatus0);
+    if (gridStatus0 != xll::GridArgStatus::kOk) {
+        // Do NOT ship the refusal's empty grid — surface the same error the
         // SHM-failure path below returns so the cell shows #VALUE! and Excel
         // re-drives the UDF on the next recalc pass (precedents calc first for
         // a `$`-registered function, so this is genuinely exceptional).
-        SAFE_LOG_WARN("SyncGrid: grid arg g coerce failed; returning error sentinel");
+        SAFE_LOG_WARN(std::string("SyncGrid: grid arg g rejected: ") + xll::GridArgStatusText(gridStatus0));
         
         return &g_xlErrValue;
         
@@ -2504,6 +2586,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncGrid: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -2653,6 +2750,21 @@ extern "C" __declspec(dllexport) FP12* __stdcall SyncNumGrid(FP12* ng) {
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncNumGrid: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return nullptr;
+        
+    }
+
     
     // Sync Send
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)146, 2000);
@@ -2792,6 +2904,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncRange: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -2946,6 +3073,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncDate: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -3136,15 +3278,22 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     // to its cell VALUES first (mirrors the rtd/rtd-once content-hash path).
     // An array LITERAL ({1,2;3,4}) already arrives as xltypeMulti and passes
     // through unchanged.
-    bool gridCoerceOk4 = true;
-    auto arg4 = xll::ConvertGridArg(g, builder, &gridCoerceOk4);
-    if (!gridCoerceOk4) {
-        // xlCoerce failed (xlretUncalced mid-calc, cross-sheet restriction, …).
-        // Do NOT ship a degenerate 1x1 Nil grid — surface the same error the
+    //
+    // ConvertGridArg also REFUSES the two reference shapes a grid cannot carry,
+    // both of which used to reach the user as a crash or a wrong number:
+    //   * over kMaxGridArgCells — =SumGrid($P:$R) is ~3.1M cells; coercing that
+    //     and serializing it into the fixed-size slot arena killed Excel.
+    //   * a multi-area union — =SumGrid((A1:B2,D1:E2)); xlCoerce cannot flatten
+    //     it, and the error it answers with used to be wrapped as a 1x1 grid
+    //     that the handler summed to 0.
+    xll::GridArgStatus gridStatus4 = xll::GridArgStatus::kOk;
+    auto arg4 = xll::ConvertGridArg(g, builder, &gridStatus4);
+    if (gridStatus4 != xll::GridArgStatus::kOk) {
+        // Do NOT ship the refusal's empty grid — surface the same error the
         // SHM-failure path below returns so the cell shows #VALUE! and Excel
         // re-drives the UDF on the next recalc pass (precedents calc first for
         // a `$`-registered function, so this is genuinely exceptional).
-        SAFE_LOG_WARN("SyncMulti: grid arg g coerce failed; returning error sentinel");
+        SAFE_LOG_WARN(std::string("SyncMulti: grid arg g rejected: ") + xll::GridArgStatusText(gridStatus4));
         
         return &g_xlErrValue;
         
@@ -3187,6 +3336,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncMulti: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -3342,6 +3506,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("SyncCachedGrid: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
 
     
     // Sync Send
@@ -3523,6 +3702,21 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("CallerMacroRange: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        return &g_xlErrValue;
+        
+    }
+
     
     // Sync Send
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)151, 2000);
@@ -3625,6 +3819,25 @@ extern "C" __declspec(dllexport) void __stdcall AsyncStr(LPXLOPER12 s, LPXLOPER1
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("AsyncStr: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        XLOPER12 xErrBig{};
+        xErrBig.xltype = xltypeErr;
+        xErrBig.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErrBig);
+        return;
+        
+    }
+
     
     // Async Send
     SAFE_LOG_DEBUG("Async Send Start: AsyncStr");
@@ -3704,6 +3917,25 @@ extern "C" __declspec(dllexport) void __stdcall AsyncInt(int32_t i, LPXLOPER12 a
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("AsyncInt: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        XLOPER12 xErrBig{};
+        xErrBig.xltype = xltypeErr;
+        xErrBig.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErrBig);
+        return;
+        
+    }
+
     
     // Async Send
     SAFE_LOG_DEBUG("Async Send Start: AsyncInt");
@@ -3767,15 +3999,22 @@ extern "C" __declspec(dllexport) void __stdcall AsyncGrid(LPXLOPER12 g, LPXLOPER
     // to its cell VALUES first (mirrors the rtd/rtd-once content-hash path).
     // An array LITERAL ({1,2;3,4}) already arrives as xltypeMulti and passes
     // through unchanged.
-    bool gridCoerceOk0 = true;
-    auto arg0 = xll::ConvertGridArg(g, builder, &gridCoerceOk0);
-    if (!gridCoerceOk0) {
-        // xlCoerce failed (xlretUncalced mid-calc, cross-sheet restriction, …).
-        // Do NOT ship a degenerate 1x1 Nil grid — surface the same error the
+    //
+    // ConvertGridArg also REFUSES the two reference shapes a grid cannot carry,
+    // both of which used to reach the user as a crash or a wrong number:
+    //   * over kMaxGridArgCells — =SumGrid($P:$R) is ~3.1M cells; coercing that
+    //     and serializing it into the fixed-size slot arena killed Excel.
+    //   * a multi-area union — =SumGrid((A1:B2,D1:E2)); xlCoerce cannot flatten
+    //     it, and the error it answers with used to be wrapped as a 1x1 grid
+    //     that the handler summed to 0.
+    xll::GridArgStatus gridStatus0 = xll::GridArgStatus::kOk;
+    auto arg0 = xll::ConvertGridArg(g, builder, &gridStatus0);
+    if (gridStatus0 != xll::GridArgStatus::kOk) {
+        // Do NOT ship the refusal's empty grid — surface the same error the
         // SHM-failure path below returns so the cell shows #VALUE! and Excel
         // re-drives the UDF on the next recalc pass (precedents calc first for
         // a `$`-registered function, so this is genuinely exceptional).
-        SAFE_LOG_WARN("AsyncGrid: grid arg g coerce failed; returning error sentinel");
+        SAFE_LOG_WARN(std::string("AsyncGrid: grid arg g rejected: ") + xll::GridArgStatusText(gridStatus0));
         
         XLOPER12 xErr{}; // zero-init: Excel reads only val.err for xltypeErr; keeps padding deterministic
         xErr.xltype = xltypeErr;
@@ -3807,6 +4046,25 @@ extern "C" __declspec(dllexport) void __stdcall AsyncGrid(LPXLOPER12 g, LPXLOPER
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("AsyncGrid: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        XLOPER12 xErrBig{};
+        xErrBig.xltype = xltypeErr;
+        xErrBig.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErrBig);
+        return;
+        
+    }
 
     
     // Async Send
@@ -3888,6 +4146,25 @@ extern "C" __declspec(dllexport) void __stdcall AsyncNumGrid(FP12* ng, LPXLOPER1
     auto req = reqBuilder.Finish();
     builder.Finish(req);
 
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("AsyncNumGrid: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        XLOPER12 xErrBig{};
+        xErrBig.xltype = xltypeErr;
+        xErrBig.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErrBig);
+        return;
+        
+    }
+
     
     // Async Send
     SAFE_LOG_DEBUG("Async Send Start: AsyncNumGrid");
@@ -3967,6 +4244,25 @@ extern "C" __declspec(dllexport) void __stdcall AsyncAny(LPXLOPER12 a, LPXLOPER1
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("AsyncAny: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        
+        XLOPER12 xErrBig{};
+        xErrBig.xltype = xltypeErr;
+        xErrBig.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErrBig);
+        return;
+        
+    }
 
     
     // Async Send
@@ -4152,16 +4448,28 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(tok1);
             bool rcOk = true;
+            const char* rcWhy = "";
             
-            auto rcInner = xll::ConvertGridArg(g, rcb, &rcOk);
+            // A `grid` arg is a U-passed REFERENCE, so it can be a shape a grid
+            // cannot hold (a multi-area union) or an area far too large to
+            // travel one slot (a whole column). ConvertGridArg refuses those;
+            // shipping the refusal's empty grid would hand the handler a wrong
+            // answer under a token the Go RefCache would then serve to every
+            // other cell using the same range.
+            xll::GridArgStatus rcStatus = xll::GridArgStatus::kOk;
+            auto rcInner = xll::ConvertGridArg(g, rcb, &rcStatus);
+            rcOk = (rcStatus == xll::GridArgStatus::kOk);
+            rcWhy = xll::GridArgStatusText(rcStatus);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic.
-                SAFE_LOG_WARN("RTD RtdComposite: composite arg coerce failed; skipping payload ship for token " + tok1);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic.
+                SAFE_LOG_WARN(std::string("RTD RtdComposite: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + tok1);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(tok1, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -4209,16 +4517,19 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(tok2);
             bool rcOk = true;
+            const char* rcWhy = "";
             
             auto rcInner = ConvertNumGrid(ng, rcb);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic.
-                SAFE_LOG_WARN("RTD RtdComposite: composite arg coerce failed; skipping payload ship for token " + tok2);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic.
+                SAFE_LOG_WARN(std::string("RTD RtdComposite: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + tok2);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(tok2, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -4323,16 +4634,19 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(tok1);
             bool rcOk = true;
+            const char* rcWhy = "";
             
             auto rcInner = ConvertRange(r, rcb);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic.
-                SAFE_LOG_WARN("RTD RtdRangeAny: composite arg coerce failed; skipping payload ship for token " + tok1);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic.
+                SAFE_LOG_WARN(std::string("RTD RtdRangeAny: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + tok1);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(tok1, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -4380,16 +4694,19 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(tok2);
             bool rcOk = true;
+            const char* rcWhy = "";
             
             // any: ConvertAny already produces an Offset<protocol::Any>.
             auto rcAny = ConvertAny(a, rcb);
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic.
-                SAFE_LOG_WARN("RTD RtdRangeAny: composite arg coerce failed; skipping payload ship for token " + tok2);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic.
+                SAFE_LOG_WARN(std::string("RTD RtdRangeAny: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + tok2);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(tok2, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -5066,17 +5383,29 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(refTok1);
             bool rcOk = true;
+            const char* rcWhy = "";
             
-            auto rcInner = xll::ConvertGridArg(g, rcb, &rcOk);
+            // A `grid` arg is a U-passed REFERENCE, so it can be a shape a grid
+            // cannot hold (a multi-area union) or an area far too large to
+            // travel one slot (a whole column). ConvertGridArg refuses those;
+            // shipping the refusal's empty grid would hand the handler a wrong
+            // answer under a token the Go RefCache would then serve to every
+            // other cell using the same range.
+            xll::GridArgStatus rcStatus = xll::GridArgStatus::kOk;
+            auto rcInner = xll::ConvertGridArg(g, rcb, &rcStatus);
+            rcOk = (rcStatus == xll::GridArgStatus::kOk);
+            rcWhy = xll::GridArgStatusText(rcStatus);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic instead of
-                // silently handing the handler an empty grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok1);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic instead of silently
+                // handing the handler an empty grid.
+                SAFE_LOG_WARN(std::string("rtd-once OnceComposite: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + refTok1);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(refTok1, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -5107,17 +5436,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(refTok2);
             bool rcOk = true;
+            const char* rcWhy = "";
             
             auto rcInner = ConvertNumGrid(ng, rcb);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::NumGrid, rcInner.Union());
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic instead of
-                // silently handing the handler an empty grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok2);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic instead of silently
+                // handing the handler an empty grid.
+                SAFE_LOG_WARN(std::string("rtd-once OnceComposite: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + refTok2);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(refTok2, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -5148,17 +5480,20 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(refTok3);
             bool rcOk = true;
+            const char* rcWhy = "";
             
             auto rcInner = ConvertRange(r, rcb);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Range, rcInner.Union());
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic instead of
-                // silently handing the handler an empty grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok3);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic instead of silently
+                // handing the handler an empty grid.
+                SAFE_LOG_WARN(std::string("rtd-once OnceComposite: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + refTok3);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(refTok3, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -5189,16 +5524,19 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(refTok4);
             bool rcOk = true;
+            const char* rcWhy = "";
             
             auto rcAny = ConvertAny(a, rcb);
             
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic instead of
-                // silently handing the handler an empty grid.
-                SAFE_LOG_WARN("rtd-once OnceComposite: composite arg coerce failed; skipping payload ship for token " + refTok4);
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic instead of silently
+                // handing the handler an empty grid.
+                SAFE_LOG_WARN(std::string("rtd-once OnceComposite: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + refTok4);
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(refTok4, rcb.GetBufferPointer(), rcb.GetSize())) {

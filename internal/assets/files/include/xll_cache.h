@@ -303,7 +303,81 @@ std::string ContentHashToken(char typeTag, const XLOPER12* px);
 // the 'n' type tag.
 std::string ContentHashTokenFP12(const FP12* fp);
 
-// ConvertGridArg serializes a `grid`-typed RTD argument into a protocol::Grid.
+// ---------------------------------------------------------------------------
+// `grid` argument conversion
+// ---------------------------------------------------------------------------
+
+// Why a `grid` argument needs its own guards. It is registered `U` (§19.2), so
+// Excel hands the wrapper the RAW reference the user typed — including shapes
+// that the grid wire type cannot represent at all and shapes far too large to
+// travel one SHM slot. Both were reproduced against the shipped showcase on
+// Excel 16.0.20131.20154:
+//
+//   =SumGrid($P:$R)                    -> Excel PROCESS DEATH (5/5)
+//   =SumGrid(($P$1:$R$5,$P$6:$R$10))   -> 0, silently, no error (2/2)
+//   =SumGrid($P$1:$R$10)               -> 2805 (the same cells, contiguous)
+//
+// GridArgStatus names each refusal so the wrapper can log WHICH one fired
+// instead of a bare "coerce failed", and so the offline gate can assert on the
+// reason rather than on a side effect.
+enum class GridArgStatus {
+    // Converted; the returned offset is the argument's cell values.
+    kOk = 0,
+    // xlCoerce refused outright (xlretUncalced mid-calc, xlretAbort, ...).
+    kCoerceFailed,
+    // xlCoerce reported SUCCESS but handed back something other than the
+    // xltypeMulti we asked for. Excel answers this way for a reference it
+    // cannot flatten — a multi-area union being the shape users actually hit —
+    // and the old code passed that straight to ConvertGrid, which wrapped the
+    // #VALUE! error in a 1x1 grid the handler then summed to 0. A silent wrong
+    // answer is worse than an error, so this is now a refusal.
+    kNotAnArray,
+    // A UNION reference: =F((A1:B2,D1:E2)). xlCoerce cannot produce "the union"
+    // and protocol::Grid is one rectangle of values, so there is no shape to
+    // deliver. Detected structurally (xltypeRef with count > 1) before Excel is
+    // asked, so the diagnosis does not depend on how xlCoerce chooses to fail.
+    kMultiArea,
+    // The reference covers more cells than kMaxGridArgCells.
+    kTooLarge,
+};
+
+// GridArgStatusText renders a GridArgStatus for a log line. Returns a static
+// string; never null.
+const char* GridArgStatusText(GridArgStatus s);
+
+// Largest AREA (rows x cols, summed over the reference's rectangles) accepted
+// for a `grid` argument.
+//
+// This is a TRANSPORT bound, not a taste bound. A grid argument is serialized
+// straight into the SHM slot's request buffer (512 KiB with the stock slot
+// geometry, and there is no chunking in the host->guest ARGUMENT direction),
+// and protocol::Grid costs ~28 bytes per cell (one Scalar table + union member
+// + vtable + vector slot; measured, see AGENTS.md §23.3). That puts the real
+// ceiling near 18.7k cells, and the measured cliff on the shipped build agrees:
+// 120x120 = 14,400 cells returns the right answer, 140x140 = 19,600 cells
+// killed the process.
+//
+// 16384 is therefore chosen to sit just BELOW the point where the request stops
+// fitting: everything that works today keeps working, and everything that used
+// to be a crash becomes #VALUE! plus a log line. Note it is a PRE-FILTER, not a
+// guarantee — 16k string-valued cells still will not fit, which is why
+// SHMAllocator latches an overflow instead of returning nullptr.
+//
+// Deliberately NOT wired to xll.yaml. The only defensible value is a function
+// of the SHM slot geometry, which the config surface does not expose; a
+// user-supplied cell count could not be validated against anything. Same
+// posture as the C++ chunk-receiver caps in xll_worker.h (§18.6.1).
+constexpr uint64_t kMaxGridArgCells = 16384;
+
+// MeasureRefArg reports the shape of a U-passed argument WITHOUT calling Excel:
+//   *outAreas = number of rectangles the reference covers (0 = not a reference),
+//   *outCells = total cells across those rectangles (saturating at 0 for a
+//               malformed rect).
+// Both out-params are optional. Split out of ConvertGridArg so the bound can be
+// unit-tested and reused.
+void MeasureRefArg(const XLOPER12* op, uint64_t* outCells, uint32_t* outAreas);
+
+// ConvertGridArg serializes a `grid`-typed argument into a protocol::Grid.
 // A grid arg is registered `U`, so Excel passes a REFERENCE (xltypeRef/SRef)
 // for a range like A1:B2; types' ConvertGrid only handles xltypeMulti and would
 // otherwise emit a 1x1 Nil grid. This helper coerces a reference to its cell
@@ -312,11 +386,17 @@ std::string ContentHashTokenFP12(const FP12* fp);
 // is passed through unchanged. Declared here (not in types) so the coercion
 // lives with the wrapper that needs it, without a types release.
 //
-// coerceOk (optional): set to false when a reference arg's xlCoerce FAILED
-// (xlretUncalced etc.) — the returned offset is then a degenerate 1x1 grid and
-// the caller must NOT ship it as the token's payload (skip the send; the Go
-// dispatch surfaces an explicit miss error instead of silently delivering a
-// wrong-shaped grid).
-flatbuffers::Offset<protocol::Grid> ConvertGridArg(const XLOPER12* op, flatbuffers::FlatBufferBuilder& builder, bool* coerceOk = nullptr);
+// status (optional): the refusal reason, or kOk. On any non-kOk status the
+// returned offset is a well-formed EMPTY (0x0) grid and the caller MUST NOT
+// ship it — return #VALUE! from a sync/async wrapper, or skip the payload ship
+// on the RTD content-hash path (the Go dispatch then surfaces an explicit miss
+// instead of silently delivering a wrong-shaped grid).
+//
+// maxCells: overridable so the offline gate can drive the bound without
+// building a 16k-cell fixture. Production always takes the default.
+flatbuffers::Offset<protocol::Grid> ConvertGridArg(const XLOPER12* op,
+                                                   flatbuffers::FlatBufferBuilder& builder,
+                                                   GridArgStatus* status = nullptr,
+                                                   uint64_t maxCells = kMaxGridArgCells);
 
 } // namespace xll

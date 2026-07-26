@@ -388,6 +388,17 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
             auto req = protocol::CreateRtdConnectRequest(builder, TopicID, stringsVec, newVal);
             builder.Finish(req);
 
+            // The request lives in the slot's fixed-size arena. An
+            // over-capacity build is served from the heap and latched (see
+            // SHMAllocator) — those bytes are not in shared memory, so sending
+            // would ship garbage. Retrying cannot help: the topic strings are
+            // the same every attempt. Give up instead of spinning.
+            if (allocator.Overflowed()) {
+                xll::LogWarn("RtdServer::ConnectData: topic strings exceed the SHM slot; "
+                             "connect not forwarded for TopicID " + std::to_string(TopicID));
+                return;
+            }
+
             if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
 
             auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_CONNECT, kAttemptTimeoutMs);
@@ -463,6 +474,18 @@ HRESULT __stdcall RtdServer::DisconnectData(long TopicID) {
             flatbuffers::FlatBufferBuilder builder(slot.GetMaxReqSize(), &allocator, false);
             auto req = protocol::CreateRtdDisconnectRequest(builder, TopicID);
             builder.Finish(req);
+            // Same contract as ConnectData above: an over-capacity build lives
+            // on the heap fallback, so its bytes are NOT in the slot and
+            // sending would publish a length that describes nothing. A
+            // fixed-size disconnect request cannot reach this, but the rule is
+            // "every slot-arena sender checks", not "every one that looks
+            // risky" — an unchecked site is how the next payload grows into a
+            // corrupt send.
+            if (allocator.Overflowed()) {
+                xll::LogWarn("RtdServer::DisconnectData: request exceeds the SHM slot; "
+                             "disconnect not forwarded for TopicID " + std::to_string(TopicID));
+                return RtdServerBase::DisconnectData(TopicID);
+            }
             slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_DISCONNECT, 500);
         }
     } else {

@@ -1659,8 +1659,18 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(tok{{add $j 1}});
             bool rcOk = true;
+            const char* rcWhy = "";
             {{if eq .Type "grid"}}
-            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
+            // A `grid` arg is a U-passed REFERENCE, so it can be a shape a grid
+            // cannot hold (a multi-area union) or an area far too large to
+            // travel one slot (a whole column). ConvertGridArg refuses those;
+            // shipping the refusal's empty grid would hand the handler a wrong
+            // answer under a token the Go RefCache would then serve to every
+            // other cell using the same range.
+            xll::GridArgStatus rcStatus = xll::GridArgStatus::kOk;
+            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcStatus);
+            rcOk = (rcStatus == xll::GridArgStatus::kOk);
+            rcWhy = xll::GridArgStatusText(rcStatus);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
             {{else if eq .Type "numgrid"}}
             auto rcInner = ConvertNumGrid({{.Name}}, rcb);
@@ -1673,11 +1683,13 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
             auto rcAny = ConvertAny({{.Name}}, rcb);
             {{end}}
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic.
-                SAFE_LOG_WARN("RTD {{$fn.Name}}: composite arg coerce failed; skipping payload ship for token " + tok{{add $j 1}});
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic.
+                SAFE_LOG_WARN(std::string("RTD {{$fn.Name}}: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + tok{{add $j 1}});
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(tok{{add $j 1}}, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -1904,8 +1916,18 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
             flatbuffers::FlatBufferBuilder rcb(1024);
             auto rcKey = rcb.CreateString(refTok{{add $j 1}});
             bool rcOk = true;
+            const char* rcWhy = "";
             {{if eq .Type "grid"}}
-            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcOk);
+            // A `grid` arg is a U-passed REFERENCE, so it can be a shape a grid
+            // cannot hold (a multi-area union) or an area far too large to
+            // travel one slot (a whole column). ConvertGridArg refuses those;
+            // shipping the refusal's empty grid would hand the handler a wrong
+            // answer under a token the Go RefCache would then serve to every
+            // other cell using the same range.
+            xll::GridArgStatus rcStatus = xll::GridArgStatus::kOk;
+            auto rcInner = xll::ConvertGridArg({{.Name}}, rcb, &rcStatus);
+            rcOk = (rcStatus == xll::GridArgStatus::kOk);
+            rcWhy = xll::GridArgStatusText(rcStatus);
             auto rcAny = protocol::CreateAny(rcb, protocol::AnyValue::Grid, rcInner.Union());
             {{else if eq .Type "numgrid"}}
             auto rcInner = ConvertNumGrid({{.Name}}, rcb);
@@ -1917,12 +1939,14 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
             auto rcAny = ConvertAny({{.Name}}, rcb);
             {{end}}
             if (!rcOk) {
-                // Coerce of the reference failed (xlretUncalced etc.) — do NOT
-                // ship a degenerate payload under this token; the Go dispatch
-                // will miss and push an explicit error to the topic instead of
-                // silently handing the handler an empty grid.
-                SAFE_LOG_WARN("rtd-once {{$fn.Name}}: composite arg coerce failed; skipping payload ship for token " + refTok{{add $j 1}});
+                // The reference could not be turned into a grid (coerce failed,
+                // union reference, over the cell limit, ...) — do NOT ship a
+                // degenerate payload under this token; the Go dispatch will miss
+                // and push an explicit error to the topic instead of silently
+                // handing the handler an empty grid.
+                SAFE_LOG_WARN(std::string("rtd-once {{$fn.Name}}: composite arg rejected (") + rcWhy + "); skipping payload ship for token " + refTok{{add $j 1}});
             } else {
+                (void)rcWhy;
                 auto rcReq = protocol::CreateSetRefCacheRequest(rcb, rcKey, rcAny);
                 rcb.Finish(rcReq);
                 if (!xll::SendRefCachePayloadOnce(refTok{{add $j 1}}, rcb.GetBufferPointer(), rcb.GetSize())) {
@@ -2099,15 +2123,22 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     // to its cell VALUES first (mirrors the rtd/rtd-once content-hash path).
     // An array LITERAL ({1,2;3,4}) already arrives as xltypeMulti and passes
     // through unchanged.
-    bool gridCoerceOk{{$j}} = true;
-    auto arg{{$j}} = xll::ConvertGridArg({{.Name}}, builder, &gridCoerceOk{{$j}});
-    if (!gridCoerceOk{{$j}}) {
-        // xlCoerce failed (xlretUncalced mid-calc, cross-sheet restriction, …).
-        // Do NOT ship a degenerate 1x1 Nil grid — surface the same error the
+    //
+    // ConvertGridArg also REFUSES the two reference shapes a grid cannot carry,
+    // both of which used to reach the user as a crash or a wrong number:
+    //   * over kMaxGridArgCells — =SumGrid($P:$R) is ~3.1M cells; coercing that
+    //     and serializing it into the fixed-size slot arena killed Excel.
+    //   * a multi-area union — =SumGrid((A1:B2,D1:E2)); xlCoerce cannot flatten
+    //     it, and the error it answers with used to be wrapped as a 1x1 grid
+    //     that the handler summed to 0.
+    xll::GridArgStatus gridStatus{{$j}} = xll::GridArgStatus::kOk;
+    auto arg{{$j}} = xll::ConvertGridArg({{.Name}}, builder, &gridStatus{{$j}});
+    if (gridStatus{{$j}} != xll::GridArgStatus::kOk) {
+        // Do NOT ship the refusal's empty grid — surface the same error the
         // SHM-failure path below returns so the cell shows #VALUE! and Excel
         // re-drives the UDF on the next recalc pass (precedents calc first for
         // a `$`-registered function, so this is genuinely exceptional).
-        SAFE_LOG_WARN("{{$fn.Name}}: grid arg {{.Name}} coerce failed; returning error sentinel");
+        SAFE_LOG_WARN(std::string("{{$fn.Name}}: grid arg {{.Name}} rejected: ") + xll::GridArgStatusText(gridStatus{{$j}}));
         {{if eq $fn.Mode "async"}}
         XLOPER12 xErr{}; // zero-init: Excel reads only val.err for xltypeErr; keeps padding deterministic
         xErr.xltype = xltypeErr;
@@ -2182,6 +2213,29 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 
     auto req = reqBuilder.Finish();
     builder.Finish(req);
+
+    // The request was built DIRECTLY into the slot's fixed-size request buffer
+    // (there is no chunking in the host->guest ARGUMENT direction). If it did
+    // not fit, SHMAllocator served the overflow from the heap and latched it —
+    // those bytes are not in shared memory, so the request is unsendable. See
+    // SHMAllocator.h for why returning nullptr there used to kill Excel.
+    if (allocator.Overflowed()) {
+        SAFE_LOG_ERROR("{{$fn.Name}}: request does not fit the SHM slot ("
+                       + std::to_string((size_t)builder.GetSize()) + " > "
+                       + std::to_string((size_t)slot.GetMaxReqSize())
+                       + " bytes); argument too large");
+        {{if eq .Mode "async"}}
+        XLOPER12 xErrBig{};
+        xErrBig.xltype = xltypeErr;
+        xErrBig.val.err = xlerrValue;
+        xll::CallExcel(xlAsyncReturn, nullptr, (LPXLOPER12)asyncHandle, &xErrBig);
+        return;
+        {{else if eq .Return "numgrid"}}
+        return nullptr;
+        {{else}}
+        return &g_xlErrValue;
+        {{end}}
+    }
 
     {{if eq .Mode "async"}}
     // Async Send
