@@ -65,6 +65,18 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 	offsetU32 := reqObj.Offset()
 	dataLen := reqObj.DataLength()
 
+	// A previous chunk of this transfer was refused for a protocol violation.
+	// Refuse everything else on that id until the poison entry expires: without
+	// this, the reject paths below (which drop the buffer) let the producer's
+	// NEXT chunk allocate a fresh buffer and be acked as SUCCESS, so the retry
+	// ladder never aborts and the transfer hangs to its timeout. See
+	// ChunkManager.poisoned; mirrored by g_poisonedTransfers in xll_worker.cpp.
+	if h.ChunkManager.IsPoisoned(id) {
+		log.Error("HandleChunk: chunk for a previously rejected transfer; refusing",
+			"id", id, "offset", offsetU32, "len", dataLen)
+		return 0, shm.MsgTypeSystemError
+	}
+
 	buf, err := h.ChunkManager.GetChunkBuffer(id, total)
 	if err != nil {
 		// Wire-supplied total was non-positive or exceeded
@@ -76,27 +88,84 @@ func (h *SystemHandler) HandleChunk(data []byte, respBuf []byte, b *flatbuffers.
 	}
 
 	buf.Mutex.Lock()
-	// Defensive bounds check (load-bearing per AGENTS.md §23 Cache
-	// Visibility Discipline): silently drop OOB writes.
-	if offset+dataLen <= len(buf.Data) {
-		// Dedup by chunk offset. A retransmit of the same chunk
-		// (e.g. after a dropped ACK) MUST NOT advance Received,
-		// otherwise duplicates push Received past TotalSize and
-		// trigger premature completion with the trailing bytes
-		// still zero — data corruption. See AGENTS.md §23.3.
-		if !buf.ReceivedOffsets[offsetU32] {
-			copy(buf.Data[offset:], reqObj.DataBytes())
-			buf.Received += dataLen
-			buf.ReceivedOffsets[offsetU32] = true
-		}
+	// Defensive bounds check (load-bearing per AGENTS.md §23 Cache Visibility
+	// Discipline). Computed in uint64 rather than in `int`: the operands are
+	// WIRE types (uint32 offset, int32 length) and uint64 keeps the arithmetic
+	// explicitly safe against any wrap regardless of how they are widened. On
+	// the supported target (amd64 only — AGENTS.md §0.1; shm v0.8.10 blocks a
+	// 386 build outright) `int` is 64-bit so no wrap is reachable today; the
+	// uint64 form states the intent instead of relying on that.
+	if uint64(offsetU32)+uint64(dataLen) > uint64(len(buf.Data)) {
+		buf.Mutex.Unlock()
+		// A chunk that would write past TotalSize is a protocol violation,
+		// not a retryable event: the transfer can never be completed
+		// correctly, so keeping the buffer would only park it until the TTL
+		// sweep while the producer keeps pushing. Drop it and answer
+		// SystemError so the producer fails fast — mirrors shm
+		// SPECIFICATION.md §3.3.4 ("if the running assembled length would
+		// exceed totalSize, the stream is rejected with SYSTEM_ERROR") and
+		// the C++ mirror in xll_worker.cpp, which erases the partial message
+		// on the same condition.
+		h.ChunkManager.PoisonTransfer(id)
+		log.Error("HandleChunk: chunk out of bounds; dropping transfer",
+			"id", id, "offset", offsetU32, "len", dataLen, "total", buf.TotalSize)
+		return 0, shm.MsgTypeSystemError
 	}
+
+	// A ZERO-LENGTH segment is refused explicitly rather than tolerated. It
+	// carries no payload, so it can never be a legitimate part of a transfer —
+	// but ClaimSegment would happily record a (offset, 0) range, and the REAL
+	// chunk that later arrives at that same offset then classifies as "same
+	// start offset, different length" => ClaimOverlap => the whole otherwise
+	// healthy transfer is discarded. One empty frame would kill a good
+	// transfer. Mirrors the `len == 0` refusal in xll_worker.cpp (§18.6).
+	if dataLen == 0 {
+		buf.Mutex.Unlock()
+		h.ChunkManager.PoisonTransfer(id)
+		log.Error("HandleChunk: zero-length chunk segment; dropping transfer",
+			"id", id, "offset", offsetU32, "total", buf.TotalSize)
+		return 0, shm.MsgTypeSystemError
+	}
+
+	// Coverage bookkeeping. ClaimSegment separates the three cases the old
+	// offset-only dedup conflated:
+	//   - ClaimNew:       first arrival, copy + advance Received;
+	//   - ClaimDuplicate: exact retransmit (e.g. after a dropped ACK) — skip
+	//     BOTH the copy and the advance, otherwise the duplicate pushes
+	//     Received past TotalSize (AGENTS.md §23.3);
+	//   - ClaimOverlap:   a range that partially overlaps one already
+	//     received. Previously this was accepted (distinct offsets, so the
+	//     dedup set did not fire) and it could reach Received >= TotalSize
+	//     while leaving an interior gap that was never written — the consumer
+	//     then read zero-fill as if it were payload. Reject the transfer.
+	claim := buf.ClaimSegment(offsetU32, uint32(dataLen))
+	if claim == ClaimOverlap {
+		buf.Mutex.Unlock()
+		h.ChunkManager.PoisonTransfer(id)
+		log.Error("HandleChunk: overlapping chunk range; dropping transfer",
+			"id", id, "offset", offsetU32, "len", dataLen, "total", buf.TotalSize)
+		return 0, shm.MsgTypeSystemError
+	}
+	if claim == ClaimNew {
+		copy(buf.Data[offset:], reqObj.DataBytes())
+		buf.Received += dataLen
+	}
+
 	// Claim the dispatch under buf.Mutex. When a retransmitted FINAL chunk
-	// races the original, both goroutines can observe Received >= TotalSize.
-	// Only the first to flip Dispatched (still holding Mutex) is permitted to
-	// dispatch; the loser must not re-run the user function or emit a second
-	// response. See AGENTS.md §23.3.
+	// races the original, both goroutines can observe completion. Only the
+	// first to flip Dispatched (still holding Mutex) is permitted to dispatch;
+	// the loser must not re-run the user function or emit a second response.
+	// See AGENTS.md §23.3.
+	//
+	// The test is `==`, not `>=`. With bounds-checked, non-overlapping
+	// segments, Received == TotalSize means every byte of [0, TotalSize) was
+	// written exactly once — the shm SPECIFICATION.md §3.3.4 completion
+	// contract. `>=` was unreachable-by-construction under those two rules and
+	// would only ever fire on a coverage bug, so an exact test is both
+	// stricter and self-checking. Keep in lockstep with the C++ mirror
+	// (xll_worker.cpp, CO-CHANGE ANCHOR §18.6).
 	claimedDispatch := false
-	if buf.Received >= buf.TotalSize && !buf.Dispatched {
+	if buf.Received == buf.TotalSize && !buf.Dispatched {
 		buf.Dispatched = true
 		claimedDispatch = true
 	}

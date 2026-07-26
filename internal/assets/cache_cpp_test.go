@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/xll-gen/xll-gen/internal/templates"
 )
 
 // ---------------------------------------------------------------------------
@@ -256,6 +258,151 @@ func TestRefIdentityFoldedForCoordinatePayloads(t *testing.T) {
 		!strings.Contains(code, "const XLREF12& r = px->val.sref.ref;") {
 		t.Errorf("the reference-identity fold must handle xltypeRef (idSheet + rect array) " +
 			"and xltypeSRef (one rect, no sheet id) distinctly")
+	}
+}
+
+// TestIterativeCalcGateWired pins the source-level wiring of the RefCache's
+// iterative-calculation gate.
+//
+// Regression it pins (HIGH, correctness, 2026-07-26): the per-cycle RefCache is
+// keyed on COORDINATES ((sheetId, rect)) and valued with the range's VALUE
+// digest, and the ONLY place that clears it is HandleCalculationEnded. Measured
+// against Excel 16.0.20131.20154, xleventCalculationEnded fires exactly ONCE per
+// calculation cycle no matter how many ITERATIONS that cycle runs
+// (MaxIterations=5 -> 5 UDF invocations + 1 event; a converging circular formula
+// -> 14 invocations + 1 event; a plain non-circular recalc -> 1 invocation + 1
+// event). So inside an iterative (circular-reference) calculation the coordinates
+// of a range keep resolving to the FIRST pass's value digest even though the
+// cells changed, MakeCacheKey returns a stale key, and a cache-enabled function
+// is served its own first-pass result for the rest of the cycle.
+//
+// The gate is queried at calc end via GET.DOCUMENT(15) — macro-sheet only, which
+// is why it has to sit in the event callback (a command context) and not in the
+// `$`-registered wrapper — and bypasses only the MEMOIZATION, never the digest.
+func TestIterativeCalcGateWired(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	hdr, ok := m["include/xll_cache.h"]
+	if !ok {
+		t.Fatalf("embedded include/xll_cache.h not found in assets")
+	}
+	src, ok := m["src/xll_cache.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_cache.cpp not found in assets")
+	}
+	events, ok := m["src/xll_events.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_events.cpp not found in assets")
+	}
+	code := stripLineComments(src)
+	eventCode := stripLineComments(events)
+
+	for _, want := range []string{
+		"void RefreshIterativeCalcMode();",
+		"void ForceRefreshIterativeCalcMode();",
+		"void SetIterativeCalcMode(bool on);",
+		"bool IterativeCalcMode() const;",
+		"std::atomic<bool> iterativeCalc_{false};",
+		"std::atomic<bool> refPathUsed_{false};",
+	} {
+		if !strings.Contains(hdr, want) {
+			t.Errorf("xll_cache.h must declare %q (the iterative-calculation gate for the "+
+				"per-cycle RefCache)", want)
+		}
+	}
+
+	// The query itself: GET.DOCUMENT type_num 15 is the iteration flag.
+	if !strings.Contains(code, "xll::CallExcel(xlfGetDocument, &xRes, 15)") {
+		t.Errorf("RefreshIterativeCalcMode must read Excel's iteration flag with " +
+			"GET.DOCUMENT(15); 16/17 are MaxIterations/MaxChange and are NOT the gate")
+	}
+
+	// The bypass must skip the MAP, not the hash: the key bytes have to stay
+	// identical in both modes, otherwise flipping the gate silently invalidates
+	// every cache entry and every RTD topic token derived from a ref argument.
+	if !strings.Contains(code, "const bool bypassMemo = iterativeCalc_.load(std::memory_order_acquire);") ||
+		!strings.Contains(code, "if (!bypassMemo) refCache_.insert_or_assign(key, hashVal);") ||
+		!strings.Contains(code, "if (!bypassMemo) {") {
+		t.Errorf("GetOrComputeRefHash must gate the RefCache lookup AND the store on " +
+			"bypassMemo while still folding computeFn's digest into the accumulator " +
+			"(the gate drops the memoization, it must never change the digest)")
+	}
+
+	// The "ref path was used" flag has to be raised even while bypassing, or the
+	// calc-end query stops running and the gate can never be turned back off.
+	if !strings.Contains(code, "refPathUsed_.store(true, std::memory_order_release);") {
+		t.Errorf("GetOrComputeRefHash must mark the RefCache path as used before the " +
+			"bypass check, otherwise RefreshIterativeCalcMode stops querying Excel once " +
+			"the gate is on and it can never be cleared again")
+	}
+	if !strings.Contains(code, "if (!refPathUsed_.exchange(false, std::memory_order_acquire)) return;") {
+		t.Errorf("RefreshIterativeCalcMode must consume the refPathUsed_ flag so projects " +
+			"that never route a reference argument through the RefCache pay no extra " +
+			"Excel round-trip at calc end")
+	}
+
+	// Wiring + ORDER in the calc-end handler.
+	//
+	// NOTE ON WHAT THIS ORDER ASSERTION MEANS. The two calls are currently
+	// INDEPENDENT: ClearRefCache() only empties refCache_ — it does not touch
+	// refPathUsed_ or iterativeCalc_ — so swapping them would not change
+	// behavior. (An earlier version of this comment, and of the one in
+	// xll_events.cpp, claimed the clear "consumes" the flag; it does not.) The
+	// assertion is kept as an INTENT pin, not a correctness proof: the refresh
+	// is the decision about the cycle just observed and the clear is the cycle
+	// boundary, so the refresh belongs before it. If a future change ever makes
+	// ClearRefCache reset the gate flags, this ordering becomes load-bearing —
+	// which is the other reason to freeze it now.
+	refresh := strings.Index(eventCode, "CacheManager::Instance().RefreshIterativeCalcMode();")
+	clear := strings.Index(eventCode, "CacheManager::Instance().ClearRefCache();")
+	if refresh < 0 {
+		t.Errorf("HandleCalculationEnded must call CacheManager::RefreshIterativeCalcMode(): " +
+			"it is the only command context available once per calculation cycle, and " +
+			"GET.DOCUMENT cannot be called from the thread-safe UDF wrappers")
+	}
+	if clear < 0 {
+		t.Fatalf("HandleCalculationEnded no longer clears the RefCache")
+	}
+	if refresh >= 0 && refresh > clear {
+		t.Errorf("RefreshIterativeCalcMode must run BEFORE ClearRefCache in " +
+			"HandleCalculationEnded (intent pin: refresh decides on the cycle just " +
+			"observed, the clear ends it)")
+	}
+}
+
+// TestIterativeCalcGatePrimedAtLoad pins that the iterative-calculation gate is
+// primed ONCE at xlAutoOpen, not only at calc end.
+//
+// Regression it pins (MED, 2026-07-26): the gate was refreshed exclusively in
+// HandleCalculationEnded, so a workbook SAVED with iterative calculation enabled
+// opened with the gate OFF and its FIRST recalculation memoized pass-1 reference
+// digests across every iteration of the cycle — the exact stale-value symptom
+// the gate exists to eliminate — and the wrong result then survived for the rest
+// of the session unless the cell was dirtied again. xlAutoOpen is a valid
+// command context for the macro-sheet-only GET.DOCUMENT, and a failed query
+// leaves the gate untouched (the previous behavior), so priming there adds no
+// risk.
+func TestIterativeCalcGatePrimedAtLoad(t *testing.T) {
+	tmpl, err := templates.Get("xll_main.cpp.tmpl")
+	if err != nil {
+		t.Fatalf("templates.Get(xll_main.cpp.tmpl): %v", err)
+	}
+	if !strings.Contains(tmpl, "ForceRefreshIterativeCalcMode()") {
+		t.Fatalf("xll_main.cpp.tmpl must prime the iterative-calculation gate with " +
+			"CacheManager::Instance().ForceRefreshIterativeCalcMode() at xlAutoOpen; " +
+			"refreshing only at calc end loses the first calculation cycle of a " +
+			"workbook saved with iteration enabled")
+	}
+	open := strings.Index(tmpl, "int __stdcall xlAutoOpen()")
+	prime := strings.Index(tmpl, "ForceRefreshIterativeCalcMode()")
+	if open < 0 {
+		t.Fatalf("xll_main.cpp.tmpl no longer defines xlAutoOpen")
+	}
+	if prime < open {
+		t.Errorf("the gate prime must sit INSIDE xlAutoOpen (a valid command context " +
+			"for GET.DOCUMENT), not before it")
 	}
 }
 

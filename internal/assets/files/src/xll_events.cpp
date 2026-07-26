@@ -21,6 +21,46 @@ namespace xll {
             std::lock_guard<std::mutex> lock(g_refCacheMutex);
             g_sentRefCache.clear();
         }
+        // Re-read Excel's iterative-calculation state. This must run HERE, in
+        // the event callback, because GET.DOCUMENT is macro-sheet only and the
+        // calc-end callback is a valid command context; it is a no-op for
+        // projects that never route a reference argument through the RefCache.
+        //
+        // On the ORDER relative to ClearRefCache: the two are currently
+        // INDEPENDENT — ClearRefCache() only empties refCache_ and does not
+        // touch refPathUsed_ or iterativeCalc_, so swapping them would not
+        // change behavior today. The refresh is placed before the clear because
+        // it is the decision that closes the cycle just observed (it consumes
+        // the "a reference argument used the RefCache this cycle" flag), and
+        // the clear is the cycle boundary itself. Keep the order as
+        // documentation of that intent, not as a load-bearing dependency.
+        //
+        // Why the gate exists: iterative (circular-reference) calculation runs
+        // the SAME cells up to MaxIterations times inside ONE calculation cycle
+        // — with different values each pass — while this event fires exactly
+        // ONCE for that whole cycle (verified against real Excel; AGENTS.md
+        // §19.4). Without the gate the pass-1 (sheet, rect) -> value-digest
+        // entry survives into passes 2..N and a cache-enabled function freezes
+        // at its first-pass result.
+        CacheManager::Instance().RefreshIterativeCalcMode();
+        {
+            // Log only the TRANSITION (STA-only, so a plain static is fine).
+            // The logging lives here rather than in xll_cache.cpp on purpose:
+            // that file must stay free of cross-TU calls so the offline g++
+            // gate (internal/assets/testdata/cache_native_test.cpp) can link it
+            // against nothing but a stub Excel12v.
+            static bool s_lastIterativeMode = false;
+            const bool iterativeMode = CacheManager::Instance().IterativeCalcMode();
+            if (iterativeMode != s_lastIterativeMode) {
+                s_lastIterativeMode = iterativeMode;
+                xll::LogInfo(iterativeMode
+                    ? "RefCache: iterative calculation detected (GET.DOCUMENT(15)); "
+                      "per-cycle reference-digest memoization disabled so each "
+                      "iteration re-reads the range"
+                    : "RefCache: iterative calculation off; per-cycle "
+                      "reference-digest memoization re-enabled");
+            }
+        }
         CacheManager::Instance().ClearRefCache();
 
 #ifdef XLL_RTD_ENABLED

@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -62,7 +63,54 @@ public:
     // Clear the Ref cache (call on CalculationEnded)
     void ClearRefCache();
 
+    // Iterative-calculation gate for the per-cycle RefCache.
+    //
+    // The RefCache memoizes (sheet, rect) -> value digest and its ONLY clear
+    // point is CalculationEnded, so it rests on "the same coordinates hold the
+    // same values for the whole calculation cycle". ITERATIVE calculation
+    // (Excel's Options > Formulas > "Enable iterative calculation", i.e. a
+    // circular reference) breaks that premise: Excel re-evaluates the circular
+    // group up to MaxIterations times INSIDE ONE cycle, with different cell
+    // values each pass, and fires xleventCalculationEnded exactly ONCE for the
+    // whole cycle — verified against Excel 16.0.20131.20154 (5 iterations -> 1
+    // event; 14 iterations to convergence -> 1 event; see AGENTS.md §19.4).
+    // A memoized pass-1 digest would then be served to passes 2..N, so a
+    // cache-enabled function with a reference argument freezes at its
+    // first-pass result and the circular system converges on a wrong value.
+    //
+    // RefreshIterativeCalcMode() re-reads the state from Excel and is called at
+    // calc end (a valid command context) BEFORE ClearRefCache; while the gate
+    // is set, GetOrComputeRefHash computes every digest fresh (the memoization
+    // — an optimization only — is bypassed; the DIGEST is byte-identical
+    // either way). It is a no-op unless a reference argument actually went
+    // through the RefCache during the cycle, so projects that never use a
+    // cache-enabled reference argument make no extra Excel call.
+    void RefreshIterativeCalcMode();
+    // ForceRefreshIterativeCalcMode() is the same query WITHOUT the
+    // "a reference argument used the RefCache this cycle" precondition, for the
+    // one caller that runs before any calculation has happened: xlAutoOpen.
+    //
+    // Refreshing only at calc END left a hole with exactly the symptom the gate
+    // was built to remove: a workbook SAVED with iterative calculation enabled
+    // opens with the gate off, so its FIRST recalculation memoizes pass-1
+    // digests across every later iteration and returns a wrong value — which
+    // then persists for the whole session unless the cell is dirtied again.
+    // Priming the gate once at load closes that first cycle. xlAutoOpen is a
+    // valid command context for the macro-sheet-only GET.DOCUMENT (§19.4); a
+    // failed query (no active workbook yet) leaves the gate untouched, so the
+    // worst case is the previous behavior, never worse.
+    void ForceRefreshIterativeCalcMode();
+    // Test/diagnostic seam: set the gate directly (no Excel round-trip).
+    void SetIterativeCalcMode(bool on);
+    bool IterativeCalcMode() const;
+
 private:
+    // The GET.DOCUMENT(15) round-trip itself, shared by the gated
+    // (RefreshIterativeCalcMode) and unconditional
+    // (ForceRefreshIterativeCalcMode) entry points. A failed or
+    // unrecognized answer leaves the gate at its previous value.
+    void QueryIterativeCalcMode();
+
     CacheManager() = default;
     ~CacheManager() = default;
     CacheManager(const CacheManager&) = delete;
@@ -130,6 +178,17 @@ private:
     };
 
     phmap::parallel_flat_hash_map_m<RefKey, uint64_t, RefKeyHash> refCache_;
+
+    // Set to true whenever an xltypeRef argument takes the RefCache path (hit,
+    // miss, OR bypass). Consumed by RefreshIterativeCalcMode so the calc-end
+    // Excel query only happens for projects that actually memoize ref digests.
+    // It must be set even while the gate bypasses the map — otherwise the gate
+    // could never be cleared again once iteration is switched back off.
+    std::atomic<bool> refPathUsed_{false};
+
+    // See RefreshIterativeCalcMode. Read on Excel calculation threads (the
+    // `$`-registered wrappers) and written on the STA at calc end.
+    std::atomic<bool> iterativeCalc_{false};
 
     // Same gate as for cache_ above. The RefCache is populated from the
     // thread-safe (`$`) UDF wrappers too, so it needs real locking as much as the

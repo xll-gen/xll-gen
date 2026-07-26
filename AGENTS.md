@@ -718,6 +718,76 @@ byte-identical to `rtd/server.h`'s RefreshData placeholder (§22); do not
 diverge. Unload-safety idioms (`g_isUnloading`, ConnectData drain) are
 unchanged — rtd-once adds no new detached threads.
 
+### 19.4 Calculation events — MEASURED semantics (2026-07-26, real Excel)
+
+Everything the runtime hangs off `xleventCalculationEnded` (the RefCache clear,
+`g_sentRefCache`, `RtdOnceRegistry::ClearNonMemoized`, the date-format drain, the
+`MSG_CALCULATION_ENDED` round-trip) depends on WHEN Excel actually fires these
+two events. The answers below are **measured**, not inferred: a minimal probe XLL
+(one exported handler per event + UDFs that log every invocation) was driven
+against **Excel 16.0.20131.20154 (64-bit)**. Treat these as settled — do not
+re-derive them from documentation.
+
+1. **One `CalculationEnded` per calculation CYCLE, not per iteration.** With
+   `Application.Iteration = True` on a circular formula, Excel runs the circular
+   group up to `MaxIterations` times inside ONE cycle and fires the event
+   **once, after the last pass**:
+   * `MaxIterations=5`, non-converging (`A1 = PROBEITER(A1)+D1*0`): 5 UDF
+     invocations (arguments 0,1,2,3,4 — the values DO change every pass), then 1
+     `CalculationEnded`.
+   * converging (`B1 = PROBECONV(B1)+E1*0`, MaxChange 0.001): 14 invocations to
+     convergence, then 1 event.
+   * non-circular baseline: 1 invocation, 1 event.
+   **Consequence (this was a real HIGH defect, fixed the same day):** any
+   per-cycle cache keyed on something that changes BETWEEN iterations is stale
+   for passes 2..N. That is exactly `CacheManager::refCache_` — key = pure
+   coordinates `(idSheet, rect)`, value = the range's VALUE digest — so a
+   cache-enabled function with a reference argument inside a circular group was
+   served its own first-pass result for the rest of the cycle and the system
+   "converged" on a wrong number. Fixed by the iterative-calculation gate
+   (`CacheManager::RefreshIterativeCalcMode`, `xll_cache.h`): calc end reads
+   `GET.DOCUMENT(15)` and, while iteration is on, `GetOrComputeRefHash` skips the
+   MEMOIZATION (never the digest — the key bytes are identical either way).
+   Residual, accepted: the gate is refreshed at calc END, so the FIRST cycle
+   after iteration is switched on still memoizes; every later cycle is correct.
+2. **`GET.DOCUMENT(15)` is the iteration flag, and it is callable from inside the
+   calc-end callback.** Dumping `GET.DOCUMENT(1..90)` with `Application.Iteration`
+   false vs true moved exactly two entries: **15** (`BOOL` 0→1, iteration
+   enabled) and **16** (`num`, MaxIterations); 17 is MaxChange. The same dump run
+   from inside the `xleventCalculationEnded` handler returned identical values —
+   confirming the event callback is a valid macro-sheet/command context. It is
+   NOT callable from the `$`-registered UDF wrappers (macro-sheet only), which is
+   why the gate is refreshed at calc end and cached in an atomic.
+3. **A cancelled calculation fires `CalculationCanceled` AND THEN
+   `CalculationEnded`.** Interrupting a recalc with a real ESC produced, 3 times
+   out of 3 (mid-work interruptions, native array formulas so Excel's own calc
+   loop owns the interrupt check):
+   `EVENT CalculationCanceled` → `EVENT CalculationEnded` **2–6 ms later, with no
+   calculation work in between**. So `HandleCalculationEnded` — and therefore the
+   RefCache clear, `g_sentRefCache.clear()`, the rtd-once `ClearNonMemoized`
+   sweeps and the calc-end round-trip — **already runs after a cancel**.
+   **Do NOT add a `xleventCalculationCanceled` registration "to clear the caches
+   on Esc": the premise is false and the change is not neutral.** `xll_ipc.h`'s
+   `MSG_CALCULATION_CANCELED` (132) is deliberately unsent today; wiring it would
+   make Go's `HandleCalculationCanceled` run `CommandBatcher.Clear()` and then
+   `RefCache.Clear()` a few ms BEFORE the Ended flush, i.e. silently drop
+   `ScheduleSet`/`ScheduleFormat` commands produced during that cycle, and would
+   fire BOTH `OnCalculationCanceled` and `OnCalculationEnded` for one interrupted
+   cycle. It also has a second-order hazard: `g_sentRefCache` (C++) and the Go
+   `RefCache` are currently cleared by the same single event, so they stay in
+   lockstep; clearing only one side re-ships nothing while the other has already
+   forgotten the payload → `ResolveRangeArg` misses. See §23.3's open item for
+   the (separate, product-level) question of the user-declared
+   `CalculationCanceled` event being a no-op.
+4. **Trigger matters when you test this.** `Application.Calculate()` over COM
+   fires NEITHER event (observed repeatedly: the UDFs run, no event). A cell edit
+   (`Range.Value2 = …`) and a real F9 keystroke both do. Excel's calculation
+   interrupt is likewise driven by REAL keyboard input: `PostMessage(WM_KEYDOWN,
+   VK_ESCAPE)` to `XLMAIN` is ignored, `keybd_event`/SendKeys with Excel in the
+   foreground is observed (a UDF's `xlAbort` then returns TRUE). Any future
+   probe must use an edit/F9 trigger, or it will "prove" that the events never
+   fire.
+
 ## 20. Excel Load/Unload Patterns & SHM Lifecycle
 
 Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry points, and immediately unloads it (`DLL_PROCESS_DETACH`) before reloading it for actual use. This also applies when an Add-in is disabled or forcefully unloaded while background threads are running.
@@ -1034,6 +1104,18 @@ reviews and confirmed correct — do not "fix", "harden", or re-propose:
   the `grid[next] && !visited[next]` guard blocks any wrong merge. The wrap is
   unreachable by any API/reuse path (invariant proof) — no observable behavior
   change exists, so a guard would be unverifiable dead code. Do not add it.
+* **The calc-end caches do NOT need a `xleventCalculationCanceled` clear**
+  (measured 2026-07-26, §19.4). Excel fires `CalculationCanceled` and then
+  `CalculationEnded` **2–6 ms later with no work in between** (3/3 real-ESC
+  interruptions on Excel 16.0.20131.20154), so `HandleCalculationEnded` — RefCache
+  clear, `g_sentRefCache.clear()`, rtd-once `ClearNonMemoized`, the calc-end
+  round-trip — already runs on a cancelled cycle. The recurring proposal
+  "`refCache_` survives an Esc into the next cycle, register Canceled and clear
+  there" is based on a false premise, and sending `MSG_CALCULATION_CANCELED`
+  would additionally drop that cycle's batched commands (`CommandBatcher.Clear()`)
+  a few ms before the Ended flush and desynchronize `g_sentRefCache` from the Go
+  `RefCache`. Do not re-propose as a cache fix; the user-facing
+  `CalculationCanceled` event gap is tracked separately in §23.3.
 * **`range` is intentionally unsupported as a RETURN type** (v0.5.0 decision). A
   range in value position is meaningless and a `U` return breaks registration
   (worksheet name → `#NAME?`). Use grid/numgrid returns. See §19.2 / §19.3. Do
@@ -1135,6 +1217,25 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
   * **Resolved — `generateTransferID` constant-0 fallback (MED, correlation-key collision; 2026-06-10).** On the (essentially impossible) `crypto/rand.Read` error path, `generateTransferID` returned a constant `0`, collapsing every concurrent chunked transfer onto the same correlation key → guaranteed cross-talk/corruption. Fix: fall back to `math/rand/v2`'s lock-free auto-seeded `Uint64()` and log the degraded path. No dedicated test (the failure path is not reachable without injecting a crypto/rand fault); covered by inspection.
     * **Unified across all three chunk-framing sites (2026-06-19).** The generator now lives in leaf package `pkg/transferid` (`transferid.New()`). Previously only `SendAckOrChunk` (host→guest) used the hardened crypto/rand path; the guest→host sites `async_batcher.go` (`sendChunkedAsync`) and `rtd/manager.go` (`SendOnceGrid`) each used `uint64(rand.Int63())` — a 63-bit value from the global-mutex `math/rand`, which both halved the keyspace and serialized concurrent senders. `pkg/transferid` is a leaf (imports only `pkg/log`) so both `pkg/server` and `pkg/rtd` share one 64-bit generator despite the server→rtd import cycle (`NewSystemHandler`). **New transfer-ID sites MUST call `transferid.New()`, never roll their own `rand`.**
 * **DONE (2026-06-20) — R24: chunk frame + split loop + chunk-size constant unified into leaf `pkg/chunk`.** The chunk-split loop, the `protocol.Chunk` frame build, and the 950 KiB chunk-size constant were copy-pasted across three sites with three intentionally-different transport models. They are now extracted to leaf package `pkg/chunk` (imports only flatbuffers + `types/protocol`; the `Sender.Send` retry path is transport-agnostic via a `SendFunc` callback so it pulls in no shm/transferid dependency). Like `pkg/msgid`/`pkg/transferid`, being a leaf dissolves the server→rtd import cycle that previously forced `pkg/rtd.onceGridChunkSize` to hand-copy `pkg/server.DefaultChunkSize`. **Single source of truth:** `chunk.DefaultChunkSize`; `pkg/server.DefaultChunkSize` and `pkg/rtd.onceGridChunkSize` are now aliases of it. `chunk.BuildFrame` is the one frame builder; `pkg/server.BuildChunkResponse` delegates to it and the rtd-once hand-built frame is gone — output bytes are **byte-identical** (`XCHN` identifier, same field set/order), so the C++ `HandleChunk` reassembler is untouched (no `internal/assets/files/**` change). **Transport models stay separate (NOT unified):** `SendAckOrChunk` keeps its ACK-pull/`ChunkManager` model and shares only the frame builder — the §23.3 Offset-publication-before-`AddOutgoingChunk` invariant and its load-bearing comment are preserved verbatim; `sendChunkedAsync` keeps push + `chunk.AsyncRetry` (10× exp backoff); `SendOnceGrid` keeps synchronous push. **Retry-policy divergence made explicit (was an implicit gap):** the policy is now a typed `chunk.RetryPolicy` argument. async = `chunk.AsyncRetry`; `SendOnceGrid` = `chunk.NoRetry`, a DELIBERATE choice documented at the call site — the synchronous path must surface the first send error immediately so `RunOnceGrid` does not signal RTD readiness for a grid the host never received (a stuck retry would block readiness anyway; the RTD layer re-drives the whole one-shot). Regression: `pkg/chunk/chunk_test.go` — `TestBuildFrame_ByteIdenticalToLegacy` (matrix vs a verbatim copy of the old hand-built frame; FAIL-confirmed by flipping the file identifier), `TestSender_SplitBoundaries` (sub/exact/over-chunk offset progression + lossless reassembly), `TestSender_RetryPolicy` (retry rides out N transient fails; `NoRetry` fails on attempt 1; mid-stream chunk failure aborts the transfer). The pre-existing `pkg/rtd` `TestSendOnceGrid_Chunked` and `pkg/server` batcher tests act as integration regressions and still pass (byte-identical, correctly-offset chunks). All pass under `-race -count=10`.
+* **DONE (2026-07-26) — HIGH: the per-cycle RefCache was stale across ITERATIONS of a circular calculation.** `CacheManager::refCache_` is keyed on pure coordinates (`RefKey{idSheet, rwFirst, rwLast, colFirst, colLast}`) and valued with the range's VALUE digest, and its only clear point is `HandleCalculationEnded`. Measured against real Excel (§19.4): `xleventCalculationEnded` fires **once per calculation cycle regardless of how many iterations that cycle runs**, so with `Application.Iteration = True` a cache-enabled function taking a reference argument inside a circular group kept resolving pass 1's digest for passes 2..N — same `MakeCacheKey` → result-cache hit → the cell froze at its first-pass value and the circular system converged on a wrong number. **Fix:** an iterative-calculation gate on the CacheManager — `RefreshIterativeCalcMode()` reads `GET.DOCUMENT(15)` at calc end (a valid command context; macro-sheet only, hence not callable from the `$` wrappers) and, while it is on, `GetOrComputeRefHash` bypasses the map lookup AND the store while still folding `computeFn`'s digest into the accumulator, so the emitted key bytes are byte-identical in both modes. The Excel query is skipped entirely unless a reference argument actually took the RefCache path during the cycle (`refPathUsed_`), and that flag is raised even while bypassing so the gate can be turned back OFF. `xll_cache.cpp` stays free of cross-TU calls (the transition is logged by the caller in `xll_events.cpp`) because the offline g++ gate links it against nothing but a stub `Excel12v`. Regressions: `internal/assets/cache_cpp_test.go::TestIterativeCalcGateWired` (source markers incl. the refresh-before-clear ORDER) and `internal/assets/testdata/cache_native_test.cpp::TestIterativeCalcBypassesRefCache` (behavioral: identical key bytes across modes, re-coercion per pass, a mid-cycle value change yields a NEW key, gate-off still memoizes, a failed query leaves the gate untouched, reversible). FAIL-before confirmed by neutering the gate to `bypassMemo = false` — 2 failures ("coerce calls: 1", stale key).
+  * **First-cycle hole CLOSED (MED, same day).** Refreshing only at calc END meant the gate could not be armed before the first calculation ever ran: a workbook **saved** with `Application.Iteration = True` opened with the gate off, memoized pass-1 digests through that entire first cycle, and the wrong value then persisted for the whole session unless the cell was dirtied again — i.e. exactly the symptom the gate was built to remove. Fix: `CacheManager::ForceRefreshIterativeCalcMode()` — the same `GET.DOCUMENT(15)` query with the `refPathUsed_` precondition removed (at load that flag is necessarily false, so the gated entry point would never ask) — called **once from `xlAutoOpen`**, which is a valid command context (§19.4 / §23.6). A failed query (no active workbook yet) leaves the gate untouched, so the worst case is the previous behavior and the change cannot regress anything. Both entry points share the private `QueryIterativeCalcMode()`, so there is one query implementation. Regressions: `internal/assets/cache_cpp_test.go::TestIterativeCalcGatePrimedAtLoad` (template marker, FAIL-confirmed by removing the call) and 4 new behavioral checks in `cache_native_test.cpp` (the gated refresh makes ZERO Excel calls before any RefCache use; the forced one asks and arms; it can also clear; a failed forced query is a no-op) — the harness stub now answers `xlfGetDocument`. `internal/templates/xll_main.cpp.tmpl` changed, so `internal/generator/testdata/golden/xll_main.cpp.golden` was regenerated (`UPDATE_GOLDEN=1`; +25 lines, the only golden affected).
+  * Memory ordering on `iterativeCalc_`/`refPathUsed_` was tightened from `relaxed` to release/acquire (zero extra instructions on x86 — plain MOV, and the exchange is already a locked XCHG) so the pairing with the `refCache_` operations the gate guards is stated rather than inferred from the target ISA.
+  * The "refresh must run BEFORE `ClearRefCache` because the clear consumes the flag" comment in `xll_events.cpp` (and the matching assertion rationale in `cache_cpp_test.go`) described a dependency that **does not exist** — `ClearRefCache()` only empties `refCache_`. Both are reworded: the order is an INTENT pin (refresh decides on the cycle just observed, the clear ends it), not a correctness requirement. The assertion is kept because a future change that makes the clear reset the gate flags would make it load-bearing.
+* **DONE (2026-07-26) — MED x3: the chunk reassembler's reject paths were not actually rejections.** Three defects on the same C++/Go mirror pair (`internal/assets/files/src/xll_worker.cpp` ↔ `pkg/server/handlers.go` + `manager.go`), fixed together as one §18.6 co-change:
+  1. **A zero-length segment poisoned a healthy transfer.** A `protocol.Chunk` with a PRESENT but EMPTY data vector passed every guard (C++ only tested `!chunk->data()`; Go had no length test at all), so `ClaimSegment`/`receivedSegments` recorded an `(offset, 0)` range — and the REAL chunk arriving at that offset then classified as "same start offset, different length" → `ClaimOverlap` → the whole, otherwise perfectly healthy, transfer was discarded, with the diagnostic naming the innocent chunk. A zero-length segment advances nothing and can never be part of a valid transfer; both sides now refuse it explicitly.
+  2. **A rejection was not final — the next chunk RESURRECTED the transfer.** Every reject path erased the buffer but remembered nothing, so the producer's next chunk found no buffer, a FRESH one was allocated, and the chunk was acked as SUCCESS. The resurrected buffer is missing every earlier chunk (can never complete; squats a `kMaxPartialMessages` / `MaxConcurrentTransfers` slot for the full 60 s TTL) and, worse, `pkg/chunk.AsyncRetry`'s first retry saw success and therefore never aborted — the async call hung to its own timeout. Exactly inverted from the fail-fast the refusal exists for. Fix: a **TTL-bounded poison set** (`g_poisonedTransfers`, `std::map<uint64_t, steady_clock::time_point>`; `ChunkManager.poisoned`, `map[uint64]time.Time`) consulted at the top of `HandleChunk`; every later chunk on a rejected id answers SYSTEM_ERROR. Entries expire on the same clock as reassembly buffers (drained by the existing stale prune, so an id is never permanently burned) and the set is capped at 1024 with oldest-eviction. **Poison set chosen over the minimal `offset == 0`-only-creates alternative**: the minimal fix would have baked in an unstated "producers send ascending" assumption (only true for two of the three senders — `SendAckOrChunk` is ACK-pull driven) and would still ack the resurrecting `offset == 0` retry, which is precisely the frame `AsyncRetry` sends first. **Deliberate asymmetry:** only PROTOCOL VIOLATIONS poison (out-of-bounds, zero-length, overlap — deterministic properties of the producer's framing). RESOURCE refusals (total cap, concurrent-transfer cap) do NOT: they insert no buffer, so there is nothing to resurrect, and a later retry may legitimately succeed.
+  3. **C++ had no `total_size == 0` guard** (Go's `GetChunkBuffer` refuses `total <= 0`). `resize(0)` satisfies the `0 == 0` completion test immediately and hands `GetRoot<BatchAsyncResponse>` a **nullptr** from `buffer.data()` → access violation inside Excel. Unreachable from an honest Go producer, but this is the wire; closed for reject-path symmetry.
+  Regressions: `pkg/server/manager_test.go::TestChunkManager_ZeroLengthSegmentRejected` and `::TestChunkManager_RejectedTransferIsPoisoned` (per-id scope, TTL expiry, resource-refusal must NOT poison) — FAIL-before confirmed by neutering both guards (6 failing sub-cases); plus regtest mock-host cases **16c** (rejection is final: neither a mid-stream continuation nor a from-scratch re-open may be acked), **16d** (poison is per-id), **16e** (empty data vector refused).
+* **OPEN (product decision, NOT a runtime bug) — a user-declared `CalculationCanceled` event never reaches the Go handler.** `internal/templates/xll_main.cpp.tmpl`'s named-event stub (`{{else}}` branch, "Currently not fully implemented for named events") only logs, so `MSG_CALCULATION_CANCELED` (132) is never sent and the whole Go chain — `HandleCalculationCanceled` → `OnCalculationCanceled` (`server.go.tmpl`, `interface.go.tmpl`, documented in `README.md`/`TUTORIAL.md`) — is dead code in generated projects; only `internal/regtest/testdata/mock_host.cpp` case 13 exercises it. **This is NOT a cache-correctness issue** — Excel fires `CalculationCanceled` and then `CalculationEnded` 2–6 ms later, so the caches are already cleared (§19.4). Wiring 132 is therefore a semantics change, not a fix: it would fire both `OnCalculationCanceled` and `OnCalculationEnded` for one interrupted cycle and let `HandleCalculationCanceled`'s `CommandBatcher.Clear()` drop commands scheduled during that cycle just before the Ended flush. Decide the intended contract (does a cancelled cycle discard scheduled commands?) before implementing, and keep the C++/Go RefCache clears on the SAME event so `g_sentRefCache` and the Go `RefCache` cannot diverge.
+* **OPEN (LOW, deferred from the 2026-07-26 pre-release C++ review).** Deliberately NOT fixed in that pass — all documentation/coverage polish, none change runtime behavior:
+  * `GetChunkBuffer`'s doc comment says the concurrent-transfer bound keeps the "aggregate footprint" bounded; strictly it bounds the transfer COUNT (`MaxConcurrentTransfers × MaxChunkBufferBytes` is the actual ceiling). Reword.
+  * `kMaxChunkTotalSize` / `kMaxPartialMessages` are compile-time constants in C++ while the Go twins are `xll.yaml`-tunable (`server.chunk`). Document the asymmetry (or wire the C++ side through the template).
+  * The total-mismatch-on-reuse reset exists only on the Go side (`GetChunkBuffer`); C++ keeps the first `totalSize` for the life of the entry. Record it in the §18.6 co-change anchor as an intentional asymmetry.
+  * `HandleChunk`'s TOCTOU note: `GetChunkBuffer` releases `chunkMutex` before `buf.Mutex` is taken, so a concurrent TTL sweep can evict the buffer this call still holds a pointer to. Benign (the writer finishes into a now-unreachable buffer), but undocumented.
+  * No offline C++ test for the segment/overlap logic — `xll_worker.cpp` is only covered through the cmake gates and the regtest mock host. An offline g++ harness like `cache_native_test.cpp` would make the reject matrix cheap to test.
+  * No RTD F9 smoke case in `internal/smoketest`.
+  * `RefreshIterativeCalcMode` reads `GET.DOCUMENT(15)`, which is the ACTIVE workbook's iteration setting; with several workbooks open the gate tracks whichever is active. Note the scope in the header (the gate can only ever disable an optimization, so a mismatch is not a correctness issue).
+  * Doxygen coverage of the new CacheManager/chunk entry points.
 * `internal/regtest`: regression tests bind to Excel via COM (`internal/regtest/runner.go`). Add a short doc note explaining how to run them on a fresh Windows machine (which Excel SKUs work, what registry entries are needed).
 * Follow-ups uncovered during the stabilization pass:
   * `MaxChunkBufferBytes` is currently only mutable through code (`ChunkManager` field or `NewChunkManagerWithMax`). Plumb it through `xll.yaml` → `internal/config` so deployments can tune it without rebuilds. Co-change cluster: pairs with the §23.2 cleanup-tick/TTL promotion.

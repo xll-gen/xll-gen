@@ -658,6 +658,191 @@ int main(int argc, char* argv[]) {
         CoUninitialize();
     }
 
+    // 16. Chunked host->guest delivery (MSG_CHUNK = 129) — reassembly contract.
+    //
+    // This is the end-to-end counterpart to pkg/server/manager_test.go: the
+    // mock host plays the XLL, splitting an EchoString request (ID 142) into
+    // protocol::Chunk frames the Go guest's HandleChunk must reassemble before
+    // dispatching. It replaces the long-deferred "regtest duplicate-chunk case"
+    // (AGENTS.md §23.3 / IMPROVEMENT_BACKLOG R8 residue) and extends it to the
+    // OVERLAP case, which is what the exact-coverage completion contract
+    // (shm SPECIFICATION.md §3.3.4) was added for.
+    //
+    // Response shapes: a non-final chunk answers protocol::Ack; the chunk that
+    // completes the transfer answers whatever the dispatched user function
+    // returns (here an ipc::EchoStringResponse). A refused chunk comes back as
+    // MsgType::SYSTEM_ERROR, which shm's SlotAllocator turns into an Err — i.e.
+    // host.Send(...).ValueOr(-1) yields -1.
+    {
+        // Serialize an EchoString request, then hand it over in pieces.
+        const string echoVal = "chunked-reassembly-payload-0123456789";
+        builder.Reset();
+        {
+            auto off = builder.CreateString(echoVal);
+            ipc::EchoStringRequestBuilder req(builder);
+            req.add_val(off);
+            builder.Finish(req.Finish());
+        }
+        const vector<uint8_t> payload(builder.GetBufferPointer(),
+                                      builder.GetBufferPointer() + builder.GetSize());
+        const uint32_t total = (uint32_t)payload.size();
+        const uint32_t split = total / 2; // first chunk [0,split), second [split,total)
+
+        flatbuffers::FlatBufferBuilder chunkBuilder(1024);
+        // sendChunk frames one protocol::Chunk and delivers it on MSG_CHUNK.
+        // Returns the SHM response size (<0 when the guest answered
+        // SYSTEM_ERROR).
+        auto sendChunk = [&](uint64_t id, uint32_t offset, uint32_t len,
+                             vector<uint8_t>& respBuf) -> int {
+            chunkBuilder.Clear();
+            auto dataOff = chunkBuilder.CreateVector(payload.data() + offset, len);
+            protocol::ChunkBuilder cb(chunkBuilder);
+            cb.add_id(id);
+            cb.add_total_size(total);
+            cb.add_offset(offset);
+            cb.add_data(dataOff);
+            cb.add_msg_type(142); // dispatch target once reassembled: EchoString
+            // "XCHN" mirrors pkg/chunk.BuildFrame's file identifier.
+            chunkBuilder.Finish(cb.Finish(), "XCHN");
+            respBuf.clear();
+            return host.Send(chunkBuilder.GetBufferPointer(), chunkBuilder.GetSize(),
+                             (shm::MsgType)129, respBuf).ValueOr(-1);
+        };
+
+        // 16a. Well-formed two-chunk transfer completes and dispatches.
+        {
+            vector<uint8_t> respBuf;
+            if (sendChunk(0xC0DE0001ull, 0, split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16a first chunk rejected" << endl; return 1;
+            }
+            auto ack = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
+            if (!ack->ok()) { cerr << "FAIL: chunk 16a first chunk Ack not ok" << endl; return 1; }
+
+            if (sendChunk(0xC0DE0001ull, split, total - split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16a final chunk rejected" << endl; return 1;
+            }
+            auto resp = flatbuffers::GetRoot<ipc::EchoStringResponse>(respBuf.data());
+            ASSERT_STREQ(echoVal, resp->result()->str(), "Chunked EchoString");
+        }
+
+        // 16b. DUPLICATE chunk is idempotent: replaying the first chunk must
+        // neither complete the transfer early nor corrupt the reassembly. This
+        // is the R8 residue case — before offset dedup, the replay advanced the
+        // received counter past total_size and dispatched with the tail still
+        // zero-filled.
+        {
+            vector<uint8_t> respBuf;
+            if (sendChunk(0xC0DE0002ull, 0, split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16b first chunk rejected" << endl; return 1;
+            }
+            // Replay of the exact same range: still an Ack, still incomplete.
+            if (sendChunk(0xC0DE0002ull, 0, split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16b duplicate chunk rejected (an exact retransmit must be tolerated)" << endl; return 1;
+            }
+            auto dupAck = flatbuffers::GetRoot<protocol::Ack>(respBuf.data());
+            if (!dupAck->ok()) { cerr << "FAIL: chunk 16b duplicate Ack not ok" << endl; return 1; }
+
+            if (sendChunk(0xC0DE0002ull, split, total - split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16b final chunk rejected" << endl; return 1;
+            }
+            auto resp = flatbuffers::GetRoot<ipc::EchoStringResponse>(respBuf.data());
+            ASSERT_STREQ(echoVal, resp->result()->str(), "Chunked EchoString after duplicate replay");
+        }
+
+        // 16c. OVERLAPPING chunk is refused, AND the refusal is FINAL. [0,split)
+        // then a range starting inside it: two distinct offsets whose lengths
+        // can still sum to total_size, so the old `received >= total` test would
+        // have reported COMPLETE with an interior region nobody ever wrote
+        // (zero-fill read back as payload). Must come back SYSTEM_ERROR.
+        //
+        // The follow-on assertion is the POISON-SET contract. Dropping the
+        // buffer alone made the rejection non-final: the producer's next chunk
+        // found no buffer, the guest allocated a FRESH one, and the chunk was
+        // ACKED — so the transfer silently restarted mid-stream (permanently
+        // incomplete, holding a concurrency slot until the TTL) and
+        // pkg/chunk.AsyncRetry, seeing success on its first retry, kept pushing
+        // instead of failing the call. Every chunk on a rejected id must now
+        // come back SYSTEM_ERROR until the poison entry ages out.
+        {
+            vector<uint8_t> respBuf;
+            if (sendChunk(0xC0DE0003ull, 0, split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16c first chunk rejected" << endl; return 1;
+            }
+            // Starts one byte before the first chunk ends -> overlap.
+            if (sendChunk(0xC0DE0003ull, split - 1, total - split + 1, respBuf) >= 0) {
+                cerr << "FAIL: chunk 16c overlapping chunk was ACCEPTED; the completion contract lets a zero-fill hole through" << endl;
+                return 1;
+            }
+            // The id is poisoned: neither a mid-stream continuation nor a
+            // from-scratch re-open may be acked.
+            if (sendChunk(0xC0DE0003ull, split, total - split, respBuf) >= 0) {
+                cerr << "FAIL: chunk 16c continuation after rejection was ACCEPTED; the rejected transfer was resurrected" << endl;
+                return 1;
+            }
+            if (sendChunk(0xC0DE0003ull, 0, split, respBuf) >= 0) {
+                cerr << "FAIL: chunk 16c re-open after rejection was ACCEPTED; the transfer id is not poisoned" << endl;
+                return 1;
+            }
+        }
+
+        // 16d. The poison is PER ID, not global: a fresh transfer id must still
+        // complete normally right after another id was rejected. (Also proves
+        // 16c's rejections left no reassembly state behind for case 17.)
+        {
+            vector<uint8_t> respBuf;
+            if (sendChunk(0xC0DE0004ull, 0, split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16d first chunk rejected (poison leaked across transfer ids?)" << endl; return 1;
+            }
+            if (sendChunk(0xC0DE0004ull, split, total - split, respBuf) < 0) {
+                cerr << "FAIL: chunk 16d final chunk rejected" << endl; return 1;
+            }
+            auto resp = flatbuffers::GetRoot<ipc::EchoStringResponse>(respBuf.data());
+            ASSERT_STREQ(echoVal, resp->result()->str(), "Chunked EchoString on a fresh id after a rejection");
+        }
+
+        // 16e. A present-but-EMPTY data vector is refused. It advances nothing,
+        // so it can never be part of a valid transfer — and if it were recorded
+        // as an (offset, 0) segment, the REAL chunk arriving at that offset
+        // would classify as "same offset, different length" => overlap => the
+        // whole healthy transfer discarded. One stray empty frame must not be
+        // able to kill a good transfer.
+        {
+            vector<uint8_t> respBuf;
+            if (sendChunk(0xC0DE0005ull, 0, 0, respBuf) >= 0) {
+                cerr << "FAIL: chunk 16e zero-length segment was ACCEPTED; it would turn the real chunk at that offset into an overlap" << endl;
+                return 1;
+            }
+        }
+
+        // 17. Concurrent-transfer bound (server.DefaultMaxConcurrentTransfers,
+        // 1024). Open that many transfers without finishing any of them, then
+        // assert the next one is refused. The per-transfer byte cap does not
+        // bound the aggregate; this does.
+        //
+        // Every case above either completed or was dropped, so the guest starts
+        // this block with an empty reassembly table — if any leftover existed,
+        // one of the first 1024 would be refused and the test would say so.
+        // Poison entries live in their own map and do not consume slots, which
+        // 16c/16e implicitly confirm here.
+        {
+            const int kMaxConcurrent = 1024;
+            vector<uint8_t> respBuf;
+            for (int i = 0; i < kMaxConcurrent; ++i) {
+                uint64_t id = 0xC0DE1000ull + (uint64_t)i;
+                if (sendChunk(id, 0, split, respBuf) < 0) {
+                    cerr << "FAIL: transfer " << i << " of " << kMaxConcurrent
+                         << " refused before the bound was reached" << endl;
+                    return 1;
+                }
+            }
+            if (sendChunk(0xC0DEFFFFull, 0, split, respBuf) >= 0) {
+                cerr << "FAIL: transfer " << (kMaxConcurrent + 1)
+                     << " was ACCEPTED; the concurrent-transfer bound is not enforced" << endl;
+                return 1;
+            }
+        }
+    }
+
     cout << "PASSED" << endl;
     return 0;
 }

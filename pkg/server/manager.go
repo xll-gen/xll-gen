@@ -26,11 +26,66 @@ const DefaultCleanupInterval = 30 * time.Second
 // ChunkManager.ChunkBufferTTL before traffic flows.
 const DefaultChunkBufferTTL = 60 * time.Second
 
+// DefaultMaxConcurrentTransfers bounds how many partially-reassembled inbound
+// transfers may be resident at once.
+//
+// MaxChunkBufferBytes caps ONE transfer; without a count bound the aggregate is
+// still unbounded (256 MiB x N). Before this bound existed, the only reclaim
+// was the TTL sweep, so a peer opening transfers it never finishes could pile
+// up buffers for a whole sweep period + TTL (worst case ~90 s at the defaults)
+// with no ceiling. rtd-once grid makes that a realistic pressure path rather
+// than a theoretical one: every topic draws a fresh transfer id, so a large RTD
+// grid connecting many topics at once opens many concurrent transfers.
+//
+// 1024 mirrors shm's maxConcurrentStreams (SPECIFICATION.md §3.3.4). The
+// reclaim mechanism is explicitly implementation-defined there; we use the
+// simpler of shm's two (the C++ Host's "prune stale, then refuse" — see
+// StreamReassembler::Handle) rather than LRU eviction, because evicting a live
+// transfer to admit a new one just moves the failure onto an innocent peer.
+// Override with ChunkManager.MaxConcurrentTransfers / ChunkManagerConfig, or
+// xll.yaml `server.chunk.max_concurrent_transfers`.
+const DefaultMaxConcurrentTransfers = 1024
+
+// DefaultMaxPoisonedTransfers bounds the poison set (see ChunkManager.poisoned).
+// Entries are tiny and expire with ChunkBufferTTL, but a peer spraying distinct
+// malformed ids must not grow the map without limit. Mirrors
+// kMaxPoisonedTransfers in internal/assets/files/src/xll_worker.cpp.
+const DefaultMaxPoisonedTransfers = 1024
+
 type ChunkManager struct {
 	chunkCache     map[uint64]*ChunkBuffer
 	chunkMutex     sync.Mutex
 	outgoingChunks map[uint64]*OutgoingChunk
 	outgoingMutex  sync.Mutex
+
+	// poisoned holds transfer ids whose reassembly was REFUSED for a PROTOCOL
+	// VIOLATION, with the time of refusal. Guarded by chunkMutex (the same lock
+	// that guards chunkCache, so poison-and-remove is one atomic step).
+	//
+	// Why a rejection has to be remembered: every reject path in
+	// HandleChunk drops the ChunkBuffer, so the producer's NEXT chunk for the
+	// same id finds no buffer, GetChunkBuffer allocates a FRESH one, and the
+	// chunk is acked as success. The resurrected buffer is missing every
+	// earlier chunk, so it can never complete — it just occupies a
+	// MaxConcurrentTransfers slot until the TTL sweep — and, worse, the
+	// producer's retry ladder (pkg/chunk.AsyncRetry, 10x exponential backoff)
+	// sees SUCCESS on its first retry and therefore never aborts: the async
+	// call hangs until its own timeout. The refusal existed to make the
+	// producer fail FAST and achieved the exact opposite.
+	//
+	// Only PROTOCOL VIOLATIONS poison — out-of-bounds range, zero-length
+	// segment, overlapping range. Those are deterministic properties of the
+	// producer's framing, so a retry on the same id cannot succeed. RESOURCE
+	// refusals (total non-positive / over MaxChunkBufferBytes / over
+	// MaxConcurrentTransfers) deliberately do NOT poison: they insert no
+	// buffer (nothing to resurrect) and are transient, so a later retry may
+	// legitimately succeed.
+	//
+	// Entries expire on the same clock as reassembly buffers (effectiveTTL),
+	// pruned by pruneStaleChunkBuffersLocked, so an id is never permanently
+	// burned. Mirrors g_poisonedTransfers in
+	// internal/assets/files/src/xll_worker.cpp (CO-CHANGE ANCHOR, §18.6).
+	poisoned map[uint64]time.Time
 
 	// MaxChunkBufferBytes is the upper bound on the TotalSize a single
 	// incoming transfer may declare. GetChunkBuffer refuses (returns an
@@ -52,6 +107,14 @@ type ChunkManager struct {
 	// inbound buffer or an unacked outbound chunk is evicted. Zero means
 	// DefaultChunkBufferTTL. See AGENTS.md §23.2.
 	ChunkBufferTTL time.Duration
+
+	// MaxConcurrentTransfers bounds the number of partially-reassembled
+	// inbound transfers held at once. GetChunkBuffer prunes stale buffers
+	// when the bound is hit and, if that frees nothing, refuses the new
+	// transfer (returns an error, inserts nothing) so the caller emits
+	// MsgTypeSystemError. Zero/negative means
+	// DefaultMaxConcurrentTransfers.
+	MaxConcurrentTransfers int
 
 	// stop signals the cleanup goroutine to exit. Closed exactly once by
 	// Close(); closeOnce makes Close idempotent so a double-shutdown (e.g.
@@ -79,9 +142,10 @@ func NewChunkManagerWithMax(maxBytes int64) *ChunkManager {
 // fields after the background goroutine has captured them. Zeros mean "use
 // the corresponding Default* constant".
 type ChunkManagerConfig struct {
-	MaxBufferBytes  int64
-	CleanupInterval time.Duration
-	BufferTTL       time.Duration
+	MaxBufferBytes         int64
+	CleanupInterval        time.Duration
+	BufferTTL              time.Duration
+	MaxConcurrentTransfers int
 }
 
 // NewChunkManagerFromConfig builds a ChunkManager with all settings captured
@@ -94,12 +158,14 @@ func NewChunkManagerFromConfig(c ChunkManagerConfig) *ChunkManager {
 		maxBytes = DefaultMaxChunkBufferBytes
 	}
 	cm := &ChunkManager{
-		chunkCache:          make(map[uint64]*ChunkBuffer),
-		outgoingChunks:      make(map[uint64]*OutgoingChunk),
-		MaxChunkBufferBytes: maxBytes,
-		CleanupInterval:     c.CleanupInterval,
-		ChunkBufferTTL:      c.BufferTTL,
-		stop:                make(chan struct{}),
+		chunkCache:             make(map[uint64]*ChunkBuffer),
+		outgoingChunks:         make(map[uint64]*OutgoingChunk),
+		poisoned:               make(map[uint64]time.Time),
+		MaxChunkBufferBytes:    maxBytes,
+		CleanupInterval:        c.CleanupInterval,
+		ChunkBufferTTL:         c.BufferTTL,
+		MaxConcurrentTransfers: c.MaxConcurrentTransfers,
+		stop:                   make(chan struct{}),
 	}
 	go cm.cleanupLoop()
 	return cm
@@ -110,10 +176,7 @@ func (cm *ChunkManager) cleanupLoop() {
 	if interval <= 0 {
 		interval = DefaultCleanupInterval
 	}
-	ttl := cm.ChunkBufferTTL
-	if ttl <= 0 {
-		ttl = DefaultChunkBufferTTL
-	}
+	ttl := cm.effectiveTTL()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -145,11 +208,7 @@ func (cm *ChunkManager) Close() {
 // audit referenced in AGENTS.md §23.
 func (cm *ChunkManager) runCleanupOnce(now time.Time, ttl time.Duration) {
 	cm.chunkMutex.Lock()
-	for id, buf := range cm.chunkCache {
-		if now.Sub(buf.LastAccess) > ttl {
-			delete(cm.chunkCache, id)
-		}
-	}
+	cm.pruneStaleChunkBuffersLocked(now, ttl)
 	cm.chunkMutex.Unlock()
 
 	cm.outgoingMutex.Lock()
@@ -161,6 +220,45 @@ func (cm *ChunkManager) runCleanupOnce(now time.Time, ttl time.Duration) {
 	cm.outgoingMutex.Unlock()
 }
 
+// pruneStaleChunkBuffersLocked drops every inbound reassembly buffer idle for
+// longer than ttl. The caller MUST hold cm.chunkMutex. It backs both the
+// periodic sweep (runCleanupOnce) and the on-demand reclaim GetChunkBuffer runs
+// when MaxConcurrentTransfers is hit — the same "prune, then refuse" order shm's
+// C++ StreamReassembler::Handle uses at its maxStreams bound.
+// It also expires poison-set entries on the same clock, so a transfer id
+// refused for a protocol violation becomes reusable after the window instead of
+// being burned for the life of the process.
+func (cm *ChunkManager) pruneStaleChunkBuffersLocked(now time.Time, ttl time.Duration) {
+	for id, buf := range cm.chunkCache {
+		if now.Sub(buf.LastAccess) > ttl {
+			delete(cm.chunkCache, id)
+		}
+	}
+	for id, at := range cm.poisoned {
+		if now.Sub(at) > ttl {
+			delete(cm.poisoned, id)
+		}
+	}
+}
+
+// effectiveTTL resolves the configured idle window, falling back to
+// DefaultChunkBufferTTL for the zero value.
+func (cm *ChunkManager) effectiveTTL() time.Duration {
+	if cm.ChunkBufferTTL > 0 {
+		return cm.ChunkBufferTTL
+	}
+	return DefaultChunkBufferTTL
+}
+
+// effectiveMaxConcurrentTransfers resolves the configured concurrent-transfer
+// bound, falling back to DefaultMaxConcurrentTransfers for the zero value.
+func (cm *ChunkManager) effectiveMaxConcurrentTransfers() int {
+	if cm.MaxConcurrentTransfers > 0 {
+		return cm.MaxConcurrentTransfers
+	}
+	return DefaultMaxConcurrentTransfers
+}
+
 // GetChunkBuffer returns the per-id reassembly buffer, allocating it on first
 // touch. The wire-supplied `total` is the only thing telling us how big the
 // payload will be, so it MUST be bounded: a malicious or corrupt producer
@@ -170,6 +268,12 @@ func (cm *ChunkManager) runCleanupOnce(now time.Time, ttl time.Duration) {
 // a MsgTypeSystemError to the wire. The defensive offset+len bounds check in
 // HandleChunk remains load-bearing and is preserved separately
 // (AGENTS.md §23, Cache Visibility Discipline).
+//
+// The per-transfer byte cap is only half the bound: opening a NEW transfer also
+// has to fit under MaxConcurrentTransfers, or the aggregate footprint is
+// unbounded no matter how small each transfer is. At the bound we prune stale
+// buffers and, if that frees nothing, refuse the same way (no insert, error
+// returned) — see DefaultMaxConcurrentTransfers.
 func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, error) {
 	if total <= 0 {
 		return nil, fmt.Errorf("xll-gen/server: refusing chunk buffer allocation: non-positive total=%d (id=%#x)", total, id)
@@ -183,8 +287,9 @@ func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, erro
 	}
 
 	cm.chunkMutex.Lock()
-	buf, exists := cm.chunkCache[id]
-	if exists && buf.TotalSize != total {
+	buf, present := cm.chunkCache[id]
+	reuse := present
+	if present && buf.TotalSize != total {
 		// The id was reused with a different declared total. This can happen
 		// when a transfer id collides with a stale, never-completed buffer
 		// (e.g. a producer reset after a dropped final chunk). Keeping the old
@@ -193,14 +298,30 @@ func (cm *ChunkManager) GetChunkBuffer(id uint64, total int) (*ChunkBuffer, erro
 		// fresh buffer sized for the new total. See IMPROVEMENT_BACKLOG.md §3.
 		log.Warn("ChunkManager: chunk buffer total mismatch on reuse; resetting buffer",
 			"id", id, "oldTotal", buf.TotalSize, "newTotal", total)
-		exists = false
+		reuse = false
 	}
-	if !exists {
+	if !reuse {
+		// Concurrent-transfer bound. Only a genuinely NEW key grows the map —
+		// a total-mismatch reset (present && !reuse) replaces an entry in
+		// place and must not be refused by a cap it does not push against.
+		if !present {
+			maxTransfers := cm.effectiveMaxConcurrentTransfers()
+			if len(cm.chunkCache) >= maxTransfers {
+				// Prune first: at the bound, buffers abandoned by a peer that
+				// stopped mid-transfer are exactly what we want to reclaim,
+				// and the periodic sweep may be up to CleanupInterval away.
+				cm.pruneStaleChunkBuffersLocked(time.Now(), cm.effectiveTTL())
+				if len(cm.chunkCache) >= maxTransfers {
+					n := len(cm.chunkCache)
+					cm.chunkMutex.Unlock()
+					return nil, fmt.Errorf("xll-gen/server: refusing chunk buffer allocation: %d concurrent transfers already in flight (max=%d) (id=%#x)", n, maxTransfers, id)
+				}
+			}
+		}
 		buf = &ChunkBuffer{
-			Data:            make([]byte, total),
-			TotalSize:       total,
-			ReceivedOffsets: make(map[uint32]bool),
-			LastAccess:      time.Now(),
+			Data:       make([]byte, total),
+			TotalSize:  total,
+			LastAccess: time.Now(),
 		}
 		cm.chunkCache[id] = buf
 	}
@@ -213,6 +334,57 @@ func (cm *ChunkManager) RemoveChunkBuffer(id uint64) {
 	cm.chunkMutex.Lock()
 	delete(cm.chunkCache, id)
 	cm.chunkMutex.Unlock()
+}
+
+// PoisonTransfer drops the reassembly buffer for id AND records the id as
+// refused, so every later chunk carrying it is rejected until the entry expires
+// (see ChunkManager.poisoned). Call it from the PROTOCOL-VIOLATION reject paths
+// only; RemoveChunkBuffer stays the plain (completion / resource-refusal)
+// removal.
+func (cm *ChunkManager) PoisonTransfer(id uint64) {
+	now := time.Now()
+	cm.chunkMutex.Lock()
+	delete(cm.chunkCache, id)
+	if cm.poisoned == nil {
+		cm.poisoned = make(map[uint64]time.Time)
+	}
+	if len(cm.poisoned) >= DefaultMaxPoisonedTransfers {
+		cm.pruneStaleChunkBuffersLocked(now, cm.effectiveTTL())
+		if len(cm.poisoned) >= DefaultMaxPoisonedTransfers {
+			// Still full of live entries: evict the oldest. The poison set is a
+			// fail-fast accelerator, not a correctness invariant — losing an
+			// entry only restores the old resurrect-until-TTL behavior for that
+			// single id.
+			var oldestID uint64
+			var oldestAt time.Time
+			first := true
+			for id, at := range cm.poisoned {
+				if first || at.Before(oldestAt) {
+					oldestID, oldestAt, first = id, at, false
+				}
+			}
+			delete(cm.poisoned, oldestID)
+		}
+	}
+	cm.poisoned[id] = now
+	cm.chunkMutex.Unlock()
+}
+
+// IsPoisoned reports whether id was refused for a protocol violation within the
+// TTL window. HandleChunk consults it before touching (or allocating) a buffer.
+// An expired entry is dropped here so the id is immediately reusable.
+func (cm *ChunkManager) IsPoisoned(id uint64) bool {
+	cm.chunkMutex.Lock()
+	defer cm.chunkMutex.Unlock()
+	at, ok := cm.poisoned[id]
+	if !ok {
+		return false
+	}
+	if time.Since(at) > cm.effectiveTTL() {
+		delete(cm.poisoned, id)
+		return false
+	}
+	return true
 }
 
 func (cm *ChunkManager) AddOutgoingChunk(id uint64, chunk *OutgoingChunk) {

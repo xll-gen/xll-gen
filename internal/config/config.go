@@ -191,6 +191,11 @@ type ChunkConfig struct {
 	// BufferTTL is the idle window before a buffer is evicted (e.g. "60s").
 	// Zero/empty means pkg/server.DefaultChunkBufferTTL.
 	BufferTTL string `yaml:"buffer_ttl"`
+	// MaxConcurrentTransfers bounds how many partially-reassembled inbound
+	// transfers may be in flight at once (aggregate-footprint guard;
+	// MaxBufferBytes only caps ONE transfer). Zero means
+	// pkg/server.DefaultMaxConcurrentTransfers (1024).
+	MaxConcurrentTransfers int `yaml:"max_concurrent_transfers"`
 }
 
 // LaunchConfig controls the automatic process launching behavior.
@@ -1004,6 +1009,9 @@ func validateServerChunk(config *Config) error {
 			if _, err := parseDuration(c.BufferTTL); err != nil {
 				return fmt.Errorf("server.chunk.buffer_ttl: %w", err)
 			}
+		}
+		if c.MaxConcurrentTransfers < 0 {
+			return fmt.Errorf("server.chunk.max_concurrent_transfers must be non-negative, got %d", c.MaxConcurrentTransfers)
 		}
 	}
 	return nil

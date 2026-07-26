@@ -166,11 +166,15 @@ server:
     # command: "${BIN}" # Optional: Defaults to the server executable
     # cwd: "${BIN_DIR}" # Optional: Defaults to the directory containing the executable
   # chunk: (optional) — tune the runtime ChunkManager.
-  #   Omit the block to keep defaults: 256 MiB cap, 30s sweep, 60s idle TTL.
+  #   Omit the block to keep defaults: 256 MiB cap, 30s sweep, 60s idle TTL,
+  #   1024 concurrent transfers.
   # chunk:
-  #   max_buffer_bytes: 134217728   # 128 MiB cap on per-transfer reassembly
+  #   max_buffer_bytes: 134217728    # 128 MiB cap on ONE transfer's reassembly
   #   cleanup_interval: "30s"        # Sweep cadence
   #   buffer_ttl: "60s"              # Idle window before eviction
+  #   max_concurrent_transfers: 1024 # Cap on in-flight partial transfers
+  #                                  # (aggregate guard; at the cap the manager
+  #                                  # prunes stale buffers, then refuses)
 
 # Real-Time Data (RTD) Server Configuration
 rtd:

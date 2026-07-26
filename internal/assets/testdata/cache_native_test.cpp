@@ -41,6 +41,14 @@ HINSTANCE g_hModule = nullptr;
 static const XLOPER12* g_coerceResult = nullptr;
 static std::atomic<int> g_coerceCalls{0};
 
+// What the next GET.DOCUMENT(15) (the iterative-calculation flag) should answer:
+// -1 => the call FAILS, which is the default and what the pre-existing "a failed
+// query leaves the gate untouched" case relies on; 0/1 => an xltypeBool answer.
+// g_getDocumentCalls counts the queries so a test can prove the GATED entry point
+// did not ask at all.
+static int g_getDocumentAnswer = -1;
+static std::atomic<int> g_getDocumentCalls{0};
+
 int pascal Excel12v(int xlfn, LPXLOPER12 operRes, int count, LPXLOPER12 opers[]) {
     (void)count;
     (void)opers;
@@ -49,6 +57,13 @@ int pascal Excel12v(int xlfn, LPXLOPER12 operRes, int count, LPXLOPER12 opers[])
         if (!operRes) return xlretFailed;
         if (!g_coerceResult) return xlretUncalced;
         *operRes = *g_coerceResult; // shallow: the test owns the storage
+        return xlretSuccess;
+    }
+    if (xlfn == xlfGetDocument) {
+        g_getDocumentCalls.fetch_add(1);
+        if (g_getDocumentAnswer < 0 || !operRes) return xlretFailed;
+        operRes->xltype = xltypeBool;
+        operRes->val.xbool = (BOOL)(g_getDocumentAnswer != 0);
         return xlretSuccess;
     }
     if (xlfn == xlFree) return xlretSuccess;
@@ -541,6 +556,128 @@ static void TestRefArgs() {
 }
 
 // ---------------------------------------------------------------------------
+// 4a2. iterative (circular-reference) calculation must bypass the RefCache
+// ---------------------------------------------------------------------------
+//
+// Regression it pins (HIGH, correctness, 2026-07-26): the per-cycle RefCache is
+// keyed on COORDINATES only ((sheetId, rect)) and valued with the range's VALUE
+// digest, and its ONLY clear point is HandleCalculationEnded. Excel fires
+// xleventCalculationEnded exactly ONCE per calculation cycle even when iterative
+// calculation runs the circular group MaxIterations times inside that cycle
+// (measured on Excel 16.0.20131.20154: MaxIterations=5 -> 5 UDF invocations, 1
+// event; a converging circular formula -> 14 invocations, 1 event). So without
+// the gate the pass-1 digest is memoized and re-served to passes 2..N with the
+// cell values already changed: MakeCacheKey returns the SAME key for different
+// content, the result cache hits, and a cache-enabled function freezes at its
+// first-pass value while the circular system "converges" on it.
+//
+// The gate must (a) make every pass recompute, (b) leave the KEY BYTES
+// unchanged versus the memoized path for identical content (it drops the
+// memoization, never changes the digest), and (c) be reversible.
+static void TestIterativeCalcBypassesRefCache() {
+    XLOPER12 cellsA[2] = {Num(1.0), Num(2.0)};
+    XLOPER12 cellsB[2] = {Num(3.0), Num(4.0)};
+    XLOPER12 coercedA = Multi(1, 2, cellsA);
+    XLOPER12 coercedB = Multi(1, 2, cellsB);
+
+    RefHolder ref(0x1234, {Rect(0, 1, 0, 1)});
+    auto& cm = xll::CacheManager::Instance();
+
+    // (b) same content, memoized vs bypassed -> byte-identical key.
+    cm.SetIterativeCalcMode(false);
+    cm.ClearRefCache();
+    g_coerceResult = &coercedA;
+    const std::string keyMemo = xll::MakeCacheKey("F", {&ref.op});
+    cm.SetIterativeCalcMode(true);
+    cm.ClearRefCache();
+    const std::string keyBypass = xll::MakeCacheKey("F", {&ref.op});
+    Check(keyMemo == keyBypass,
+          "iterative gate does not change the cache key for identical content (" +
+              keyMemo + " vs " + keyBypass + ")");
+
+    // (a) THE DEFECT: same coordinates, new values, no calc-end in between —
+    // exactly what iteration 2 of a circular group looks like.
+    cm.SetIterativeCalcMode(true);
+    cm.ClearRefCache();
+    g_coerceResult = &coercedA;
+    g_coerceCalls.store(0);
+    const std::string pass1 = xll::MakeCacheKey("F", {&ref.op});
+    g_coerceResult = &coercedB;               // the range's values changed
+    const std::string pass2 = xll::MakeCacheKey("F", {&ref.op});
+    Check(g_coerceCalls.load() == 2,
+          "iterative gate re-coerces the same (sheet, rect) on every pass "
+          "(coerce calls: " + std::to_string(g_coerceCalls.load()) + ")");
+    Check(pass1 != pass2,
+          "iterative gate: a mid-cycle value change produces a NEW cache key "
+          "(without it, iteration 2 is served iteration 1's result)");
+
+    // The same sequence WITH the gate off is the memoized (stale) behavior the
+    // gate exists to avoid — pinned here so the two paths stay distinguishable.
+    cm.SetIterativeCalcMode(false);
+    cm.ClearRefCache();
+    g_coerceResult = &coercedA;
+    g_coerceCalls.store(0);
+    const std::string memo1 = xll::MakeCacheKey("F", {&ref.op});
+    g_coerceResult = &coercedB;
+    const std::string memo2 = xll::MakeCacheKey("F", {&ref.op});
+    Check(g_coerceCalls.load() == 1 && memo1 == memo2,
+          "gate OFF keeps the per-cycle memoization (one coerce, stable key)");
+
+    // (c) reversible, and RefreshIterativeCalcMode must not flip the gate when
+    // Excel is unavailable (the offline stub fails every non-coerce call): an
+    // unanswered query leaves the previous state alone.
+    cm.SetIterativeCalcMode(true);
+    (void)xll::MakeCacheKey("F", {&ref.op}); // arms the "ref path used" flag
+    cm.RefreshIterativeCalcMode();
+    Check(cm.IterativeCalcMode(),
+          "a failed GET.DOCUMENT query leaves the iterative gate untouched");
+    cm.SetIterativeCalcMode(false);
+    Check(!cm.IterativeCalcMode(), "iterative gate is reversible");
+
+    // (d) THE FIRST-CYCLE HOLE (MED, 2026-07-26). RefreshIterativeCalcMode is
+    // gated on "a reference argument used the RefCache during this cycle", which
+    // is by construction FALSE at load time — so a workbook saved with iterative
+    // calculation enabled opened with the gate off and ran its whole FIRST
+    // recalculation memoizing pass-1 digests, i.e. exactly the defect above,
+    // permanently for that value unless the cell was dirtied again.
+    // ForceRefreshIterativeCalcMode is the ungated twin xlAutoOpen calls.
+    {
+        // The gated entry point must not even ASK when the flag is clear...
+        cm.SetIterativeCalcMode(false);
+        cm.RefreshIterativeCalcMode(); // consume any residual flag
+        g_getDocumentAnswer = 1;
+        g_getDocumentCalls.store(0);
+        cm.RefreshIterativeCalcMode();
+        Check(g_getDocumentCalls.load() == 0 && !cm.IterativeCalcMode(),
+              "the gated refresh makes no Excel call (and cannot arm the gate) before any "
+              "reference argument has used the RefCache — this is the first-cycle hole");
+
+        // ...while the forced refresh does, which is what closes the hole.
+        g_getDocumentCalls.store(0);
+        cm.ForceRefreshIterativeCalcMode();
+        Check(g_getDocumentCalls.load() == 1 && cm.IterativeCalcMode(),
+              "ForceRefreshIterativeCalcMode primes the gate at load with no prior "
+              "RefCache use (xlAutoOpen path)");
+
+        // It must also be able to turn the gate back OFF, and a FAILED query must
+        // still leave whatever was there alone.
+        g_getDocumentAnswer = 0;
+        cm.ForceRefreshIterativeCalcMode();
+        Check(!cm.IterativeCalcMode(), "the forced refresh also clears the gate when Excel says FALSE");
+        cm.SetIterativeCalcMode(true);
+        g_getDocumentAnswer = -1; // no active workbook at load: the query fails
+        cm.ForceRefreshIterativeCalcMode();
+        Check(cm.IterativeCalcMode(),
+              "a failed forced query leaves the gate untouched (load-time fallback: "
+              "no worse than the previous calc-end-only behavior)");
+        cm.SetIterativeCalcMode(false);
+    }
+
+    cm.ClearRefCache();
+    g_coerceResult = &coercedA;
+}
+
+// ---------------------------------------------------------------------------
 // 4b. RTD topic tokens: the digest must match the WIRE PAYLOAD the typeTag names
 // ---------------------------------------------------------------------------
 //
@@ -839,6 +976,7 @@ int main(int argc, char** argv) {
     TestFP12Token();
     TestMakeCacheKey();
     TestRefArgs();
+    TestIterativeCalcBypassesRefCache();
     TestRefIdentityInToken();
     TestConcurrentGetPut();
     TestConcurrentRefHash();

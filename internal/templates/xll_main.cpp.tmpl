@@ -1231,6 +1231,31 @@ start_worker:
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
+    XLL_SAFE_BLOCK_BEGIN
+        // Prime the RefCache's iterative-calculation gate ONCE, here, at load.
+        //
+        // The gate (CacheManager::RefreshIterativeCalcMode, AGENTS.md §19.4) is
+        // otherwise refreshed only at calc END, which loses the very first
+        // cycle: a workbook SAVED with "Enable iterative calculation" on opens
+        // with the gate off, so its first recalculation memoizes pass-1
+        // reference digests across every iteration of the circular group and
+        // returns a wrong value — the exact defect the gate exists to prevent —
+        // and that value then survives for the whole session unless the cell is
+        // dirtied again.
+        //
+        // xlAutoOpen is a valid command context for the macro-sheet-only
+        // GET.DOCUMENT (§19.4 / §23.6). If no workbook is active yet the query
+        // simply fails and leaves the gate at its previous value, which is the
+        // documented fallback — the calc-end refresh then takes over from the
+        // first cycle onwards, i.e. exactly the old behavior. So this can only
+        // add correctness, never remove it.
+        xll::CacheManager::Instance().ForceRefreshIterativeCalcMode();
+        if (xll::CacheManager::Instance().IterativeCalcMode()) {
+            SAFE_LOG_INFO("RefCache: iterative calculation is ON at load (GET.DOCUMENT(15)); "
+                          "per-cycle reference-digest memoization disabled for the first cycle too.");
+        }
+    XLL_SAFE_BLOCK_END_CONTINUE
+
         SAFE_LOG_INFO("xlAutoOpen: Initialization complete. Returning 1.");
         return 1;
     XLL_SAFE_BLOCK_END(0)

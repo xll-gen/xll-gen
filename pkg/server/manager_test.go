@@ -496,9 +496,18 @@ func TestChunkManager(t *testing.T) {
 
 	t.Run("OversizedPayload_HandleChunkWirePath", func(t *testing.T) {
 		// Same edge case but exercised through HandleChunk so that the
-		// FlatBuffers Chunk decode path is covered. A late, malformed chunk
-		// claiming offset+len > TotalSize must be silently dropped without
-		// advancing Received.
+		// FlatBuffers Chunk decode path is covered. A chunk claiming
+		// offset+len > TotalSize is a protocol violation: the transfer can
+		// never be completed correctly, so it must be REFUSED with
+		// MsgTypeSystemError and the partial buffer dropped.
+		//
+		// CONTRACT CHANGE (chunk hardening): this used to assert the buffer was
+		// "retained for retry" and the chunk silently dropped. There is no
+		// legitimate retry for an out-of-bounds range — the producer would be
+		// acked as if all were well and keep pushing until the 60s TTL — and
+		// the C++ mirror (xll_worker.cpp) already erased the partial message on
+		// the same condition. Both sides now drop + report, matching shm
+		// SPECIFICATION.md §3.3.4.
 		cm := NewChunkManager()
 		h := &SystemHandler{ChunkManager: cm}
 
@@ -517,22 +526,276 @@ func TestChunkManager(t *testing.T) {
 			dispatched = true
 			return 0, 0
 		}
-		_, _ = h.HandleChunk(oversized, respBuf, b, dispatch)
+		size, mt := h.HandleChunk(oversized, respBuf, b, dispatch)
 		if dispatched {
 			t.Fatalf("oversized chunk must not trigger completion dispatch")
 		}
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("HandleChunk must return (0, MsgTypeSystemError) for an out-of-bounds chunk; got (%d, %d)", size, mt)
+		}
 
 		cm.chunkMutex.Lock()
-		buf := cm.chunkCache[id]
+		_, stillThere := cm.chunkCache[id]
 		cm.chunkMutex.Unlock()
-		if buf == nil {
-			t.Fatalf("buffer for id=%#x missing after oversized chunk; should be retained for retry", id)
+		if stillThere {
+			t.Fatalf("out-of-bounds chunk must drop the transfer; buffer for id=%#x still in chunkCache", id)
 		}
-		buf.Mutex.Lock()
-		recv := buf.Received
-		buf.Mutex.Unlock()
-		if recv != 0 {
-			t.Fatalf("Received must remain 0 after oversized wire chunk; got %d", recv)
+	})
+
+	t.Run("OverlappingChunks_TransferRejected", func(t *testing.T) {
+		// THE zero-fill hole. total=100 with (off=0,len=60) then (off=50,len=40):
+		// two DISTINCT offsets, so the old offset-only dedup accepted both, and
+		// Received reached 60+40 = 100 >= TotalSize → COMPLETE. But [90,100)
+		// was never written by anyone, so the consumer would have read 10 bytes
+		// of zero-fill as if they were payload.
+		//
+		// Under the coverage contract the second chunk overlaps [50,60) and is
+		// refused with MsgTypeSystemError, and the whole transfer is dropped.
+		cm := NewChunkManager()
+		h := &SystemHandler{ChunkManager: cm}
+
+		const id uint64 = 0x0FF5E7
+		const total uint32 = 100
+
+		respBuf := make([]byte, 4096)
+		b := flatbuffers.NewBuilder(1024)
+		dispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+			t.Fatalf("overlapping chunks must never reach completion dispatch (the zero-fill hole)")
+			return 0, 0
+		}
+
+		first := buildChunkRequest(t, id, total, 0, bytes.Repeat([]byte{0xA1}, 60), 0)
+		if size, mt := h.HandleChunk(first, respBuf, b, dispatch); mt == shm.MsgTypeSystemError {
+			t.Fatalf("first (well-formed) chunk must be accepted; got (%d, %d)", size, mt)
+		}
+
+		overlapping := buildChunkRequest(t, id, total, 50, bytes.Repeat([]byte{0xA2}, 40), 0)
+		size, mt := h.HandleChunk(overlapping, respBuf, b, dispatch)
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("overlapping chunk must return (0, MsgTypeSystemError); got (%d, %d)", size, mt)
+		}
+
+		cm.chunkMutex.Lock()
+		_, stillThere := cm.chunkCache[id]
+		cm.chunkMutex.Unlock()
+		if stillThere {
+			t.Fatalf("overlap must drop the whole transfer; buffer for id=%#x still in chunkCache", id)
+		}
+	})
+
+	t.Run("SameOffsetDifferentLength_TransferRejected", func(t *testing.T) {
+		// A producer that re-chunks mid-transfer resends the same START offset
+		// with a different length. That is NOT the benign retransmit the dedup
+		// path exists for: which bytes end up covered changes. Refuse it.
+		cm := NewChunkManager()
+		h := &SystemHandler{ChunkManager: cm}
+
+		const id uint64 = 0x5A3E
+		const total uint32 = 40
+
+		respBuf := make([]byte, 4096)
+		b := flatbuffers.NewBuilder(1024)
+		dispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+			t.Fatalf("re-chunked transfer must not dispatch")
+			return 0, 0
+		}
+
+		_, _ = h.HandleChunk(buildChunkRequest(t, id, total, 0, bytes.Repeat([]byte{0x01}, 10), 0), respBuf, b, dispatch)
+		size, mt := h.HandleChunk(buildChunkRequest(t, id, total, 0, bytes.Repeat([]byte{0x02}, 20), 0), respBuf, b, dispatch)
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("same offset with a different length must return (0, MsgTypeSystemError); got (%d, %d)", size, mt)
+		}
+	})
+
+	t.Run("AdjacentChunks_OutOfOrder_Complete", func(t *testing.T) {
+		// Control for the two rejection cases above: exactly-abutting ranges
+		// delivered out of order are NOT overlaps and must complete normally,
+		// with Received == TotalSize reached exactly.
+		cm := NewChunkManager()
+		h := &SystemHandler{ChunkManager: cm}
+
+		const id uint64 = 0xAD3ACE
+		const total uint32 = 30
+
+		respBuf := make([]byte, 4096)
+		b := flatbuffers.NewBuilder(1024)
+		var got []byte
+		dispatch := func(data []byte, _ []byte, _ shm.MsgType) (int32, shm.MsgType) {
+			got = append([]byte(nil), data...)
+			return 0, 0
+		}
+
+		// Arrive 20, 0, 10.
+		_, _ = h.HandleChunk(buildChunkRequest(t, id, total, 20, bytes.Repeat([]byte{0x03}, 10), 0), respBuf, b, dispatch)
+		_, _ = h.HandleChunk(buildChunkRequest(t, id, total, 0, bytes.Repeat([]byte{0x01}, 10), 0), respBuf, b, dispatch)
+		if got != nil {
+			t.Fatalf("dispatch fired before full coverage")
+		}
+		_, _ = h.HandleChunk(buildChunkRequest(t, id, total, 10, bytes.Repeat([]byte{0x02}, 10), 0), respBuf, b, dispatch)
+
+		want := append(append(bytes.Repeat([]byte{0x01}, 10), bytes.Repeat([]byte{0x02}, 10)...), bytes.Repeat([]byte{0x03}, 10)...)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("out-of-order reassembly mismatch.\n got %v\nwant %v", got, want)
+		}
+	})
+
+	t.Run("MaxConcurrentTransfers_PruneThenRefuse", func(t *testing.T) {
+		// Aggregate resource bound: MaxChunkBufferBytes caps ONE transfer, so
+		// without a count bound N transfers x 256 MiB is unbounded. At the cap
+		// the manager prunes stale buffers and, if that frees nothing, refuses
+		// the NEW transfer (nothing inserted) so the wire sees SystemError.
+		const cap = 8
+		cm := NewChunkManagerFromConfig(ChunkManagerConfig{MaxConcurrentTransfers: cap})
+		defer cm.Close()
+
+		for i := 0; i < cap; i++ {
+			if _, err := cm.GetChunkBuffer(uint64(0x1000+i), 64); err != nil {
+				t.Fatalf("transfer %d within cap=%d must be admitted; got %v", i, cap, err)
+			}
+		}
+		if _, err := cm.GetChunkBuffer(0x2000, 64); err == nil {
+			t.Fatalf("transfer %d must be refused at cap=%d", cap+1, cap)
+		}
+		cm.chunkMutex.Lock()
+		_, leaked := cm.chunkCache[0x2000]
+		n := len(cm.chunkCache)
+		cm.chunkMutex.Unlock()
+		if leaked {
+			t.Fatalf("refused transfer must not leave a chunkCache entry")
+		}
+		if n != cap {
+			t.Fatalf("chunkCache grew past the cap: got %d want %d", n, cap)
+		}
+
+		// An EXISTING transfer must still be servable at the cap — the bound is
+		// on opening new ones, not on making progress.
+		if _, err := cm.GetChunkBuffer(0x1000, 64); err != nil {
+			t.Fatalf("in-flight transfer must remain servable at the cap; got %v", err)
+		}
+		// And a total-mismatch reset of an existing id replaces in place rather
+		// than growing the map, so it must not be refused either.
+		if _, err := cm.GetChunkBuffer(0x1000, 128); err != nil {
+			t.Fatalf("total-mismatch reset of an existing id must not be refused at the cap; got %v", err)
+		}
+
+		// Make one entry stale: the next new transfer prunes it and is admitted.
+		cm.chunkMutex.Lock()
+		cm.chunkCache[0x1001].LastAccess = time.Now().Add(-2 * DefaultChunkBufferTTL)
+		cm.chunkMutex.Unlock()
+		if _, err := cm.GetChunkBuffer(0x3000, 64); err != nil {
+			t.Fatalf("prune-then-admit failed at the cap; got %v", err)
+		}
+		cm.chunkMutex.Lock()
+		_, prunedGone := cm.chunkCache[0x1001]
+		cm.chunkMutex.Unlock()
+		if prunedGone {
+			t.Fatalf("stale buffer should have been pruned to make room")
+		}
+	})
+
+	t.Run("MaxConcurrentTransfers_WirePathReturnsSystemError", func(t *testing.T) {
+		const cap = 4
+		cm := NewChunkManagerFromConfig(ChunkManagerConfig{MaxConcurrentTransfers: cap})
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+
+		respBuf := make([]byte, 4096)
+		b := flatbuffers.NewBuilder(1024)
+		dispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+			t.Fatalf("no transfer in this case is complete; dispatch must not fire")
+			return 0, 0
+		}
+
+		// Each transfer declares 64 bytes and delivers only the first 32, so
+		// none completes and all stay resident.
+		for i := 0; i < cap; i++ {
+			frame := buildChunkRequest(t, uint64(0x7000+i), 64, 0, bytes.Repeat([]byte{0x11}, 32), 0)
+			if _, mt := h.HandleChunk(frame, respBuf, b, dispatch); mt == shm.MsgTypeSystemError {
+				t.Fatalf("transfer %d within cap=%d must be accepted", i, cap)
+			}
+		}
+		frame := buildChunkRequest(t, 0x8000, 64, 0, bytes.Repeat([]byte{0x11}, 32), 0)
+		size, mt := h.HandleChunk(frame, respBuf, b, dispatch)
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("transfer past the cap must return (0, MsgTypeSystemError); got (%d, %d)", size, mt)
+		}
+	})
+}
+
+// TestChunkBuffer_ClaimSegment covers the overlap arbiter directly, including
+// the neighbour cases the wire-path tests only reach indirectly.
+func TestChunkBuffer_ClaimSegment(t *testing.T) {
+	newBuf := func() *ChunkBuffer { return &ChunkBuffer{Data: make([]byte, 1000), TotalSize: 1000} }
+
+	t.Run("DisjointAscending", func(t *testing.T) {
+		b := newBuf()
+		for _, off := range []uint32{0, 10, 20, 30} {
+			if got := b.ClaimSegment(off, 10); got != ClaimNew {
+				t.Fatalf("offset %d: got %v want ClaimNew", off, got)
+			}
+		}
+	})
+
+	t.Run("DisjointDescending_SortedInsert", func(t *testing.T) {
+		b := newBuf()
+		for _, off := range []uint32{30, 20, 10, 0} {
+			if got := b.ClaimSegment(off, 10); got != ClaimNew {
+				t.Fatalf("offset %d: got %v want ClaimNew", off, got)
+			}
+		}
+		for i := 1; i < len(b.Segments); i++ {
+			if b.Segments[i-1].Offset >= b.Segments[i].Offset {
+				t.Fatalf("Segments not kept ascending: %v", b.Segments)
+			}
+		}
+	})
+
+	t.Run("ExactRepeatIsDuplicate", func(t *testing.T) {
+		b := newBuf()
+		b.ClaimSegment(100, 50)
+		if got := b.ClaimSegment(100, 50); got != ClaimDuplicate {
+			t.Fatalf("got %v want ClaimDuplicate", got)
+		}
+	})
+
+	t.Run("SameOffsetOtherLengthIsOverlap", func(t *testing.T) {
+		b := newBuf()
+		b.ClaimSegment(100, 50)
+		if got := b.ClaimSegment(100, 20); got != ClaimOverlap {
+			t.Fatalf("got %v want ClaimOverlap", got)
+		}
+	})
+
+	t.Run("OverlapsPredecessorTail", func(t *testing.T) {
+		b := newBuf()
+		b.ClaimSegment(0, 60)
+		if got := b.ClaimSegment(50, 40); got != ClaimOverlap {
+			t.Fatalf("got %v want ClaimOverlap", got)
+		}
+	})
+
+	t.Run("OverlapsSuccessorHead", func(t *testing.T) {
+		b := newBuf()
+		b.ClaimSegment(50, 40)
+		if got := b.ClaimSegment(0, 60); got != ClaimOverlap {
+			t.Fatalf("got %v want ClaimOverlap", got)
+		}
+	})
+
+	t.Run("FullyContainedIsOverlap", func(t *testing.T) {
+		b := newBuf()
+		b.ClaimSegment(0, 100)
+		if got := b.ClaimSegment(10, 10); got != ClaimOverlap {
+			t.Fatalf("got %v want ClaimOverlap", got)
+		}
+	})
+
+	t.Run("ExactlyAbuttingIsNew", func(t *testing.T) {
+		b := newBuf()
+		b.ClaimSegment(0, 50)
+		b.ClaimSegment(100, 50)
+		if got := b.ClaimSegment(50, 50); got != ClaimNew {
+			t.Fatalf("a range that exactly fills the gap must be accepted; got %v", got)
 		}
 	})
 }
@@ -550,7 +813,7 @@ func TestChunkManager_TotalMismatchResetsBuffer(t *testing.T) {
 	buf1.Mutex.Lock()
 	copy(buf1.Data, bytes.Repeat([]byte{0xAB}, 32))
 	buf1.Received = 32
-	buf1.ReceivedOffsets[0] = true
+	buf1.Segments = append(buf1.Segments, ChunkSegment{Offset: 0, Length: 32})
 	buf1.Mutex.Unlock()
 
 	// Reuse the same id with a different total. Must reset.
@@ -567,8 +830,8 @@ func TestChunkManager_TotalMismatchResetsBuffer(t *testing.T) {
 	if buf2.Received != 0 {
 		t.Fatalf("reset buffer Received=%d, want 0", buf2.Received)
 	}
-	if len(buf2.ReceivedOffsets) != 0 {
-		t.Fatalf("reset buffer ReceivedOffsets not empty: %v", buf2.ReceivedOffsets)
+	if len(buf2.Segments) != 0 {
+		t.Fatalf("reset buffer Segments not empty: %v", buf2.Segments)
 	}
 	if !bytes.Equal(buf2.Data, make([]byte, 128)) {
 		t.Fatal("reset buffer Data not zeroed")
@@ -694,6 +957,265 @@ func TestChunkManager_ConcurrentDuplicateFinalChunk(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestChunkManager_ZeroLengthSegmentRejected is the regression for the MED
+// finding "a zero-length segment poisons a healthy chunk".
+//
+// A protocol.Chunk whose data vector is PRESENT but EMPTY passed every guard:
+// the C++ mirror only tested `!chunk->data()` and the Go side had no length
+// test at all. The frame then reached ClaimSegment, which happily recorded an
+// (offset, 0) range — and the REAL chunk that later arrived at that same offset
+// classified as "same start offset, DIFFERENT length" => ClaimOverlap => the
+// whole, otherwise perfectly healthy, transfer was discarded with SystemError.
+// One empty frame (a producer bug, a truncated retransmit, a hostile peer)
+// killed a good transfer, and the diagnostic pointed at the innocent chunk.
+//
+// A zero-length segment advances nothing, so it can never be a legitimate part
+// of a transfer: both sides now refuse it up front.
+func TestChunkManager_ZeroLengthSegmentRejected(t *testing.T) {
+	respBuf := make([]byte, 4096)
+	noDispatch := func(t *testing.T) func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+		return func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+			t.Fatalf("a rejected transfer must never reach the completion dispatch")
+			return 0, 0
+		}
+	}
+
+	t.Run("EmptySegmentRefusedNotRecorded", func(t *testing.T) {
+		cm := NewChunkManager()
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+		b := flatbuffers.NewBuilder(1024)
+
+		const id uint64 = 0x0E0E0E
+		const total uint32 = 32
+
+		// Present-but-empty data vector at offset 0.
+		size, mt := h.HandleChunk(buildChunkRequest(t, id, total, 0, []byte{}, 0), respBuf, b, noDispatch(t))
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("a zero-length chunk segment must return (0, MsgTypeSystemError); got (%d, %d) "+
+				"— accepting it records an (offset, 0) range that turns the real chunk at that "+
+				"offset into a ClaimOverlap and kills the transfer", size, mt)
+		}
+
+		cm.chunkMutex.Lock()
+		_, stillThere := cm.chunkCache[id]
+		cm.chunkMutex.Unlock()
+		if stillThere {
+			t.Fatalf("a refused zero-length segment must drop the transfer; buffer for id=%#x still resident", id)
+		}
+	})
+
+	t.Run("EmptySegmentCannotPreemptTheRealChunk", func(t *testing.T) {
+		// The harm the refusal prevents, stated as a property: after an empty
+		// frame at offset 0, no segment covering offset 0 exists, so nothing an
+		// honest producer sends later can be mistaken for an overlap of it.
+		cm := NewChunkManager()
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+		b := flatbuffers.NewBuilder(1024)
+
+		const id uint64 = 0x0E0E0F
+		const total uint32 = 32
+
+		_, _ = h.HandleChunk(buildChunkRequest(t, id, total, 0, []byte{}, 0), respBuf, b, noDispatch(t))
+
+		cm.chunkMutex.Lock()
+		buf, present := cm.chunkCache[id]
+		cm.chunkMutex.Unlock()
+		if present {
+			buf.Mutex.Lock()
+			segs := append([]ChunkSegment(nil), buf.Segments...)
+			buf.Mutex.Unlock()
+			t.Fatalf("the empty frame left a live buffer with segments %v; before the fix the "+
+				"recorded (0,0) range made the real chunk at offset 0 a ClaimOverlap", segs)
+		}
+	})
+}
+
+// TestChunkManager_RejectedTransferIsPoisoned is the regression for the MED
+// finding "rejection is not final — the next chunk resurrects the transfer".
+//
+// Every reject path drops the ChunkBuffer, and nothing remembered the id. The
+// producer's NEXT chunk for that id therefore found no buffer, GetChunkBuffer
+// allocated a FRESH one, and the chunk was acked as SUCCESS. Two effects, both
+// the exact inverse of the fail-fast the refusal was added for:
+//
+//   - the resurrected buffer is missing every earlier chunk, so it can never
+//     complete and squats a MaxConcurrentTransfers slot until the TTL sweep;
+//   - pkg/chunk.AsyncRetry (10x exponential backoff) receives a SUCCESS on its
+//     first retry, so the producer never aborts and keeps pushing — the async
+//     call hangs to its own timeout instead of failing immediately.
+//
+// The fix records the id in a TTL-bounded poison set; every later chunk on that
+// id is refused at the door.
+func TestChunkManager_RejectedTransferIsPoisoned(t *testing.T) {
+	respBuf := make([]byte, 4096)
+
+	t.Run("OverlapRejectionBlocksTheFollowingChunk", func(t *testing.T) {
+		cm := NewChunkManager()
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+		b := flatbuffers.NewBuilder(1024)
+		dispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) {
+			t.Fatalf("a poisoned transfer must never dispatch")
+			return 0, 0
+		}
+
+		const id uint64 = 0xA001
+		const total uint32 = 100
+
+		if _, mt := h.HandleChunk(buildChunkRequest(t, id, total, 0, bytes.Repeat([]byte{0xA1}, 60), 0), respBuf, b, dispatch); mt == shm.MsgTypeSystemError {
+			t.Fatalf("the first well-formed chunk must be accepted")
+		}
+		if _, mt := h.HandleChunk(buildChunkRequest(t, id, total, 50, bytes.Repeat([]byte{0xA2}, 40), 0), respBuf, b, dispatch); mt != shm.MsgTypeSystemError {
+			t.Fatalf("the overlapping chunk must be refused")
+		}
+
+		// THE REGRESSION: the producer's next chunk (offset != 0, so it cannot
+		// be mistaken for a new transfer opening at 0) must NOT be acked.
+		size, mt := h.HandleChunk(buildChunkRequest(t, id, total, 60, bytes.Repeat([]byte{0xA3}, 40), 0), respBuf, b, dispatch)
+		if size != 0 || mt != shm.MsgTypeSystemError {
+			t.Fatalf("a chunk arriving after the transfer was rejected must return "+
+				"(0, MsgTypeSystemError); got (%d, %d) — an ack here resurrects a buffer that "+
+				"can never complete and tells the retry ladder to keep pushing", size, mt)
+		}
+		cm.chunkMutex.Lock()
+		_, resurrected := cm.chunkCache[id]
+		cm.chunkMutex.Unlock()
+		if resurrected {
+			t.Fatalf("the rejected transfer was resurrected: a buffer for id=%#x is resident again "+
+				"and will hold a MaxConcurrentTransfers slot until the TTL sweep", id)
+		}
+	})
+
+	t.Run("OutOfBoundsAndZeroLengthPoisonToo", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			id    uint64
+			frame func(t *testing.T) []byte
+		}{
+			{"OutOfBounds", 0xB0, func(t *testing.T) []byte {
+				return buildChunkRequest(t, 0xB0, 16, 8, bytes.Repeat([]byte{0xCD}, 32), 0)
+			}},
+			{"ZeroLength", 0xB1, func(t *testing.T) []byte {
+				return buildChunkRequest(t, 0xB1, 16, 0, []byte{}, 0)
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cm := NewChunkManager()
+				defer cm.Close()
+				h := &SystemHandler{ChunkManager: cm}
+				b := flatbuffers.NewBuilder(1024)
+				dispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) { return 0, 0 }
+
+				if _, mt := h.HandleChunk(tc.frame(t), respBuf, b, dispatch); mt != shm.MsgTypeSystemError {
+					t.Fatalf("%s must be refused", tc.name)
+				}
+				if !cm.IsPoisoned(tc.id) {
+					t.Fatalf("%s must poison the transfer id", tc.name)
+				}
+				// Any follow-up on that id, well-formed or not, is refused.
+				size, mt := h.HandleChunk(buildChunkRequest(t, tc.id, 16, 0, bytes.Repeat([]byte{0x01}, 16), 0), respBuf, b, dispatch)
+				if size != 0 || mt != shm.MsgTypeSystemError {
+					t.Fatalf("a follow-up chunk on the poisoned id must be refused; got (%d, %d)", size, mt)
+				}
+			})
+		}
+	})
+
+	t.Run("PoisonIsPerIdNotGlobal", func(t *testing.T) {
+		cm := NewChunkManager()
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+		b := flatbuffers.NewBuilder(1024)
+
+		// Poison one id...
+		_, _ = h.HandleChunk(buildChunkRequest(t, 0xC0, 16, 0, []byte{}, 0), respBuf, b,
+			func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) { return 0, 0 })
+
+		// ...an unrelated transfer must still complete normally.
+		var got []byte
+		dispatch := func(data []byte, _ []byte, _ shm.MsgType) (int32, shm.MsgType) {
+			got = append([]byte(nil), data...)
+			return 0, 0
+		}
+		payload := bytes.Repeat([]byte{0x7E}, 16)
+		if _, mt := h.HandleChunk(buildChunkRequest(t, 0xC1, 16, 0, payload, 0), respBuf, b, dispatch); mt == shm.MsgTypeSystemError {
+			t.Fatalf("poisoning id 0xC0 must not affect id 0xC1")
+		}
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("unrelated transfer did not reassemble: got %v want %v", got, payload)
+		}
+	})
+
+	t.Run("PoisonExpiresWithTheTTL", func(t *testing.T) {
+		// The poison set must never burn an id permanently: a producer that
+		// reconnects after the window gets a clean slate, exactly like a stale
+		// reassembly buffer.
+		cm := NewChunkManagerFromConfig(ChunkManagerConfig{BufferTTL: 20 * time.Millisecond})
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+		b := flatbuffers.NewBuilder(1024)
+
+		const id uint64 = 0xD0
+		_, _ = h.HandleChunk(buildChunkRequest(t, id, 16, 0, []byte{}, 0), respBuf, b,
+			func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) { return 0, 0 })
+		if !cm.IsPoisoned(id) {
+			t.Fatalf("id must be poisoned right after the refusal")
+		}
+
+		time.Sleep(40 * time.Millisecond)
+		if cm.IsPoisoned(id) {
+			t.Fatalf("the poison entry must expire with the buffer TTL")
+		}
+
+		var got []byte
+		payload := bytes.Repeat([]byte{0x5C}, 16)
+		if _, mt := h.HandleChunk(buildChunkRequest(t, id, 16, 0, payload, 0), respBuf, b,
+			func(data []byte, _ []byte, _ shm.MsgType) (int32, shm.MsgType) {
+				got = append([]byte(nil), data...)
+				return 0, 0
+			}); mt == shm.MsgTypeSystemError {
+			t.Fatalf("after the poison expired the id must be reusable from scratch")
+		}
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("reused id did not reassemble: got %v want %v", got, payload)
+		}
+	})
+
+	t.Run("ResourceRefusalDoesNotPoison", func(t *testing.T) {
+		// Deliberate asymmetry: hitting MaxConcurrentTransfers is TRANSIENT and
+		// inserts no buffer, so there is nothing to resurrect and a later retry
+		// on the same id may legitimately succeed. Only protocol violations
+		// poison.
+		const cap = 2
+		cm := NewChunkManagerFromConfig(ChunkManagerConfig{MaxConcurrentTransfers: cap})
+		defer cm.Close()
+		h := &SystemHandler{ChunkManager: cm}
+		b := flatbuffers.NewBuilder(1024)
+		dispatch := func([]byte, []byte, shm.MsgType) (int32, shm.MsgType) { return 0, 0 }
+
+		for i := 0; i < cap; i++ {
+			frame := buildChunkRequest(t, uint64(0xE000+i), 64, 0, bytes.Repeat([]byte{0x11}, 32), 0)
+			if _, mt := h.HandleChunk(frame, respBuf, b, dispatch); mt == shm.MsgTypeSystemError {
+				t.Fatalf("transfer %d within cap=%d must be accepted", i, cap)
+			}
+		}
+		const late uint64 = 0xEFFF
+		if _, mt := h.HandleChunk(buildChunkRequest(t, late, 64, 0, bytes.Repeat([]byte{0x11}, 32), 0), respBuf, b, dispatch); mt != shm.MsgTypeSystemError {
+			t.Fatalf("the transfer past the cap must be refused")
+		}
+		if cm.IsPoisoned(late) {
+			t.Fatalf("a RESOURCE refusal must not poison the id: it is transient and inserts no buffer")
+		}
+		// Free a slot; the same id must now be admitted.
+		cm.RemoveChunkBuffer(0xE000)
+		if _, mt := h.HandleChunk(buildChunkRequest(t, late, 64, 0, bytes.Repeat([]byte{0x11}, 32), 0), respBuf, b, dispatch); mt == shm.MsgTypeSystemError {
+			t.Fatalf("once a slot frees up, the previously capped id must be admitted")
+		}
+	})
 }
 
 // TestChunkManager_CloseStopsCleanupGoroutine is the regression for the MED

@@ -310,6 +310,87 @@ void CacheManager::ClearRefCache() {
     refCache_.clear();
 }
 
+// Memory ordering for iterativeCalc_ / refPathUsed_ (both written on the STA at
+// calc end / xlAutoOpen and read on Excel's calculation threads): stores are
+// RELEASE, loads and the flag-consuming exchange are ACQUIRE. On x86 this
+// compiles to the SAME instructions as relaxed (plain MOV; XCHG is already
+// locked), so the pairing costs nothing and states the intent — the gate is
+// read next to the refCache_ map operations it guards, and relaxed would have
+// left "why is this safe?" resting on the target ISA.
+void CacheManager::SetIterativeCalcMode(bool on) {
+    iterativeCalc_.store(on, std::memory_order_release);
+}
+
+bool CacheManager::IterativeCalcMode() const {
+    return iterativeCalc_.load(std::memory_order_acquire);
+}
+
+void CacheManager::RefreshIterativeCalcMode() {
+    // Only pay for the Excel round-trip when a reference argument actually went
+    // through the RefCache this cycle (see the header). Consumes the flag.
+    if (!refPathUsed_.exchange(false, std::memory_order_acquire)) return;
+    QueryIterativeCalcMode();
+}
+
+void CacheManager::ForceRefreshIterativeCalcMode() {
+    // Unconditional twin of RefreshIterativeCalcMode: it does NOT consult (or
+    // consume) refPathUsed_, because at its one call site — xlAutoOpen — no
+    // calculation has happened yet, so the flag is necessarily false and the
+    // gated version would return without ever asking Excel.
+    //
+    // Why that mattered: the gate was refreshed at calc END only, so opening a
+    // workbook that was SAVED with iterative calculation enabled ran its FIRST
+    // recalculation with memoization still on — precisely the stale-across-
+    // iterations defect the gate exists to prevent — and the wrong value then
+    // survived for the whole session unless the cell was dirtied again. Priming
+    // the gate at load closes that first cycle. xlAutoOpen is a valid command
+    // context for GET.DOCUMENT (§19.4 / §23.6); if it fails (no active workbook
+    // yet) the query leaves the gate untouched and the calc-end refresh takes
+    // over from the next cycle, i.e. exactly the previous behavior.
+    QueryIterativeCalcMode();
+}
+
+void CacheManager::QueryIterativeCalcMode() {
+    // GET.DOCUMENT(15) = "TRUE if iterative calculation is enabled" for the
+    // ACTIVE workbook; 16 is MaxIterations and 17 is MaxChange. Empirically
+    // confirmed against Excel 16.0.20131.20154 by dumping GET.DOCUMENT(1..90)
+    // with Application.Iteration false vs true: type_num 15 (BOOL 0 -> 1) and
+    // 16 (100 -> the MaxIterations value) were the ONLY entries that moved.
+    // The same dump run from inside the xleventCalculationEnded callback
+    // returned identical values, which is what makes this call legal here —
+    // GET.DOCUMENT is macro-sheet only, and the event callback IS a command
+    // context (AGENTS.md §19.4 / §23.6).
+    //
+    // Failure (no active workbook, wrong context, older host) leaves the gate
+    // at its previous value: this query may only ever DISABLE an optimization,
+    // never change a digest, so "unknown" safely means "keep what we had".
+    XLOPER12 xRes;
+    xRes.xltype = 0;
+    if (xll::CallExcel(xlfGetDocument, &xRes, 15) != xlretSuccess) return;
+
+    const DWORD ty = xRes.xltype & ~(xlbitXLFree | xlbitDLLFree);
+    bool on = false;
+    bool known = false;
+    if (ty == xltypeBool) {
+        on = xRes.val.xbool != 0;
+        known = true;
+    } else if (ty == xltypeNum) { // defensive: some hosts answer numerically
+        on = xRes.val.num != 0.0;
+        known = true;
+    }
+    xll::CallExcel(xlFree, nullptr, &xRes);
+    if (!known) return;
+
+    // NOTE: deliberately no logging here. xll_cache.cpp reaches Excel only
+    // through xlCoerce/xlFree/xlfGetDocument (all satisfied by a stub Excel12v)
+    // and calls into NO other xll_* translation unit, which is what lets
+    // internal/assets/testdata/cache_native_test.cpp compile and RUN this file
+    // offline with g++. Adding an xll::LogInfo call here breaks that link
+    // (undefined reference); the gate transition is logged by the caller in
+    // xll_events.cpp instead.
+    iterativeCalc_.store(on, std::memory_order_release);
+}
+
 uint64_t CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, const std::function<uint64_t(const XLOPER12*)>& computeFn) {
     if (!pRef) return Fnv1aByte(kFnvBasis, kTagNull);
 
@@ -331,6 +412,19 @@ uint64_t CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, const std::func
     if (refTy != xltypeRef) return computeFn(pRef);
     if (!pRef->val.mref.lpmref) return computeFn(pRef);
 
+    // This IS the RefCache path — record it even when the gate below bypasses
+    // the map, so calc end keeps re-querying Excel and the gate can be turned
+    // back OFF when the user disables iterative calculation.
+    refPathUsed_.store(true, std::memory_order_release);
+
+    // Iterative (circular-reference) calculation re-evaluates the same cells
+    // MANY times within ONE calculation cycle while CalculationEnded — the only
+    // clear point — fires once for the whole cycle, so a memoized pass-1 digest
+    // would be served to passes 2..N with the cell values already changed. Skip
+    // the memoization (not the hash) while that mode is on. See
+    // CacheManager::RefreshIterativeCalcMode in xll_cache.h.
+    const bool bypassMemo = iterativeCalc_.load(std::memory_order_acquire);
+
     uint64_t acc = kFnvBasis;
     IDSHEET sheetId = pRef->val.mref.idSheet;
     // Correct access: lpmref points to XLMREF12 which contains 'count' and 'reftbl'
@@ -349,10 +443,12 @@ uint64_t CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, const std::func
         // calls back into Excel (xlCoerce).
         bool found = false;
         uint64_t hashVal = 0;
-        refCache_.if_contains(key, [&](const std::pair<RefKey, uint64_t>& val) {
-            hashVal = val.second;
-            found = true;
-        });
+        if (!bypassMemo) {
+            refCache_.if_contains(key, [&](const std::pair<RefKey, uint64_t>& val) {
+                hashVal = val.second;
+                found = true;
+            });
+        }
 
         if (!found) {
             // Construct a temporary XLOPER just for this rect to pass to computeFn
@@ -386,8 +482,10 @@ uint64_t CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, const std::func
 
             hashVal = computeFn(&xRef);
 
-            // Store in cache
-            refCache_.insert_or_assign(key, hashVal);
+            // Store in cache (skipped under the iterative-calculation gate: the
+            // digest is still folded into `acc` below, so the KEY BYTES are
+            // identical in both modes — only the memoization is dropped).
+            if (!bypassMemo) refCache_.insert_or_assign(key, hashVal);
         }
         acc = Fnv1aU64(acc, hashVal);
     }

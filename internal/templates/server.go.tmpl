@@ -32,9 +32,10 @@ var _ = strings.Join
 var (
 	asyncBatcher   = server.NewAsyncBatcher()
 	chunkManager   = {{if .Chunk}}server.NewChunkManagerFromConfig(server.ChunkManagerConfig{
-		MaxBufferBytes:  {{.Chunk.MaxBufferBytes}},
-		CleanupInterval: time.Duration({{parseDurationToNs .Chunk.CleanupInterval}}),
-		BufferTTL:       time.Duration({{parseDurationToNs .Chunk.BufferTTL}}),
+		MaxBufferBytes:         {{.Chunk.MaxBufferBytes}},
+		CleanupInterval:        time.Duration({{parseDurationToNs .Chunk.CleanupInterval}}),
+		BufferTTL:              time.Duration({{parseDurationToNs .Chunk.BufferTTL}}),
+		MaxConcurrentTransfers: {{.Chunk.MaxConcurrentTransfers}},
 	}){{else}}server.NewChunkManager(){{end}}
 	commandBatcher = server.NewCommandBatcher()
 	refCache       = server.NewRefCache()
