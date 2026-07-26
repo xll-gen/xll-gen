@@ -15,13 +15,46 @@ type XllService interface {
 {{range .Functions}}	{{if eq .Mode "rtd"}}	{{.Name}}_RTD(ctx context.Context, topicID int32{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}) error
 	{{else}}	{{.Name}}(ctx context.Context{{range .Args}}, {{.Name}} {{lookupGoType .Type}}{{end}}{{if .Caller}}, caller *protocol.Range{{end}}) ({{lookupRetGoType .Return}}, error)
 {{end}}{{end}}
-{{range .Events}}	{{.Handler}}(ctx context.Context) error
+{{range .Events}}{{if eq .Type "CalculationCanceled"}}	// {{.Handler}} runs when the user interrupts a recalculation (Esc).
+	//
+	// A cancelled cycle fires BOTH handlers: Excel emits CalculationCanceled and
+	// then CalculationEnded 2-6 ms later, so this is followed by the
+	// CalculationEnded handler for the SAME interrupted cycle, in that order
+	// (guaranteed — the XLL blocks Excel's UI thread until this returns). Do not
+	// assume "cancelled means Ended will not come".
+	//
+	// Cancellation clears nothing: per-cycle caches and any commands you
+	// scheduled are handled by the CalculationEnded path that follows, so
+	// ScheduleSet/ScheduleFormat issued here are still applied.
+	//
+	// Runs while Excel's UI thread is blocked — never drive Excel over COM from
+	// it; use ScheduleSet/ScheduleFormat.
+{{end}}	{{.Handler}}(ctx context.Context) error
 {{end}}
 {{range .Commands}}	{{.Handler}}(ctx context.Context, cmd server.CommandContext) error
 {{end}}
 {{if not (hasEvent "CalculationEnded" .Events)}}	OnCalculationEnded(ctx context.Context) error
 {{end}}
-{{if not (hasEvent "CalculationCanceled" .Events)}}	OnCalculationCanceled(ctx context.Context) error
+{{if not (hasEvent "CalculationCanceled" .Events)}}	// OnCalculationCanceled runs when the user interrupts a recalculation (Esc).
+	//
+	// It only fires if xll.yaml declares `- type: CalculationCanceled` under
+	// events; otherwise this method is required by the interface but never
+	// called.
+	//
+	// IMPORTANT — a cancelled cycle fires BOTH handlers. Excel emits
+	// CalculationCanceled and then CalculationEnded 2-6 ms later, so
+	// OnCalculationCanceled is followed by OnCalculationEnded for the SAME
+	// interrupted cycle, in that order (the ordering is guaranteed: the XLL
+	// blocks Excel's UI thread until this handler returns). Do not assume
+	// "cancelled means Ended will not come".
+	//
+	// Cancellation clears nothing: per-cycle caches and any commands you
+	// scheduled are handled by the CalculationEnded path that follows, so
+	// ScheduleSet/ScheduleFormat issued here are still applied.
+	//
+	// Like OnCalculationEnded, this runs while Excel's UI thread is blocked —
+	// never drive Excel over COM from it; use ScheduleSet/ScheduleFormat.
+	OnCalculationCanceled(ctx context.Context) error
 {{end}}
 {{if .Rtd.Enabled}}
 	OnRtdConnect(ctx context.Context, topicID int32, strings []string, newValues bool) error

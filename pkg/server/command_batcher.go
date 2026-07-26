@@ -19,16 +19,15 @@ const (
 // calc-end.
 //
 // Concurrency: the generated server calls ScheduleSet/ScheduleFormat from async
-// UDF worker goroutines, while the calc-boundary handlers call FlushCommands
-// (calc-ended) and Clear (calc-canceled) from the SHM dispatch goroutines —
-// all genuinely concurrent. A single mutex guards both the per-cell buffer and
-// the command queue so that every public method is atomic as a whole. This
-// matters because each schedule of a large/non-scalar range first flushes the
-// buffer and then enqueues its own command; with separate locks that two-step
-// sequence could interleave with a concurrent Flush/Clear, reordering commands
-// or leaking a command past a cancellation. The cost is that GreedyMesh runs
-// under the lock (FlushCommands still serializes its FlatBuffer build outside
-// the lock by swapping the queue to a local first).
+// UDF worker goroutines, while FlushCommands (calc-ended) runs on the SHM
+// dispatch goroutine — genuinely concurrent. A single mutex guards both the
+// per-cell buffer and the command queue so that every public method is atomic
+// as a whole. This matters because each schedule of a large/non-scalar range
+// first flushes the buffer and then enqueues its own command; with separate
+// locks that two-step sequence could interleave with a concurrent
+// Flush/Clear, reordering commands or losing one. The cost is that GreedyMesh
+// runs under the lock (FlushCommands still serializes its FlatBuffer build
+// outside the lock by swapping the queue to a local first).
 //
 // Note on async scheduling: a command scheduled after its cycle's calc-ended
 // has already flushed lands in the buffer/queue and is emitted on the next
@@ -47,6 +46,14 @@ func NewCommandBatcher() *CommandBatcher {
 	}
 }
 
+// Clear discards every buffered cell and queued command.
+//
+// NOTE: no production path calls this. It used to be wired to
+// HandleCalculationCanceled, which was wrong — a cancelled cycle is still
+// followed by CalculationEnded 2–6 ms later (AGENTS.md §19.4), so clearing on
+// cancel silently dropped that cycle's ScheduleSet/ScheduleFormat just before
+// the flush meant to emit them. Kept as a supported reset primitive (and used
+// by tests); do NOT re-attach it to a calc-boundary event.
 func (cb *CommandBatcher) Clear() {
 	cb.mu.Lock()
 	cb.cmdQueue = nil

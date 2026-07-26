@@ -48,6 +48,11 @@ func TestCalcEnd_DeferredRunner_AssetDoesNotMutateCellsInEvent(t *testing.T) {
 		t.Fatalf("HandleCalculationEnded not found in xll_events.cpp:\n%s", src)
 	}
 	body := src[start:]
+	// Stop at the next namespace-scope function (the TU also defines
+	// HandleCalculationCanceled) so its text cannot satisfy or mask an assertion.
+	if end := strings.Index(body[len(sig):], "\n    void "); end >= 0 {
+		body = body[:len(sig)+end]
+	}
 
 	// The cell-mutating calls must be DEFERRED, never invoked inline in the event.
 	if strings.Contains(body, "ExecuteCommands(") {

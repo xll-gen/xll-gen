@@ -13,7 +13,6 @@
 #include <chrono>
 #include <thread>
 #include <cstring>  // std::memcpy in HandleChunk
-#include <iterator> // std::prev over receivedSegments
 
 #ifdef XLL_RTD_ENABLED
 #include "rtd/rtd.h" // Needed for IRTDUpdateEvent
@@ -51,7 +50,9 @@ std::thread g_workerThread;
 // either way; a project that lowers the Go caps ends up asymmetric by design.
 //
 // Keep the two in lockstep:
-//   - receivedSegments here    <->  ChunkBuffer.Segments + ClaimSegment
+//   - receivedSegments +
+//     xll::ClaimChunkSegment
+//     (xll_worker.h)           <->  ChunkBuffer.Segments + ClaimSegment
 //   - kMaxChunkTotalSize       <->  server.DefaultMaxChunkBufferBytes (256 MiB)
 //   - kMaxPartialMessages      <->  server.DefaultMaxConcurrentTransfers (1024)
 //   - the == completion test   <->  handlers.go `buf.Received == buf.TotalSize`
@@ -77,10 +78,13 @@ struct PartialMessage {
     size_t receivedSize;
     size_t totalSize;
     int32_t finalMsgType;
-    // Received byte ranges, keyed offset -> length, held disjoint. std::map is
-    // ordered, so lower_bound gives the two neighbours an arriving range has to
-    // be checked against. This is the C++ mirror of Go's
-    // ChunkBuffer.Segments/ClaimSegment and it does two jobs:
+    // Received byte ranges, keyed offset -> length, held disjoint. The arbiter
+    // that maintains that invariant is xll::ClaimChunkSegment (xll_worker.h) —
+    // deliberately a PURE function in the header so it can be exercised offline
+    // (internal/assets/testdata/chunk_segments_native_test.cpp, driven by
+    // internal/assets/chunk_cpp_test.go) instead of only being compiled. This
+    // map is the C++ mirror of Go's ChunkBuffer.Segments/ClaimSegment and it
+    // does two jobs:
     //   (a) DEDUP — an exact (offset, length) repeat is a retransmit (e.g.
     //       after a dropped ACK) and must skip BOTH the copy and the
     //       receivedSize advance, or the duplicate pushes receivedSize past
@@ -267,15 +271,11 @@ bool HandleChunk(const protocol::Chunk* chunk) {
     PartialMessage& pm = it->second;
     pm.lastUpdate = std::chrono::steady_clock::now();
 
-    // Validate offset and size. Subtraction form: the additive check
-    // (offset + size > total) can wrap for wire-supplied values near the
-    // unsigned max and pass validation while memcpy writes out of bounds.
-    if (!chunk->data() ||
-        chunk->offset() > pm.totalSize ||
-        chunk->data()->size() > pm.totalSize - chunk->offset()) {
-        // Out of bounds: the transfer can never complete correctly, so discard
-        // it instead of parking it until the TTL sweep, and tell the producer.
-        if (!g_isUnloading) LogWarn("Chunk out of bounds (offset " + std::to_string(chunk->offset()) + ", total " + std::to_string(pm.totalSize) + "). Dropping transfer.");
+    // A MISSING data vector is not something ClaimChunkSegment can see (it
+    // takes an already-extracted offset/length pair), so it is checked here and
+    // folded into the same out-of-bounds handling.
+    if (!chunk->data()) {
+        if (!g_isUnloading) LogWarn("Chunk carries no data vector (offset " + std::to_string(chunk->offset()) + ", total " + std::to_string(pm.totalSize) + "). Dropping transfer.");
         g_partialMessages.erase(it);
         PoisonTransferLocked(msgId);
         return false;
@@ -284,53 +284,58 @@ bool HandleChunk(const protocol::Chunk* chunk) {
     const uint32_t off = chunk->offset();
     const uint32_t len = static_cast<uint32_t>(chunk->data()->size());
 
-    // A PRESENT-but-EMPTY data vector is not the same as a missing one, and the
-    // `!chunk->data()` test above does not catch it. Refuse it explicitly: a
-    // (off, 0) segment records a zero-length range at `off`, and the REAL chunk
-    // that later arrives at the same offset then hits "same start offset,
-    // different length" -> overlap -> the whole (otherwise healthy) transfer is
-    // discarded. One harmless-looking empty frame would poison a good transfer.
-    // It also advances nothing, so it can never be a legitimate part of a
-    // transfer. Mirrors handlers.go's `dataLen == 0` refusal (§18.6).
-    if (len == 0) {
+    // Bounds-check + zero-length refusal + overlap arbitration, all in the pure
+    // helper in xll_worker.h so the rules can be exercised offline (g++ only,
+    // no Excel/FlatBuffers/shm) by internal/assets/testdata/
+    // chunk_segments_native_test.cpp — the same accept/reject set
+    // pkg/server's TestChunkBuffer_ClaimSegment pins for the Go mirror.
+    // ClaimChunkSegment RECORDS the range only on ::New; every reject verdict
+    // leaves pm.receivedSegments untouched, which is what lets each of them
+    // discard the transfer here without unwinding bookkeeping.
+    //
+    // pm.totalSize is a size_t but is bounded by kMaxChunkTotalSize (256 MiB)
+    // at insert time, and protocol.fbs declares total_size as uint32 anyway, so
+    // the narrowing cast cannot lose information.
+    const ChunkSegmentClaim claim = ClaimChunkSegment(
+        pm.receivedSegments, static_cast<uint32_t>(pm.totalSize), off, len);
+
+    switch (claim) {
+    case ChunkSegmentClaim::OutOfBounds:
+        // The transfer can never complete correctly, so discard it instead of
+        // parking it until the TTL sweep, and tell the producer.
+        if (!g_isUnloading) LogWarn("Chunk out of bounds (offset " + std::to_string(off) + ", len " + std::to_string(len) + ", total " + std::to_string(pm.totalSize) + "). Dropping transfer.");
+        g_partialMessages.erase(it);
+        PoisonTransferLocked(msgId);
+        return false;
+    case ChunkSegmentClaim::ZeroLength:
         if (!g_isUnloading) LogWarn("Zero-length chunk segment (offset " + std::to_string(off) + "). Dropping transfer.");
         g_partialMessages.erase(it);
         PoisonTransferLocked(msgId);
         return false;
-    }
-
-    // Classify the arriving range against what is already covered.
-    bool duplicate = false;
-    bool overlap = false;
-    auto seg = pm.receivedSegments.lower_bound(off);
-    if (seg != pm.receivedSegments.end() && seg->first == off) {
-        // Same start offset: an exact-length repeat is the retransmit case,
-        // anything else is a producer that re-chunked mid-transfer.
-        duplicate = (seg->second == len);
-        overlap = !duplicate;
-    } else {
-        if (seg != pm.receivedSegments.begin()) {
-            auto prev = std::prev(seg);
-            if (static_cast<uint64_t>(prev->first) + prev->second > off) overlap = true;
-        }
-        if (!overlap && seg != pm.receivedSegments.end() &&
-            static_cast<uint64_t>(off) + len > seg->first) {
-            overlap = true;
-        }
-    }
-
-    if (overlap) {
+    case ChunkSegmentClaim::Overlap:
         if (!g_isUnloading) LogWarn("Overlapping chunk range (offset " + std::to_string(off) + ", len " + std::to_string(len) + "). Dropping transfer.");
         g_partialMessages.erase(it);
         PoisonTransferLocked(msgId);
         return false;
-    }
-
-    if (!duplicate) {
-        // First time we see this range: copy + advance.
+    case ChunkSegmentClaim::Duplicate:
+        // Exact retransmit: skip BOTH the copy and the advance.
+        break;
+    case ChunkSegmentClaim::New:
+        // First time we see this range: copy + advance. The range is already
+        // recorded in pm.receivedSegments by ClaimChunkSegment.
         std::memcpy(pm.buffer.data() + off, chunk->data()->Data(), len);
         pm.receivedSize += len;
-        pm.receivedSegments.emplace(off, len);
+        break;
+    default:
+        // Fail closed. -Wswitch is not enabled by the generated CMake, so a new
+        // ChunkSegmentClaim enumerator would otherwise fall through to the
+        // completion check with nothing copied and nothing advanced — a silently
+        // stuck transfer. Treat an unknown claim like any other protocol
+        // violation: drop and poison so the producer learns immediately.
+        if (!g_isUnloading) LogWarn("Unknown chunk segment claim (offset " + std::to_string(off) + "). Dropping transfer.");
+        g_partialMessages.erase(it);
+        PoisonTransferLocked(msgId);
+        return false;
     }
 
     // Check completion. The test is `==`, not `>=`: with bounds-checked,

@@ -1360,11 +1360,31 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     // stub only logged, and the built-in CalculationEnded() macro that calls
     // HandleCalculationEnded was suppressed whenever a user handler existed.)
     HandleCalculationEnded();
+    {{else if eq .Type "CalculationCanceled"}}
+    // The user declared `- type: CalculationCanceled`, so forward the event to
+    // the Go server (MSG_CALCULATION_CANCELED = 132), which invokes their
+    // OnCalculationCanceled handler. Emitted ONLY on declaration — an
+    // undeclared project registers no cancel callback and pays no round-trip.
+    //
+    // CONTRACT (measured, AGENTS.md §19.4): a cancelled recalc fires BOTH
+    // events — Canceled here, then CalculationEnded 2–6 ms later on this same
+    // STA thread. "Cancelled" therefore does NOT mean "Ended will not come";
+    // both Go handlers run, in that order. HandleCalculationCanceled does no
+    // cache/command work at all (the Ended path owns every per-cycle clear, and
+    // splitting them would desynchronize g_sentRefCache from the Go RefCache) —
+    // commands this handler schedules survive into the Ended flush.
+    HandleCalculationCanceled();
     {{else}}
-    std::vector<uint8_t> respBuf;
-    // Construct Request (Event)
-    // Currently not fully implemented for named events
-    SAFE_LOG_INFO("Event {{.Type}} triggered");
+    // No forwarding path exists for this event type: it is REGISTERED with
+    // Excel above but its Go handler can never run. config.validEventTypes
+    // currently admits only CalculationEnded/CalculationCanceled, so this
+    // branch is unreachable — it is the trap that made CalculationCanceled a
+    // silent no-op for its whole life. Per AGENTS.md §18.3, widening
+    // validEventTypes REQUIRES adding the matching send here (and a
+    // dispatch case in server.go.tmpl). Warn, do not inform.
+    SAFE_LOG_WARN("Event {{.Type}} fired but is not forwarded to the server: no "
+                  "IPC message is wired for this event type, so its Go handler "
+                  "({{.Handler}}) will not run. See AGENTS.md 18.3.");
     {{end}}
 }
 {{end}}

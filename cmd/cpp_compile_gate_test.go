@@ -1,10 +1,17 @@
 package cmd
 
 import (
+	"bytes"
+	"debug/pe"
+	"encoding/binary"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/xll-gen/xll-gen/internal/generator"
@@ -32,6 +39,16 @@ import (
 const cppCompileGateYaml = `project:
   name: "cpp_gate"
   version: "0.1.0"
+
+# A user-declared CalculationCanceled with a RENAMED handler. Until v0.8.36 the
+# named-event stub only logged, so nothing compiled the cancel forwarding path;
+# now it emits xll::HandleCalculationCanceled() from an exported proc, and the
+# built-in CalculationEnded() macro must still be emitted alongside it (no
+# CalculationEnded event is declared here on purpose, so both branches of the
+# `+"`hasEvent \"CalculationEnded\"`"+` gate are exercised in one build).
+events:
+  - type: CalculationCanceled
+    handler: OnEscape
 
 rtd:
   enabled: true
@@ -176,4 +193,131 @@ func TestRtdOnceNumGridCppCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated XLL failed to compile (the rtd-once numgrid BLOCKER regression):\n%s", out)
 	}
+
+	// Excel resolves an event callback by its EXPORTED PROCEDURE NAME — the
+	// second argument of xlEventRegister. A handler that compiles but is not
+	// exported undecorated (or is renamed by the toolchain) fails silently: the
+	// registration is rejected and the event never fires, with nothing in the
+	// log. Assert the shipped export table instead of trusting the source.
+	// CMAKE_RUNTIME_OUTPUT_DIRECTORY is ${CMAKE_BINARY_DIR}/.. so the .xll lands
+	// beside the build dir, in generated/cpp/.
+	assertXllExports(t, cppDir, "OnEscape", "xlAutoOpen", "xlAutoClose")
+}
+
+// assertXllExports opens the built .xll under root and fails unless every name
+// is present in its PE export directory.
+func assertXllExports(t *testing.T, root string, names ...string) {
+	t.Helper()
+
+	var matches []string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.EqualFold(filepath.Ext(path), ".xll") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if len(matches) == 0 {
+		t.Fatalf("no .xll artifact found under %s", root)
+	}
+
+	have, err := peExportNames(matches[0])
+	if err != nil {
+		t.Fatalf("read export directory of %s: %v", matches[0], err)
+	}
+	for _, want := range names {
+		if !have[want] {
+			t.Errorf("built XLL does not export %q; Excel resolves callbacks by exported name, "+
+				"so this would fail registration silently. Exports: %v", want, sortedKeys(have))
+		}
+	}
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// peExportNames returns the names in a PE image's export directory.
+// debug/pe exposes IMPORTS but not exports, so the IMAGE_EXPORT_DIRECTORY is
+// walked by hand: DataDirectory[0] -> the section holding it -> AddressOfNames
+// -> the NUL-terminated name strings.
+func peExportNames(path string) (map[string]bool, error) {
+	f, err := pe.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var dirRVA, dirSize uint32
+	switch oh := f.OptionalHeader.(type) {
+	case *pe.OptionalHeader64:
+		if len(oh.DataDirectory) == 0 {
+			return nil, fmt.Errorf("no data directories")
+		}
+		dirRVA, dirSize = oh.DataDirectory[0].VirtualAddress, oh.DataDirectory[0].Size
+	case *pe.OptionalHeader32:
+		if len(oh.DataDirectory) == 0 {
+			return nil, fmt.Errorf("no data directories")
+		}
+		dirRVA, dirSize = oh.DataDirectory[0].VirtualAddress, oh.DataDirectory[0].Size
+	default:
+		return nil, fmt.Errorf("unsupported optional header %T", f.OptionalHeader)
+	}
+	if dirRVA == 0 || dirSize == 0 {
+		return nil, fmt.Errorf("image has no export directory")
+	}
+
+	// readRVA returns up to n bytes of image data starting at the given RVA.
+	readRVA := func(rva uint32, n int) ([]byte, error) {
+		for _, s := range f.Sections {
+			if rva >= s.VirtualAddress && rva < s.VirtualAddress+s.VirtualSize {
+				data, err := s.Data()
+				if err != nil {
+					return nil, err
+				}
+				off := int(rva - s.VirtualAddress)
+				if off >= len(data) {
+					return nil, fmt.Errorf("rva %#x past section %s data", rva, s.Name)
+				}
+				end := off + n
+				if end > len(data) {
+					end = len(data)
+				}
+				return data[off:end], nil
+			}
+		}
+		return nil, fmt.Errorf("rva %#x is in no section", rva)
+	}
+
+	hdr, err := readRVA(dirRVA, 40)
+	if err != nil {
+		return nil, err
+	}
+	if len(hdr) < 40 {
+		return nil, fmt.Errorf("truncated export directory")
+	}
+	numNames := binary.LittleEndian.Uint32(hdr[24:])
+	namesRVA := binary.LittleEndian.Uint32(hdr[32:])
+
+	out := make(map[string]bool, numNames)
+	for i := uint32(0); i < numNames; i++ {
+		ptr, err := readRVA(namesRVA+i*4, 4)
+		if err != nil {
+			return nil, err
+		}
+		nameRVA := binary.LittleEndian.Uint32(ptr)
+		raw, err := readRVA(nameRVA, 512)
+		if err != nil {
+			return nil, err
+		}
+		if z := bytes.IndexByte(raw, 0); z >= 0 {
+			raw = raw[:z]
+		}
+		out[string(raw)] = true
+	}
+	return out, nil
 }

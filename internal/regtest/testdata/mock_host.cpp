@@ -519,10 +519,18 @@ int main(int argc, char* argv[]) {
         ASSERT_EQ(4, s3->val_as_Int()->val(), "S3 val");
     }
 
-    // 13. RefCache Cleanup on Canceled (ID 130, 132, 131, 144)
-    // Product decision (IMPROVEMENT_BACKLOG.md §7 / refcache_test.go
-    // TestHandleCalculationCanceled_ClearsRefCache): a CANCELED calc clears the
-    // RefCache, symmetric with calc-ENDED. This case asserts BOTH clear paths.
+    // 13. CalculationCanceled is a pure NOTIFICATION (ID 130, 132, 131, 144, 148)
+    //
+    // Measured contract (AGENTS.md §19.4): Excel fires CalculationCanceled and
+    // then CalculationEnded 2-6 ms later on the same cycle, so the CANCELED
+    // handler must clear NOTHING — the ENDED handler that follows owns every
+    // per-cycle clear and the command flush.
+    //
+    // This case previously asserted the opposite (a canceled calc clears the
+    // RefCache). That was written before the two-event sequence was measured;
+    // clearing on cancel desynchronizes the Go RefCache from the C++
+    // g_sentRefCache (only one side forgets, so the payload is never re-shipped)
+    // and drops the cycle's batched commands. Both directions are pinned below.
     {
         // Helper: set RefCache "K1" = Int(123) and assert it resolves via CheckAny.
         auto setK1 = [&](vector<uint8_t>& respBuf) -> bool {
@@ -552,27 +560,71 @@ int main(int argc, char* argv[]) {
 
         vector<uint8_t> respBuf;
 
-        // --- Canceled clears the cache ---
+        // --- 13a. Canceled must NOT clear the RefCache; the Ended that follows does ---
         // 1. Set "K1" and confirm it resolves to "Int:123".
         ASSERT_EQ(true, setK1(respBuf), "SetRefCache Ack (canceled case)");
         ASSERT_STREQ("Int:123", checkK1(respBuf).c_str(), "CheckAny RefCache Resolved (pre-cancel)");
 
-        // 2. Send CalculationCanceled (ID 132); no response payload expected.
-        if(host.Send(nullptr, 0, (shm::MsgType)132, respBuf).ValueOr(-1) < 0) return 1;
+        // 2. Send CalculationCanceled (ID 132). The round-trip must succeed and
+        //    carry an empty payload (notification only, no commands folded in).
+        respBuf.clear();
+        if(host.Send(nullptr, 0, (shm::MsgType)132, respBuf).ValueOr(-1) < 0) {
+            cerr << "FAIL: CalculationCanceled (132) round-trip failed" << endl;
+            return 1;
+        }
+        if (!respBuf.empty()) {
+            cerr << "FAIL: CalculationCanceled must reply with an empty payload, got "
+                 << respBuf.size() << " bytes" << endl;
+            return 1;
+        }
 
-        // 3. Cache must now be cleared -> CheckAny renders the unresolved key.
-        ASSERT_STREQ("RefCache:K1", checkK1(respBuf).c_str(), "CheckAny RefCache Cleared on Cancel");
+        // 3. The cache must SURVIVE the cancel — clearing only the Go side here
+        //    leaves C++'s g_sentRefCache believing the payload is still shipped.
+        ASSERT_STREQ("Int:123", checkK1(respBuf).c_str(), "CheckAny RefCache SURVIVES Cancel");
 
-        // --- Ended also clears the cache ---
-        // 4. Re-establish "K1" so the calc-ended path has something to clear.
-        ASSERT_EQ(true, setK1(respBuf), "SetRefCache Ack (ended case)");
-        ASSERT_STREQ("Int:123", checkK1(respBuf).c_str(), "CheckAny RefCache Resolved (pre-end)");
-
-        // 5. Send CalculationEnded (ID 131).
+        // 4. The CalculationEnded that Excel fires 2-6 ms later is what clears it.
         if(host.Send(nullptr, 0, (shm::MsgType)131, respBuf).ValueOr(-1) < 0) return 1;
+        ASSERT_STREQ("RefCache:K1", checkK1(respBuf).c_str(), "CheckAny RefCache Cleared on End (post-cancel)");
 
-        // 6. Cache must be cleared after Ended too.
-        ASSERT_STREQ("RefCache:K1", checkK1(respBuf).c_str(), "CheckAny RefCache Cleared on End");
+        // --- 13b. Canceled must NOT discard the cycle's batched commands ---
+        // The whole point of not calling CommandBatcher.Clear(): a ScheduleSet
+        // issued during the interrupted cycle (by a UDF, or by the user's own
+        // OnCalculationCanceled handler) must still be emitted by the Ended
+        // flush that arrives a few milliseconds later.
+        {
+            // 1. Schedule a Set command (ID 148 -> Sheet1!0:0:0:0 = Int 100).
+            builder.Reset();
+            ipc::ScheduleCmdRequestBuilder req(builder);
+            builder.Finish(req.Finish());
+            vector<uint8_t> schedBuf;
+            if(host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)148, schedBuf).ValueOr(-1) < 0) return 1;
+            auto schedResp = flatbuffers::GetRoot<ipc::ScheduleCmdResponse>(schedBuf.data());
+            ASSERT_EQ(1, schedResp->result(), "ScheduleCmd (cancel case)");
+
+            // 2. Cancel arrives FIRST, exactly as Excel orders it.
+            vector<uint8_t> cancelBuf;
+            if(host.Send(nullptr, 0, (shm::MsgType)132, cancelBuf).ValueOr(-1) < 0) return 1;
+
+            // 3. Then Ended — which must still carry the scheduled SetCommand.
+            vector<uint8_t> eventBuf;
+            if(host.Send(nullptr, 0, (shm::MsgType)131, eventBuf).ValueOr(-1) < 0) return 1;
+            if (eventBuf.empty()) {
+                cerr << "FAIL: Cancel dropped the batched command (empty CalcEnded response)" << endl;
+                return 1;
+            }
+            auto eventResp = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(eventBuf.data());
+            if (!eventResp->commands() || eventResp->commands()->size() != 1) {
+                cerr << "FAIL: Expected exactly 1 command to survive the cancel" << endl;
+                return 1;
+            }
+            auto wrapper = eventResp->commands()->Get(0);
+            if (wrapper->cmd_type() != protocol::Command::SetCommand) {
+                cerr << "FAIL: Expected a SetCommand to survive the cancel" << endl;
+                return 1;
+            }
+            auto setCmd = static_cast<const protocol::SetCommand*>(wrapper->cmd());
+            ASSERT_EQ(100, setCmd->value()->val_as_Int()->val(), "SetCommand survives Cancel");
+        }
     }
 
     // 14. Command invoke (MSG_COMMAND_INVOKE = 137)

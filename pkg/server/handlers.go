@@ -343,24 +343,51 @@ func (h *SystemHandler) HandleCalculationEnded(respBuf []byte, b *flatbuffers.Bu
 	return 0, 0
 }
 
-// HandleCalculationCanceled processes the calculation canceled event.
+// HandleCalculationCanceled processes the calculation canceled event
+// (MSG_CALCULATION_CANCELED, 132), sent by the XLL only when the project
+// declares `- type: CalculationCanceled` in xll.yaml.
+//
+// It is a pure NOTIFICATION: it clears nothing and flushes nothing, and replies
+// with an empty payload.
+//
+// Why no state is touched (this is load-bearing; see AGENTS.md §19.4, measured
+// against real Excel):
+//
+//   - Excel fires CalculationCanceled and then CalculationEnded 2–6 ms later,
+//     with no calculation work in between. HandleCalculationEnded therefore
+//     already runs on a cancelled cycle and already does every per-cycle clear.
+//
+//   - CommandBatcher.Clear() here would be a silent DATA LOSS bug, not a
+//     cleanup: commands scheduled during the cancelled cycle — including any
+//     ScheduleSet/ScheduleFormat issued by the user's OnCalculationCanceled
+//     handler itself — would be dropped a few milliseconds before the Ended
+//     flush that is supposed to emit them. Cancellation means "the calculation
+//     was interrupted", not "discard the writes you were asked to make".
+//
+//   - RefCache.Clear() here would desynchronize the two halves of one cache.
+//     The C++ g_sentRefCache and this RefCache stay consistent precisely
+//     because a SINGLE event clears both. Clearing only the Go side leaves C++
+//     believing the payload was already shipped, so it is not re-sent and
+//     ResolveRangeArg misses.
+//
+// onCanceled is invoked SYNCHRONOUSLY (like HandleCalculationEnded, unlike the
+// RTD connect/disconnect hooks). That is what preserves the measured
+// Canceled → Ended ordering for the user's handlers: the XLL's send blocks the
+// Excel STA thread until this returns, so Excel cannot fire CalculationEnded —
+// and the guest cannot start OnCalculationEnded — until OnCalculationCanceled
+// has finished. Dispatching it on a goroutine would let the two handlers run
+// concurrently or in the wrong order. The §18.3 rule applies unchanged: the
+// handler must not drive Excel over COM while the STA is blocked; use
+// ScheduleSet/ScheduleFormat, which this path deliberately preserves.
 func (h *SystemHandler) HandleCalculationCanceled(onCanceled func(context.Context) error) (int32, shm.MsgType) {
-	h.CommandBatcher.Clear()
-	// Drop refs cached during the aborted cycle, symmetric with the
-	// HandleCalculationEnded path (RefCache.Clear there). Without this, refs
-	// from a canceled calc survive until the next calc-ended, so a run of
-	// back-to-back cancellations accumulates RefCache entries unboundedly.
-	h.RefCache.Clear()
-
 	if onCanceled != nil {
-		ctx := context.Background()
-		go func() {
+		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error("Panic in OnCalculationCanceled", "error", r)
 				}
 			}()
-			if err := onCanceled(ctx); err != nil {
+			if err := onCanceled(context.Background()); err != nil {
 				log.Error("Event handler OnCalculationCanceled failed", "error", err)
 			}
 		}()

@@ -254,6 +254,16 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${zstd_SOURCE_DIR}/lib)
 target_compile_definitions(${PROJECT_NAME} PRIVATE EMBED_GO_SERVER)
 {{ end }}
 
+# Debug instrumentation switch. Declared with option() so it shows up as a
+# typed BOOL in `cmake -LA` / CMakeCache.txt instead of an UNINITIALIZED entry.
+#
+# NOTE: option() only supplies the DEFAULT — it never overrides a value already
+# in the cache. Release and Debug share one build tree (build/cpp), so the
+# Release configure in Taskfile.yml passes -DXLL_DEBUG=OFF EXPLICITLY; that is
+# the only thing that clears an ON left behind by an earlier debug configure.
+# Do not drop either half.
+option(XLL_DEBUG "Enable debug instrumentation (SHM_DEBUG + XLL_DEBUG_LOGGING)" OFF)
+
 if(XLL_DEBUG)
   target_compile_definitions(${PROJECT_NAME} PRIVATE SHM_DEBUG XLL_DEBUG_LOGGING)
 endif()

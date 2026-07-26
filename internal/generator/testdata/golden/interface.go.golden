@@ -44,6 +44,25 @@ type XllService interface {
 	RunReport(ctx context.Context, cmd server.CommandContext) error
 
 
+	// OnCalculationCanceled runs when the user interrupts a recalculation (Esc).
+	//
+	// It only fires if xll.yaml declares `- type: CalculationCanceled` under
+	// events; otherwise this method is required by the interface but never
+	// called.
+	//
+	// IMPORTANT — a cancelled cycle fires BOTH handlers. Excel emits
+	// CalculationCanceled and then CalculationEnded 2-6 ms later, so
+	// OnCalculationCanceled is followed by OnCalculationEnded for the SAME
+	// interrupted cycle, in that order (the ordering is guaranteed: the XLL
+	// blocks Excel's UI thread until this handler returns). Do not assume
+	// "cancelled means Ended will not come".
+	//
+	// Cancellation clears nothing: per-cycle caches and any commands you
+	// scheduled are handled by the CalculationEnded path that follows, so
+	// ScheduleSet/ScheduleFormat issued here are still applied.
+	//
+	// Like OnCalculationEnded, this runs while Excel's UI thread is blocked —
+	// never drive Excel over COM from it; use ScheduleSet/ScheduleFormat.
 	OnCalculationCanceled(ctx context.Context) error
 
 

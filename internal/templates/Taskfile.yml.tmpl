@@ -41,8 +41,19 @@ tasks:
   configure-cpp:
     desc: Configure the C++ project with CMake
     # Pass the path of the pre-built Go executable to CMake
+    #
+    # -DXLL_DEBUG=OFF is NOT redundant. Release and Debug share ONE build tree
+    # (build/cpp), so the cache entry `configure-cpp-debug` writes with
+    # -DXLL_DEBUG=ON survives into every later Release configure: CMake keeps
+    # cache variables that a subsequent run does not set. Without this line a
+    # single `xll-gen build --debug` permanently turns every following release
+    # build into a debug-instrumented XLL (SHM_DEBUG + XLL_DEBUG_LOGGING —
+    # CMakeLists.txt), silently, with `task clean` as the only escape. Setting
+    # it explicitly on the release side makes the flag one-directional again.
+    # (A separate build/cpp-debug tree would also work but would download the
+    # FetchContent dependencies twice.)
     cmds:
-      - cmake -S {{.Package}}/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DGO_SERVER_EXE_PATH=build/go_server.exe
+      - cmake -S {{.Package}}/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DXLL_DEBUG=OFF -DGO_SERVER_EXE_PATH=build/go_server.exe
 
   configure-cpp-debug:
     desc: Configure the C++ project with CMake (Debug)
@@ -65,9 +76,15 @@ tasks:
   # For other modes, the process is simpler.
   build-cpp:
     desc: Build C++ XLL (Release)
+    # -DXLL_DEBUG=OFF is NOT redundant. Release and Debug share ONE build tree
+    # (build/cpp) and CMake keeps every cache variable a later run does not
+    # set, so without this line the -DXLL_DEBUG=ON that build-cpp-debug writes
+    # leaks into every following release build and silently ships a
+    # debug-instrumented XLL (SHM_DEBUG + XLL_DEBUG_LOGGING), with `task clean`
+    # as the only escape.
     cmds:
       - task: build-go
-      - cmake -S {{.Package}}/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release
+      - cmake -S {{.Package}}/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DXLL_DEBUG=OFF
       - cmake --build build/cpp --config Release
 
   build-cpp-debug:

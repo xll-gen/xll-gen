@@ -155,6 +155,11 @@ func (h *Handler) ReverseString(ctx context.Context, input string) (string, erro
 // The generated XllService interface always includes OnCalculationEnded and
 // OnCalculationCanceled (unless you declare them as events in xll.yaml), so the
 // Handler must implement them. Leave them as no-ops until you need calc hooks.
+//
+// OnCalculationCanceled (Esc during a recalc) only fires if you declare
+// `- type: CalculationCanceled` under events. When you do, note that an
+// interrupted cycle calls BOTH hooks: OnCalculationCanceled first, then
+// OnCalculationEnded a few milliseconds later.
 func (h *Handler) OnCalculationEnded(ctx context.Context) error   { return nil }
 func (h *Handler) OnCalculationCanceled(ctx context.Context) error { return nil }
 

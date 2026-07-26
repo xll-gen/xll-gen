@@ -219,6 +219,8 @@ The chunk co-change pair (`internal/assets/files/src/xll_worker.cpp` ↔ `pkg/se
 * **Go (`ChunkManager` / `HandleChunk`)** reassembles **host → guest** chunks: what the C++ XLL sends to the Go server.
 * **C++ (`g_partialMessages` / `HandleChunk`)** reassembles **guest → host** chunks: async batch responses and rtd-once grid results arriving at the XLL.
 
+**The segment arbiter is extracted and unit-gated (2026-07-26).** The C++ side's bounds check + zero-length refusal + overlap classification live in `xll::ClaimChunkSegment` — a **pure inline function** in `internal/assets/files/include/xll_worker.h`, not in `xll_worker.cpp`. That is deliberate: `xll_worker.cpp` cannot be linked outside the XLL (its completion path reaches `xlAsyncReturn`, COM `IRTDUpdateEvent` and the shm host), so before the extraction the C++ mirror had **no automated test at all** — the cmake gates only proved it compiles, and regtest's `mock_host` cases 16a–17e exercise the **Go** guest. The arbiter now has the same offline g++ gate `xll_cache.cpp` has: `internal/assets/testdata/chunk_segments_native_test.cpp`, driven by `internal/assets/chunk_cpp_test.go`. That Go file owns **one** case table which it replays against BOTH `pkg/server`'s `ClaimSegment` (plus HandleChunk's two caller-side guards) and, by emitting it as C++, against `ClaimChunkSegment` — so "same rules" is checked, not asserted in prose. **Do not re-inline the classification into `xll_worker.cpp`** (`TestChunkSegmentLogicIsExtracted` fails if you do: the offline gate would keep passing while the shipped reassembler ran untested code), and **add every new accept/reject rule to that shared table**, never to one side's tests alone.
+
 **Tunability is one-sided.** `xll.yaml` `server.chunk` (`max_buffer_bytes`, `max_concurrent_transfers`, `cleanup_interval`, `buffer_ttl`) configures the **Go/host→guest** side only. The C++ twins (`kMaxChunkTotalSize`, `kMaxPartialMessages`, `kChunkStaleTtl`) are **compile-time constants with no template or YAML wiring**. They are hand-kept at the same default numbers so the wire behaves the same in both directions; a project that lowers the Go knobs is asymmetric by construction. Wiring the C++ side through the template is a possible future change, not a current guarantee.
 
 **Cap semantics — the two caps MULTIPLY.** `MaxChunkBufferBytes`/`kMaxChunkTotalSize` caps ONE transfer; `MaxConcurrentTransfers`/`kMaxPartialMessages` caps the transfer COUNT. Neither is an aggregate-byte guard, and their combination is not one either: worst-case resident footprint is `MaxBufferBytes × MaxConcurrentTransfers` = **256 GiB at the defaults**. The TTL sweep does not rescue that — a peer that pushes one chunk per transfer inside `ChunkBufferTTL` keeps every buffer's `LastAccess` fresh, so nothing is prunable. A real byte ceiling requires lowering `max_buffer_bytes`. Do not describe the count bound as an "aggregate guard" (that wording was corrected 2026-07-26 in `manager.go`, `xll_worker.cpp` and `README.md`).
@@ -781,19 +783,99 @@ re-derive them from documentation.
    calculation work in between**. So `HandleCalculationEnded` — and therefore the
    RefCache clear, `g_sentRefCache.clear()`, the rtd-once `ClearNonMemoized`
    sweeps and the calc-end round-trip — **already runs after a cancel**.
-   **Do NOT add a `xleventCalculationCanceled` registration "to clear the caches
-   on Esc": the premise is false and the change is not neutral.** `xll_ipc.h`'s
-   `MSG_CALCULATION_CANCELED` (132) is deliberately unsent today; wiring it would
-   make Go's `HandleCalculationCanceled` run `CommandBatcher.Clear()` and then
-   `RefCache.Clear()` a few ms BEFORE the Ended flush, i.e. silently drop
-   `ScheduleSet`/`ScheduleFormat` commands produced during that cycle, and would
-   fire BOTH `OnCalculationCanceled` and `OnCalculationEnded` for one interrupted
-   cycle. It also has a second-order hazard: `g_sentRefCache` (C++) and the Go
-   `RefCache` are currently cleared by the same single event, so they stay in
-   lockstep; clearing only one side re-ships nothing while the other has already
-   forgotten the payload → `ResolveRangeArg` misses. See §23.3's open item for
-   the (separate, product-level) question of the user-declared
-   `CalculationCanceled` event being a no-op.
+   **Do NOT add cache clearing to the cancel path "to clear the caches on Esc":
+   the premise is false and the change is not neutral.** Clearing there would
+   (a) drop `ScheduleSet`/`ScheduleFormat` commands produced during that cycle a
+   few ms BEFORE the Ended flush that is supposed to emit them, and (b)
+   desynchronize `g_sentRefCache` (C++) from the Go `RefCache` — they stay in
+   lockstep only because ONE event clears both; clearing one side re-ships
+   nothing while the other has already forgotten the payload →
+   `ResolveRangeArg` misses.
+   See §19.4.1 for the shipped `CalculationCanceled` event semantics.
+
+#### 19.4.1 `CalculationCanceled` as a user event (v0.8.36) — BOTH handlers fire
+
+`CalculationCanceled` is a first-class, **opt-in** user event. Declaring
+
+```yaml
+events:
+  - type: CalculationCanceled
+    handler: OnEscape        # optional; defaults to OnCalculationCanceled
+```
+
+makes the XLL register `xleventCalculationCanceled` (it already did) **and**
+forward it: the exported proc calls `xll::HandleCalculationCanceled()`
+(`internal/assets/files/src/xll_events.cpp`), which sends
+`MSG_CALCULATION_CANCELED` (132) and nothing else. Before v0.8.36 the named-event
+stub in `xll_main.cpp.tmpl` only logged, so the whole Go chain
+(`HandleCalculationCanceled` → `OnCalculationCanceled`) was dead code in every
+generated project. An **undeclared** project registers no cancel callback and
+pays no round-trip — the emission is gated on the declaration.
+
+**The user contract — do not try to hide it.** One Esc-interrupted cycle invokes
+**both** handlers: `OnCalculationCanceled` first, `OnCalculationEnded` 2–6 ms
+later. "Cancelled" does NOT mean "Ended will not come". This is documented in the
+generated `interface.go` doc comment, `README.md` and `TUTORIAL.md`; a user who
+assumes the events are mutually exclusive will write broken cleanup code.
+
+**Ordering is guaranteed by the synchronous send, not by luck.** Excel fires both
+events on the same STA thread, cancel first; `g_host.Send` blocks that thread
+until the guest dispatch returns, and
+`pkg/server/handlers.go::HandleCalculationCanceled` invokes `onCanceled`
+**synchronously** (like `HandleCalculationEnded`, unlike the RTD hooks). So
+`OnCalculationEnded` cannot start until `OnCalculationCanceled` has finished. The
+previous goroutine dispatch would have let them run concurrently or inverted.
+The §18.3 rule applies unchanged: the handler runs while Excel's STA is blocked,
+so no synchronous COM — use `ScheduleSet`/`ScheduleFormat`.
+
+**`HandleCalculationCanceled` clears NOTHING** — not `CommandBatcher`, not
+`RefCache` — for the two reasons in item 3 above, and replies with an empty
+payload. Commands scheduled during the interrupted cycle (including by the
+cancel handler itself) survive into the Ended flush. `CommandBatcher.Clear()`
+consequently has no production caller; it is kept as a reset primitive and must
+not be re-attached to a calc-boundary event.
+
+**Regressions.** `internal/generator/gen_event_test.go` —
+`TestGenCpp_CalculationCanceledForwardsToServer` (declared ⇒ registration +
+`HandleCalculationCanceled();`, renamed handler included),
+`TestGenCpp_CalculationCanceledNotEmittedWhenUndeclared` (undeclared ⇒ neither),
+`TestCalcCanceled_AssetIsNotificationOnly` (the asset's cancel body, comments
+stripped, must not name `g_sentRefCache` / `ClearRefCache` /
+`ClearNonMemoized` / `DeferCalcEndCommands` / `RefreshIterativeCalcMode`),
+`TestGenServer_CalculationCanceledDispatch`. `pkg/server/handlers_calc_test.go` —
+`TestHandleCalculationCanceled_PreservesBatchedCommands` (5 sub-cases),
+`…_InvokesHandlerSynchronously`, `TestCalculationCanceledThenEnded_HandlerOrder`,
+`…_ReplyIsEmpty`; `pkg/server/refcache_test.go::TestHandleCalculationCanceled_LeavesRefCacheToTheEndedPath`
+(replaces `…_ClearsRefCache`, which asserted the disproved behavior). Regtest
+mock-host case **13a/13b** (cache survives the cancel and is cleared by the
+Ended that follows; a `ScheduleSet` issued before a cancel still arrives in the
+Ended response). The C++ gate fixture `cppCompileGateYaml` now declares the event
+with a RENAMED handler, so the forwarding branch is actually compiled.
+
+**Verification status — read before claiming this is proven end-to-end.** What
+is verified: the Excel-level event ordering (the §19.4 item-3 probe, real Excel,
+3/3); that the forwarding code compiles into a real MinGW-built XLL and that the
+renamed callback is actually in the shipped **PE export table** (the C++ gate now
+asserts it — Excel resolves `xlEventRegister` callbacks by exported name, so a
+compiled-but-unexported handler fails registration silently); and the whole
+guest-side contract over real SHM via the regtest mock host. What is **NOT** yet
+verified: a live Esc-during-F9 in real Excel showing both Go handlers firing in
+order. That needs a foreground keyboard-driven probe — `Application.Calculate()`
+over COM fires NEITHER event and `PostMessage(WM_KEYDOWN, VK_ESCAPE)` is ignored
+(§19.4 item 4), so the recipe is: build a project declaring the event plus a UDF
+slow enough to interrupt, register it, `keybd_event` F9 with Excel in the
+foreground, `keybd_event` ESC mid-calc, and read the ordered handler log. Do
+that before treating the ordering as field-proven.
+
+**No named event remains a no-op.** Excel's C API defines exactly two
+`xlEvent*` constants (`types/include/types/xlcall.h:317-318`:
+`xleventCalculationEnded` = 1, `xleventCalculationCanceled` = 2), and
+`config.validEventTypes` contains exactly those two — both now fully wired. The
+`{{else}}` branch of the named-event stub is therefore unreachable; it was
+downgraded from `SAFE_LOG_INFO("Event X triggered")` to a `SAFE_LOG_WARN` that
+says the event is not forwarded, so the next person who widens
+`validEventTypes` without doing the §18.3 co-change sees it at runtime instead
+of silently shipping another dead handler.
 4. **Trigger matters when you test this.** `Application.Calculate()` over COM
    fires NEITHER event (observed repeatedly: the UDFs run, no event). A cell edit
    (`Range.Value2 = …`) and a real F9 keystroke both do. Excel's calculation
@@ -1132,11 +1214,13 @@ reviews and confirmed correct — do not "fix", "harden", or re-propose:
   clear, `g_sentRefCache.clear()`, rtd-once `ClearNonMemoized`, the calc-end
   round-trip — already runs on a cancelled cycle. The recurring proposal
   "`refCache_` survives an Esc into the next cycle, register Canceled and clear
-  there" is based on a false premise, and sending `MSG_CALCULATION_CANCELED`
-  would additionally drop that cycle's batched commands (`CommandBatcher.Clear()`)
-  a few ms before the Ended flush and desynchronize `g_sentRefCache` from the Go
-  `RefCache`. Do not re-propose as a cache fix; the user-facing
-  `CalculationCanceled` event gap is tracked separately in §23.3.
+  there" is based on a false premise. Do not re-propose as a cache fix.
+  `MSG_CALCULATION_CANCELED` (132) **is** wired as of v0.8.36, but strictly as a
+  user-event NOTIFICATION: `HandleCalculationCanceled` clears nothing (no
+  `CommandBatcher.Clear()` — that would drop the cycle's batched commands a few
+  ms before the Ended flush; no `RefCache.Clear()` — that would desynchronize
+  `g_sentRefCache` from the Go `RefCache`). See §19.4.1. Adding any clear back to
+  that path is the regression this bullet exists to prevent.
 * **`range` is intentionally unsupported as a RETURN type** (v0.5.0 decision). A
   range in value position is meaningless and a `U` return breaks registration
   (worksheet name → `#NAME?`). Use grid/numgrid returns. See §19.2 / §19.3. Do
@@ -1247,7 +1331,7 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
   2. **A rejection was not final — the next chunk RESURRECTED the transfer.** Every reject path erased the buffer but remembered nothing, so the producer's next chunk found no buffer, a FRESH one was allocated, and the chunk was acked as SUCCESS. The resurrected buffer is missing every earlier chunk (can never complete; squats a `kMaxPartialMessages` / `MaxConcurrentTransfers` slot for the full 60 s TTL) and, worse, `pkg/chunk.AsyncRetry`'s first retry saw success and therefore never aborted — the async call hung to its own timeout. Exactly inverted from the fail-fast the refusal exists for. Fix: a **TTL-bounded poison set** (`g_poisonedTransfers`, `std::map<uint64_t, steady_clock::time_point>`; `ChunkManager.poisoned`, `map[uint64]time.Time`) consulted at the top of `HandleChunk`; every later chunk on a rejected id answers SYSTEM_ERROR. Entries expire on the same clock as reassembly buffers (drained by the existing stale prune, so an id is never permanently burned) and the set is capped at 1024 with oldest-eviction. **Poison set chosen over the minimal `offset == 0`-only-creates alternative**: the minimal fix would have baked in an unstated "producers send ascending" assumption (only true for two of the three senders — `SendAckOrChunk` is ACK-pull driven) and would still ack the resurrecting `offset == 0` retry, which is precisely the frame `AsyncRetry` sends first. **Deliberate asymmetry:** only PROTOCOL VIOLATIONS poison (out-of-bounds, zero-length, overlap — deterministic properties of the producer's framing). RESOURCE refusals (total cap, concurrent-transfer cap) do NOT: they insert no buffer, so there is nothing to resurrect, and a later retry may legitimately succeed.
   3. **C++ had no `total_size == 0` guard** (Go's `GetChunkBuffer` refuses `total <= 0`). `resize(0)` satisfies the `0 == 0` completion test immediately and hands `GetRoot<BatchAsyncResponse>` a **nullptr** from `buffer.data()` → access violation inside Excel. Unreachable from an honest Go producer, but this is the wire; closed for reject-path symmetry.
   Regressions: `pkg/server/manager_test.go::TestChunkManager_ZeroLengthSegmentRejected` and `::TestChunkManager_RejectedTransferIsPoisoned` (per-id scope, TTL expiry, resource-refusal must NOT poison) — FAIL-before confirmed by neutering both guards (6 failing sub-cases); plus regtest mock-host cases **16c** (rejection is final: neither a mid-stream continuation nor a from-scratch re-open may be acked), **16d** (poison is per-id), **16e** (empty data vector refused).
-* **OPEN (product decision, NOT a runtime bug) — a user-declared `CalculationCanceled` event never reaches the Go handler.** `internal/templates/xll_main.cpp.tmpl`'s named-event stub (`{{else}}` branch, "Currently not fully implemented for named events") only logs, so `MSG_CALCULATION_CANCELED` (132) is never sent and the whole Go chain — `HandleCalculationCanceled` → `OnCalculationCanceled` (`server.go.tmpl`, `interface.go.tmpl`, documented in `README.md`/`TUTORIAL.md`) — is dead code in generated projects; only `internal/regtest/testdata/mock_host.cpp` case 13 exercises it. **This is NOT a cache-correctness issue** — Excel fires `CalculationCanceled` and then `CalculationEnded` 2–6 ms later, so the caches are already cleared (§19.4). Wiring 132 is therefore a semantics change, not a fix: it would fire both `OnCalculationCanceled` and `OnCalculationEnded` for one interrupted cycle and let `HandleCalculationCanceled`'s `CommandBatcher.Clear()` drop commands scheduled during that cycle just before the Ended flush. Decide the intended contract (does a cancelled cycle discard scheduled commands?) before implementing, and keep the C++/Go RefCache clears on the SAME event so `g_sentRefCache` and the Go `RefCache` cannot diverge.
+* **DONE (2026-07-26, v0.8.36) — a user-declared `CalculationCanceled` event never reached the Go handler.** `internal/templates/xll_main.cpp.tmpl`'s named-event stub (`{{else}}` branch, "Currently not fully implemented for named events") only logged, so `MSG_CALCULATION_CANCELED` (132) was never sent and the whole Go chain — `HandleCalculationCanceled` → `OnCalculationCanceled` (`server.go.tmpl`, `interface.go.tmpl`, documented in `README.md`/`TUTORIAL.md`) — was dead code in generated projects; only the regtest mock host exercised it. **Resolved as a product decision, with the semantics settled up front (full write-up in §19.4.1):** the event is opt-in and now forwards via a new `xll::HandleCalculationCanceled()` asset function; a cancelled cycle fires **both** `OnCalculationCanceled` and `OnCalculationEnded`, in that order, and that is the documented contract rather than something to hide. The two traps flagged here were both avoided: the cancel path clears **nothing** (no `CommandBatcher.Clear()` — a cancel is "the calculation was interrupted", not "discard the writes"; no `RefCache.Clear()` — the C++/Go clears stay on the SAME event so `g_sentRefCache` cannot diverge), and `onCanceled` is invoked **synchronously** so the guest cannot invert the measured Canceled → Ended order. No named event remains a no-op: Excel's C API defines exactly the two `xlEvent*` constants that `config.validEventTypes` admits.
 * **DONE (2026-07-26) — MED: `BuildRtdOnceGridResult` started every grid on a fixed 1 KiB FlatBuffers builder.** `pkg/server/converters.go`'s rtd-once grid serializer (`internal/templates/server.go.tmpl`'s only caller) allocated `flatbuffers.NewBuilder(1024)` regardless of the grid's size, so every large result walked the whole doubling-realloc ladder from 1 KiB — each doubling copies the entire buffer, i.e. **O(payload) of pure memmove on top of the serialization**. It is the only NON-POOLED builder on a payload-sized path (the async batcher, `pkg/chunk` and `pkg/pool` builders are pooled and amortize their growth), so nothing else absorbed it. **Fix:** pre-size from the grid geometry via the new `fbany.GridBuilderSize(v, bytesPerCell)` + `fbany.AnyGridBytesPerCell` / `fbany.NumGridBytesPerCell`.
   * **The per-cell constants are MEASURED, and 24 is wrong.** A `[][]any` cell (a `Scalar` table + union member + vtable + vector slot) encodes at **~28 B/cell**, so the intuitive `rows*cols*24+512` is an UNDER-estimate: the last doubling still fires at 1000×1000 and the win collapses to zero. `AnyGridBytesPerCell = 32` (next power of two above the measurement) is what actually removes the ladder. `[][]float64` is exactly 8 B/cell (dense doubles, no per-cell table) and `rows*cols*8+512` is effectively optimal (82,000 B/op against an 80,080 B payload).
   * **Measured (Ryzen 9 3900X, `-benchtime 200x -count=3`, best of 3):** numgrid 100×100 **−48% ns / −82% B/op** (18→4 allocs); numgrid 1000×1000 **−32% ns / −71% B/op** (30→4); any 100×100 **−23% ns / −80% B/op** (25→7); any 1000×1000 **−68% B/op**, 37→7 allocs, ns within noise (the per-cell table building dominates at that size). Tiny grids are unaffected (a 10×10 numgrid's 1,312 B hint is a ~180 B overshoot vs the old 1,024 default).
@@ -1264,8 +1348,10 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
   * **DONE** — the total-mismatch-on-reuse divergence (Go resets in place and continues; C++ keeps the first `totalSize`, so the re-open is discarded + poisoned) is recorded in §18.6.1 as an **intentional asymmetry**, with comments on both sides. Symmetrizing it is a separate change.
   * **DONE** — `HandleChunk`'s `chunkMutex`→`buf.Mutex` TOCTOU is documented at the call site with the reason it is safe (rejected segments are never written; the surviving segments are disjoint + in-bounds, so an exact `Received == TotalSize` still means complete coverage — only the OBSERVED outcome can differ) plus an explicit "do not widen the locking" note.
   * **DONE** — `QueryIterativeCalcMode`'s header comment now states the scope: `GET.DOCUMENT(15)` reads the ACTIVE workbook while `iterativeCalc_` is process-global. Practically irrelevant (`Application.Iteration` is effectively app-global) and worst case is a lost optimization, never a wrong value.
+* **DONE (2026-07-26) — offline C++ unit gate for the segment/overlap logic.** Was: "`xll_worker.cpp` is only covered through the cmake gates and the regtest mock host." Closed by extracting the bounds check + zero-length refusal + overlap classification into the pure `xll::ClaimChunkSegment` (`internal/assets/files/include/xll_worker.h`) and gating it with `internal/assets/testdata/chunk_segments_native_test.cpp` + `internal/assets/chunk_cpp_test.go` — see §18.6.1 for the contract and the "do not re-inline" rule. The gate needs **only g++** (no types/flatbuffers/phmap headers, no FetchContent cache), because the unit under test is a pure function over `std::map`. 25 shared cases × both reassemblers + 3 native-only property tests = 576 native checks. FAIL-before confirmed by three mutations of the shipped header: `>` → `>=` on the predecessor comparison (6 accept cases flip to overlap, i.e. every normal multi-chunk transfer breaks), the additive bounds form (the uint32-wrap case is accepted and records a segment past `totalSize`), and deleting the zero-length refusal (reproduces the documented "one empty frame kills a good transfer" chain).
+* **WON'T DO for now (2026-07-26, re-evaluated after the gate above landed) — a harness that drives C++ `HandleChunk` with a real Go guest over real SHM.** The remaining value after the offline gate is integration-shaped only: framing/dispatch by `msg_type` and the `false` → `shm::MsgType::SYSTEM_ERROR` write-back. The cost is a **new C++ host binary** that links `xll_worker.cpp` — which drags in `xll_async.cpp` (`xlAsyncReturn`), `xll_rtd.cpp` (COM `IRTDUpdateEvent`), `xll_log`, `xll_lifecycle` and a live `shm::DirectHost` — plus a stubbed `Excel12v`, a new embedded CMake fixture with its own hand-maintained `flatbuffers`/`shm`/`types` pins and a new drift gate (§18.2 point 6), and a Go driver. That is regtest-scale infrastructure for three `if` branches, it only runs where MinGW+cmake exist (so it is skipped on CI exactly like every other gate here), and it is the flakiest class of test in the repo (real SHM, timeouts, child-process lifetime). The `SYSTEM_ERROR` write-back is additionally protected by a **build-breaking** coupling already documented in `xll_worker.cpp` (the handler lambda's `shm::MsgType&` parameter binds only via `ProcessGuestCalls`' template overload; narrowing it to the `GuestCallHandler` typedef fails to compile rather than silently losing the write), and the slot-level `SYSTEM_ERROR` mechanism itself is shm's contract, tested in shm's own suite.
+  **Cheaper successor, if this gap is revisited:** extend the SAME offline pattern instead. The untested remainder that is worth covering is bookkeeping over two `std::map`s — the `total_size == 0` / `kMaxChunkTotalSize` / `kMaxPartialMessages` refusals, the prune-then-refuse reclaim, and the poison set's TTL expiry + `kMaxPoisonedTransfers` oldest-eviction. Extracting those into a pure registry type next to `ClaimChunkSegment` would make them g++-testable at roughly a tenth of the cost, and would leave only framing/dispatch — genuinely low-value — uncovered. Do that before building a process harness.
 * **OPEN (LOW, still deferred from the same review):**
-  * No offline C++ test for the segment/overlap logic — `xll_worker.cpp` is only covered through the cmake gates and the regtest mock host. An offline g++ harness like `cache_native_test.cpp` would make the reject matrix cheap to test.
   * No RTD F9 smoke case in `internal/smoketest`.
   * Doxygen coverage of the new CacheManager/chunk entry points.
 * `internal/regtest`: regression tests bind to Excel via COM (`internal/regtest/runner.go`). Add a short doc note explaining how to run them on a fresh Windows machine (which Excel SKUs work, what registry entries are needed).

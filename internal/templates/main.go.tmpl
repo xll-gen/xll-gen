@@ -43,6 +43,10 @@ func (s *MyService) OnCalculationEnded(ctx context.Context) error {
 	return nil
 }
 
+// OnCalculationCanceled fires only if xll.yaml declares
+// `- type: CalculationCanceled` under events. When it does, an Esc-interrupted
+// recalc calls THIS first and OnCalculationEnded a few milliseconds later — a
+// cancelled cycle runs both, in that order.
 func (s *MyService) OnCalculationCanceled(ctx context.Context) error {
 	return nil
 }

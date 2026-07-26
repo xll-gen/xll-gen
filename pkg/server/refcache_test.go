@@ -24,23 +24,44 @@ func TestRefCache_SetGetClear(t *testing.T) {
 	}
 }
 
-// TestHandleCalculationCanceled_ClearsRefCache verifies the canceled-calc path
-// drops cached refs, symmetric with HandleCalculationEnded. Without this a run
-// of cancellations (no intervening calc-ended) leaks RefCache entries.
-func TestHandleCalculationCanceled_ClearsRefCache(t *testing.T) {
+// TestHandleCalculationCanceled_LeavesRefCacheToTheEndedPath replaces the
+// former TestHandleCalculationCanceled_ClearsRefCache, which asserted the
+// OPPOSITE. That test encoded a premise measurement later disproved (AGENTS.md
+// §19.4): it assumed a run of cancellations with no intervening calc-ended
+// could leak RefCache entries. Real Excel fires CalculationCanceled and then
+// CalculationEnded 2-6 ms later for the SAME interrupted cycle, 3/3 — there is
+// no such run, and the Ended path clears the cache either way.
+//
+// Clearing on cancel is not merely redundant, it is a correctness bug: the C++
+// g_sentRefCache and this RefCache stay consistent only because ONE event
+// clears both. Dropping the Go side early leaves C++ believing the payload was
+// already shipped, so it is never re-sent and ResolveRangeArg misses.
+//
+// FAIL-before: restoring `h.RefCache.Clear()` in HandleCalculationCanceled
+// fails the survives-the-cancel assertion.
+func TestHandleCalculationCanceled_LeavesRefCacheToTheEndedPath(t *testing.T) {
 	h := &SystemHandler{
 		CommandBatcher: NewCommandBatcher(),
 		RefCache:       NewRefCache(),
+		ChunkManager:   NewChunkManager(),
 	}
 	h.RefCache.Set("ref1", []byte("payload"))
 	if _, ok := h.RefCache.Get("ref1"); !ok {
 		t.Fatal("precondition: ref1 should be present")
 	}
 
-	// onCanceled = nil: only the synchronous Clear paths run.
+	// onCanceled = nil: the handler must be a pure notification.
 	h.HandleCalculationCanceled(nil)
 
+	if _, ok := h.RefCache.Get("ref1"); !ok {
+		t.Fatalf("RefCache lost ref1 on cancel; the clear belongs to the " +
+			"CalculationEnded path so the C++ g_sentRefCache stays in lockstep")
+	}
+
+	// The CalculationEnded that Excel fires a few ms later is the clear point.
+	flushEnded(t, h, nil)
+
 	if _, ok := h.RefCache.Get("ref1"); ok {
-		t.Errorf("RefCache still holds ref1 after HandleCalculationCanceled")
+		t.Errorf("RefCache still holds ref1 after HandleCalculationEnded")
 	}
 }

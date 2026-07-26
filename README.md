@@ -457,7 +457,21 @@ func (s *Service) OnCalculationEnded(ctx context.Context) error {
 
 > ⚠️ **Event handlers must NOT drive Excel synchronously over COM.** A `CalculationEnded` handler runs while Excel's main (STA) thread is **blocked** inside a synchronous round-trip: at calc-end the XLL calls the handler and waits for it to return so it can apply any scheduled commands in the same cycle. If the handler tries to manipulate Excel via COM — e.g. attaching with `sugar` and reading/writing cells (`UsedRange().Find(...)`, `Range(...).SetValue(...)`) — those calls need the very STA thread that is blocked, so they **deadlock until a ~2-second timeout fires on every recalc**, freezing Excel and making typing nearly impossible. To change cells or formatting from an event handler, use `generated.ScheduleSet` / `generated.ScheduleFormat` (see [Command Scheduling](#command-scheduling)): these enqueue deferred commands the XLL applies on the STA thread *after* the handler returns. Note this restriction applies to **event handlers only** — **command** handlers (ribbon/macro) run when the STA thread is free, so synchronous `sugar` COM automation is fine there.
 
-Supported event types map onto Excel's `xlEvent*` constants — `CalculationEnded`, `CalculationCanceled`. If your handler is omitted but the event is needed internally (e.g. `any`-typed args or `cache.enabled`), `xll-gen` registers a built-in `CalculationEnded` handler automatically.
+Supported event types map onto Excel's `xlEvent*` constants — `CalculationEnded`, `CalculationCanceled`. These are the only two events Excel's XLL C API exposes. If your handler is omitted but the event is needed internally (e.g. `any`-typed args or `cache.enabled`), `xll-gen` registers a built-in `CalculationEnded` handler automatically.
+
+### `CalculationCanceled` (Esc during a recalculation)
+
+`CalculationCanceled` is **opt-in**: it only fires if you declare it. `OnCalculationCanceled` exists on the generated interface either way, but stays dormant until the event appears in `xll.yaml`.
+
+```yaml
+events:
+  - type: CalculationCanceled
+    handler: OnEscape          # optional; defaults to OnCalculationCanceled
+```
+
+> ⚠️ **A cancelled cycle fires BOTH handlers.** Excel emits `CalculationCanceled` and then `CalculationEnded` about 2–6 ms later for the *same* interrupted recalculation (measured against real Excel). So `OnCalculationCanceled` runs first and `OnCalculationEnded` runs right after it — the order is guaranteed. Do **not** write code that assumes "cancelled means `CalculationEnded` will not come"; it will.
+
+Cancellation is a **notification, not a rollback**. Nothing is discarded: per-cycle caches are cleared by the `CalculationEnded` that follows, and any `ScheduleSet` / `ScheduleFormat` you issue — including from inside `OnCalculationCanceled` itself — is still applied. The same "no synchronous COM" rule as `CalculationEnded` applies: this handler also runs while Excel's STA thread is blocked.
 
 ## Commands & Ribbon
 
