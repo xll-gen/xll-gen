@@ -331,8 +331,42 @@ func (h *SystemHandler) HandleCommandInvoke(data []byte, respBuf []byte, b *flat
 	return SendAckOrChunk(b.FinishedBytes(), respBuf, MsgCommandInvoke, h.ChunkManager, b)
 }
 
-// SendAckOrChunk handles the complexity of sending a response that might be larger than the buffer.
-// It uses ChunkManager if necessary.
+// SendAckOrChunk writes a host->guest response into respBuf.
+//
+// If the payload fits, it is copied verbatim and returned with the caller's
+// msgType. If it does NOT fit, the response is REFUSED with
+// shm.MsgTypeSystemError.
+//
+// Why refusal and not chunking (2026-07-25, defect B):
+// The host->guest chunk transport is ACK-PULL — the Go guest parks the
+// remainder in ChunkManager and hands back only the first protocol.Chunk frame,
+// expecting the C++ host to come back with MSG_ACK requests to pull the rest.
+// **No such C++ consumer exists.** MSG_ACK (xll_ipc.h) is only ever *defined*;
+// grep finds zero senders across every asset, template and mock host, so
+// HandleAck / GetNextChunk / OutgoingChunk are unreachable from production. The
+// one path that DID reach the chunking branch was an oversized SYNCHRONOUS UDF
+// response (e.g. a 200x200 `any` grid ~= 1.1 MB against a 512 KiB response
+// buffer): the generated C++ does
+//
+//	auto resp = flatbuffers::GetRoot<ipc::XResponse>(slot.GetRespBuffer());
+//
+// with NO check of the response msgType, so it read the protocol.Chunk frame
+// through the Response vtable — arbitrary garbage fields, i.e. silent data
+// corruption, not an error.
+//
+// Returning shm.MsgTypeSystemError closes that hole: the Go worker stores it in
+// the slot header, and shm's C++ SlotHandle::Send / SendFlatBuffer converts it
+// to Error::InternalError, which the generated wrapper's existing
+// `if (res.HasError())` branch turns into a cell error (#VALUE!, or a null FP12*
+// for numgrid) BEFORE any GetRoot<Response> runs. Paired with the log.Error
+// below, the failure is diagnosable instead of silently wrong.
+//
+// The ACK-pull machinery is intentionally RETAINED (see registerAckPullChunk):
+// removing the MSG_ACK wire ID is a user decision, and the infrastructure
+// becomes live the moment a C++ ACK-pull consumer is implemented. HandleAck's
+// own resend path still works through this function because it pre-slices each
+// chunk to ChunkBudget(respBuf), which always takes the fits-in-respBuf branch.
+//
 // It returns the values expected by the shm.Handle callback.
 func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *ChunkManager, b *flatbuffers.Builder) (int32, shm.MsgType) {
 	if len(payload) <= len(respBuf) {
@@ -340,6 +374,25 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
 		return int32(len(payload)), msgType
 	}
 
+	log.Error("Response too large for the SHM response buffer; failing the call instead of emitting an unconsumable chunk frame",
+		"payloadBytes", len(payload),
+		"respBufBytes", len(respBuf),
+		"msgType", uint32(msgType),
+		"hint", "reduce the returned grid/string size, or raise hostCfg.payloadSize in the generated xll_main.cpp")
+	return 0, shm.MsgTypeSystemError
+}
+
+// registerAckPullChunk is the RETAINED host->guest ACK-pull chunk transport:
+// it parks payload in cm as an OutgoingChunk and returns the first
+// protocol.Chunk frame written into respBuf, expecting the peer to pull the
+// remainder with MSG_ACK requests (HandleAck -> GetNextChunk).
+//
+// It is deliberately NOT called by SendAckOrChunk: the C++ host has no MSG_ACK
+// sender, so a chunk frame handed back in a Response slot would be misparsed
+// (see SendAckOrChunk's note). Kept — with its regression tests — so the
+// transport is one call away once a C++ ACK-pull consumer lands, and so the
+// §23.3 Offset-publication-before-AddOutgoingChunk invariant is not lost.
+func registerAckPullChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *ChunkManager, b *flatbuffers.Builder) (int32, shm.MsgType) {
 	// Chunking needed
 	transferId := transferid.New()
 	chunkSize := ChunkBudget(respBuf)
@@ -369,6 +422,11 @@ func SendAckOrChunk(payload []byte, respBuf []byte, msgType shm.MsgType, cm *Chu
 	chunkPayload := BuildChunkResponse(b, out.Data[0:currentSize], transferId, len(out.Data), 0, uint32(msgType))
 
 	if len(chunkPayload) > len(respBuf) {
+		// The transfer is dead on arrival: the framed first chunk cannot fit
+		// respBuf, so no chunk was sent and the consumer will never ACK. Undo
+		// the AddOutgoingChunk above immediately instead of leaving the entry
+		// to be reclaimed by the TTL sweep — nothing will ever advance it.
+		cm.RemoveOutgoingChunk(transferId)
 		log.Error("Chunk header overhead too large", "size", len(chunkPayload))
 		return 0, 0
 	}

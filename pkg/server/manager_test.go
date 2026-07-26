@@ -336,24 +336,35 @@ func TestChunkManager(t *testing.T) {
 		}
 	})
 
-	t.Run("SendAckOrChunk_OffsetPublishedBeforeMapInsert", func(t *testing.T) {
-		// Regression for SendAckOrChunk publication-order bug
+	t.Run("AckPullChunk_OffsetPublishedBeforeMapInsert", func(t *testing.T) {
+		// NOTE (2026-07-25, defect B): this exercises registerAckPullChunk, the
+		// RETAINED host->guest ACK-pull transport. SendAckOrChunk no longer
+		// calls it — an oversized response is now refused with
+		// shm.MsgTypeSystemError because the C++ host has no MSG_ACK sender, so
+		// a chunk frame in a Response slot would be misparsed. The invariant
+		// below still guards the transport for the day a C++ consumer lands.
+		//
+		// Regression for the registerAckPullChunk publication-order bug
 		// (AGENTS.md §23.3): if `out.Offset = currentSize` happens
 		// AFTER cm.AddOutgoingChunk, a concurrent HandleAck →
 		// GetNextChunk can observe Offset==0 and resend the first
 		// slice, double-delivering bytes [0,chunkSize) to the consumer.
 		//
 		// Two assertions hold under the fix:
-		//   (a) Post-SendAckOrChunk steady state: the map entry's
+		//   (a) Post-registerAckPullChunk steady state: the map entry's
 		//       Offset must already be chunkSize (the fix sets
 		//       Offset on the struct BEFORE publishing the pointer).
-		//   (b) Under stress: a tight loop of SendAckOrChunk +
+		//   (b) Under stress: a tight loop of registerAckPullChunk +
 		//       concurrent GetNextChunk must never observe an offset
 		//       of 0 on the returned chunk. Under the buggy ordering,
 		//       a sufficiently timed race delivers a chunk with
-		//       offset=0 even though SendAckOrChunk already returned.
-		const chunkSize = 950 * 1024
-		respBuf := make([]byte, chunkSize+100*1024)
+		//       offset=0 even though registerAckPullChunk already returned.
+		//
+		// chunkSize is derived from respBuf via ChunkBudget — exactly what
+		// registerAckPullChunk does — instead of a hardcoded literal that
+		// silently diverges when the budget arithmetic changes.
+		respBuf := make([]byte, DefaultChunkSize+ChunkFramingOverhead+100*1024)
+		chunkSize := ChunkBudget(respBuf)
 		payload := bytes.Repeat([]byte{0x5A}, 2*chunkSize+1024)
 		if len(payload) <= len(respBuf) {
 			t.Fatalf("test setup invariant violated: payload=%d must exceed respBuf=%d to force chunking", len(payload), len(respBuf))
@@ -364,9 +375,9 @@ func TestChunkManager(t *testing.T) {
 			cm := NewChunkManager()
 			b := flatbuffers.NewBuilder(1024)
 
-			size, mt := SendAckOrChunk(payload, respBuf, MsgChunk, cm, b)
+			size, mt := registerAckPullChunk(payload, respBuf, MsgChunk, cm, b)
 			if size == 0 {
-				t.Fatalf("SendAckOrChunk returned size=0; want chunked response written")
+				t.Fatalf("registerAckPullChunk returned size=0; want chunked response written")
 			}
 			if mt != MsgChunk {
 				t.Fatalf("expected first response to be MsgChunk; got %d", mt)
@@ -383,7 +394,7 @@ func TestChunkManager(t *testing.T) {
 				t.Fatalf("expected exactly one outgoing chunk in flight; got %d", n)
 			}
 			if foundOff != chunkSize {
-				t.Fatalf("after SendAckOrChunk, Offset must already equal chunkSize=%d on the map entry; got %d (Bug 1 — Offset write deferred past publication)", chunkSize, foundOff)
+				t.Fatalf("after registerAckPullChunk, Offset must already equal chunkSize=%d on the map entry; got %d (Bug 1 — Offset write deferred past publication)", chunkSize, foundOff)
 			}
 		}
 
@@ -427,7 +438,7 @@ func TestChunkManager(t *testing.T) {
 				}
 			}()
 
-			SendAckOrChunk(payload, localRespBuf, MsgChunk, cm, localB)
+			registerAckPullChunk(payload, localRespBuf, MsgChunk, cm, localB)
 			<-done
 			select {
 			case off := <-seenOffset:

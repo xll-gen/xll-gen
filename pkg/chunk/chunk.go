@@ -10,7 +10,7 @@
 //
 // The TRANSPORT models are intentionally different and stay different. What was
 // duplicated — and is unified here — is purely (a) the frame byte layout, (b)
-// the offset-advancing split loop, and (c) the 950 KiB chunk-size constant
+// the offset-advancing split loop, and (c) the chunk-size budget arithmetic
 // (formerly DefaultChunkSize in pkg/server AND a hand-copied onceGridChunkSize
 // in pkg/rtd).
 //
@@ -29,16 +29,81 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 )
 
-// DefaultChunkSize is the per-chunk payload byte budget for chunked transfers.
-// It is derived from the 1 MiB SHM slot payload (hostCfg.payloadSize in
-// xll_main.cpp.tmpl) minus FlatBuffers/chunk-header overhead. It is the UPPER
-// BOUND on a chunk payload.
+// Slot geometry the chunk budget is derived from.
 //
-// This is the ONE definition. pkg/server.DefaultChunkSize and the former
-// pkg/rtd.onceGridChunkSize are now aliases of this value so all three sites
-// chunk at the same boundary and the C++ HandleChunk reassembly contract is
-// unchanged.
-const DefaultChunkSize = 950 * 1024
+// A SHM slot's payload is SPLIT IN HALF by the host: the first half is the
+// request region (guest->host), the second half the response region
+// (host->guest). Missing that `/2` is what made the pre-fix 950 KiB constant
+// 1.86x too large for the real 512 KiB request buffer — EVERY guest->host
+// chunk frame was rejected by shm with "data too large". The arithmetic, from
+// the authoritative sources:
+//
+//	internal/templates/xll_main.cpp.tmpl   hostCfg.payloadSize = 1024*1024   (1 MiB)
+//	shm/include/shm/DirectHost.h Init()    halfSize   = slotSize/2 rounded down to 64B
+//	                                       reqOffset  = 0
+//	                                       respOffset = halfSize
+//	shm/go/direct.go NewDirectGuest()      maxReq  = respOffset - reqOffset  = 512 KiB
+//	                                       maxResp = slotSize   - respOffset = 512 KiB
+//	shm/go/direct.go sendGuestCallInternal if len(data) > len(slot.reqBuffer) -> "data too large"
+//
+// So both the request and the response region are 512 KiB, NOT 1 MiB.
+const (
+	// SlotPayloadSize is the SHM slot payload size the default budget assumes
+	// (hostCfg.payloadSize in xll_main.cpp.tmpl). It is the WHOLE slot, both
+	// halves.
+	SlotPayloadSize = 1024 * 1024
+
+	// HalfSlotSize is the usable capacity of ONE direction's buffer:
+	// SlotPayloadSize/2, i.e. what shm reports as len(reqBuffer) guest-side
+	// and maxRespSize host-side. 1 MiB / 2 = 512 KiB = 524288 bytes.
+	HalfSlotSize = SlotPayloadSize / 2
+
+	// FramingOverhead is a conservative UPPER BOUND on the bytes BuildFrame
+	// adds around the raw chunk payload: the FlatBuffers root offset (4) +
+	// "XCHN" file identifier (4) + vtable (~14) + Chunk table (soffset 4 +
+	// id u64 8 + total_size u32 4 + offset u32 4 + msg_type u32 4 + data
+	// uoffset 4) + the byte-vector length prefix (4) + alignment padding.
+	// That is ~60-70 bytes in practice; 256 leaves a wide margin.
+	// TestFramingOverheadIsAnUpperBound pins the real value below this.
+	FramingOverhead = 256
+
+	// DefaultChunkSize is the per-chunk payload byte budget for chunked
+	// transfers, and the UPPER BOUND on any chunk payload:
+	//
+	//	HalfSlotSize - FramingOverhead = 524288 - 256 = 524032 bytes
+	//
+	// so that (chunk payload + frame) always fits one direction's buffer.
+	//
+	// This is the ONE definition. pkg/server.DefaultChunkSize and the former
+	// pkg/rtd.onceGridChunkSize are aliases of this value so all three sites
+	// chunk at the same boundary and the C++ HandleChunk reassembly contract
+	// is unchanged (it keys on id/total_size/offset, never on chunk size).
+	//
+	// Prefer Budget(bufCap) over this constant wherever the REAL buffer
+	// capacity is in hand: the constant can only be correct for the slot
+	// geometry hardcoded above, while Budget adapts to a project that
+	// configures a different hostCfg.payloadSize.
+	DefaultChunkSize = HalfSlotSize - FramingOverhead
+)
+
+// Budget returns the per-chunk payload size that is guaranteed to fit a buffer
+// of bufCap bytes once framed, capped at DefaultChunkSize and floored at 1.
+//
+// It is the single source of the budget arithmetic for every chunking site:
+// host->guest uses Budget(len(respBuf)) (pkg/server.ChunkBudget), guest->host
+// uses Budget(len(client request buffer)). Deriving from the real capacity is
+// what keeps a slot geometry other than the SlotPayloadSize assumed above from
+// silently breaking every transfer.
+func Budget(bufCap int) int {
+	budget := bufCap - FramingOverhead
+	if budget > DefaultChunkSize {
+		budget = DefaultChunkSize
+	}
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
+}
 
 // fileIdentifier is the 4-byte FlatBuffers file identifier on every Chunk
 // frame. The C++ host's HandleChunk keys reassembly on it; it MUST stay "XCHN".

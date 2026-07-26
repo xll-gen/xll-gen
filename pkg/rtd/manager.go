@@ -17,16 +17,24 @@ import (
 	"github.com/xll-gen/xll-gen/pkg/transferid"
 )
 
-// onceGridChunkSize is the per-chunk payload byte budget for a chunked
-// guest->host RtdOnceGrid transfer AND the single-slot threshold. It is now an
-// alias of the single source of truth, pkg/chunk.DefaultChunkSize (950 KiB),
-// rather than the former hand-copied literal: pkg/chunk is a leaf, so pkg/rtd
-// can import it despite the pkg/server->pkg/rtd cycle (NewSystemHandler takes
-// rtd.GlobalRtd) that previously blocked importing the constant from pkg/server.
-// A grid payload at or below this size goes in a single slot tagged
+// onceGridChunkSize is the FALLBACK per-chunk payload byte budget for a chunked
+// guest->host RtdOnceGrid transfer AND the fallback single-slot threshold, used
+// when the real request-buffer capacity cannot be probed. It is an alias of the
+// single source of truth, pkg/chunk.DefaultChunkSize, rather than a hand-copied
+// literal: pkg/chunk is a leaf, so pkg/rtd can import it despite the
+// pkg/server->pkg/rtd cycle (NewSystemHandler takes rtd.GlobalRtd) that
+// previously blocked importing the constant from pkg/server.
+//
+// A grid payload at or below the budget goes in a single slot tagged
 // MsgRtdOnceGrid; a larger one is split into protocol.Chunk messages (each
 // tagged MsgChunk, carrying the real MsgRtdOnceGrid msg_type) that the C++
 // host's HandleChunk reassembles before dispatching MSG_RTD_ONCE_GRID.
+//
+// The budget MUST NOT exceed len(shm request buffer) — that buffer is only HALF
+// the slot payload. When it did (the old 950 KiB literal vs a real 512 KiB
+// buffer) BOTH branches failed: 512..950 KiB grids went down the single-slot
+// path and were rejected with "data too large", and larger grids were split into
+// chunks that were each individually rejected too. See pkg/chunk's geometry note.
 const onceGridChunkSize = chunk.DefaultChunkSize
 
 // onceGridSendTimeout bounds each guest->host send for a one-shot grid. It is
@@ -49,6 +57,45 @@ type rtdClient interface {
 // rtdClient stub used by the SendUpdate tests need not grow this method.
 type chunkSender interface {
 	SendGuestCall(data []byte, msgType shm.MsgType) ([]byte, error)
+}
+
+// guestSlotAcquirer is the shm surface needed to learn the real guest->host
+// request-buffer capacity. *shm.Client satisfies it; the test stubs do not, so
+// they transparently fall back to the conservative constant.
+type guestSlotAcquirer interface {
+	AcquireGuestSlot() (*shm.GuestSlot, error)
+}
+
+// guestRequestBudget returns the per-chunk / single-slot payload budget for a
+// guest->host send over client, derived from the ACTUAL request-buffer capacity
+// shm published for this SHM segment (slot payload / 2, see pkg/chunk).
+//
+// shm exposes that capacity only through AcquireGuestSlot().RequestBuffer() —
+// there is no read-only accessor on *shm.Client — so the probe briefly claims
+// and immediately releases one guest slot. No Send is issued, so the host never
+// observes the slot; Release CASes it straight back to SlotFree. The probe is
+// non-blocking (AcquireGuestSlot makes a single pass and errors out if all guest
+// slots are busy) and runs once per one-shot grid, so the cost is negligible.
+//
+// On any failure — including a client that is not an *shm.Client, e.g. the test
+// stubs — it falls back to onceGridChunkSize (= chunk.DefaultChunkSize), which
+// is correct for the 1 MiB slot payload the generated host configures. Mirrored
+// by pkg/server.guestRequestBudget; keep the two in sync (AGENTS.md §18.4).
+func guestRequestBudget(client rtdClient) int {
+	acq, ok := client.(guestSlotAcquirer)
+	if !ok {
+		return onceGridChunkSize
+	}
+	slot, err := acq.AcquireGuestSlot()
+	if err != nil || slot == nil {
+		return onceGridChunkSize
+	}
+	capacity := len(slot.RequestBuffer())
+	slot.Release()
+	if capacity <= 0 {
+		return onceGridChunkSize
+	}
+	return chunk.Budget(capacity)
 }
 
 // connectCancel records the cancel func for one in-flight RTD connect handler,
@@ -232,7 +279,7 @@ func (m *RtdManager) Publish(key string, value interface{}) error {
 	// Iterate and send updates (outside the lock; continue past errors)
 	var errs []error
 	for _, id := range topicIDs {
-		if err := sendUpdate(client, id, value); err != nil {
+		if err := sendUpdate(client, id, value, false); err != nil {
 			log.Error("RTD publish failed for topic", "key", key, "topicID", id, "error", err)
 			errs = append(errs, fmt.Errorf("topic %d: %w", id, err))
 		}
@@ -241,19 +288,40 @@ func (m *RtdManager) Publish(key string, value interface{}) error {
 	return errors.Join(errs...)
 }
 
-// SendUpdate sends a direct update to a specific TopicID.
+// SendUpdate sends a direct update to a specific TopicID carrying a COMPLETED
+// (non-error) value. The RtdUpdate is marked is_error=false, so for an rtd-once
+// topic the C++ consumer caches it as the topic's one-shot result and retains it
+// per the function's declared lifecycle (once / memoize_ttl / memoize).
 func (m *RtdManager) SendUpdate(topicID int32, value interface{}) error {
 	m.mu.RLock()
 	client := m.client
 	m.mu.RUnlock()
-	return sendUpdate(client, topicID, value)
+	return sendUpdate(client, topicID, value, false)
+}
+
+// SendErrorUpdate sends a direct update to a specific TopicID carrying an ERROR
+// value (a handler error, a ctx cancellation, or a composite-arg resolve miss).
+// It is byte-for-byte identical to SendUpdate EXCEPT the RtdUpdate is marked
+// is_error=true. For an rtd-once topic that makes the C++ consumer cache the
+// value as TRANSIENT: still cached (so the wrapper's next recalc HITS and the
+// error string actually paints in the cell instead of the loading placeholder),
+// but reclaimed as if the function were plain `once` — so memoize:true /
+// memoize_ttl cannot freeze an error, and the following recalc re-runs the
+// handler. See xll-gen AGENTS.md §19.3 and types RtdUpdate.is_error.
+func (m *RtdManager) SendErrorUpdate(topicID int32, value interface{}) error {
+	m.mu.RLock()
+	client := m.client
+	m.mu.RUnlock()
+	return sendUpdate(client, topicID, value, true)
 }
 
 // sendUpdate serializes value into an RtdUpdate message and sends it via
 // client. It takes the client as a parameter (instead of reading m.client)
 // so callers can snapshot the client under the manager lock and perform the
-// blocking SHM send after releasing it.
-func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
+// blocking SHM send after releasing it. isError sets RtdUpdate.is_error (see
+// SendErrorUpdate); the default-false flag is elided by flatc, so a false value
+// keeps the wire bytes byte-identical to the pre-is_error encoding.
+func sendUpdate(client rtdClient, topicID int32, value interface{}, isError bool) error {
 	if client == nil {
 		return fmt.Errorf("server not connected")
 	}
@@ -268,6 +336,7 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
 	protocol.RtdUpdateStart(b)
 	protocol.RtdUpdateAddTopicId(b, topicID)
 	protocol.RtdUpdateAddVal(b, anyOff)
+	protocol.RtdUpdateAddIsError(b, isError)
 	root := protocol.RtdUpdateEnd(b)
 	b.Finish(root)
 
@@ -283,13 +352,15 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}) error {
 // stores it in RtdOnceGridRegistry under that key; the C++ wrapper later pulls
 // it back out when the readiness recalc re-enters.
 //
-// Transport mirrors the async-batch guest->host path (pkg/server.async_batcher):
-//   - payload <= onceGridChunkSize: one slot, tagged MsgRtdOnceGrid, which the
-//     host worker dispatches directly to ProcessRtdOnceGrid.
-//   - payload  > onceGridChunkSize: split into protocol.Chunk messages, each
-//     tagged MsgChunk and carrying msg_type=MsgRtdOnceGrid + the shared
-//     transfer id/total/offset, which the host's HandleChunk reassembles and
-//     then dispatches to ProcessRtdOnceGrid on completion.
+// Transport mirrors the async-batch guest->host path (pkg/server.async_batcher).
+// budget is guestRequestBudget(client) — the REAL shm request-buffer capacity
+// minus framing, never a guessed constant:
+//   - payload <= budget: one slot, tagged MsgRtdOnceGrid, which the host worker
+//     dispatches directly to ProcessRtdOnceGrid.
+//   - payload  > budget: split into protocol.Chunk messages, each tagged
+//     MsgChunk and carrying msg_type=MsgRtdOnceGrid + the shared transfer
+//     id/total/offset, which the host's HandleChunk reassembles and then
+//     dispatches to ProcessRtdOnceGrid on completion.
 //
 // It is SYNCHRONOUS: every send waits for the host ACK, and (for the chunked
 // case) all chunks are sent in order before returning. RunOnceGrid relies on
@@ -308,9 +379,15 @@ func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
 		return fmt.Errorf("rtd.SendOnceGrid: empty payload for key %q", key)
 	}
 
+	// Budget = the ACTUAL request-buffer capacity minus framing. It gates BOTH
+	// branches below, so the single-slot threshold and the chunk split boundary
+	// can never disagree (they did before: a 512..950 KiB grid was sent whole
+	// and rejected by shm as "data too large").
+	budget := guestRequestBudget(client)
+
 	// Single-slot fast path: the whole RtdOnceGridResult fits in one request
 	// buffer. The host worker recognizes MsgRtdOnceGrid directly.
-	if len(payload) <= onceGridChunkSize {
+	if len(payload) <= budget {
 		_, err := client.SendGuestCallWithTimeout(payload, msgid.MsgRtdOnceGrid, onceGridSendTimeout)
 		return err
 	}
@@ -320,7 +397,7 @@ func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
 	// the host reassembles them and dispatches MSG_RTD_ONCE_GRID once complete.
 	cs, ok := client.(chunkSender)
 	if !ok {
-		return fmt.Errorf("rtd.SendOnceGrid: payload of %d bytes exceeds single-slot budget %d but client does not support chunked send", len(payload), onceGridChunkSize)
+		return fmt.Errorf("rtd.SendOnceGrid: payload of %d bytes exceeds single-slot budget %d but client does not support chunked send", len(payload), budget)
 	}
 
 	b := pool.GetBuilder(nil)
@@ -339,7 +416,7 @@ func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
 	// fullness; here a stuck send would block readiness anyway, so surfacing the
 	// error up-front (and letting the RTD layer retry the whole one-shot) is the
 	// safer policy. See AGENTS.md §23.3 (retry-policy divergence made explicit).
-	sender := &chunk.Sender{ChunkSize: chunk.DefaultChunkSize, Builder: b}
+	sender := &chunk.Sender{ChunkSize: budget, Builder: b}
 	send := func(frame []byte) error {
 		_, err := cs.SendGuestCall(frame, msgid.MsgChunk)
 		return err

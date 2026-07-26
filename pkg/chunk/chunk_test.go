@@ -238,12 +238,88 @@ func TestSender_RetryPolicy(t *testing.T) {
 	})
 }
 
-// TestDefaultChunkSize pins the single-source constant. Both server and rtd now
-// alias this; if it drifts, the C++ slot-geometry assumption (1 MiB - overhead)
-// is violated.
+// TestDefaultChunkSize pins the single-source constant AND the geometry it is
+// derived from. Both pkg/server and pkg/rtd alias this.
+//
+// Regression for the 2026-07-25 P0: the constant was 950*1024 = 972800, derived
+// as "1 MiB slot payload minus overhead" — which SILENTLY DROPPED the host's
+// `payloadSize / 2` request/response split. The real guest->host request buffer
+// is 512 KiB (524288), so 972800 was 1.86x too large and shm rejected EVERY
+// chunk frame with "data too large".
 func TestDefaultChunkSize(t *testing.T) {
-	if DefaultChunkSize != 950*1024 {
-		t.Fatalf("DefaultChunkSize = %d, want %d", DefaultChunkSize, 950*1024)
+	if SlotPayloadSize != 1024*1024 {
+		t.Fatalf("SlotPayloadSize = %d, want %d (hostCfg.payloadSize in xll_main.cpp.tmpl)", SlotPayloadSize, 1024*1024)
+	}
+	// The /2 that the old constant missed. DirectHost.h: halfSize = slotSize/2.
+	if HalfSlotSize != SlotPayloadSize/2 {
+		t.Fatalf("HalfSlotSize = %d, want SlotPayloadSize/2 = %d", HalfSlotSize, SlotPayloadSize/2)
+	}
+	if HalfSlotSize != 524288 {
+		t.Fatalf("HalfSlotSize = %d, want 524288", HalfSlotSize)
+	}
+	if want := HalfSlotSize - FramingOverhead; DefaultChunkSize != want {
+		t.Fatalf("DefaultChunkSize = %d, want HalfSlotSize-FramingOverhead = %d", DefaultChunkSize, want)
+	}
+	// The invariant that actually matters on the wire.
+	if DefaultChunkSize+FramingOverhead > HalfSlotSize {
+		t.Fatalf("chunk payload %d + framing %d exceeds the %d-byte request buffer",
+			DefaultChunkSize, FramingOverhead, HalfSlotSize)
+	}
+	if DefaultChunkSize >= 950*1024 {
+		t.Fatalf("DefaultChunkSize = %d: back at/above the buggy 950 KiB value that overflows the 512 KiB request buffer", DefaultChunkSize)
+	}
+}
+
+// TestFramingOverheadIsAnUpperBound measures the REAL bytes BuildFrame adds
+// around a chunk payload and asserts FramingOverhead bounds it. Without this
+// the overhead constant is an unverified guess, and a chunk sized to
+// bufCap-FramingOverhead could still overflow bufCap after framing.
+func TestFramingOverheadIsAnUpperBound(t *testing.T) {
+	b := flatbuffers.NewBuilder(0)
+	// Payload sizes spanning every FlatBuffers alignment/padding case, plus the
+	// real DefaultChunkSize, plus values whose vector length needs all 4 bytes.
+	sizes := []int{0, 1, 2, 3, 4, 7, 8, 15, 16, 63, 64, 255, 256, 257, 4095, 4096, 65535, 65536, DefaultChunkSize}
+	worst := 0
+	for _, n := range sizes {
+		payload := make([]byte, n)
+		// Max-valued header fields so no small-value encoding shortcut hides bytes.
+		frame := BuildFrame(b, payload, ^uint64(0), int(^uint32(0)), int(^uint32(0)-1), ^uint32(0))
+		over := len(frame) - n
+		if over > worst {
+			worst = over
+		}
+		if over > FramingOverhead {
+			t.Fatalf("payload %d bytes framed to %d (overhead %d) — exceeds FramingOverhead=%d",
+				n, len(frame), over, FramingOverhead)
+		}
+		if n+over > HalfSlotSize && n <= DefaultChunkSize {
+			t.Fatalf("a %d-byte chunk framed to %d, overflowing the %d-byte request buffer", n, len(frame), HalfSlotSize)
+		}
+	}
+	t.Logf("worst-case measured framing overhead: %d bytes (bound %d)", worst, FramingOverhead)
+}
+
+// TestBudget covers the shared budget arithmetic used by every chunking site.
+func TestBudget(t *testing.T) {
+	cases := []struct {
+		name   string
+		bufCap int
+		want   int
+	}{
+		{"real 512 KiB request buffer", HalfSlotSize, DefaultChunkSize},
+		{"1 MiB buffer caps at default", SlotPayloadSize, DefaultChunkSize},
+		{"huge buffer caps at default", 64 << 20, DefaultChunkSize},
+		{"small buffer scales down", 4096, 4096 - FramingOverhead},
+		{"buffer below overhead floors at 1", FramingOverhead - 5, 1},
+		{"zero floors at 1", 0, 1},
+		{"negative floors at 1", -1, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Budget(c.bufCap); got != c.want {
+				t.Fatalf("Budget(%d) = %d, want %d", c.bufCap, got, c.want)
+			}
+		})
 	}
 }
 

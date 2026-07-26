@@ -92,10 +92,16 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 	// Send Batch Message
 	msgBytes := b.FinishedBytes()
 
-	// Chunking Logic
-	const maxPayload = DefaultChunkSize
+	// Chunking Logic. maxPayload MUST be the real guest->host request-buffer
+	// capacity, not a guessed constant: shm rejects any SendGuestCall whose
+	// payload exceeds len(slot.reqBuffer) ("data too large"), and that buffer
+	// is only HALF the slot payload (see pkg/chunk's geometry note). A too-large
+	// threshold sent 512 KiB..950 KiB batches down the NON-chunked path, where
+	// all 10 retries failed and the whole batch was dropped with only a
+	// log.Error — silent loss of every async result in it.
+	maxPayload := guestRequestBudget(client)
 	if len(msgBytes) > maxPayload {
-		sendChunkedAsync(msgBytes, client)
+		sendChunkedAsync(msgBytes, client, maxPayload)
 		return
 	}
 
@@ -107,16 +113,19 @@ func FlushAsyncBatch(batch []PendingAsyncResult, client *shm.Client) {
 
 // sendChunkedAsync splits an oversized batch-async response into protocol.Chunk
 // frames and pushes each guest->host with retry. The split loop + frame build +
-// chunk-size constant come from the shared pkg/chunk.Sender; the TRANSPORT model
+// budget arithmetic come from the shared pkg/chunk; the TRANSPORT model
 // (push + AsyncRetry, abort on a chunk's final failure) stays async-specific.
 // Each chunk frame carries msg_type=MsgBatchAsyncResponse so the host's
 // HandleChunk dispatches the reassembled payload correctly; the slot-level
 // message type is MsgChunk.
-func sendChunkedAsync(data []byte, client *shm.Client) {
+//
+// chunkSize is the caller's guestRequestBudget(client) result, so the split
+// boundary and the "does it need splitting at all" threshold can never disagree.
+func sendChunkedAsync(data []byte, client *shm.Client, chunkSize int) {
 	b := heapBuilderPool.Get().(*flatbuffers.Builder)
 	defer heapBuilderPool.Put(b)
 
-	sender := &chunk.Sender{ChunkSize: DefaultChunkSize, Builder: b}
+	sender := &chunk.Sender{ChunkSize: chunkSize, Builder: b}
 	send := func(frame []byte) error {
 		_, err := client.SendGuestCall(frame, MsgChunk)
 		return err
@@ -124,4 +133,42 @@ func sendChunkedAsync(data []byte, client *shm.Client) {
 	if err := sender.Send(data, transferid.New(), MsgBatchAsyncResponse, send, chunk.AsyncRetry); err != nil {
 		log.Error("Failed to send async chunk", "error", err)
 	}
+}
+
+// guestSlotAcquirer is the shm surface needed to learn the real guest->host
+// request-buffer capacity. *shm.Client satisfies it. It is an interface so
+// tests can inject a client-less stub, and so a nil/failing probe degrades to
+// the conservative chunk.DefaultChunkSize instead of panicking.
+type guestSlotAcquirer interface {
+	AcquireGuestSlot() (*shm.GuestSlot, error)
+}
+
+// guestRequestBudget returns the per-chunk payload budget for a guest->host
+// send over client, derived from the ACTUAL request-buffer capacity shm
+// published for this SHM segment (slot payload / 2, see pkg/chunk).
+//
+// shm exposes that capacity only through AcquireGuestSlot().RequestBuffer() —
+// there is no read-only accessor on *shm.Client — so the probe briefly claims
+// and immediately releases one guest slot. No Send is issued, so the host never
+// observes the slot; Release CASes it straight back to SlotFree. The probe is
+// non-blocking (AcquireGuestSlot makes a single pass and errors out if all
+// guest slots are busy) and only runs on a flush, so the cost is negligible.
+//
+// On any failure it falls back to chunk.DefaultChunkSize, which is correct for
+// the 1 MiB slot payload the generated host configures. Mirrored by
+// rtd.guestRequestBudget — keep the two in sync (AGENTS.md §18.4).
+func guestRequestBudget(client guestSlotAcquirer) int {
+	if client == nil {
+		return DefaultChunkSize
+	}
+	slot, err := client.AcquireGuestSlot()
+	if err != nil || slot == nil {
+		return DefaultChunkSize
+	}
+	capacity := len(slot.RequestBuffer())
+	slot.Release()
+	if capacity <= 0 {
+		return DefaultChunkSize
+	}
+	return chunk.Budget(capacity)
 }
