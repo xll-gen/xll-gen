@@ -37,13 +37,27 @@ func InitLog(logDir string, level string, projectName string) (string, error) {
 	return logPath, nil
 }
 
-func ConnectSHM(projectName string) (*shm.Client, error) {
+// ResolveSHMName returns the shared-memory name to connect to: projectName by
+// default, overridden by a `-xll-shm=<name>` process argument (the form the C++
+// launcher, regtest, and the regression harness all emit).
+//
+// It scans os.Args manually on purpose — NOT via the flag package. The
+// generated Serve() runs inside the user's own main(), so a global flag.Parse()
+// would choke on (and os.Exit(2) over) any flag the user's program defines that
+// xll-gen does not know about. A manual prefix scan reads only the arg it owns
+// and ignores everything else, so it composes with arbitrary user flags.
+func ResolveSHMName(projectName string) string {
 	name := projectName
 	for _, arg := range os.Args {
 		if strings.HasPrefix(arg, "-xll-shm=") {
 			name = strings.TrimPrefix(arg, "-xll-shm=")
 		}
 	}
+	return name
+}
+
+func ConnectSHM(projectName string) (*shm.Client, error) {
+	name := ResolveSHMName(projectName)
 
 	client, err := shm.Connect(shm.ClientConfig{ShmName: name})
 	if err != nil {

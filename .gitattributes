@@ -1,0 +1,4 @@
+# protocol.fbs is byte-compared against the types repo's copy by
+# cmd/protocol_fbs_sync_test.go — pin LF so working-tree checkouts on
+# autocrlf clones don't show every line as changed in raw diffs.
+*.fbs text eol=lf

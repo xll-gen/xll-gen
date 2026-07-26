@@ -3,7 +3,6 @@ package {{.Package}}
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -118,9 +117,9 @@ func waitForProcessExit(h windows.Handle) error {
 }
 
 func Serve(handler XllService) {
-	// Parse command line flags to get SHM name
-	shmName := flag.String("xll-shm", "{{.ProjectName}}", "Shared Memory Name")
-	flag.Parse()
+	// Resolve the SHM name from a `-xll-shm=<name>` arg (manual scan, not
+	// flag.Parse) so Serve composes with any flags the user's own main defines.
+	shmName := server.ResolveSHMName("{{.ProjectName}}")
 
     if os.Getenv("XLL_LOG_TO_STDOUT") == "1" {
         if err := log.Init("", "{{.Logging.Level}}"); err != nil {
@@ -132,8 +131,8 @@ func Serve(handler XllService) {
         }
     }
 
-    log.Info("Connecting to SHM", "name", *shmName)
-    client, err := server.ConnectSHM(*shmName)
+    log.Info("Connecting to SHM", "name", shmName)
+    client, err := server.ConnectSHM(shmName)
     if err != nil {
         log.Error("Failed to connect to SHM", "error", err)
         panic(err)
@@ -602,14 +601,14 @@ func handle{{.Name}}(ctx context.Context, req []byte, respBuf []byte, handler Xl
 {{end}}
 {{define "rtdResolveCompositeArgs"}}{{range $i, $arg := .Args}}{{if eq .Type "grid"}}
                         rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveGridArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_{{.Name}}.Error()) }
                         {{else if eq .Type "numgrid"}}
                         rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveNumGridArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_{{.Name}}.Error()) }
                         {{else if eq .Type "range"}}
                         rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveRangeArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_{{.Name}}.Error()) }
                         {{else if eq .Type "any"}}
                         rarg_{{.Name}}, rerr_{{.Name}} := server.ResolveAnyArg(refCache, args[{{add $i 1}}])
-                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_{{.Name}}.Error()) }
+                        if rerr_{{.Name}} != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_{{.Name}}.Error()) }
                         {{end}}{{end}}{{end}}

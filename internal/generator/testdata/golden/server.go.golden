@@ -3,7 +3,6 @@ package generated
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -114,9 +113,9 @@ func waitForProcessExit(h windows.Handle) error {
 }
 
 func Serve(handler XllService) {
-	// Parse command line flags to get SHM name
-	shmName := flag.String("xll-shm", "GoldenProj", "Shared Memory Name")
-	flag.Parse()
+	// Resolve the SHM name from a `-xll-shm=<name>` arg (manual scan, not
+	// flag.Parse) so Serve composes with any flags the user's own main defines.
+	shmName := server.ResolveSHMName("GoldenProj")
 
     if os.Getenv("XLL_LOG_TO_STDOUT") == "1" {
         if err := log.Init("", "info"); err != nil {
@@ -128,8 +127,8 @@ func Serve(handler XllService) {
         }
     }
 
-    log.Info("Connecting to SHM", "name", *shmName)
-    client, err := server.ConnectSHM(*shmName)
+    log.Info("Connecting to SHM", "name", shmName)
+    client, err := server.ConnectSHM(shmName)
     if err != nil {
         log.Error("Failed to connect to SHM", "error", err)
         panic(err)
@@ -263,10 +262,10 @@ func Serve(handler XllService) {
                         
                         
                         rarg_g, rerr_g := server.ResolveGridArg(refCache, args[1])
-                        if rerr_g != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_g.Error()) }
+                        if rerr_g != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_g.Error()) }
                         
                         rarg_ng, rerr_ng := server.ResolveNumGridArg(refCache, args[2])
-                        if rerr_ng != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_ng.Error()) }
+                        if rerr_ng != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_ng.Error()) }
                         
                         return handler.RtdComposite_RTD(ctx, topicID , rarg_g, rarg_ng)
                     
@@ -277,10 +276,10 @@ func Serve(handler XllService) {
                         
                         
                         rarg_r, rerr_r := server.ResolveRangeArg(refCache, args[1])
-                        if rerr_r != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_r.Error()) }
+                        if rerr_r != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_r.Error()) }
                         
                         rarg_a, rerr_a := server.ResolveAnyArg(refCache, args[2])
-                        if rerr_a != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_a.Error()) }
+                        if rerr_a != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_a.Error()) }
                         
                         return handler.RtdRangeAny_RTD(ctx, topicID , rarg_r, rarg_a)
                     
@@ -386,16 +385,16 @@ func Serve(handler XllService) {
                         
                         
                         rarg_g, rerr_g := server.ResolveGridArg(refCache, args[1])
-                        if rerr_g != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_g.Error()) }
+                        if rerr_g != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_g.Error()) }
                         
                         rarg_ng, rerr_ng := server.ResolveNumGridArg(refCache, args[2])
-                        if rerr_ng != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_ng.Error()) }
+                        if rerr_ng != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_ng.Error()) }
                         
                         rarg_r, rerr_r := server.ResolveRangeArg(refCache, args[3])
-                        if rerr_r != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_r.Error()) }
+                        if rerr_r != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_r.Error()) }
                         
                         rarg_a, rerr_a := server.ResolveAnyArg(refCache, args[4])
-                        if rerr_a != nil { return rtd.GlobalRtd.SendUpdate(topicID, rerr_a.Error()) }
+                        if rerr_a != nil { return rtd.GlobalRtd.SendErrorUpdate(topicID, rerr_a.Error()) }
                         
                         
                         return rtd.RunOnce(ctx, rtd.GlobalRtd, topicID, func(ctx context.Context) (interface{}, error) {

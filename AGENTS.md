@@ -25,7 +25,7 @@ When a change crosses repo boundaries, update **all** affected `AGENTS.md` files
 
 * Findings phrased as "ARM-only bug" or "weak memory model concern" against xll-gen runtime code are **non-issues** unless they also affect x64 (rare).
 * Cross-platform build infra (Linux CI for Go-only unit tests, etc.) is acceptable as a developer convenience but is NOT a supported deployment target.
-* Companion repos have different platform stories: `shm` is cross-platform by design (its Linux backend exists for testing and potential reuse) but its production deployment via `xll-gen` is Windows x64 (amd64) only; `sugar` is Windows-only (COM-bound); `types` Go code is portable but its C++ side targets Windows + the SDK.
+* Companion repos have different platform stories: `shm` is Windows/amd64-only (its former Linux backend was removed — see shm AGENTS.md, which marks it OBSOLETE; GOARCH=386 is rejected at compile time since shm v0.8.10); `sugar` is Windows-only (COM-bound); `types` Go code is portable but its C++ side targets Windows + the SDK.
 
 When in doubt about whether a concern applies, ask: "Does this affect Windows x64 (amd64) with stock MSVC/MinGW + recent 64-bit Excel?" If no → out of scope for xll-gen.
 
@@ -404,9 +404,9 @@ fresh compute — which is exactly correct RTD semantics. The mechanism reuses
 the per-cycle ref-cache infrastructure end to end:
 
 1. **C++ wrapper** (`xll_main.cpp.tmpl`, rtd + rtd-once). For each composite
-   arg it computes `xll::ContentHashToken(typeTag, px)` (FNV-1a over
-   `SerializeXLOPER`, which coerces refs to their cell VALUES) — or
-   `ContentHashTokenFP12(fp)` for `numgrid` (geometry + raw double bytes). Both
+   arg it computes `xll::ContentHashToken(typeTag, px)` (a STREAMING FNV-1a over
+   the XLOPER12 via `HashXLOPERInto`, which coerces refs to their cell VALUES) —
+   or `ContentHashTokenFP12(fp)` for `numgrid` (geometry + raw double bytes). Both
    yield an `"h:<typeTag><hex>"` token (`internal/assets/files/src/xll_cache.cpp`).
    The `typeTag` (`g`/`r`/`n`/`a`) namespaces the hash by WIRE-PAYLOAD shape:
    the same `A1:B2` serialized as a grid (values) vs a range (coordinates) is a
@@ -439,8 +439,11 @@ the per-cycle ref-cache infrastructure end to end:
    concurrent `Clear()` (calc-end) cannot invalidate a value already resolved.
    The only failure mode is a MISS (payload cleared before this connect ran,
    e.g. server restart mid-cycle), surfaced as an error so the dispatch pushes a
-   clear value to the topic (`rtd.GlobalRtd.SendUpdate(topicID, err.Error())`)
-   instead of hanging at `#GETTING_DATA`.
+   clear value to the topic
+   (`rtd.GlobalRtd.SendErrorUpdate(topicID, err.Error())` — the error variant, so
+   a scalar rtd-once cell shows the message for one cycle and then retries
+   instead of freezing it under `memoize`; see "Error values on a scalar rtd-once
+   topic" below) instead of hanging at `#GETTING_DATA`.
 4. **rtd-once content-addressed memoization.** The hash token flows naturally
    into `MakeRtdOnceKey` (the once-key is the topic strings joined by `\x1f`),
    so memoization/TTL become content-addressed for free: the same input grid
@@ -549,19 +552,29 @@ it up to build the initial VARIANT (`#GETTING_DATA`=scode 2043, `#N/A`=2042, or 
 * `internal/templates/interface.go.tmpl` — rtd-once falls into the normal
   (non-`_RTD`) signature branch, so the user implements an ordinary handler.
 * `pkg/rtd/runonce.go` — `RunOnce` runs the handler once and pushes the
-  result (or, on error, the error string) via `SendUpdate`. Unit-testable in
-  isolation (`pkg/rtd/runonce_test.go`).
+  result via `SendUpdate`; on error (handler error, ctx already cancelled,
+  composite-arg resolve miss, `SendOnceGrid` failure) it pushes the error
+  STRING via `SendErrorUpdate` instead. Unit-testable in isolation
+  (`pkg/rtd/runonce_test.go`).
+* `pkg/rtd/manager.go` — `SendUpdate` (is_error=false) vs `SendErrorUpdate`
+  (is_error=true); both funnel into one `sendUpdate(client, topicID, value,
+  isError)`. The flag defaults to false and flatc elides defaults, so a
+  non-error push stays byte-identical to the pre-`is_error` wire encoding.
+  `protocol.fbs`: `RtdUpdate.is_error: bool = false` (single-sourced from
+  `types`, §18.1).
 * `internal/templates/xll_main.cpp.tmpl` — rtd-once registers like rtd
   (`Q<args>$`, returns `LPXLOPER12`); a distinct wrapper body (below);
   `RtdOnceRegistry::SetFunctionNames({names}, {memoizeNames}, {ttlPairs})` at
   xlAutoOpen (the third arg is name→ttl-ms pairs for memoize_ttl functions).
 * `internal/assets/files/include/xll_rtd_once.h` — `RtdOnceRegistry` (the
-  once-results map + topic bookkeeping) and `RtdOnceResultToXLOPER12`.
+  once-results map + topic bookkeeping, including `Entry::transient` and
+  `StoreResult(key, value, transient=false)`) and `RtdOnceResultToXLOPER12`.
 * `internal/assets/files/src/xll_rtd.cpp` — `ConnectData` registers the
   topicID→key map for rtd-once topics and returns `#GETTING_DATA` for them; for
   plain-rtd topics it returns `RtdPlaceholderRegistry::MakeInitial(funcName)`
   (the configured initial value, default `#GETTING_DATA`) instead of the legacy
-  "Connecting…"; `ProcessRtdUpdate` caches the value under the topic's key;
+  "Connecting…"; `ProcessRtdUpdate` caches the value under the topic's key
+  (unconditionally for non-grid-once topics, with `transient = update->is_error()`);
   `DisconnectData` drops the topicID→key map.
 * `internal/assets/files/include/xll_rtd_placeholder.h` — `RtdPlaceholderRegistry`
   (plain-rtd function-name → first-paint placeholder map + `MakeInitial` VARIANT
@@ -589,6 +602,9 @@ it up to build the initial VARIANT (`#GETTING_DATA`=scode 2043, `#N/A`=2042, or 
 4.  `ProcessRtdUpdate` looks up `topicID → key`; for rtd-once topics it stores
     the VARIANT under the key, then does the normal `UpdateTopic` +
     `NotifyUpdate` so Excel recalcs the cell → step 2 hits the cache.
+    **The store is UNCONDITIONAL** for non-grid-once topics (see "Error values"
+    below) — the wrapper's ONLY way to put a value in the cell is a
+    `TryGetResult` hit, so an un-stored value can never surface.
 5.  **once (default):** `HandleCalculationEnded` calls `ClearNonMemoized()`,
     which drops completed entries — but **only for keys with no live topic**
     (no `topicID → key` mapping left). The liveness guard closes a race: a
@@ -603,6 +619,78 @@ it up to build the initial VARIANT (`#GETTING_DATA`=scode 2043, `#N/A`=2042, or 
     persists until process teardown. The registry dtor is deliberately trivial
     (§20.2 "leak, don't crash" — no `VariantClear`/`SysFreeString` from static
     destructors on a forced unload).
+
+**Error values on a scalar rtd-once topic — the TRANSIENT entry (2026-07-25).**
+When the one-shot handler fails (handler error, ctx already cancelled, or a
+composite-arg resolve miss) the Go side pushes the error STRING with
+`RtdUpdate.is_error=true` (`rtd.RunOnce` → `SendErrorUpdate`). The host then
+stores it via `StoreResult(key, v, /*transient=*/true)`.
+
+*Why it MUST be stored (the trap).* It is tempting to read `is_error` as "do not
+cache this" and skip `StoreResult`. **That wedges the cell permanently** and was
+caught as a HIGH regression on 2026-07-24. The scalar rtd-once wrapper puts a
+value in the cell in exactly ONE place: the `TryGetResult` HIT in step 2. On a
+miss it calls `xlfRtd`, **explicitly discards the synchronous result** (`(void)xRes;`)
+and returns the `loading_placeholder`. So with no stored entry, every recalc
+misses and re-paints the placeholder — while the topic is still **connected**, so
+Excel never calls `ConnectData` again and the one-shot handler never re-runs. The
+cell is stuck at `#GETTING_DATA` for the life of the XLL. This is the same
+failure mode the `ClearNonMemoized` LIVENESS GUARD note describes; the fix is the
+same shape (make the entry reclaimable), not "don't store".
+
+*What `transient` actually does — RETENTION, not storage.* A transient entry is
+reclaimed as if the function were plain `once`, **overriding** whatever the
+function declared:
+
+| declared lifecycle | normal entry (completed result) | transient entry (error) |
+| --- | --- | --- |
+| `once` (default)   | erase at first CalculationEnded after DisconnectData | same (no change) |
+| `memoize_ttl: <d>` | erase once no live topic AND `age > d`                | erase as soon as no live topic (TTL ignored) |
+| `memoize: true`    | never erase (until process teardown)                 | erase as soon as no live topic (memoize ignored) |
+
+The liveness guard still applies to transient entries — while the producing topic
+is connected they are kept, which is precisely the one recalc in which the cell
+paints the error text. `TryGetResult` mirrors the rule on the read side (a
+transient entry whose topic is gone is a MISS and is erased there), covering the
+`DisconnectData`/`CalculationEnded` ordering window: if CalculationEnded fires
+first the sweep sees a live topic and keeps the entry, and without the read-side
+rule the next recalc would re-serve the stale error for an extra cycle instead of
+recomputing. A later completed `StoreResult` on the same key re-stamps the flag,
+promoting the entry back to normal retention. Net user-visible behavior:
+**error text appears in the cell, and the next recalc retries the handler** — for
+`once`, `memoize_ttl` and `memoize` alike. (Before `is_error` existed, plain
+`once` already behaved this way by accident; the flag is what makes
+`memoize`/`memoize_ttl` behave the same instead of freezing the error.)
+
+*Scope — scalar rtd-once ONLY.* A `grid`/`numgrid` rtd-once topic is registered
+in `RtdOnceGridRegistry`, and `ProcessRtdUpdate` deliberately skips the scalar
+`StoreResult` for it (GRID-ONCE GATE); its wrapper reads **only** the grid
+registry. So an `is_error` push never becomes cell text on a grid-once cell — it
+keeps showing the `loading_placeholder` (grid) or an empty 0×0 FP12 (numgrid),
+and the topic stays connected, so that cell does not self-heal either. This is
+**pre-existing** behavior, not a regression from the `is_error` work, and it is
+deliberately left alone here. **Follow-up (OPEN):** give
+`RtdOnceGridRegistry` a transient/error entry kind so grid-once failures surface
+in the cell and become retryable, mirroring the scalar path. Do not assume any
+code or comment claiming "the error shows in the cell" applies to grid/numgrid.
+
+*Regression tests.* `internal/assets/assets_test.go` —
+`TestRtdUpdateErrorStoresTransient` (pins `/*transient=*/update->is_error()` and
+that the only remaining `StoreResult` gate is `!isGridOnce`; explicitly fails on
+the rejected `!isGridOnce && !isError` form) and
+`TestRtdOnceRegistryTransientRetention` (pins `Entry::transient`, the
+`StoreResult` overload, the transient-before-memoize ordering in
+`ClearNonMemoized`, and the `TryGetResult` read-side rule).
+`internal/assets/rtd_once_transient_cpp_test.go::TestRtdOnceRegistryTransientBehavior`
+is the BEHAVIORAL gate: it compiles the embedded `xll_rtd_once.h` with `g++
+-std=gnu++17 -DXLL_RTD_ENABLED` against the local `types` include dir (needs
+`gnu++17` — `types/xlcall.h` uses `_cdecl`/`pascal`) and runs it, asserting
+(a) a transient entry is stored and readable while its topic is live,
+(a2) the liveness guard keeps it across a CalculationEnded, (b)/(b2)
+`ClearNonMemoized` erases it even for `memoize:true` / unexpired `memoize_ttl`,
+(c) the read-side miss, and (d)–(g) the memoize / ttl / once / promotion
+controls. Skipped when `g++` or the `types` checkout is absent, and under
+`-short`.
 
 **Thread-safety:** the wrapper runs on calc threads, `ProcessRtdUpdate` on the
 IPC thread, calc-end/xlAutoClose on the STA thread — all `RtdOnceRegistry`
@@ -955,11 +1043,22 @@ reviews and confirmed correct — do not "fix", "harden", or re-propose:
   duplicate of its caller** (over-defensive-logic audit, 2026-06-25). The caller
   admits `xltypeRef | xltypeSRef`, but the function narrows to `xltypeRef`;
   because `xltypeRef (0x0008)` and `xltypeSRef (0x0400)` are distinct
-  non-overlapping bits (from `types`/`xlcall.h`), an SRef-only input passes the
-  caller and is correctly filtered here. It is also a behavior-selecting branch
-  (SRef early-return vs hash computation), not a no-op guard. Do not remove or
-  "simplify". Likewise, the incoming XLOPER12 is **raw Excel input** — its type
-  guards are external-boundary validation and stay regardless.
+  non-overlapping bits (from `types`/`xlcall.h`), an SRef-only input is selected
+  by that narrowing. It is a behavior-selecting branch (**skip the per-`(sheet,
+  rect)` RefCache**, which only an `xltypeRef` carries the key material for) not a
+  no-op guard. Do not remove or "simplify". Likewise, the incoming XLOPER12 is
+  **raw Excel input** — its type guards are external-boundary validation and stay
+  regardless.
+  **CORRECTION (2026-07-25):** the *early-return value* on that non-`xltypeRef`
+  path WAS a bug, distinct from the guard itself. It returned an **empty string**,
+  so `MakeCacheKey` contributed nothing for an `xltypeSRef` argument and every
+  single-area reference argument collapsed onto one cache key (a call on `A1:B2`
+  could be served the result computed for `C5:D9`); the unreachable
+  `else if (xltype == xltypeSRef) ss << computeFn(pRef)` branch below the guard
+  showed the intent was to compute. The non-`xltypeRef` path now **calls
+  `computeFn` directly** — it skips the RefCache, not the hash. Regression:
+  `internal/assets/cache_cpp_test.go::TestGetOrComputeRefHashHashesNonRefArgs`
+  plus the native harness case "SRef argument content reaches the cache key".
 
 ### Over-defensive-logic audit (2026-06-25) — the boundary rule
 
@@ -1230,11 +1329,38 @@ already deleted.**
     remove the non-functional teardown-path `xlcOnTime` cancel (proven no-op there) vs keep as
     documented best-effort. Files: `internal/assets/files/src/xll_deferred_commands.cpp`,
     `internal/assets/files/include/xll_deferred_commands.h`, `internal/assets/files/src/xll_lifecycle.cpp`.
-  - **Note for §3 (ribbon.bounce off → OnTime-based connect retry):** that item reuses this exact
-    schedule/cancel infra. Scheduling from a valid command context works; but any cancel/retry issued
-    from a COM-event context (add-in callbacks, `OnConnection`) will hit the same `xlretInvXlfn` wall —
-    design the retry so both schedule AND cancel run from Excel-dispatched macro contexts (or rely on
-    the runner self-abort instead of a C-API cancel). See "§3 assessment" below.
+  - **§3 (ribbon.bounce off / bounce-failed → OnTime-based connect retry) — DONE (2026-07-24).**
+    Problem: when the ribbon does NOT connect at load (`ribbon.bounce: off`, or a bounce that failed)
+    the only remaining connect trigger was `TryConnectRibbon("calc end")`, which never fires for a
+    workbook that is OPEN (EXCEL7 exists) but never recalculates (manual calc mode / no-formula book),
+    so the ribbon tab was delayed indefinitely. (Empty Excel with no EXCEL7 window is NOT the target —
+    that is the genuine `noApp` case.) Fix: a bounded, state-gated `xlcOnTime` retry macro
+    (`__xllgen_RibbonConnectRetry`, macroType=2) heeding the schedule/cancel-context asymmetry proven
+    above. **Arm point:** `xlAutoOpen` (an SDK-standard command context, so `xlc*` is accepted), right
+    after the load-time connect attempt, ONLY when not yet connected (`g_ribbonConnectState == 0`) —
+    i.e. off-mode or a failed bounce. **Re-arm:** the runner re-schedules ITSELF via `xlcOnTime` from
+    its own Excel-dispatched macro dispatch (also a valid command context) — never from a COM-event
+    context, so it never hits the `xlretInvXlfn` wall. **Termination is by STATE GATE / SELF-ABORT, not
+    a C-API cancel:** stops (no re-arm) once connected, once `TryConnectRibbon` gives up
+    (`g_ribbonConnectState != 0`), after `kRibbonRetryMaxAttempts` (30, ~60 s at
+    `kRibbonRetryIntervalSec = 2.0`), or on `g_isUnloading`. A leaked schedule that fires post-unload
+    no-ops on the `g_isUnloading` gate and Excel un-registers the macro on unload — so **NO new
+    teardown-cancellation path is added** (§20/§23 surface unchanged). The calc-end fallback is KEPT
+    (belt-and-braces for the workbook-already-recalculating case). Reuses the deferred-commands
+    infra: new `xll::ScheduleOnTimeMacro(macroName, delaySeconds)` +
+    `xll::RibbonConnectRetryMacroName()` in `xll_deferred_commands.{h,cpp}` (reusing that TU's
+    `XlretName` decode). Template `internal/templates/xll_main.cpp.tmpl` gains the retry-budget
+    constants, the macro registration, the `xlAutoOpen` arm, and the `__xllgen_RibbonConnectRetry`
+    export — all gated `{{if .Ribbon.Enabled}}`. Files:
+    `internal/assets/files/{include,src}/xll_deferred_commands.{h,cpp}`,
+    `internal/templates/xll_main.cpp.tmpl`. Regression:
+    `internal/generator/gen_ribbon_connect_test.go::TestXllMainRibbonOnTimeConnectRetry` (default + off
+    renders: arm/re-arm/self-abort/budget/registration markers; asserts termination is self-abort, not
+    an `xlcOnTime` cancel; ribbon-disabled render emits none of it) — FAIL-before / PASS-after
+    confirmed by reverting the template. `cmd/cpp_compile_gate_bounce_test.go` (full/keep-open/off) all
+    compile+link the emitted retry under MinGW. Golden updated (`xll_main.cpp.golden`: whitespace only,
+    since the golden fixture has the ribbon disabled). Runtime C++ asset + template (not `DllMain`
+    graceful-path logic) — confirm with `xll-cpp-reviewer` before commit.
 
 **Stage 4 (2026-06-17) — SHIPPED. Deferred destructive teardown (Phase 1 / Phase 2 split). Ghost CLEARED.**
 

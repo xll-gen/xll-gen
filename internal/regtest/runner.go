@@ -11,7 +11,6 @@ import (
 
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/platform"
-	"gopkg.in/yaml.v3"
 )
 
 // Run orchestrates the regression testing process.
@@ -31,18 +30,17 @@ func Run() error {
 		return err
 	}
 
-	// 3. Load Config
-	data, err := os.ReadFile("xll.yaml")
+	// 3. Load Config — reuse config.Load (strict KnownFields) + ApplyDefaults
+	// so regtest sees the SAME defaulted view the `xll-gen generate` cmd path
+	// does, instead of a bare yaml.Unmarshal that bypasses both.
+	cfg, err := config.Load("xll.yaml")
 	if err != nil {
-		return fmt.Errorf("failed to read xll.yaml: %w", err)
+		return err
 	}
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("failed to parse xll.yaml: %w", err)
-	}
+	config.ApplyDefaults(cfg)
 
 	// 4. Build Go Server
-	serverPath, err := buildGoServer(&cfg)
+	serverPath, err := buildGoServer(cfg)
 	if err != nil {
 		return err
 	}
@@ -53,10 +51,10 @@ func Run() error {
 	if err := os.MkdirAll(simDir, 0755); err != nil {
 		return err
 	}
-	if err := generateSimMain(&cfg, simDir); err != nil {
+	if err := generateSimMain(cfg, simDir); err != nil {
 		return err
 	}
-	if err := generateSimCMake(&cfg, simDir); err != nil {
+	if err := generateSimCMake(cfg, simDir); err != nil {
 		return err
 	}
 
@@ -66,7 +64,7 @@ func Run() error {
 	}
 
 	// 7. Run Simulation
-	return runSimulation(&cfg, simDir, serverPath)
+	return runSimulation(cfg, simDir, serverPath)
 }
 
 func runSimulation(cfg *config.Config, simDir, serverPath string) error {
@@ -89,8 +87,16 @@ func runSimulation(cfg *config.Config, simDir, serverPath string) error {
 		return fmt.Errorf("failed to start mock host: %w", err)
 	}
 	defer func() {
+		// Force-kill the host AND Wait() to reap it, mirroring the serverCmd
+		// defer below. On the READY-failure / early-return paths (before the
+		// consumer goroutine starts) this defer is the ONLY reaper — a bare
+		// Kill() there leaks a zombie/handle. On the normal path the consumer
+		// goroutine's hostCmd.Wait() has already returned (sequenced before the
+		// `done` receive), so this second Wait() is a harmless already-called
+		// no-op, not a concurrent Wait.
 		if hostCmd.Process != nil {
-			hostCmd.Process.Kill()
+			_ = hostCmd.Process.Kill()
+			_ = hostCmd.Wait()
 		}
 	}()
 
