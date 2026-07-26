@@ -202,6 +202,33 @@ func TestRtdOnceNumGridCppCompiles(t *testing.T) {
 	// CMAKE_RUNTIME_OUTPUT_DIRECTORY is ${CMAKE_BINARY_DIR}/.. so the .xll lands
 	// beside the build dir, in generated/cpp/.
 	assertXllExports(t, cppDir, "OnEscape", "xlAutoOpen", "xlAutoClose")
+
+	// Second configuration: XLL_DEBUG=ON (SHM_DEBUG + XLL_DEBUG_LOGGING). The
+	// build above leaves XLL_DEBUG at its OFF default, so it only ever compiled
+	// the release side of the template's `#ifdef XLL_DEBUG_LOGGING` blocks — a
+	// debug-only block could be broken indefinitely and every gate would stay
+	// green. A separate build tree (not a reconfigure of buildDir) because CMake
+	// keeps unspecified cache variables, which is the same trap Taskfile.yml
+	// guards with an explicit -DXLL_DEBUG=OFF. FetchContent is already populated
+	// in fcBase, so this costs a compile, not a download.
+	debugBuildDir := filepath.Join(cppDir, "build-debug")
+	cfgDebug := exec.Command(cmakeBin,
+		"-G", "MinGW Makefiles",
+		"-S", cppDir,
+		"-B", debugBuildDir,
+		"-DCMAKE_BUILD_TYPE=Debug",
+		"-DXLL_DEBUG=ON",
+		"-DFETCHCONTENT_BASE_DIR="+fcBase,
+		"-DFETCHCONTENT_SOURCE_DIR_TYPES="+typesSrc,
+		"-DFETCHCONTENT_SOURCE_DIR_SHM="+shmSrc,
+	)
+	if out, err := cfgDebug.CombinedOutput(); err != nil {
+		t.Fatalf("cmake configure (XLL_DEBUG=ON) failed: %v\n%s", err, out)
+	}
+	buildDebug := exec.Command(cmakeBin, "--build", debugBuildDir, "--target", "cpp_gate")
+	if out, err := buildDebug.CombinedOutput(); err != nil {
+		t.Fatalf("generated XLL failed to compile with XLL_DEBUG=ON (debug-only code in xll_main.cpp.tmpl is broken):\n%s", out)
+	}
 }
 
 // assertXllExports opens the built .xll under root and fails unless every name

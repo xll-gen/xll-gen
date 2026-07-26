@@ -720,8 +720,14 @@ func TestGenCpp_SyncErrorSurfacedToCell(t *testing.T) {
 	if !strings.Contains(strContent, "if (resp->error() && resp->error()->size() > 0) {") {
 		t.Fatal("sync return path must check resp->error() and surface it to the cell")
 	}
-	if !strings.Contains(strContent, "return NewExcelString(werr.c_str());") {
+	// The wstring itself, NOT .c_str(): NewExcelString's only overload takes
+	// const std::wstring& (types/mem.h), so a c_str() argument rebuilds a second
+	// wstring and truncates at the first embedded NUL.
+	if !strings.Contains(strContent, "return NewExcelString(werr);") {
 		t.Fatal("sync error branch must return the error text as a string XLOPER12")
+	}
+	if strings.Contains(strContent, "NewExcelString(werr.c_str())") || strings.Contains(strContent, "NewExcelString(wres.c_str())") {
+		t.Error("NewExcelString must receive the std::wstring, not .c_str() — the c_str() form allocates a redundant temporary and truncates at an embedded NUL")
 	}
 
 	// A numgrid sync function returns FP12* (K%) and cannot carry a string, so

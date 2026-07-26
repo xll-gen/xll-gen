@@ -1717,13 +1717,20 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
+{{/*
+  The #ifdef is the point, not decoration: without XLL_DEBUG_LOGGING (the release
+  default) SAFE_LOG_DEBUG compiles to `do {} while(0)`, so this formatting would be
+  pure dead work on every recalc of every streaming RTD cell with its sole consumer
+  compiled out — and no runtime log level can gate it. Do not unwrap it.
+*/}}#ifdef XLL_DEBUG_LOGGING
         std::string valStr = "Unknown";
         if (xRes.xltype & xltypeStr) valStr = WideToUtf8(PascalToWString(xRes.val.str));
         else if (xRes.xltype & xltypeNum) valStr = std::to_string(xRes.val.num);
         else if (xRes.xltype & xltypeBool) valStr = xRes.val.xbool ? "TRUE" : "FALSE";
         else if (xRes.xltype & xltypeErr) valStr = "Error:" + std::to_string(xRes.val.err);
-        
+
         SAFE_LOG_DEBUG("xlfRtd called for {{.Name}}. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
+#endif
     }
 
     return &xRes;
@@ -2259,6 +2266,14 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType){{add MsgUserStart $i}}, {{if .Timeout}}{{parseTimeout .Timeout 2000}}{{else}}{{parseTimeout $.Server.Timeout 2000}}{{end}});
 
     if (res.HasError()) {
+{{/*
+  This SAFE_LOG_ERROR mirrors the async branch above. Without it a sync transport
+  failure is invisible on the C++ side: the cell shows the shared #VALUE! sentinel
+  (or, for numgrid, an empty grid) and the only trace is whatever the Go server
+  happened to log — which is nothing at all when the failure is transport-side
+  (timeout, slot exhaustion, SYSTEM_ERROR from an oversized response), i.e.
+  exactly the cases where the server never saw the call.
+*/}}            SAFE_LOG_ERROR("{{$fn.Name}}: sync send failed: " + SHMErrorToString(res.GetError()));
             {{if eq .Return "numgrid"}}
             // FP12* (K%) error convention: null FP12* (matches NumGridToFP12).
             return nullptr;
@@ -2300,7 +2315,15 @@ extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
 }
 {{end}}
 {{end}}
-{{define "returnConversion"}}{{if ne .Ret "numgrid"}}{{.Indent}}// Surface a handler error to the cell as text (mirrors the async path in
+{{define "returnConversion"}}{{/*
+  NewExcelString is passed the std::wstring itself, never .c_str(): its only
+  overload takes `const std::wstring&` (types/mem.h), so a c_str() argument
+  would rebuild a second wstring — an extra strlen + allocation on top of the
+  copy StringToWString already made — AND silently truncate at the first
+  embedded NUL. Handler strings are arbitrary UTF-8 from Go, so embedded NULs
+  are representable. Kept as a template comment so it does not repeat once per
+  generated function.
+*/}}{{if ne .Ret "numgrid"}}{{.Indent}}// Surface a handler error to the cell as text (mirrors the async path in
 {{.Indent}}// xll_async.cpp). The Go server writes Response.error when the handler
 {{.Indent}}// returns a non-nil error; without this the errored response falls through
 {{.Indent}}// to resp->result() and the cell shows the shared #VALUE! sentinel with the
@@ -2308,11 +2331,11 @@ extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
 {{.Indent}}// it is excluded and keeps its empty-grid error result.
 {{.Indent}}if (resp->error() && resp->error()->size() > 0) {
 {{.Indent}}    std::wstring werr = StringToWString(resp->error()->str());
-{{.Indent}}    return NewExcelString(werr.c_str());
+{{.Indent}}    return NewExcelString(werr);
 {{.Indent}}}
 {{end}}{{.Indent}}{{if eq .Ret "string"}}
 {{.Indent}}std::wstring wres = StringToWString(resp->result()->str());
-{{.Indent}}return NewExcelString(wres.c_str());
+{{.Indent}}return NewExcelString(wres);
 {{.Indent}}{{else if eq .Ret "int"}}
 {{.Indent}}static thread_local XLOPER12 xRes;
 {{.Indent}}xRes.xltype = xltypeInt;

@@ -98,9 +98,22 @@ namespace xll {
         bool haveCommands = false;
         auto res = g_host.Send(nullptr, 0, (shm::MsgType)MSG_CALCULATION_ENDED, respBuf, 2000);
         if (!res.HasError() && res.Value() > 0) {
-            auto root = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data());
-            auto commands = root->commands();
-            haveCommands = commands && commands->size() > 0;
+            // Verify before GetRoot, matching the deferred runner in
+            // xll_deferred_commands.cpp. Belt-and-braces: SendAckOrChunk on the
+            // Go side refuses an oversized calc-end payload outright (so a Chunk
+            // frame can no longer land here and be read as a
+            // CalculationEndedResponse — the two tables' field 0 shares a vtable
+            // slot, which used to turn `commands()` into a wild pointer), but
+            // this is the one remaining unverified GetRoot on a buffer the peer
+            // wrote, and it feeds a Vector walk. Warn and treat as
+            // "no commands" rather than fault inside an event callback.
+            flatbuffers::Verifier verifier(respBuf.data(), respBuf.size());
+            if (!verifier.VerifyBuffer<protocol::CalculationEndedResponse>(nullptr)) {
+                xll::LogWarn("HandleCalculationEnded: malformed CalculationEndedResponse from the server; dropping commands for this cycle");
+            } else if (auto root = flatbuffers::GetRoot<protocol::CalculationEndedResponse>(respBuf.data())) {
+                auto commands = root->commands();
+                haveCommands = commands && commands->size() > 0;
+            }
         }
 
         // CELL MUTATION MUST NOT HAPPEN INSIDE THIS EVENT CALLBACK.

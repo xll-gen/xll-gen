@@ -1703,11 +1703,11 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         std::wstring wres = StringToWString(resp->result()->str());
-        return NewExcelString(wres.c_str());
+        return NewExcelString(wres);
         
     }
     
@@ -1762,6 +1762,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)140, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncStr: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -1788,11 +1789,11 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     std::wstring wres = StringToWString(resp->result()->str());
-    return NewExcelString(wres.c_str());
+    return NewExcelString(wres);
     
     
     
@@ -1864,7 +1865,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         static thread_local XLOPER12 xRes;
@@ -1924,6 +1925,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)141, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncInt: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -1950,7 +1952,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     static thread_local XLOPER12 xRes;
@@ -2028,7 +2030,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         static thread_local XLOPER12 xRes;
@@ -2088,6 +2090,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)142, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncFloat: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -2114,7 +2117,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     static thread_local XLOPER12 xRes;
@@ -2192,7 +2195,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         static thread_local XLOPER12 xRes;
@@ -2252,6 +2255,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)143, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncBool: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -2278,7 +2282,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     static thread_local XLOPER12 xRes;
@@ -2358,7 +2362,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         xll::ScheduleDateFormatsForCaller(resp->result());
@@ -2417,6 +2421,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)144, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncAny: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -2443,7 +2448,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     xll::ScheduleDateFormatsForCaller(resp->result());
@@ -2521,7 +2526,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         xll::ScheduleDateFormatsForCaller(resp->result());
@@ -2607,6 +2612,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)145, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncGrid: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -2633,7 +2639,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     xll::ScheduleDateFormatsForCaller(resp->result());
@@ -2770,6 +2776,7 @@ extern "C" __declspec(dllexport) FP12* __stdcall SyncNumGrid(FP12* ng) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)146, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncNumGrid: sync send failed: " + SHMErrorToString(res.GetError()));
             
             // FP12* (K%) error convention: null FP12* (matches NumGridToFP12).
             return nullptr;
@@ -2864,7 +2871,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         static thread_local XLOPER12 xRes;
@@ -2925,6 +2932,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)147, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncRange: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -2951,7 +2959,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     static thread_local XLOPER12 xRes;
@@ -3034,7 +3042,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         static thread_local XLOPER12 xRes;
@@ -3094,6 +3102,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)148, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncDate: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -3120,7 +3129,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     static thread_local XLOPER12 xRes;
@@ -3242,11 +3251,11 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         std::wstring wres = StringToWString(resp->result()->str());
-        return NewExcelString(wres.c_str());
+        return NewExcelString(wres);
         
     }
     
@@ -3357,6 +3366,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)149, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncMulti: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -3383,11 +3393,11 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     std::wstring wres = StringToWString(resp->result()->str());
-    return NewExcelString(wres.c_str());
+    return NewExcelString(wres);
     
     
     
@@ -3468,7 +3478,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         xll::ScheduleDateFormatsForCaller(resp->result());
@@ -3527,6 +3537,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)150, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("SyncCachedGrid: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -3553,7 +3564,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     xll::ScheduleDateFormatsForCaller(resp->result());
@@ -3631,7 +3642,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
         // it is excluded and keeps its empty-grid error result.
         if (resp->error() && resp->error()->size() > 0) {
             std::wstring werr = StringToWString(resp->error()->str());
-            return NewExcelString(werr.c_str());
+            return NewExcelString(werr);
         }
         
         static thread_local XLOPER12 xRes;
@@ -3722,6 +3733,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)151, 2000);
 
     if (res.HasError()) {
+            SAFE_LOG_ERROR("CallerMacroRange: sync send failed: " + SHMErrorToString(res.GetError()));
             
             return &g_xlErrValue;
             
@@ -3748,7 +3760,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     // it is excluded and keeps its empty-grid error result.
     if (resp->error() && resp->error()->size() > 0) {
         std::wstring werr = StringToWString(resp->error()->str());
-        return NewExcelString(werr.c_str());
+        return NewExcelString(werr);
     }
     
     static thread_local XLOPER12 xRes;
@@ -4371,13 +4383,15 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
+#ifdef XLL_DEBUG_LOGGING
         std::string valStr = "Unknown";
         if (xRes.xltype & xltypeStr) valStr = WideToUtf8(PascalToWString(xRes.val.str));
         else if (xRes.xltype & xltypeNum) valStr = std::to_string(xRes.val.num);
         else if (xRes.xltype & xltypeBool) valStr = xRes.val.xbool ? "TRUE" : "FALSE";
         else if (xRes.xltype & xltypeErr) valStr = "Error:" + std::to_string(xRes.val.err);
-        
+
         SAFE_LOG_DEBUG("xlfRtd called for RtdScalars. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
+#endif
     }
 
     return &xRes;
@@ -4557,13 +4571,15 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
+#ifdef XLL_DEBUG_LOGGING
         std::string valStr = "Unknown";
         if (xRes.xltype & xltypeStr) valStr = WideToUtf8(PascalToWString(xRes.val.str));
         else if (xRes.xltype & xltypeNum) valStr = std::to_string(xRes.val.num);
         else if (xRes.xltype & xltypeBool) valStr = xRes.val.xbool ? "TRUE" : "FALSE";
         else if (xRes.xltype & xltypeErr) valStr = "Error:" + std::to_string(xRes.val.err);
-        
+
         SAFE_LOG_DEBUG("xlfRtd called for RtdComposite. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
+#endif
     }
 
     return &xRes;
@@ -4734,13 +4750,15 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
+#ifdef XLL_DEBUG_LOGGING
         std::string valStr = "Unknown";
         if (xRes.xltype & xltypeStr) valStr = WideToUtf8(PascalToWString(xRes.val.str));
         else if (xRes.xltype & xltypeNum) valStr = std::to_string(xRes.val.num);
         else if (xRes.xltype & xltypeBool) valStr = xRes.val.xbool ? "TRUE" : "FALSE";
         else if (xRes.xltype & xltypeErr) valStr = "Error:" + std::to_string(xRes.val.err);
-        
+
         SAFE_LOG_DEBUG("xlfRtd called for RtdRangeAny. Result type: " + std::to_string(xRes.xltype) + ", Value: " + valStr);
+#endif
     }
 
     return &xRes;
