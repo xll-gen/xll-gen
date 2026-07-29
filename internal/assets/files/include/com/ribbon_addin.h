@@ -26,6 +26,34 @@ namespace xll { namespace ribbon {
     // non-destructive, so there is no drain there to abort a mid-retry thread.)
     // Returns false on timeout (logged, non-fatal).
     bool WaitForCommandDrain(unsigned int timeoutMs);
+
+    // True while OFFICE is inside its OWN add-in disconnect for this add-in —
+    // i.e. while RibbonAddIn::OnDisconnection is on this thread's stack, called
+    // from mso.dll's COMAddIn::put_Connect(false) / host-shutdown add-in teardown.
+    //
+    // WHY IT EXISTS (measured 2026-07-30, present in v0.8.40 AND v0.8.41 alike):
+    // the generated teardown hook's first step is an explicit
+    // `Application.COMAddIns.Item(progId).Connect = false`. Reached from
+    // OnDisconnection, that is a RE-ENTRANT call into the very put_Connect that
+    // is already running: the nested call completes Office's disconnect and
+    // CLEARS the interface pointers Office caches on its COMAddIn object, and
+    // when the OUTER put_Connect resumes it Release()s one of them
+    // UNCONDITIONALLY — reading a NULL vtable. Result: EXCEL.EXE 0xC0000005 at
+    // mso.dll+0xa1d19e, 100% of the runs (3/3) in which the nested disconnect
+    // actually executed, 0% of the runs in which it did not. Office is ALREADY
+    // disconnecting us on this path, so the explicit disconnect is redundant
+    // there; the hook must skip it. It is still required when the teardown is
+    // entered from OnBeginShutdown: Excel has not started the add-in disconnect yet,
+    // and the explicit disconnect is what makes Excel release its RibbonAddIn
+    // reference EARLY (the original reason the call exists).
+    //
+    // WHAT IT IS *NOT* (corrected 2026-07-30): it is NOT what keeps Excel from holding
+    // a vtable pointer into this DLL past FreeLibrary. On a CONFIRMED host shutdown
+    // Phase 1 PINS the image (AGENTS.md §20.2.1 rule 1) BEFORE it invokes this hook, so
+    // there is no hole for a stale pointer to fall into. This call is hygiene — release
+    // early, do not leave Office holding a reference longer than necessary — and must
+    // never be cited as a reason to weaken or remove the pin.
+    bool OfficeDisconnectInProgress();
 }} // namespace xll::ribbon
 
 #ifdef XLL_RIBBON_ENABLED

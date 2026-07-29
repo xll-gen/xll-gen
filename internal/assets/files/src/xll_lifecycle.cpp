@@ -675,10 +675,12 @@ void xll::GracefulTeardownOnce(bool isHostShutdown) {
         LogInfo("GracefulTeardownOnce: confirmed shutdown — beginning teardown...");
         // PHASE 1 QUIESCE — FIRST, before ANYTHING else in this function.
         //
-        // It must precede the teardown hook because the hook's SetRibbonConnected(false)
-        // PUMPS the STA message loop, and a pumped WM_APP RTD-notify would otherwise
-        // drive IRTDUpdateEvent::UpdateNotify into an Excel that has already begun
-        // shutting down. It must also precede CancelDeferredRunner so no newly armed
+        // It must precede the teardown hook because on its non-skip path the hook's
+        // SetRibbonConnected(false) PUMPS the STA message loop, and a pumped WM_APP
+        // RTD-notify would otherwise drive IRTDUpdateEvent::UpdateNotify into an Excel
+        // that has already begun shutting down. (The hook skips that disconnect while
+        // Office is inside its own add-in disconnect, in which case there is no pump —
+        // but the ordering must hold for the path where there is one.) It must also precede CancelDeferredRunner so no newly armed
         // background work slips in behind us. See BeginQuiesce() for the full
         // rationale (2026-07-29 close-time use-after-unload, AGENTS.md §20.2/§23.6).
         //
@@ -728,9 +730,12 @@ void xll::GracefulTeardownOnce(bool isHostShutdown) {
         // (AGENTS.md §23.6) so Excel can START its RTD DisconnectData/ServerTerminate
         // handshake; on add-in disable (session continues) we still revoke.
         //
-        // STA RE-ENTRANCY HARDENING (HIGH, review 2026-06-13): the hook's
-        // SetRibbonConnected(false) PUMPS the STA message loop; Excel can re-enter
-        // GracefulTeardownOnce() on THIS thread. The g_teardownDone CAS above turns
+        // STA RE-ENTRANCY HARDENING (HIGH, review 2026-06-13): on the NON-SKIP path
+        // the hook's SetRibbonConnected(false) PUMPS the STA message loop; Excel can
+        // re-enter GracefulTeardownOnce() on THIS thread. (When the hook SKIPS that
+        // disconnect — Office is already inside its own add-in disconnect, 2026-07-30 —
+        // no pump happens and the re-entrancy window simply does not open. Nothing
+        // depends on the pump; losing it is the safe direction.) The g_teardownDone CAS above turns
         // that into a no-op; the s_inHook guard additionally prevents the hook body
         // running twice on the same stack. Cleared via RAII on normal/exception
         // unwind; an async SEH fault may leave it set, harmless (the CAS already

@@ -37,6 +37,30 @@ namespace xll { namespace ribbon {
     void SetRibbonXml(const wchar_t* xml) { g_ribbonXml = xml ? xml : L""; }
     void SetCommands(std::vector<std::wstring> commandNames) { g_commandNames = std::move(commandNames); }
 
+    // Depth counter, not a bool: Office may in principle nest its own
+    // disconnect, and an RAII guard that stored/restored a bool could clear the
+    // flag while an outer OnDisconnection is still on the stack. Defined
+    // unconditionally (this TU is compiled in non-ribbon builds too, for
+    // WaitForCommandDrain); only OnDisconnection ever increments it, so in a
+    // non-ribbon build it is permanently 0 and the accessor is a constant false.
+    // See the header for the crash this exists to prevent.
+    //
+    // NOT in ResetLifecycleStateForFreshLoad's reset set, deliberately (review LOW #3).
+    // It has internal linkage in this TU, and the exposure is what matters: the only
+    // way it could latch is an async SEH fault unwinding past DisconnectDepthGuard's
+    // destructor, and OnDisconnection is OUTSIDE XLL_SAFE_BLOCK while a fault below it
+    // is caught by GracefulTeardownOnce's own __except in ITS frame — so the guard's
+    // destructor still runs. And the LEAK DIRECTION IS FAIL-SAFE: a latched depth means
+    // "always skip the explicit disconnect", which is the correct answer on the add-in-
+    // disable path and harmless on a host shutdown (the §20.2.1 PIN already prevents the
+    // unmap the disconnect used to be credited with). Same disposition as the s_inHook
+    // residual documented in AGENTS.md §20.3.
+    static std::atomic<int> g_officeDisconnectDepth{0};
+
+    bool OfficeDisconnectInProgress() {
+        return g_officeDisconnectDepth.load(std::memory_order_acquire) > 0;
+    }
+
     bool WaitForCommandDrain(unsigned int timeoutMs) {
         using clock = std::chrono::steady_clock;
         auto deadline = clock::now() + std::chrono::milliseconds(timeoutMs);
@@ -294,6 +318,23 @@ HRESULT __stdcall RibbonAddIn::OnDisconnection(ext_DisconnectMode RemoveMode, SA
     // Excel can start its RTD DisconnectData/ServerTerminate handshake.
     // ext_dm_UserClosed (add-in disabled, session continues) => normal revoke.
     const bool isHostShutdown = (RemoveMode == ext_dm_HostShutdown);
+
+    // Mark "Office is inside its own add-in disconnect" for the whole duration of
+    // the teardown this call drives. The generated teardown hook reads it and
+    // SKIPS its explicit `COMAddIns.Item(progId).Connect = false`, which from here
+    // would re-enter the put_Connect already on this stack and leave Office
+    // Release()ing an interface pointer its own nested call had just cleared
+    // (EXCEL.EXE 0xC0000005 at mso.dll+0xa1d19e; see
+    // xll::ribbon::OfficeDisconnectInProgress in com/ribbon_addin.h).
+    //
+    // Scoped with RAII so it is cleared on normal AND exception unwind. The
+    // counter is decremented even if GracefulTeardownOnce is a CAS no-op, which
+    // is correct: the flag describes OFFICE's stack, not our teardown's progress.
+    struct DisconnectDepthGuard {
+        DisconnectDepthGuard() { xll::ribbon::g_officeDisconnectDepth.fetch_add(1, std::memory_order_acq_rel); }
+        ~DisconnectDepthGuard() { xll::ribbon::g_officeDisconnectDepth.fetch_sub(1, std::memory_order_acq_rel); }
+    } disconnectDepth;
+
     xll::GracefulTeardownOnce(isHostShutdown);
     return S_OK;
 }

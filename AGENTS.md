@@ -1305,6 +1305,12 @@ true, and no second `xlAutoOpen` ever ran.
    * `OnDisconnection` → `GracefulTeardownOnce()` on **both** `ext_dm_HostShutdown`
      (host shutdown) and `ext_dm_UserClosed` (add-in disabled, session continues).
    The CAS makes these idempotent with each other and with the DETACH backstop.
+   **INVARIANT (2026-07-30):** the teardown hook must NOT re-enter Office's
+   `COMAddIn::put_Connect` from inside Office's own add-in-disconnect stack.
+   `OnDisconnection` therefore publishes `xll::ribbon::OfficeDisconnectInProgress()`
+   (an RAII depth guard, constructed BEFORE `GracefulTeardownOnce`) and the hook SKIPS
+   its explicit `COMAddIns…Connect = false` while that is set. Rationale, evidence and
+   the two ways to get this wrong: §22 "Office add-in disconnect re-entrancy".
 
 4. **`DLL_PROCESS_DETACH` = universal backstop** (covers the non-ribbon path and
    any case where `OnBeginShutdown` did not run; it NEVER fires on a cancelled
@@ -1541,6 +1547,46 @@ hidden message window is unavoidable here. Regression: `internal/generator/gen_r
 
 Synced from the workspace `IMPROVEMENT_BACKLOG.md` §6. These were flagged by past
 reviews and confirmed correct — do not "fix", "harden", or re-propose:
+
+* **Office add-in disconnect re-entrancy: the hook's explicit `COMAddIns…Connect =
+  false` is BOTH required AND conditionally skipped** (measured 2026-07-30). Two
+  opposite "cleanups" are both WRONG; this entry exists to refuse both.
+  * **The crash.** `GracefulComTeardownHook`'s step (0) sets
+    `Application.COMAddIns.Item(progId).Connect = false`. When the teardown was entered
+    from `RibbonAddIn::OnDisconnection`, that RE-ENTERS the same `mso.dll`
+    `put_Connect(false)` already on the stack: the nested call completes Office's
+    disconnect and clears the interface pointers Office caches on its `COMAddIn`
+    object, then the OUTER `put_Connect` resumes and `Release()`s one of them
+    unconditionally — **NULL vtable READ**. `EXCEL.EXE` `0xC0000005` at
+    **`mso.dll+0xa1d19e`**. Same-source-tree control: **3/3 crash** with the nested
+    disconnect executing, **0/6 crash + 6/6 PASS** with the skip. Window-close path
+    logged the SKIP **0/8** times, i.e. that path is unchanged (there
+    `OnBeginShutdown` wins the CAS first and the explicit disconnect still runs; a
+    later `OnDisconnection` with `RemoveMode=1` = `ext_dm_UserClosed` is the nesting
+    our OWN `put_Connect` caused, so we are the outer frame and the mechanism does not
+    apply).
+  * **NOT a regression of anything recent.** The offending call was introduced
+    2026-06-11 (`d88911c`) and wired into the hook 2026-06-17 (`5afb1d0`); v0.8.41's
+    close-time unmap fix (`b51523d`) touches it zero times, and the crash reproduces
+    identically on v0.8.40.
+  * **DO NOT delete the call.** On the `OnBeginShutdown` path Office has NOT started
+    its add-in disconnect, and the explicit disconnect is what makes Excel release its
+    `RibbonAddIn` reference EARLY. Deleting it loses that on the window-close path,
+    which is the common one.
+  * **DO NOT delete the guard.** It is not "a redundant double-check": without it the
+    add-in-disable path crashes Excel 100% of the time. Pinned by
+    `internal/generator/gen_office_disconnect_guard_test.go` and
+    `internal/assets/office_disconnect_guard_cpp_test.go`, which assert ORDER and
+    BRANCH STRUCTURE — a substring assert cannot pin this (the pre-existing
+    `gen_cancel_quit_test.go` check for the string `"SetRibbonConnected(false)"` stayed
+    GREEN with the whole guard removed).
+  * **DO NOT convert the flag to `thread_local`.** The COM class is
+    `ThreadingModel="Both"`, so a configuration that delivers `OnDisconnection` and the
+    hook on different threads would make a `thread_local` MISS the skip — i.e. fail
+    toward the crash. The process-wide atomic can only over-skip, and an over-skip is
+    harmless (Office is disconnecting us anyway, and on a confirmed host shutdown the
+    §20.2.1 PIN already prevents the unmap). The mis-diagnosis direction is the correct
+    one; keep it.
 
 * **`pkg/algo/greedy_mesh.go` int32-wrap boundary guard is unnecessary** (proven
   2026-06-13). `nextCol/nextRow = MaxInt32+1` wraps to `MinInt32`, but `GreedyMesh`

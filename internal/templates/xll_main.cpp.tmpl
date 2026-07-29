@@ -241,7 +241,24 @@ static void GracefulComTeardownHook(bool revokeRtdClassObject) {
         // (0) explicitly disconnect so Excel releases its RibbonAddIn
         //     reference while this DLL is still mapped (prevents quit crash),
         // (1) revoke/unregister so nothing new can resolve the class,
-        if (!SetRibbonConnected(false)) {
+        //
+        // ...EXCEPT when Office is ALREADY inside its own add-in disconnect for us
+        // (RibbonAddIn::OnDisconnection on this stack, i.e. mso.dll's
+        // COMAddIn::put_Connect(false) or the host-shutdown add-in teardown drove
+        // us here). Setting Connect=false THERE re-enters that same put_Connect:
+        // the nested call finishes Office's disconnect and clears the interface
+        // pointers Office caches on its COMAddIn object, then the outer
+        // put_Connect resumes and Release()s one of them unconditionally, reading
+        // a NULL vtable -> EXCEL.EXE 0xC0000005 at mso.dll+0xa1d19e. Measured
+        // 2026-07-30: crashed in 3/3 runs where this nested disconnect executed
+        // and 0/N where it did not, identically on v0.8.40 and v0.8.41 (so it is
+        // NOT a regression of the close-time unmap fix). Skipping it there loses
+        // nothing: Office is disconnecting us anyway, which is the whole point of
+        // the call. See xll::ribbon::OfficeDisconnectInProgress().
+        if (xll::ribbon::OfficeDisconnectInProgress()) {
+            SAFE_LOG_INFO("Ribbon: explicit COMAddIns disconnect SKIPPED — Office is already inside its own "
+                          "add-in disconnect for us; re-entering it corrupts Office's COMAddIn state.");
+        } else if (!SetRibbonConnected(false)) {
             SAFE_LOG_WARN("Ribbon: explicit disconnect failed; Excel may release the add-in late.");
         }
         if (g_ribbonCookie != 0) {
