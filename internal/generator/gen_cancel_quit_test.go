@@ -116,16 +116,34 @@ func TestCancelQuitGracefulTeardownOnce(t *testing.T) {
 		"g_isUnloading = true",
 		// It invokes the registered COM teardown hook (decoupled from this TU).
 		"g_teardownHook",
-		// The relocated destructive steps live here now.
-		"SetEvent(g_procInfo.hShutdownEvent)",
-		"StopWorker",
-		"JoinWorker",
-		"WaitForCommandDrain(2000)",
+		// The relocated destructive steps live here now — but since the
+		// 2026-07-29 close-time use-after-unload fix they are SPLIT across
+		// Phase 1 (BeginQuiesce: stop + bounded-reap the threads, destroy the
+		// notify window, run the drains) and Phase 2 (RunDestructiveTeardown:
+		// latch g_isUnloading, delete g_phost, close the handles). Both live in
+		// this TU, below GracefulTeardownOnce, so the body slice from
+		// GracefulTeardownOnce to EOF still sees all of them.
 		"delete g_phost",
 		"CloseHandle(g_procInfo.hJob)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("GracefulTeardownOnce missing %q\n---\n%s", want, body)
+		}
+	}
+
+	// The rest of the relocated destructive work — the shutdown-event signal, the
+	// worker stop and the §23.0 drains — moved UP into Phase 1's BeginQuiesce
+	// (2026-07-29 close-time use-after-unload fix), which is defined ABOVE
+	// GracefulTeardownOnce, so assert it against the whole TU rather than the body
+	// slice. What matters for cancel-quit is unchanged: none of it is reachable
+	// without a CONFIRMED shutdown signal entering GracefulTeardownOnce.
+	for _, want := range []string{
+		"SetEvent(g_procInfo.hShutdownEvent)",
+		"StopWorker",
+		"WaitForCommandDrain(2000)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("xll_lifecycle.cpp missing the relocated destructive step %q", want)
 		}
 	}
 

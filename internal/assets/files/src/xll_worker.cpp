@@ -32,6 +32,11 @@ namespace xll {
 std::atomic<bool> g_workerRunning = false;
 std::thread g_workerThread;
 
+// Set by WorkerLoop as its LAST act, so the teardown can observe "the worker has
+// actually returned" without touching the std::thread object. See xll_worker.h
+// (WorkerExited) for why the teardown must never park in join().
+static std::atomic<bool> g_workerExited{true};
+
 // Chunk Reassembly Logic
 //
 // CO-CHANGE ANCHOR (§18.6 style): this mirrors the Go-side reassembler in
@@ -297,15 +302,31 @@ void CleanupStaleChunks() {
     g_chunkRegistry.Prune(std::chrono::steady_clock::now());
 }
 
+bool WorkerExited() { return g_workerExited.load(std::memory_order_acquire); }
+
+bool WaitForWorkerExit(unsigned int timeoutMs) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (!g_workerExited.load(std::memory_order_acquire)) {
+        if (clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
 // Worker loop
 void WorkerLoop() {
+    g_workerExited.store(false, std::memory_order_release);
     g_workerRunning = true;
 
     auto lastCleanup = std::chrono::steady_clock::now();
 
     while (g_workerRunning) {
-        // Check for unloading state to exit early
-        if (g_isUnloading) break;
+        // Check for unloading/quiescing state to exit early. g_isQuiescing is
+        // latched by the graceful teardown's Phase 1 BEFORE anything destructive
+        // happens, so the worker stops dispatching guest calls (RTD updates,
+        // async returns) while g_phost is still alive — see xll_lifecycle.h.
+        if (g_isUnloading || g_isQuiescing) break;
 
         // Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf,
         //             uint32_t maxRespSize, shm::MsgType& msgType)
@@ -333,8 +354,8 @@ void WorkerLoop() {
         // site onto Start()), this lambda STOPS COMPILING rather than silently
         // losing the write-back. Do not convert it to GuestCallHandler.
         bool processed = g_host.ProcessGuestCalls([](const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf, uint32_t maxRespSize, shm::MsgType& msgType) -> int32_t {
-            // Check for unloading inside the callback as well
-            if (g_isUnloading) return 0;
+            // Check for unloading/quiescing inside the callback as well
+            if (g_isUnloading || g_isQuiescing) return 0;
 
             if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE) {
                 auto batch = flatbuffers::GetRoot<protocol::BatchAsyncResponse>(reqBuf);
@@ -380,10 +401,12 @@ void WorkerLoop() {
             lastCleanup = now;
         }
     }
+    g_workerExited.store(true, std::memory_order_release);
 }
 
 void StartWorker() {
     if (g_workerRunning) return;
+    g_workerExited.store(false, std::memory_order_release);
     if (g_workerThread.joinable()) {
         // Should not happen if StopWorker was called correctly, but for safety
         g_workerRunning = false;

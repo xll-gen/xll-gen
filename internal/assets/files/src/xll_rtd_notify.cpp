@@ -43,11 +43,18 @@ LRESULT CALLBACK RtdNotifyWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
         // pump cycle for it.)
         g_rtdNotifyPending.store(false, std::memory_order_release);
 
-        // Lifecycle guard: bail if teardown has begun or the server is gone. This
-        // no-ops an already-queued message during/after teardown while this code
-        // is still mapped (§20.2). WndProc runs on the STA — the correct apartment
-        // for the cross-COM UpdateNotify call.
-        if (xll::g_isUnloading.load(std::memory_order_acquire) || !g_rtdServer) {
+        // Lifecycle guard: bail if ANY teardown has begun (quiescing OR unloading)
+        // or the server is gone. This no-ops an already-queued message during/after
+        // teardown while this code is still mapped (§20.2). WndProc runs on the STA —
+        // the correct apartment for the cross-COM UpdateNotify call.
+        //
+        // TeardownStarted() (not g_isUnloading alone) is load-bearing: on a host
+        // shutdown g_isUnloading stays FALSE across Excel's whole RTD handshake, so
+        // gating on it alone let queued notifies drive IRTDUpdateEvent::UpdateNotify
+        // INTO an Excel that had already begun shutting down (2026-07-29 close-time
+        // crash; AGENTS.md §20.2/§23.6). Phase 1 latches g_isQuiescing and destroys
+        // this window, so both the source and the sink are shut off.
+        if (xll::TeardownStarted() || !g_rtdServer) {
             return 0;
         }
         g_rtdServer->NotifyUpdate();
@@ -109,7 +116,8 @@ void CreateRtdNotifyWindow() {
 
 void SignalRtdUpdate() {
     // Callable from ANY thread (the worker). Non-blocking.
-    if (g_isUnloading.load(std::memory_order_acquire)) return;
+    // TeardownStarted(), not g_isUnloading alone — see RtdNotifyWndProc above.
+    if (TeardownStarted()) return;
     HWND h = g_rtdNotifyWindow.load(std::memory_order_acquire);
     if (!h) return;
 
@@ -124,7 +132,15 @@ void SignalRtdUpdate() {
 }
 
 void DestroyRtdNotifyWindow() {
-    // MUST be on the STA (the creating thread), AFTER JoinWorker. Idempotent.
+    // MUST be on the STA (the creating thread), and AFTER the worker has been reaped
+    // so no SignalRtdUpdate -> PostMessage can race the destroy. Idempotent.
+    //
+    // The three reach-sites all satisfy both: BeginQuiesce step (g) (Phase 1, on the
+    // STA, immediately after the worker/monitor reap), RunDestructiveTeardown (the
+    // idempotent repeat, also STA), and the non-host-shutdown path through the same
+    // BeginQuiesce. A forced DLL_PROCESS_DETACH deliberately does NOT call it — the
+    // window LEAKS there instead, an accepted §20.2 residual, because DestroyWindow
+    // from the wrong thread / under the loader lock is unsafe and would fail anyway.
     HWND h = g_rtdNotifyWindow.exchange(nullptr, std::memory_order_acq_rel);
     if (h) {
         DestroyWindow(h);

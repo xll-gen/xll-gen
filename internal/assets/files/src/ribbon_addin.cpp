@@ -48,6 +48,13 @@ namespace xll { namespace ribbon {
     }
 
     void SendCommandInvoke(const std::string& commandNameUtf8, const std::string& controlIdUtf8) {
+        // ENTRY GATE, before the thread exists (review MED #2). CommandInFlightGuard is
+        // acquired INSIDE the detached lambda, so a command dispatched after Phase 1's
+        // drain completed would not be counted by it and could still be inside a Send
+        // when Phase 2 deletes g_phost. A teardown means the session is going away, so
+        // dropping a ribbon click here costs nothing. The in-lambda re-checks remain the
+        // cover for a teardown that starts mid-flight.
+        if (xll::TeardownStarted()) return;
         // Log on the calling (STA) thread, not in the detached lambda, so
         // logging never races teardown.
         xll::LogDebug("CommandInvoke dispatch: " + commandNameUtf8);
@@ -87,12 +94,12 @@ namespace xll { namespace ribbon {
             constexpr int kMaxAttempts = 50;
             constexpr unsigned int kAttemptTimeoutMs = 200;
             for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-                if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (xll::TeardownStarted()) return; // quiesce OR unload — see xll_lifecycle.h
                 if (!g_phost) return;
 
                 auto slot = g_phost->GetZeroCopySlot();
 
-                if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (xll::TeardownStarted()) return; // quiesce OR unload — see xll_lifecycle.h
                 if (!slot.IsValid()) {
                     // All host slots momentarily busy; yield and retry.
                     std::this_thread::sleep_for(std::chrono::milliseconds(kAttemptTimeoutMs));
@@ -116,7 +123,7 @@ namespace xll { namespace ribbon {
                     return;
                 }
 
-                if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+                if (xll::TeardownStarted()) return; // quiesce OR unload — see xll_lifecycle.h
 
                 auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_COMMAND_INVOKE, kAttemptTimeoutMs);
 
@@ -133,7 +140,7 @@ namespace xll { namespace ribbon {
                 // Send already blocked kAttemptTimeoutMs waiting for a reader.
             }
 
-            if (!xll::g_isUnloading.load(std::memory_order_acquire)) {
+            if (!xll::TeardownStarted()) {
                 xll::LogWarn("CommandInvoke dropped (server not reachable after retries): " + commandNameUtf8);
             }
         }).detach();

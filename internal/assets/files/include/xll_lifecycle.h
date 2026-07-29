@@ -38,13 +38,76 @@ namespace xll {
         XLOPER12& xRegId
     );
 
-    // Unloading Flag
+    // Unloading Flag. Meaning: "the DESTRUCTIVE teardown has begun — g_phost is
+    // being or has been destroyed and the Go server reaped; touch NOTHING that
+    // depends on them." Anything that must still reach the server while Excel is
+    // shutting down (notably xll_rtd.cpp::DisconnectData, which needs to send
+    // MSG_RTD_DISCONNECT for every live topic) is gated on THIS flag being false.
     extern std::atomic<bool> g_isUnloading;
+
+    // Quiescing flag — the OTHER half of what g_isUnloading used to mean alone.
+    //
+    // Meaning: "a CONFIRMED teardown has begun: start no new background work and
+    // self-abort anything in flight. g_phost and the Go server are STILL ALIVE."
+    //
+    // WHY THE SPLIT (2026-07-29 close-time use-after-unload; AGENTS.md §20.2/§23.6).
+    // One flag was being asked to mean two things at once:
+    //   (a) "stop background work / self-abort" — needed EARLY, in Phase 1, and
+    //   (b) "the destructive teardown started, g_phost is going away" — which must
+    //       NOT be true in Phase 1, because Excel issues its per-topic
+    //       DisconnectData AFTER OnBeginShutdown returns and those sends require
+    //       g_isUnloading==false (the §23.6 Stage-4 ghost fix).
+    // Because (a) could not be latched without also latching (b), Phase 1 latched
+    // NEITHER: the worker thread kept dispatching RTD updates, the hidden notify
+    // window kept posting UpdateNotify into an Excel that was already shutting
+    // down, and the whole destructive teardown (thread joins included) was deferred
+    // into RtdServer::ServerTerminate — where it ran CONCURRENTLY with Excel
+    // unmapping the XLL. Measured result: 100% crash on a window-close with live
+    // streaming RTD topics (0xC0000005 in `<proj>.xll_unloaded`, faulting RIP the
+    // instruction after WaitForSingleObject inside libwinpthread's pthread_join).
+    //
+    // Phase 1 now latches ONLY this flag, so background work stops while
+    // DisconnectData keeps working. Set exclusively from GracefulTeardownOnce
+    // (i.e. only from RibbonAddIn::OnBeginShutdown / OnDisconnection, which fire
+    // ONLY on a CONFIRMED teardown and NEVER on a cancelled quit — so there is
+    // nothing to un-latch there; the same call already does irreversible work
+    // like the ribbon disconnect and the registry unregister). Cleared by
+    // ResetLifecycleStateForFreshLoad(), which runs from DLL_PROCESS_ATTACH
+    // (probe-unload-reuse symmetry, alongside g_isUnloading) AND from
+    // PrepareForFreshLoad() - a PINNED image never gets a second ATTACH, so
+    // xlAutoOpen has to be able to ask for the same reset (§20.2.1).
+    extern std::atomic<bool> g_isQuiescing;
+
+    // Convenience predicate for every background/self-scheduled work site:
+    // "should I stop?" — true from Phase 1 onwards. Do NOT use this to gate a
+    // send that must still reach the server during Excel's shutdown handshake
+    // (DisconnectData); that one checks g_isUnloading alone, on purpose.
+    inline bool TeardownStarted() {
+        return g_isUnloading.load(std::memory_order_acquire) ||
+               g_isQuiescing.load(std::memory_order_acquire);
+    }
 
     // Process Information for Server
     extern ProcessInfo g_procInfo;
 
     extern std::thread g_monitorThread;
+
+    // Publishes "the monitor thread has NOT exited" BEFORE the std::thread is
+    // constructed. Mirrors what StartWorker does for g_workerExited, and closes the
+    // same stale-flag window (review LOW #6): the flag starts true, so a teardown
+    // landing between `g_monitorThread = std::thread(...)` and the thread's first
+    // instruction would read a stale "exited" and take a REAL blocking join inside
+    // a function whose contract is "never park". Call this immediately before
+    // creating the thread.
+    void MarkMonitorStarting();
+
+    // True once MonitorThread has RETURNED. Same contract (and same reason) as
+    // xll::WorkerExited() — see xll_worker.h: the graceful teardown must never
+    // park in join(), so it waits on this flag first and only then joins.
+    //
+    // Diagnostics / test-facing, like WorkerExited(): the teardown uses the internal
+    // bounded wait. Kept public so a harness can observe the flag directly.
+    bool MonitorExited();
 
     // Thread for monitoring server process
     void MonitorThread(std::wstring logPath);
@@ -125,30 +188,96 @@ namespace xll {
     //   OnDisconnection with ext_dm_HostShutdown): DEFERRED, in two phases. Excel
     //   does NOT dispatch its RTD teardown COM calls (DisconnectData per topic,
     //   then ServerTerminate) until AFTER OnBeginShutdown returns — it serializes.
-    //   Phase 1 (here) runs ONLY the fast prep: the COM hook with the RTD
-    //   class-object revoke SKIPPED (so Excel can START its handshake), then RETURNS
-    //   FAST. It deliberately leaves RTD usable — g_phost alive AND
+    //   Phase 1 (here) runs ONLY the fast prep, in this order:
+    //     1. PIN the XLL image (PinModuleToPreventUnmap) — Excel FreeLibrary's and
+    //        UNMAPS the XLL ~80-100 ms after this function returns, while both it and
+    //        we still have code/vtables in flight. MEASURED 2026-07-29; this is the
+    //        root cause of the close-time use-after-unload crash. See §20.2.
+    //     2. QUIESCE (BeginQuiesce), in THIS order: latch g_isQuiescing; SetEvent the
+    //        private shutdown event (releases MonitorProcess only — the Go server never
+    //        sees it); StopWorker; DRAIN the detached RTD-connect and command senders,
+    //        CAPTURING both verdicts; BOUNDED-reap the worker/monitor; THEN destroy the
+    //        hidden RTD notify window (after the reap, so no live worker can PostMessage
+    //        into the destroy); THEN ReleaseCallbackForTeardown (whose documented
+    //        precondition is "after the worker is reaped"); finally record
+    //        g_backgroundThreadsReaped as the AND of ALL FOUR verdicts.
+    //        Nothing here parks: joins happen only after the thread's own exit flag
+    //        is observed, and a thread that misses its budget is detached (and, on the
+    //        unpinned add-in-disable path, that detach pins — see PinModuleToPreventUnmap).
+    //     3. CancelDeferredRunner + the COM hook with the RTD class-object revoke
+    //        SKIPPED (so Excel can START its handshake), then RETURN FAST.
+    //   Phase 1 deliberately leaves RTD USABLE — g_phost alive AND
     //   g_isUnloading==false, both required by xll_rtd.cpp::DisconnectData to
     //   actually send MSG_RTD_DISCONNECT. Phase 2 (RunDestructiveTeardown) runs the
     //   destructive sequence LATER, triggered DIRECTLY from RtdServer::ServerTerminate
     //   — which Excel calls ON THE STA after all DisconnectData, once its handshake
     //   completes (§23.6 Stage-4 remediation, 2026-06-17). This clears the windowless
     //   ghost: Excel completes its RTD topic teardown before the server is reaped and
-    //   g_phost deleted. If ServerTerminate never fires (no live topics), the
-    //   DLL_PROCESS_DETACH backstop (§20.2) still reaps the server via hJob. The
-    //   §23.0 ordering (delete g_phost ONLY AFTER the drains) is preserved in Phase 2.
+    //   g_phost deleted. NOTHING ESSENTIAL DEPENDS ON ServerTerminate FIRING: if it
+    //   never does, the DLL_PROCESS_DETACH backstop (§20.2) still reaps the server via
+    //   hJob and g_phost/handles are simply leaked into process exit. The §23.0
+    //   ordering is preserved — the drains run in Phase 1, strictly before Phase 2's
+    //   `delete g_phost`, which is additionally gated on Phase 1 having actually
+    //   reaped both background threads.
     void GracefulTeardownOnce(bool isHostShutdown = false);
 
-    // PHASE 2 destructive teardown body (set g_isUnloading, StopWorker/JoinWorker,
-    // §23.0 drains, delete g_phost, CloseHandle of hProcess/hJob/hShutdownEvent).
-    // Guarded by an internal CAS (g_destructiveDone) so it runs EXACTLY ONCE across
-    // its two STA call sites: RtdServer::ServerTerminate (host-shutdown deferred
-    // path) and GracefulTeardownOnce itself (non-host-shutdown / add-in-disable
-    // path). Declared here so the RTD server (include/rtd/server.h) can invoke it
-    // from ServerTerminate on the STA, at the correctly-timed point after Excel
-    // finishes its RTD handshake (§23.6 Stage-4 remediation, 2026-06-17). MUST run
-    // on the STA (NOT the loader lock) — see the definition's THREAD CONTEXT note.
+    // PHASE 2 destructive teardown body: set g_isUnloading, release Excel's RTD
+    // callback (idempotent), delete g_phost, CloseHandle of
+    // hProcess/hJob/hShutdownEvent. Guarded by an internal CAS (g_destructiveDone)
+    // so it runs EXACTLY ONCE across its two STA call sites:
+    // RtdServer::ServerTerminate (host-shutdown deferred path) and
+    // GracefulTeardownOnce itself (non-host-shutdown / add-in-disable path).
+    // Declared here so the RTD server (include/rtd/server.h) can invoke it from
+    // ServerTerminate on the STA, at the correctly-timed point after Excel finishes
+    // its RTD handshake (§23.6 Stage-4 remediation, 2026-06-17). MUST run on the STA
+    // (NOT the loader lock) — see the definition's THREAD CONTEXT note.
+    //
+    // IT MUST NOT PARK (2026-07-29). The thread stops/joins and the §23.0 drains
+    // that used to live here MOVED to Phase 1 (BeginQuiesce): this body runs from
+    // inside Excel's own RTD/COM shutdown, and a `join()` parked here used to return
+    // into an image Excel had already unmapped — 0xC0000005 against
+    // `<proj>.xll_unloaded`, 100% reproducible on a window-close with live streaming
+    // RTD topics. Do NOT reintroduce a join / drain / message pump / Excel callback.
     void RunDestructiveTeardown();
+
+    // Verdict from PrepareForFreshLoad().
+    enum class FreshLoadVerdict {
+        // Nothing was latched: an ordinary first load. Proceed.
+        kCleanLoad,
+        // A previous teardown HAD latched the lifecycle flags and they have now been
+        // reset. Proceed; worth an INFO line because it means this process already
+        // tore the add-in down once.
+        kResetAfterTeardown,
+        // A previous teardown left a background thread DETACHED rather than reaped,
+        // so the flags CANNOT be safely reset. The caller must FAIL LOUDLY (refuse
+        // to load) rather than continue.
+        kUnrecoverable,
+    };
+
+    // MUST be called at the very top of xlAutoOpen, before anything is constructed.
+    //
+    // WHY IT EXISTS (review HIGH #2, 2026-07-29). The lifecycle flags used to be
+    // reset in exactly one place, DLL_PROCESS_ATTACH, which was sound while every
+    // unload really unmapped the image. The §20.2.1 image PIN broke that: after a
+    // confirmed host shutdown the module is pinned, so a later
+    // FreeLibrary/LoadLibrary pair just moves the reference count and DllMain is
+    // never called again — the flags would stay latched for the life of the process.
+    //
+    // That is reachable, not theoretical: `Application.Quit()` from a COM automation
+    // client that KEEPS its Application reference delivers OnBeginShutdown (so the
+    // confirmed-shutdown teardown runs, and pins) while Excel does NOT exit. A
+    // disable→re-enable after that would run xlAutoOpen with g_isQuiescing still
+    // true: MonitorThread returns at once, WorkerLoop breaks out immediately, and
+    // the add-in is silently half-dead for the rest of the session (no RTD updates,
+    // no async results) while still holding the XLL file lock.
+    //
+    // Returns the verdict; see FreshLoadVerdict. The caller MUST honour
+    // kUnrecoverable by failing the load.
+    FreshLoadVerdict PrepareForFreshLoad();
+
+    // Restores every lifecycle flag to its fresh-load state. Called from
+    // DLL_PROCESS_ATTACH and from PrepareForFreshLoad(); not for general use.
+    void ResetLifecycleStateForFreshLoad();
 
     // Registers the COM/ribbon/RTD destructive-teardown hook that
     // GracefulTeardownOnce() invokes (ribbon disconnect, CoRevokeClassObject,

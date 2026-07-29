@@ -62,8 +62,12 @@ func TestRtdConnectDrainCapAlignment(t *testing.T) {
 		// The Send result is inspected so a delivered ack ends the loop.
 		"res.HasError()",
 		"MSG_RTD_CONNECT, kAttemptTimeoutMs",
-		// The retry honors the unload self-abort contract at the yield points.
-		"g_isUnloading.load(std::memory_order_acquire)",
+		// The retry honors the teardown self-abort contract at the yield points.
+		// TeardownStarted() (g_isUnloading OR g_isQuiescing), not g_isUnloading
+		// alone: Phase 1 latches only the quiesce flag and THEN drains this
+		// counter, so gating on g_isUnloading would make the drain time out and
+		// force Phase 2 to leak g_phost (2026-07-29 fix; see xll_lifecycle.h).
+		"xll::TeardownStarted()",
 		// Each attempt re-acquires a fresh slot (Send disowns its slot on timeout).
 		"g_phost->GetZeroCopySlot();",
 	} {

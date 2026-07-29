@@ -303,9 +303,15 @@ func TestScheduleOnTimeMacroGuards(t *testing.T) {
 
 	// (1) The unload gate must be the FIRST thing the body does — before any
 	//     Excel C-API call (xlfNow is already a C-API call).
-	gate := "if (xll::g_isUnloading.load(std::memory_order_acquire)) return xlretFailed;"
+	// TeardownStarted() == g_isUnloading || g_isQuiescing. The quiesce half is
+	// load-bearing since the 2026-07-29 close-time fix: a schedule placed during
+	// the teardown's Phase 1 (which latches g_isQuiescing but deliberately leaves
+	// g_isUnloading false so DisconnectData keeps working) is just as certainly a
+	// leaked OnTime dispatch as one placed during Phase 2. Gating on g_isUnloading
+	// alone would let it through. See xll_lifecycle.h.
+	gate := "if (xll::TeardownStarted()) return xlretFailed;"
 	if !strings.Contains(body, gate) {
-		t.Errorf("ScheduleOnTimeMacro is missing its own §20 unload self-gate (%q); "+
+		t.Errorf("ScheduleOnTimeMacro is missing its own §20 teardown self-gate (%q); "+
 			"as public API it must not be able to place an Excel C-API command during "+
 			"teardown just because a caller forgot to gate", gate)
 	} else if gi, ni := strings.Index(body, gate), strings.Index(body, "xll::CallExcel(xlfNow"); ni >= 0 && gi > ni {

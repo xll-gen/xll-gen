@@ -32,9 +32,15 @@ static void ReplaceString(std::wstring& str, const std::wstring& from, const std
     }
 }
 
+static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg);
+
 static void WriteLog(const std::string& levelStr, const std::string& msg) {
     // If unloading, avoid touching filesystem/logging resources.
     if (g_isUnloading) return;
+    WriteLogUnconditional(levelStr, msg);
+}
+
+static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg) {
     if (g_logPath.empty()) return;
     std::lock_guard<std::mutex> lock(g_logMutex);
     // Use filesystem::path for proper Unicode handling on Windows
@@ -75,6 +81,22 @@ void LogInfo(const std::string& msg) {
     if (g_isUnloading) return;
     if (g_logLevel >= LogLevel::INFO) {
         WriteLog("INFO", msg);
+    }
+}
+
+// Teardown-path logger: deliberately NOT gated on g_isUnloading (see xll_log.h).
+// Level-gated at INFO so `log.level: warn/error/none` still silences it.
+void LogTeardown(const std::string& msg) {
+    if (g_logLevel >= LogLevel::INFO) {
+        WriteLogUnconditional("TEARDOWN", msg);
+    }
+}
+
+// WARN-gated teardown logger - see xll_log.h. Survives `logging.level: warn`,
+// which is where the teardown's failure lines have to be visible.
+void LogTeardownWarn(const std::string& msg) {
+    if (g_logLevel >= LogLevel::WARN) {
+        WriteLogUnconditional("TEARDOWN-WARN", msg);
     }
 }
 

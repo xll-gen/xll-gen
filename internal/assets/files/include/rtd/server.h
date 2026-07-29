@@ -18,7 +18,7 @@ namespace xll { void LogDebug(const std::string& msg); }
 // window is closed by BOTH the m_callback null-out (in ServerTerminate, before
 // JoinWorker) AND this flag, so a future edit that reorders the null-out cannot
 // re-open a NotifyUpdate-vs-teardown race.
-namespace xll { extern std::atomic<bool> g_isUnloading; }
+namespace xll { extern std::atomic<bool> g_isUnloading; extern std::atomic<bool> g_isQuiescing; }
 // Close-time ghost fix (AGENTS.md §23.6 Stage 4, remediation 2026-06-17):
 // RtdServer::ServerTerminate is the correctly-timed, COM-apartment-safe,
 // naturally-serialized point at which to run the DEFERRED destructive teardown.
@@ -271,7 +271,14 @@ namespace rtd {
             // Defense-in-depth (review MED-1): bail if teardown has begun. The
             // m_callback null-out already covers the race, but this closes the
             // snapshot window against future reorderings too.
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+            //
+            // BOTH flags: on a host shutdown g_isUnloading stays false across
+            // Excel's entire RTD handshake, so g_isUnloading alone let UpdateNotify
+            // fire into an Excel that was already shutting down (2026-07-29
+            // close-time crash; AGENTS.md §20.2/§23.6). g_isQuiescing is latched by
+            // the teardown's Phase 1 and is the correct gate for "stop calling out".
+            if (xll::g_isUnloading.load(std::memory_order_acquire) ||
+                xll::g_isQuiescing.load(std::memory_order_acquire)) return;
             IRTDUpdateEvent* tempCallback = nullptr;
             {
                 std::lock_guard<std::mutex> lock(m_callbackMutex);

@@ -115,7 +115,12 @@ func TestRtdNotifyWindowStaRouting(t *testing.T) {
 	}
 	clearIdx := strings.Index(body, "g_rtdNotifyPending.store(false")
 	notifyIdx := strings.Index(body, "g_rtdServer->NotifyUpdate();")
-	unloadIdx := strings.Index(body, "g_isUnloading.load")
+	// TeardownStarted() == g_isUnloading || g_isQuiescing. The quiesce half is what
+	// stops a QUEUED notify from driving IRTDUpdateEvent::UpdateNotify into an Excel
+	// that has already begun shutting down: on a host shutdown g_isUnloading stays
+	// false across Excel's whole RTD handshake, so the old g_isUnloading-only guard
+	// let those through (2026-07-29 close-time crash; see xll_lifecycle.h).
+	unloadIdx := strings.Index(body, "xll::TeardownStarted()")
 	serverGuardIdx := strings.Index(body, "!g_rtdServer")
 	if clearIdx < 0 {
 		t.Errorf("WndProc must clear g_rtdNotifyPending FIRST so updates during the call re-post")
@@ -124,13 +129,13 @@ func TestRtdNotifyWindowStaRouting(t *testing.T) {
 		t.Errorf("WndProc must call g_rtdServer->NotifyUpdate()")
 	}
 	if unloadIdx < 0 || serverGuardIdx < 0 {
-		t.Errorf("WndProc must guard on g_isUnloading AND g_rtdServer before NotifyUpdate")
+		t.Errorf("WndProc must guard on xll::TeardownStarted() AND g_rtdServer before NotifyUpdate")
 	}
 	if clearIdx >= 0 && notifyIdx >= 0 && clearIdx > notifyIdx {
 		t.Errorf("WndProc must clear the coalescing flag BEFORE calling NotifyUpdate (so re-posts are not lost)")
 	}
 	if unloadIdx >= 0 && notifyIdx >= 0 && unloadIdx > notifyIdx {
-		t.Errorf("WndProc must check g_isUnloading BEFORE calling NotifyUpdate")
+		t.Errorf("WndProc must check xll::TeardownStarted() BEFORE calling NotifyUpdate")
 	}
 	if serverGuardIdx >= 0 && notifyIdx >= 0 && serverGuardIdx > notifyIdx {
 		t.Errorf("WndProc must check g_rtdServer BEFORE calling NotifyUpdate")
@@ -145,12 +150,17 @@ func TestRtdNotifyWindowStaRouting(t *testing.T) {
 	if end := strings.Index(sigBody, "void DestroyRtdNotifyWindow()"); end > 0 {
 		sigBody = sigBody[:end]
 	}
-	if !strings.Contains(sigBody, "g_isUnloading.load") {
-		t.Errorf("SignalRtdUpdate must early-return on g_isUnloading")
+	if !strings.Contains(sigBody, "TeardownStarted()") {
+		t.Errorf("SignalRtdUpdate must early-return on xll::TeardownStarted() (quiesce OR unload)")
 	}
 
-	// (d) xll_lifecycle.cpp RunDestructiveTeardown calls DestroyRtdNotifyWindow
-	//     inside the XLL_RTD_ENABLED block, AFTER JoinWorker.
+	// (d) xll_lifecycle.cpp destroys the notify window on the STA, inside an
+	//     XLL_RTD_ENABLED block, AFTER the worker has been stopped and reaped.
+	//     Since the 2026-07-29 close-time fix the PRIMARY site is Phase 1's
+	//     BeginQuiesce (which is where the worker reap lives, and which runs while
+	//     the image is still certainly mapped); RunDestructiveTeardown keeps an
+	//     idempotent repeat. Assert BOTH sites, and that the primary one orders the
+	//     destroy after the worker reap.
 	lc, ok := m["src/xll_lifecycle.cpp"]
 	if !ok {
 		t.Fatalf("embedded asset src/xll_lifecycle.cpp not found")
@@ -160,13 +170,42 @@ func TestRtdNotifyWindowStaRouting(t *testing.T) {
 	if rtdIdx < 0 {
 		t.Fatalf("RunDestructiveTeardown not found in xll_lifecycle.cpp")
 	}
+	// Primary site: BeginQuiesce (Phase 1).
+	bqIdx := strings.Index(lcCode, "static void BeginQuiesce(bool hostShutdown)")
+	if bqIdx < 0 {
+		t.Fatalf("BeginQuiesce not found in xll_lifecycle.cpp")
+	}
+	bqBody := lcCode[bqIdx:]
+	if end := strings.Index(bqBody, "int xll::RegisterFunction("); end > 0 {
+		bqBody = bqBody[:end]
+	}
+	if !strings.Contains(bqBody, "xll::DestroyRtdNotifyWindow();") {
+		t.Errorf("BeginQuiesce (Phase 1) must destroy the RTD notify window on the STA - a leaked "+
+			"message-only WndProc is a raw code pointer the OS keeps dispatching after the image is "+
+			"unmapped (AGENTS.md 20.3 / the 2026-07-29 close-time crash)\n---\n%s", bqBody)
+	}
+	if !strings.Contains(bqBody, "#ifdef XLL_RTD_ENABLED") {
+		t.Errorf("BeginQuiesce's notify-window destroy must sit inside an XLL_RTD_ENABLED block")
+	}
+	// The destroy must follow the REAP, not merely the StopWorker request: only once
+	// the worker has actually RETURNED is it impossible for a SignalRtdUpdate ->
+	// PostMessage to race the DestroyWindow (review LOW #5 — the ordering
+	// xll_rtd_notify.cpp documents as its own precondition).
+	bqStopIdx := strings.Index(bqBody, "xll::StopWorker();")
+	bqReapIdx := strings.Index(bqBody, "xll::JoinWorker();")
+	bqDestroyIdx := strings.Index(bqBody, "xll::DestroyRtdNotifyWindow();")
+	if bqStopIdx < 0 || bqDestroyIdx < 0 || bqStopIdx > bqDestroyIdx {
+		t.Errorf("BeginQuiesce must StopWorker BEFORE destroying the notify window (no PostMessage may race the destroy)")
+	}
+	if bqReapIdx < 0 || bqReapIdx > bqDestroyIdx {
+		t.Errorf("BeginQuiesce must REAP the worker (JoinWorker) BEFORE destroying the notify window: "+
+			"a still-running worker can PostMessage to the HWND we are about to destroy "+
+			"(reap@%d destroy@%d)", bqReapIdx, bqDestroyIdx)
+	}
+
 	rtdBody := lcCode[rtdIdx:]
-	joinIdx := strings.Index(rtdBody, "xll::JoinWorker();")
 	destroyIdx := strings.Index(rtdBody, "xll::DestroyRtdNotifyWindow();")
 	gateIdx := strings.Index(rtdBody, "#ifdef XLL_RTD_ENABLED")
-	if joinIdx < 0 {
-		t.Fatalf("JoinWorker call not found in RunDestructiveTeardown")
-	}
 	if destroyIdx < 0 {
 		t.Errorf("RunDestructiveTeardown must call xll::DestroyRtdNotifyWindow()")
 	}
@@ -176,9 +215,10 @@ func TestRtdNotifyWindowStaRouting(t *testing.T) {
 	if destroyIdx >= 0 && destroyIdx < gateIdx {
 		t.Errorf("DestroyRtdNotifyWindow must be inside the XLL_RTD_ENABLED block")
 	}
-	if destroyIdx >= 0 && destroyIdx < joinIdx {
-		t.Errorf("DestroyRtdNotifyWindow must be called AFTER JoinWorker (no PostMessage can race the destroy)")
-	}
+	// (The "after the worker reap" ordering is asserted on the PRIMARY site above.
+	// RunDestructiveTeardown no longer joins anything — it must not park, see
+	// TestCloseUnloadNoParkAfterPhase1 — so there is no join to order against here;
+	// its DestroyRtdNotifyWindow is the idempotent repeat.)
 	if !strings.Contains(lcCode, "#include \"xll_rtd_notify.h\"") {
 		t.Errorf("xll_lifecycle.cpp must include xll_rtd_notify.h (RTD-gated)")
 	}

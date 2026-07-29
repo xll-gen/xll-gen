@@ -140,8 +140,24 @@ func TestRtdServerTerminateGatedOnHostShutdown(t *testing.T) {
 	if end := strings.Index(attachBody, "case DLL_THREAD_ATTACH:"); end > 0 {
 		attachBody = attachBody[:end]
 	}
-	if !strings.Contains(attachBody, "g_hostShutdownTeardownArmed.store(false") {
-		t.Errorf("DLL_PROCESS_ATTACH must reset g_hostShutdownTeardownArmed to false (probe-unload-reuse symmetry)\n---\n%s", attachBody)
+	// The reset itself moved into ResetLifecycleStateForFreshLoad (review HIGH #2: a
+	// PINNED image never gets a second DLL_PROCESS_ATTACH, so xlAutoOpen must be able
+	// to ask for the same reset). ATTACH must delegate, and the function must still
+	// clear this gate.
+	if !strings.Contains(attachBody, "ResetLifecycleStateForFreshLoad()") {
+		t.Errorf("DLL_PROCESS_ATTACH must delegate the flag reset to ResetLifecycleStateForFreshLoad()\n---\n%s", attachBody)
+	}
+	rlIdx := strings.Index(lcCode, "void xll::ResetLifecycleStateForFreshLoad() {")
+	if rlIdx < 0 {
+		t.Fatalf("ResetLifecycleStateForFreshLoad not found in xll_lifecycle.cpp")
+	}
+	rlBody := lcCode[rlIdx:]
+	if e := strings.Index(rlBody, "\n    }"); e > 0 {
+		rlBody = rlBody[:e]
+	}
+	if !strings.Contains(rlBody, "g_hostShutdownTeardownArmed.store(false") {
+		t.Errorf("ResetLifecycleStateForFreshLoad must reset g_hostShutdownTeardownArmed to false "+
+			"(probe-unload-reuse symmetry)\n---\n%s", rlBody)
 	}
 
 	// --- include/xll_lifecycle.h: declare the accessor. ---

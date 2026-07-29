@@ -298,6 +298,15 @@ func (h *SystemHandler) HandleRtdDisconnect(data []byte, respBuf []byte, b *flat
 	reqObj := protocol.GetRootAsRtdDisconnectRequest(data, 0)
 	topicID := reqObj.TopicId()
 
+	// Logged at Info to MIRROR HandleRtdConnect's "RTD Connect request received"
+	// (line ~241). The asymmetry was a real observability hole: the XLL side only
+	// LogDebug's DisconnectData, so on a release build there was NO evidence
+	// anywhere that Excel had torn a topic down. That matters because the close-time
+	// teardown design (AGENTS.md §23.6) turns on whether `MSG_RTD_DISCONNECT`
+	// actually reaches the server before g_phost dies — a claim that could not be
+	// checked without rebuilding. Keep the pair together.
+	log.Info("RTD Disconnect request received", "topicID", topicID)
+
 	h.RtdManager.Unsubscribe(topicID)
 
 	ctx := context.Background()

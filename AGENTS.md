@@ -1160,6 +1160,7 @@ Excel exhibits a "Probe Unload" pattern where it loads the XLL, checks entry poi
 If global `std::thread` objects (like `g_monitorThread` or `g_workerThread`) are destroyed while they are still **joinable** during `DLL_PROCESS_DETACH`, the C++ runtime will call `std::terminate()`. This causes the Excel process to crash or the Add-in to "disappear" (detach) immediately.
 
 ### 20.2 The Detach Solution
+
 To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
 
 1.  **Check Unload State**: If `DLL_PROCESS_DETACH` is called and our explicit cleanup function (`xlAutoClose`) has **not** run (indicated by `!g_isUnloading`), it means we are in a forced unload scenario.
@@ -1170,6 +1171,78 @@ To prevent this crash, we employ an **Explicit Detach Strategy** in `DllMain`:
 3.  **Precedent**: This strategy is also observed in other advanced Excel frameworks like [xlOil](https://github.com/cunnane/xloil), which implements a `detachPlugins` mechanism to handle similar lifecycle challenges.
 
 **Implementation Reference**: See `internal/assets/files/src/xll_lifecycle.cpp` (`DllMain`).
+
+#### 20.2.1 "Leak, don't crash" — CORRECTED 2026-07-29. It only holds while the image stays MAPPED.
+
+The §20.2 wording above was **falsified by measurement**: leaking a running thread is safe
+*only* if the XLL image is never unmapped while that thread (or Excel) still has code or a
+vtable in it. There is a real, 100%-reproducible close path where Excel **does** unmap it.
+
+**What is still TRUE (keep):**
+* A joinable global `std::thread` destroyed at `DLL_PROCESS_DETACH` calls `std::terminate()`
+  (§20.1). `.detach()` at DETACH is the correct fix for THAT, and DETACH must never join,
+  drain, or run C++/SHM destructors under the loader lock.
+* On a **normal Excel exit with no live RTD topics**, `DLL_PROCESS_DETACH` arrives from
+  PROCESS TERMINATION (`lpReserved != NULL`), the image is **not** unmapped, and every
+  leaked thread is killed by the OS before it can run again. Measured clean.
+
+**What is WRONG (do not rely on it):**
+* "The threads continue running (leaked) until the OS cleans up the process resources" —
+  this silently assumes the image survives. **On a host shutdown with live streaming RTD
+  topics, Excel calls `FreeLibrary` ~80–100 ms after `OnBeginShutdown` returns and the image
+  is REALLY UNMAPPED** (`DLL_PROCESS_DETACH` with `lpReserved == NULL`; measured 2026-07-29,
+  Excel x64 16.0.20228). Anything of ours still executing — a leaked worker loop, a leaked
+  message-only `WndProc` the OS still dispatches (§20.3 already documents that hazard for the
+  removed ribbon `TimerProc`), or a thread **parked inside `join()`** — resumes in a hole and
+  dies with `0xC0000005` against `<proj>.xll_unloaded`. Excel's own side dies the same way,
+  dereferencing an `IRtdServer` vtable in the hole (`0xC0000005` in `EXCEL.EXE` /
+  `mso20win32client.dll`).
+* `join()` is NOT exempt: `std::thread::join` parks in libwinpthread's `pthread_join`, whose
+  code is linked **into the XLL** (`-static`). The measured faulting RIP was the instruction
+  immediately after `WaitForSingleObject(handle, INFINITE)` inside `pthread_join`.
+
+**The rules that follow (enforced by
+`internal/generator/gen_close_unload_test.go`):**
+
+1. **On a CONFIRMED host shutdown, PIN the image** — `GetModuleHandleExW(FROM_ADDRESS | PIN)`
+   in `GracefulTeardownOnce`'s Phase 1 (`PinModuleToPreventUnmap`). This is also the plain
+   COM contract: an in-process server must not be unmapped while its objects are still
+   referenced, and Excel's XLL manager `FreeLibrary`s **without** consulting our exported
+   `DllCanUnloadNow` (verified: it is never called on that path). It makes the RTD close
+   behave exactly like the measured-clean no-RTD close. Scope is deliberately narrow — **exactly
+   two call sites**: (i) a confirmed host shutdown, and (ii) the add-in-DISABLE path *only when
+   Phase 1's bounded reap had to `detach()` a thread instead of reaping it*, because a detached
+   thread there would be executing inside an image Excel unmaps the moment `OnDisconnection`
+   returns. In the normal disable case (both threads reaped — the measured case) nothing is pinned,
+   so unload/re-enable and its `DLL_PROCESS_ATTACH` flag resets still work and dev-mode
+   rebuild-while-Excel-is-open is unaffected. **A pinned image gets no second
+   `DLL_PROCESS_ATTACH`**, which is why the flag reset had to become callable — see rule 5.
+   Never use a matched `LoadLibrary`/`FreeLibrary` pair: a self-`FreeLibrary` that dropped
+   the last reference would unmap the image under its own return address.
+2. **Stop background work EARLY, while Excel is still calling into us** — see §23.6 Stage 5.
+3. **After the graceful Phase 1 returns, no code of ours may PARK.** Bounded kernel calls
+   only. A `join()` is permitted only after the target thread's own exit flag
+   (`xll::WorkerExited()` / `xll::MonitorExited()`) has been observed, which makes the join
+   return immediately; a thread that misses its bounded budget is **detached**, and the miss
+   is recorded so the deferred phase leaks `g_phost` instead of freeing memory a live thread
+   may still read.
+4. **The teardown must be VISIBLE.** `LogInfo`/`LogWarn`/`LogError` all short-circuit on
+   `g_isUnloading`, which the destructive phase latches as its first act — so that whole
+   phase used to be invisible, and its absence from the log was misread as "Phase 2 never
+   ran" while it was in fact running and parked in a join. `xll::LogTeardown()`
+   (`xll_log.{h,cpp}`) bypasses that suppression and is used by the teardown path only
+   (STA, never `DllMain`, never a detached thread on a forced unload).
+5. **A PINNED image must still be able to start fresh.** Every lifecycle flag used to be reset in
+   exactly one place, `DLL_PROCESS_ATTACH` — sound only while every unload really unmapped the
+   image. Once pinned, `FreeLibrary`/`LoadLibrary` only move the reference count and `DllMain` is
+   never called again, so the flags would stay latched for the life of the process and the next
+   `xlAutoOpen` would come back **silently half-dead** (`MonitorThread` returning at once,
+   `WorkerLoop` breaking out immediately ⇒ no RTD updates, no async results) while still holding the
+   XLL file lock. Reachable, not theoretical: `Application.Quit()` from a COM client that KEEPS its
+   `Application` reference delivers `OnBeginShutdown` (so the teardown runs, and pins) while Excel
+   does **not** exit. The reset is therefore `xll::ResetLifecycleStateForFreshLoad()`, called from
+   ATTACH **and** from `xll::PrepareForFreshLoad()` at the top of `xlAutoOpen`; when the previous
+   teardown had to detach a thread the verdict is `kUnrecoverable` and the load is REFUSED instead.
 
 ### 20.3 Cancel-Quit Teardown Model (2026-06-13) — non-destructive `xlAutoClose` + reap on real exit
 
@@ -1450,7 +1523,8 @@ stalling all RTD updates then delivering a burst.
 * WndProc (dispatched by Excel's STA pump → correct apartment) clears the coalescing flag FIRST (so an
   update arriving during the call re-posts, none lost), guards `g_isUnloading`/`g_rtdServer`, then calls
   `NotifyUpdate()`. Wrapped in `XLL_SAFE_BLOCK` (C-ABI fault containment, §20).
-* `DestroyRtdNotifyWindow()` — called in `RunDestructiveTeardown` AFTER `JoinWorker` (no post can race),
+* `DestroyRtdNotifyWindow()` — called from the teardown's **Phase 1** (`BeginQuiesce`), on the
+creating STA and AFTER the worker reap (`RunDestructiveTeardown` repeats it idempotently) (no post can race),
   ON THE STA (same thread that created it — required by `DestroyWindow`). Reached on BOTH teardown paths
   (real quit via `ServerTerminate`→`RunDestructiveTeardown`; add-in disable via `GracefulTeardownOnce`).
   Forced `DLL_PROCESS_DETACH` (no graceful teardown) LEAKS the window — accepted §20.2 residual (worker
@@ -1695,9 +1769,22 @@ regression tests in `internal/generator/`.
 ### 23.5 Windows-Specific Code Layout
 * **DONE (2026-05-17):** Created `internal/platform/` with `_windows.go` / `_other.go` build-tagged constants. Migrated 6 `.exe`-extension branches (`internal/flatc/flatc.go`, `internal/regtest/prepare.go`, `internal/regtest/runner.go`, `cmd/regression_test.go`, `cmd/regression_helpers_test.go`) to `platform.ExeName`. Added `platform.FindBuiltExe` for the single-config vs multi-config cmake output layout (used by 2 sites). The remaining `runtime.GOOS == "windows"` checks in `cmd/doctor.go` are install-hint specific (winget) — not the same kind of duplication, intentionally left as-is. Smoketest files use file-level `//go:build windows`, already idiomatic.
 
-### 23.6 Close-time ghost Excel (S1') / orphaned server (S2) — RESOLVED Stage 4 (2026-06-17)
+### 23.6 Close-time ghost Excel (S1') / orphaned server (S2) / use-after-unload — RESOLVED (Stage 4 2026-06-17, Stage 5 2026-07-29)
 
-**STATUS: S1' ghost RESOLVED and SHIPPED (Stage 4, 2026-06-17). S2 was never regressed.**
+**STATUS: S1' ghost RESOLVED and SHIPPED (Stage 4, 2026-06-17). S2 was never regressed. The
+close-time USE-AFTER-UNLOAD crash that the Stage-4 deferral exposed is RESOLVED in Stage 5
+(2026-07-29) — read Stage 5 before touching any of this.**
+
+**TWO LOAD-BEARING FACTS, MEASURED, THAT INVALIDATE EARLIER REASONING IN THIS SECTION:**
+1. **Excel does NOT reliably call `IRtdServer::ServerTerminate`, and the whole deferred Phase 2
+   must therefore never be load-bearing.** Nothing essential may depend on it firing. (It does
+   fire on the current build's host-shutdown path; it did NOT in the Stage-1 diag, and it also
+   fires on every zero-live-topic transition with the host alive — see the 2026-06-18 remediation.)
+2. **On a host shutdown with live streaming RTD topics, Excel `FreeLibrary`s and truly UNMAPS the
+   XLL ~80–100 ms after `OnBeginShutdown` returns** (`DLL_PROCESS_DETACH`, `lpReserved == NULL`).
+   With no live topics it never does (`lpReserved != NULL`, process exit, no unmap). So the
+   deferred Phase 2 ran concurrently with the unmap. See Stage 5 and §20.2.1.
+
 The deferred-teardown fix (Phase 1/Phase 2 split, below) makes `EXCEL.EXE` exit cleanly on a
 real quit with live RTD topics. The history (Stages 1–3) is kept below for context; the
 authoritative current behavior is the **Stage 4** block at the end of this section. The
@@ -2192,6 +2279,304 @@ ONLY when armed:
   (`$rounds=3`) went WEAK (round-2 `0x800706BA`, Excel gone before round 3) → **PASS** (3 rounds settle,
   Excel alive). C++ asset change touching `DllMain` reasoning — `xll-cpp-reviewer` pass obtained before
   commit.
+
+**Stage 5 (2026-07-29) — close-time USE-AFTER-UNLOAD. Excel UNMAPS the XLL mid-teardown. Fixed by
+pinning the image + a Phase-1 quiesce + a no-park rule. Measured 3/3 → 0/12.**
+
+**The defect.** Closing the Excel window with a live **streaming plain-rtd** topic crashed 100% of
+the time. WER, identical every run: faulting module `<proj>.xll_unloaded` (i.e. an image that had
+ALREADY been unmapped), `0xc0000005`, plus a companion fault inside Excel itself
+(`mso20win32client.dll`, later `EXCEL.EXE`). Minimal repro matrix (window close): streaming RTD
+**2/2 crash**; `rtd-once` only **0/2**; no RTD **0/2**.
+
+**Symbolication (do this, don't guess).** The Release XLL is `-s`-stripped, so `addr2line` was
+useless. Disassembling the shipped binary at the WER offset (`objdump -d` around
+`ImageBase + 0x70a6a`) landed on `mov 0x28(%rbx),%rcx` — the instruction **immediately after
+`WaitForSingleObject(handle, INFINITE)`** inside a function that locks a mutex, looks up a handle,
+calls `GetHandleInformation`, checks `TlsGetValue` for self-join, waits, then `CloseHandle`s: that
+is libwinpthread's **`pthread_join`**, linked INTO the XLL by `-static`. Exactly one `pthread_join`
+and one out-of-line `std::thread::join()` exist in the image, with three shutdown-relevant call
+sites (worker join, monitor join, and `DirectHost::Shutdown`'s guest-worker join — the last
+unreachable, `Start()` is never called). ⇒ **the crash was a thread PARKED IN A JOIN inside the
+graceful teardown.**
+
+**Then an instrumented Release build (unconditional `LogTeardown` + thread-id markers + the
+`lpReserved` bit) gave the mechanism outright:**
+```
+Phase 1 (host shutdown) returns fast              t+0
+ServerTerminate ENTRY armed=1 → Phase 2 ENTRY     t+95 ms   (STA)
+WorkerLoop EXIT ; "JoinWorker done; monitor join..."        (STA parks in pthread_join)
+DllMain DLL_PROCESS_DETACH  lpReserved=NULL                 ← FreeLibrary: REAL UNMAP
+<crash: the parked STA resumes in unmapped pthread_join>
+```
+and the control (no live RTD topics, no crash):
+```
+Phase 1 returns fast ; Phase 2 never runs
+DllMain DLL_PROCESS_DETACH  lpReserved=0x1                  ← PROCESS EXIT: no unmap
+```
+
+**Two corrections to earlier §23.6 / §20.2 claims — both were wrong:**
+* **"Phase 2 never ran" is FALSE.** It ran every time. `RunDestructiveTeardown` latches
+  `g_isUnloading` as its FIRST act and every logger short-circuits on that flag, so the entire
+  phase was invisible. Absence of log lines was not absence of execution. Fixed structurally with
+  `xll::LogTeardown` (§20.2.1 rule 4).
+* **"leak, don't crash" (§20.2) does not hold here** — see §20.2.1. The image really is unmapped on
+  this path.
+
+**Also measured (do not re-assume):** on this Excel build and this close path
+`RtdServer::DisconnectData` is **NEVER called** — only `ServerTerminate` is. Keeping `g_phost` alive
+past Phase 1 therefore buys nothing *here*; it is nevertheless KEPT, because `DisconnectData` **is**
+delivered on the zero-topic-blip path (plain workbook close with the Application held — verified,
+2 disconnects reaching the Go server) and the June-2026 measurements saw it at host shutdown too.
+
+**The fix — three parts, in `internal/assets/files/`:**
+1. **PIN the image on the confirmed-host-shutdown path** (`PinModuleToPreventUnmap`,
+   `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | _PIN`), FIRST, before the COM hook (which pumps the
+   STA) and before the quiesce. See §20.2.1 rule 1 for the scope argument. **This is the part that
+   actually stops the crash** — without it, every other variant still died (the crash simply moved
+   from our `pthread_join` to Excel dereferencing our `IRtdServer` vtable in the hole).
+2. **Split the overloaded `g_isUnloading` flag.** It meant two things at once: (a) "stop background
+   work / self-abort" and (b) "the destructive teardown started, `g_phost` is going away". Phase 1
+   needs (a) but must NOT publish (b) (`DisconnectData` requires `g_isUnloading == false`), so it
+   latched NEITHER — leaving the worker thread dispatching RTD updates and the hidden notify window
+   pumping `IRTDUpdateEvent::UpdateNotify` into an already-shutting-down Excel. New
+   `xll::g_isQuiescing` + `xll::TeardownStarted()` carry (a) alone. Latched in **exactly one place**
+   (`BeginQuiesce`), reached only from `GracefulTeardownOnce`, so the cancelled-quit exposure is
+   **identical to before** (that same call already did the irreversible ribbon disconnect and
+   registry unregister). Reset in `DLL_PROCESS_ATTACH`. `DisconnectData`'s send gate deliberately
+   stays `g_isUnloading`-ONLY — pinned by a negative assertion, because sweeping it into
+   `TeardownStarted()` would resurrect the S1' ghost.
+3. **`BeginQuiesce` (Phase 1) + the no-park rule.** Phase 1, in this exact order (kept in sync with
+   `xll_lifecycle.cpp`; the steps are lettered there):
+   (a) latch `g_isQuiescing` → (b) `SetEvent(hShutdownEvent)` (private, unnamed, non-inherited event —
+   the Go server never sees it; it only releases `MonitorProcess`) → (c) `StopWorker` (non-blocking
+   flag store) → (d)+(e) both §23.0 drains, **capturing** their verdicts → (f) a **bounded,
+   non-parking reap** of the worker and monitor (`WaitForWorkerExit`/`WaitForMonitorExit`, 500 ms
+   budget each, then `join()` only if the thread's own exit flag says it already returned, else
+   `detach()`; a `detach()` on the *unpinned* add-in-disable path additionally **pins**, see rule 1)
+   → (g) `DestroyRtdNotifyWindow` (on the creating STA — killing the leaked-`WndProc` hazard —
+   deliberately AFTER the reap so no live worker can `PostMessage` into the destroy) →
+   (h) `ReleaseCallbackForTeardown` (its documented precondition is "after the worker is reaped") →
+   record `g_backgroundThreadsReaped` = *all four* verdicts ANDed. Then, back in
+   `GracefulTeardownOnce`: the pin (host shutdown only, and BEFORE all of the above),
+   `CancelDeferredRunner`, the COM hook, fast return.
+   `RunDestructiveTeardown` (Phase 2, still triggered from `ServerTerminate`) keeps ONLY
+   non-parking work: latch `g_isUnloading`, idempotent notify-window destroy + callback release,
+   `delete g_phost` **gated on both threads having actually been reaped**, and the three
+   `CloseHandle`s. Nothing essential depends on `ServerTerminate` firing: if it never does, DETACH's
+   unconditional `CloseHandle(hJob)` still reaps the server and `g_phost`/handles leak into process
+   exit (§20.2-accepted).
+
+**MEASURED, real Excel x64 16.0.20228, faithful UIA window close, live streaming topics:**
+BEFORE **3/3 crash** (`xll_unloaded` + `mso20win32client`; independently 3/3 on v0.8.40 and 3/3 on
+v0.8.38, so it is not a v0.8.39 regression) → AFTER **0 crash events in 22 close iterations**:
+primary gate `rtd` **0/5** (all five settling at **t+0 s**), plus `rtd` 0/3+0/5, `both` 0/3,
+`once` 0/2, `nortd` 0/2, COM `Quit` 0/2 — every one with **zero residual `EXCEL.EXE` and zero
+residual server**, RTD streaming (`Value2`, 5 distinct values per run) and `rtd-once` values correct
+throughout. Post-fix timeline: Phase 1 (pin + quiesce, ~2 ms quiesce / ~25 ms incl. the COM hook) →
+`ServerTerminate` → Phase 2 (~7 ms, server reaped) → `DLL_PROCESS_DETACH` with
+`lpReserved != NULL` (**process exit, no unmap**).
+
+**Regression gates (all PASS, real Excel — re-measured on the post-review tree):**
+| # | Gate | Result |
+|---|------|--------|
+| ① | no ghost Excel | `EXCEL.EXE` residual 0, "settled at t+0s", 5/5 |
+| ② | no orphaned server | `xll_showcase.exe` residual 0, 5/5 |
+| ③ | RTD still works | `Value2` real values; `Clock` 5 distinct/run; `StockTick`/`YDP`/`YDH` correct |
+| ④ | `DisconnectData` alive | plain workbook close (Application held) → **2 `RTD Disconnect request received`** in the Go log, server SURVIVES, re-subscribe on a new book streams again, and **0** pin/quiesce/Phase-2 lines (that close is not a host shutdown) |
+| ⑤ | cancelled quit | `xlAutoClose`=1 while `GracefulTeardownOnce`=0 and pin/quiesce/Phase-2=0; Excel and the Go server both still alive |
+| ⑥ | add-in DISABLE does not pin | `COMAddIn.Connect=$false` → `GracefulTeardownOnce`=1, Phase-1 quiesce=1, Phase 2 synchronous (server reaped), **`PINNED`=0** — the image stays unloadable on that path. ⚠ The gate is **SELF-POISONING**: disabling leaves `LoadBehavior=0`, so the harness must restore it to `3` before each run or the add-in never connects, `OnDisconnection` never fires, and the gate fails for an *environment* reason |
+| ⑦ | pinned image + reload in the SAME process | `Application.Quit()` while the client HOLDS the `Application` → `PINNED`=1 and Phase 2 EXIT=1 while Excel stays ALIVE; then `RegisterXLL` in that same process → `[TEARDOWN] … state reset for this fresh load` **followed by** the template's `[INFO]` line (which can only print once the flags are actually cleared). Pre-fix that reload came back **silently half-dead** — review HIGH #2 |
+
+**REVIEW ROUND (xll-cpp-reviewer, GO-conditional) — six findings fixed, all re-verified.**
+The review found hazards in the FIX, not in the original defect. Each is pinned by
+`internal/generator/gen_close_unload_review_test.go` (10 tests; all 10 fail on the parent commit):
+
+* **MED #4 — Phase 2 closed the two WAITABLE handles unconditionally.** `MonitorProcess` parks in
+  `WaitForMultipleObjects(2, { hProcess, hShutdownEvent })` — exactly those two. If Phase 1 had to
+  DETACH the monitor, closing them under it lets the handle VALUES be recycled, and the monitor then
+  wakes into its `WAIT_OBJECT_0` branch and calls `GetExitCodeProcess` on a foreign handle → modal
+  `MessageBoxW("Server Crash")` during shutdown. They are now gated on the SAME
+  `g_backgroundThreadsReaped` load as `delete g_phost`, and leaked on a miss (the treatment DETACH
+  already documents for this pair). `CloseHandle(hJob)` stays UNCONDITIONAL — its closure IS the
+  `KILL_ON_JOB_CLOSE` server reap and nothing waits on it.
+* **MED #3 — the reap strategy must not fork on the path, and the disable path needs the pin on a
+  miss.** The no-park rule is UNCONDITIONAL: a bare blocking `join()` on the add-in-disable path
+  would freeze Excel's STA behind `MonitorProcess`'s modal MessageBox. Both paths therefore use the
+  bounded exit-flag-then-join reap. `hostShutdown` now selects ONE thing: a budget miss on the
+  add-in-disable path (which was NOT pinned on the way in, and where Excel unmaps as soon as
+  `OnDisconnection` returns) **pins the image**, so the thread we just detached cannot execute out of
+  a hole. Exactly TWO pin call sites exist; a third would break unload/re-enable.
+* **MED #2 — the §23.0 drains did not feed the reap flag.** A timed-out RTD-connect / command drain
+  logged "may still be touching g_phost" and then let `delete g_phost` proceed anyway. All FOUR
+  verdicts (worker, monitor, rtd drain, command drain) now AND into `g_backgroundThreadsReaped`. And
+  both detached-sender sites now refuse to SPAWN once `TeardownStarted()`, which is what makes the
+  drains sound at all: the in-flight counter is incremented INSIDE the lambda, so a thread created
+  after a drain returned would be invisible to it.
+* **HIGH #2 — the PIN introduced a new regression: the lifecycle flags could never be reset.** They
+  were cleared in exactly one place, `DLL_PROCESS_ATTACH`, and a pinned image gets no second ATTACH
+  (`FreeLibrary`/`LoadLibrary` only move the reference count). After a host-shutdown teardown the
+  flags would stay latched for the life of the process, so the next `xlAutoOpen` would build a fresh
+  `g_phost` and server while `MonitorThread` returned at once and `WorkerLoop` broke out
+  immediately — **silently half-dead** (no RTD updates, no async results) while still holding the XLL
+  file lock. Reachable: `Application.Quit()` from a COM client that KEEPS its `Application` reference
+  delivers `OnBeginShutdown` (so it pins) while Excel does NOT exit — and the showcase's own tooling
+  does exactly that (4/4 observed). Fixed with `ResetLifecycleStateForFreshLoad()` +
+  `xll::PrepareForFreshLoad()`, called at the top of `xlAutoOpen`: reset when the previous teardown
+  actually reaped everything, else return `kUnrecoverable` and **fail the load loudly** (reviving
+  background work beside a still-running detached thread is worse than refusing).
+* **HIGH #1 — pin + quiesce exist ONLY in COM add-in builds.** `GracefulTeardownOnce`'s only call
+  sites are `RibbonAddIn::OnBeginShutdown`/`OnDisconnection`, compiled under `XLL_RIBBON_ENABLED`,
+  which `CMakeLists.txt.tmpl` defines only when the project has **BOTH** commands **AND**
+  `ribbon.enabled`. `XLL_RTD_ENABLED` is independent. **So `rtd.enabled: true` with no ribbon and no
+  commands has NO teardown at all and the unmap hazard is unmitigated** — and the 0/N verification
+  was obtained on a ribbon+commands project. §20.2.1 rule 1 and this section must be read with that
+  dependency in mind. `generate` now WARNS on that shape
+  (`cmd/generate.go::rtdWithoutComAddInWarning`, unit-tested). **BACKLOG:** register a minimal
+  `IDTExtensibility2` for every RTD build so the teardown exists regardless of the ribbon.
+* **LOW #5/#6/#7/#8 —** the notify-window destroy moved to AFTER the thread reap (only a returned
+  worker cannot `PostMessage` into the `DestroyWindow`); `MarkMonitorStarting()` pre-publishes
+  "monitor not exited" before the thread object exists (mirrors `StartWorker`, closes the stale-flag
+  window); `LogTeardownWarn` (WARN-gated) carries the seven diagnosis-critical failure lines so they
+  survive `logging.level: warn`; `TryConnectRibbon` / `__xllgen_RibbonConnectRetry` switched to
+  `TeardownStarted()` for §20.2.1 rule 2 consistency.
+* **Re-verified after the review fixes** (real Excel, same environment): close-crash **0/5** with all
+  five settling at `t+0 s` and zero residual; `ghost-check.ps1` **no ghost / no orphan** and
+  `-FastClose` likewise (`EXCEL` exits at t+1 s, both logs FREE); `verify-ydp-stranding-uia.ps1`
+  **PASS, 3/3 rounds** (the zero-topic-blip regression: `ServerTerminate` must not tear down when
+  unarmed); gate ④ **PASS** (2 disconnects reach the Go server, server survives, re-subscribe
+  streams, and 0 pin/quiesce/Phase-2 lines); gate ⑤ **PASS**. `go build`/`go vet` clean,
+  `go test ./... -count=1` all green including the offline g++ gates and the real-compile cmake gates.
+* **NOT re-verified after the review fixes (accepted residual):** the add-in-DISABLE path could not
+  be driven on this machine afterwards — Office reports our COM add-in `Connect=False` at startup
+  (the Office key is written by `xlAutoOpen`, i.e. after Office enumerates `COMAddIns`, and each
+  teardown unregisters it again) and a programmatic `Connect = $true` returns `E_ABORT`. Since MED #3
+  CHANGED that path (bounded reap + pin-on-miss), the pre-review measurement does not fully transfer.
+  It rests on the structural pins (`TestCloseUnloadDisablePathBoundedReapAndPin`, including the
+  exactly-two-pin-call-sites count) until someone can drive a real disable.
+
+* **Files:** `internal/assets/files/src/xll_lifecycle.cpp`,
+  `internal/assets/files/include/xll_lifecycle.h`,
+  `internal/assets/files/src/xll_worker.cpp`, `internal/assets/files/include/xll_worker.h`,
+  `internal/assets/files/src/xll_rtd_notify.cpp`, `internal/assets/files/src/xll_rtd.cpp`,
+  `internal/assets/files/src/ribbon_addin.cpp`, `internal/assets/files/src/xll_events.cpp`,
+  `internal/assets/files/src/xll_deferred_commands.cpp`,
+  `internal/assets/files/include/rtd/server.h`,
+  `internal/assets/files/src/xll_log.cpp`, `internal/assets/files/include/xll_log.h`,
+  `internal/templates/xll_main.cpp.tmpl` (the `PrepareForFreshLoad` gate at the top of
+  `xlAutoOpen`, `MarkMonitorStarting` before the monitor thread is constructed, the monitor
+  re-creation after `start_worker:` for a reload of a pinned image — which MUST
+  `ResetEvent(hShutdownEvent)` first, because that event is manual-reset and Phase 1 leaves
+  it signalled, so without the reset the new monitor returns through its shutdown branch
+  immediately and the re-creation is inert (caught in review round 2); `launchLog` is
+  `static` for the same reason, since the reload path GOTOs past `LaunchServer` — and the two
+  `TeardownStarted()` gates in the ribbon connect/retry path),
+  `internal/generator/testdata/golden/xll_main.cpp.golden` (regenerated — the two non-ribbon-gated
+  template hunks), `cmd/generate.go` (the `rtd.enabled` without-COM-add-in warning),
+  plus `pkg/server/handlers.go` (the missing `RTD Disconnect request received` Info log — the
+  observability hole that made the DisconnectData claim uncheckable).
+
+**NEW USER-VISIBLE BEHAVIOUR (three things, all deliberate):**
+1. **`xlAutoOpen` can now REFUSE to load.** `xll::PrepareForFreshLoad()` returns `kUnrecoverable`
+   when a previous teardown in this process left a background thread DETACHED rather than reaped;
+   `xlAutoOpen` then logs through `LogTeardownWarn` and returns 0. Rationale: the alternative is
+   re-arming background work beside a thread we no longer control. It is reported via
+   `LogTeardownWarn`, NOT `SAFE_LOG_ERROR` — the latter expands to `if (!g_isUnloading) LogError(...)`
+   and `g_isUnloading` is normally STILL LATCHED on that path, so the "loud" failure would have been
+   double-suppressed into silence (the exact blind spot that made this defect expensive to diagnose).
+2. **`xll-gen generate` warns** when `rtd.enabled: true` but the project has no ribbon AND no
+   commands — that shape defines no `XLL_RIBBON_ENABLED`, hence no COM add-in, hence NO teardown and
+   no pin at all (see the dependency note above). Advisory only.
+3. **`xll::LogTeardownWarn()`** is a new WARN-gated companion to `LogTeardown`; both bypass the
+   `g_isUnloading` suppression. All SEVEN teardown failure messages route through it so they survive
+   `logging.level: warn` — which is exactly the level a user reporting a close-time problem is
+   likely to be running. The step-narration lines stay on the INFO-gated `LogTeardown`.
+* **Regression tests:** `internal/generator/gen_close_unload_test.go`
+  (`TestCloseUnloadPinsImageOnHostShutdown`, `TestCloseUnloadQuiesceFlagSplit` — including the
+  negative `DisconnectData` assertion, `TestCloseUnloadNoParkAfterPhase1`,
+  `TestCloseUnloadTeardownIsLoggable`); every assertion fails on the parent commit. Updated to the
+  new shape: `gen_close_ghost_test.go`, `gen_cancel_quit_test.go`, `gen_rtd_connect_test.go`,
+  `gen_ribbon_connect_test.go`, `gen_rtd_notify_window_test.go`,
+  `internal/assets/assets_test.go::TestScheduleOnTimeMacroGuards`.
+* **C++ asset change touching `DllMain`/unload reasoning — `xll-cpp-reviewer` pass REQUIRED before
+  commit.**
+**REVIEW ROUND 2 (2026-07-29, `xll-cpp-reviewer` NO-GO → resolved). Six findings on the FIX itself,
+all fixed; the design (host-shutdown-only pin + flag split + no-park) was confirmed and NOT reworked:**
+* **BLOCKER — it did not compile.** `ResetLifecycleStateForFreshLoad()` was defined ABOVE the five
+  statics it writes; namespace-scope lookup ends at the definition point. Definition moved below
+  them. **PROCESS LESSON (this is the durable part):** the first `go test ./...` reported green
+  because `./cmd` came from the BUILD CACHE. Any edit to a C++ asset MUST be followed by
+  `go test -count=1 ./cmd/... -run 'CppCompile|Compiles'`, and "passed" may only be written about a
+  run made on the FINAL tree. Third observation-tool illusion in this repo after `.Text` and the
+  `g_isUnloading` log short-circuit.
+* **HIGH — the "deliberately LOUD" refusal was silent.** `xlAutoOpen`'s `kUnrecoverable` arm used
+  `SAFE_LOG_ERROR`, which expands to `if (!g_isUnloading) LogError(...)` — and the commonest way to
+  reach that arm is with `g_isUnloading` STILL LATCHED from the previous Phase 2. Double-suppressed
+  into nothing, leaving only "the add-in silently does not load". Now `xll::LogTeardownWarn`, pinned
+  by a NEGATIVE assertion (`the arm must not contain SAFE_LOG_`).
+* **MED — drain timeouts did not reach `g_backgroundThreadsReaped`.** Only the two threads fed it, so
+  a timed-out RTD-connect/command drain logged "a sender may still be touching `g_phost`" and then
+  let Phase 2 delete it anyway. The flag is now the AND of **all four** verdicts. Additionally,
+  `ConnectData`/`SendCommandInvoke` now refuse to SPAWN a detached sender once `TeardownStarted()` —
+  their in-flight guards are acquired INSIDE the lambda, so a request arriving in the ~95 ms window
+  after the drain finished was invisible to it.
+* **MED — the add-in-disable path's unconditional blocking `join()`** could freeze Excel's STA behind
+  `MonitorProcess`'s modal `MessageBoxW("Server Crash")`. Both paths now use the bounded, exit-flag-first
+  reap; a budget MISS on the (otherwise unpinned) disable path additionally **pins**, so the detached
+  thread cannot be executing in a hole when Excel unmaps after `OnDisconnection` returns. §20.2.1
+  rule 3 is therefore unconditional again — code and doc agree.
+* **MED — doc drift** (the same class of defect that caused the original misdiagnosis): the Phase-1
+  step order in §23.6/`xll_lifecycle.h`, §22.4's claim about where the notify window is destroyed, the
+  Files list, and three unrecorded user-visible behaviours. All corrected here.
+* **LOW** — the `Phase 2 MUST NOT PARK` doc block had drifted onto the wrong function; a co-change
+  anchor now records WHY `delete g_phost` does not park (shm's `GuestCallWorker::Stop` only joins when
+  `guestWorkerRunning`, and this XLL never calls `DirectHost::Start()`); `MarkMonitorStarting()`
+  pre-publishes the monitor's exit flag like `StartWorker` does; a pinned reload now recreates the
+  monitor thread after `start_worker:` — **`ResetEvent(hShutdownEvent)` first**, or the recreation is
+  inert (manual-reset event still signalled from Phase 1 → the new monitor exits through its
+  shutdown branch at once); `launchLog` is `static` so that path still has the Go log path to show
+  on a later server crash; `WorkerExited`/`MonitorExited` documented as diagnostics.
+  Verified separately: no harness greps on the `[INFO]`/`[WARN]` level tokens, so the new
+  `TEARDOWN`/`TEARDOWN-WARN` tokens break nothing.
+
+* **`DLL_PROCESS_DETACH` is UNCHANGED and still wait-free** (§20.1/§20.2): unconditional
+  `CloseHandle(g_procInfo.hJob)` (a kernel call — the `KILL_ON_JOB_CLOSE` reap), then, only when no
+  graceful teardown preceded it, `g_isUnloading = true` + `SetEvent` + **`.detach()`** of the
+  worker/monitor. No join, no drain, no `delete g_phost`, no wait of any kind. After a host-shutdown
+  Phase 1 both threads have already been reaped, so those `joinable()` checks are false and the
+  detaches are no-ops.
+* **Phase 1's added latency is BOUNDED** (it must return fast so Excel proceeds to its RTD
+  handshake): the thread reap is `kThreadReapBudgetMs` = **500 ms per thread**, and the `join()` is
+  issued ONLY after the thread's exit flag says it already returned, so the join itself cannot park.
+  Over budget ⇒ `detach()` and record the miss (Phase 2 then leaks `g_phost` and the two waitable
+  handles rather than freeing them under a live thread). The two §23.0 drains keep their pre-existing
+  2 s caps. **WORST CASE = 2000 + 2000 + 500 + 500 ≈ 5 s** of bounded waiting inside
+  `OnBeginShutdown`; **measured 2 ms** (the worker is a poll loop, the monitor is one
+  `WaitForMultipleObjects` that Phase 1 signals). That 5 s ceiling is written down deliberately:
+  "Phase 1 RETURNS FAST" is the load-bearing premise of the §23.6 Stage-4 ghost fix, so a future
+  ghost regression will want to suspect this number. Exceeding the budget does NOT reopen the crash
+  window — the image is pinned by then, which is exactly what makes "leak, don't crash" sound again.
+* **Accepted residual (recorded, not fixed):** "the drain completed" does NOT strictly mean "that
+  thread has left the image". The in-flight counters are decremented by an RAII destructor, so the
+  lambda's own capture destructors and libstdc++/libwinpthread's thread-exit code still run inside
+  the image afterwards. Harmless on the pinned path (nothing unmaps); it is the reason the drains are
+  a soundness input to the reap flag rather than a proof of departure.
+* **Also recorded:** `WriteLogUnconditional` takes a mutex, so `LogTeardown`/`LogTeardownWarn` can
+  park briefly behind another logger. Bounded by that logger's own I/O and not on any unmap-exposed
+  path; a `try_lock` + line-drop variant is the obvious hardening if it ever matters.
+* **Residual / not covered:** a literal Save-prompt **Cancel** click could not be driven in the
+  verification environment (synthetic keyboard input is refused by UIPI; `Close-ExcelWindowFaithful`
+  auto-clicks Don't-Save; and the prompt did not surface as a top-level `#32770` for
+  `WM_COMMAND`/IDCANCEL). Gate ⑤ therefore rests on (a) a measured close that ran `xlAutoClose` and
+  then did NOT proceed — leaving exactly the add-in-visible cancelled-quit state, with
+  `GracefulTeardownOnce`/pin/quiesce all absent and both processes alive — and (b) the
+  single-latch-site argument above. A post-cancel cell re-read is NOT available: after a cancelled
+  quit Excel de-registers itself from the ROT and refuses automation (measured).
+  Separately observed and **pre-existing** (not caused by this fix): `Application.Quit()` from a COM
+  client that KEEPS its `Application` reference delivers `OnBeginShutdown` even though Excel does
+  **not** exit — so the confirmed-shutdown teardown runs and the add-in is left torn down in a
+  session that continues. That is a §20.3 hole in the "confirmed shutdown" signal set, not in this
+  change; it needs its own fix.
 
 ## 24. CLAUDE.md / Agent Tool Compatibility
 

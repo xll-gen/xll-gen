@@ -785,7 +785,13 @@ static bool TryConnectRibbon(const char* phase, bool allowBounce = false,
                              RibbonAttempt* pOutcome = nullptr) {
     if (pOutcome) *pOutcome = RibbonAttempt::kNotAttempted;
     if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return true;
-    if (g_isUnloading.load(std::memory_order_acquire)) return false;
+    // TeardownStarted(), not g_isUnloading alone: a confirmed teardown latches
+    // g_isQuiescing in Phase 1 and deliberately keeps g_isUnloading FALSE across
+    // Excel's whole RTD handshake, so the unload flag alone would let a connect
+    // attempt run mid-teardown (AGENTS.md 20.2.1 rule 2). Unreachable today from the
+    // retry runner, which gates on the same predicate first; kept consistent so the
+    // next caller cannot reintroduce the hole.
+    if (xll::TeardownStarted()) return false;
 
     // Re-entrancy guard. The temp-workbook bounce (xlcNew/xlcWorkbookInsert) and
     // the COMAddIns Connect both pump the STA message loop, so an Excel callback
@@ -884,7 +890,13 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
         std::string tempPattern = "";
     std::string projName = "{{.ProjectName}}";
     bool isSingleFile = false;
-    std::wstring launchLog;
+    // STATIC on purpose: a PINNED image can be re-loaded without a fresh DllMain, so a
+    // second xlAutoOpen in this process may take the "server already running" path, which
+    // GOTOs past LaunchServer and would otherwise leave this empty. The monitor-thread
+    // recreation below needs the log path to show the Go log on a server crash, and the
+    // path cannot change within one process (same log dir, same project name), so the
+    // value the first load resolved stays correct. xlAutoOpen is STA-only, so no locking.
+    static std::wstring launchLog;
     LaunchConfig cfg;
 
     {{if eq .Build.Singlefile "xll"}}
@@ -931,6 +943,42 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
 #ifdef SHM_DEBUG
     shm::SetLogHandler(LogHandler);
 #endif
+
+    // Lifecycle-flag reset for a reload that gets NO DllMain(DLL_PROCESS_ATTACH).
+    //
+    // After a confirmed host shutdown the XLL image is PINNED (AGENTS.md §20.2.1), so
+    // a later FreeLibrary/LoadLibrary pair only moves the module reference count and
+    // DllMain never runs again - the lifecycle flags would stay latched for the life
+    // of the process and this add-in would come back SILENTLY HALF-DEAD (MonitorThread
+    // returning at once, WorkerLoop breaking out immediately, so no RTD updates and no
+    // async results). Reachable via `Application.Quit()` from a COM client that keeps
+    // its Application reference: that delivers OnBeginShutdown - which pins - while
+    // Excel does not actually exit. See xll::PrepareForFreshLoad.
+    switch (xll::PrepareForFreshLoad()) {
+    case xll::FreshLoadVerdict::kResetAfterTeardown:
+        SAFE_LOG_INFO("xlAutoOpen: a previous teardown in this process had latched the "
+                      "lifecycle flags; state was reset for this fresh load.");
+        break;
+    case xll::FreshLoadVerdict::kUnrecoverable:
+        // Deliberately LOUD, not best-effort: a background thread from the previous
+        // teardown is still running, so re-arming background work would race it.
+        //
+        // LogTeardownWarn, NOT SAFE_LOG_ERROR (review HIGH #1). SAFE_LOG_* expands to
+        // `if (!g_isUnloading) LogError(...)` and LogError re-checks the same flag - and
+        // the COMMONEST way to reach kUnrecoverable is precisely with g_isUnloading
+        // still latched from the previous Phase 2. The "loud" line would then be
+        // double-suppressed and the user would be left with nothing but "the add-in
+        // silently does not load" - the exact class of blind spot that made this whole
+        // defect expensive to diagnose. LogTeardownWarn bypasses the suppression by
+        // design (xll_log.h).
+        xll::LogTeardownWarn("xlAutoOpen: REFUSING to load. A previous teardown in this process "
+                             "left a background thread detached, so the add-in cannot be safely "
+                             "restarted in-place. Restart Excel.");
+        return 0;
+    case xll::FreshLoadVerdict::kCleanLoad:
+    default:
+        break;
+    }
 
     SAFE_LOG_INFO("xlAutoOpen: Loading XLL...");
 
@@ -1048,10 +1096,32 @@ launch_server:
             return 0;
     }
 
-    // Start Monitor Thread
+    // Start Monitor Thread. MarkMonitorStarting publishes "not exited" BEFORE the
+    // thread object exists, so a teardown that lands in the gap cannot read a stale
+    // "already exited" and take a blocking join (xll_lifecycle.h, review LOW #6).
+    xll::MarkMonitorStarting();
     g_monitorThread = std::thread(MonitorThread, launchLog);
 
 start_worker:
+    // A PINNED image can be re-loaded WITHOUT a fresh DllMain, so this xlAutoOpen may be
+    // the SECOND one in this process (see xll::PrepareForFreshLoad). Placed AFTER the
+    // label on purpose: the "server already running" path GOTOs here, skipping the
+    // launch and the monitor creation above, and the previous teardown had REAPED the
+    // monitor thread - so without this a later server death would go unreported for the
+    // rest of the session. No-ops on a first load (the thread is already joinable).
+    if (!g_monitorThread.joinable() && g_procInfo.hProcess) {
+        // hShutdownEvent is MANUAL-reset (xll_launch.cpp: CreateEvent(NULL, TRUE, ...)) and
+        // Phase 1 SetEvent's it to tell the background threads to leave. Nobody clears it,
+        // so on the only path that reaches here (Phase 1 ran, Phase 2 did not) it is STILL
+        // signalled — a fresh MonitorProcess would return from its very first
+        // WaitForMultipleObjects via the shutdown branch and die in microseconds, leaving
+        // the recreation inert and a later server death unreported. Clear it first so the
+        // new monitor actually waits on the process handle.
+        if (g_procInfo.hShutdownEvent) ResetEvent(g_procInfo.hShutdownEvent);
+        SAFE_LOG_INFO("Recreating the server monitor thread (reload of a pinned image).");
+        xll::MarkMonitorStarting();
+        g_monitorThread = std::thread(MonitorThread, launchLog);
+    }
     {{else}}
     SAFE_LOG_INFO("Server launch disabled by configuration.");
     {{end}}
@@ -1482,8 +1552,9 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
 // xll::RibbonConnectRetryMacroName(). Returns short (TypeText "I").
 extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
     XLL_SAFE_BLOCK_BEGIN
-        // Self-abort on unload: do NOT touch Excel and do NOT re-arm.
-        if (g_isUnloading.load(std::memory_order_acquire)) return 1;
+        // Self-abort on ANY teardown (quiesce or unload): do NOT touch Excel and do
+        // NOT re-arm. See the TryConnectRibbon gate above (20.2.1 rule 2).
+        if (xll::TeardownStarted()) return 1;
         // Idempotent connect attempt (no bounce on retries: a workbook, if any,
         // already exists; the bounce is only for the xlAutoOpen no-workbook case).
         // The outcome CLASS decides which budget (if any) pays for this dispatch.

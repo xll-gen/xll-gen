@@ -14,6 +14,27 @@ namespace xll {
     void JoinWorker();
     void ForceTerminateWorker();
 
+    // True once WorkerLoop has RETURNED (not merely been asked to stop). The
+    // graceful teardown uses this to turn its `join()` into a NON-BLOCKING one:
+    // it polls this with a bounded deadline and only then calls JoinWorker(),
+    // so the join itself can never park.
+    //
+    // WHY (2026-07-29, close-time use-after-unload — AGENTS.md §20.2/§23.6):
+    // a `join()` parks inside libwinpthread's pthread_join, whose code lives IN
+    // the XLL image. If Excel unmaps the XLL while a thread is parked there, the
+    // wait returns into UNMAPPED code and the process dies with 0xC0000005
+    // against `<proj>.xll_unloaded`. That was reproduced 100% of the time on a
+    // window-close with live streaming RTD topics. The rule that came out of it:
+    // the graceful teardown may perform bounded kernel calls, but it must NEVER
+    // park on another thread. Hence "wait for the exit flag, THEN join".
+    // Diagnostics / test-facing accessor: the teardown itself uses the bounded
+    // WaitForWorkerExit below. Kept public so a harness (or a future watchdog) can
+    // observe the flag without touching the std::thread.
+    bool WorkerExited();
+    // Polls WorkerExited() until true or timeoutMs elapses. Returns the final
+    // WorkerExited() value. Never touches the std::thread object.
+    bool WaitForWorkerExit(unsigned int timeoutMs);
+
 // ---------------------------------------------------------------------------
 // Chunk segment bookkeeping — the guest->host reassembler's overlap arbiter.
 // ---------------------------------------------------------------------------

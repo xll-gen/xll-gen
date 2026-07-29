@@ -144,7 +144,9 @@ int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds) {
         // placed during teardown can only ever resolve to a leaked OnTime dispatch.
         // Both current callers already gate; this makes the guarantee STRUCTURAL
         // and local to the API rather than an unenforced caller contract.
-        if (xll::g_isUnloading.load(std::memory_order_acquire)) return xlretFailed;
+        // TeardownStarted(): a schedule placed during Phase 1 (quiescing) is just
+        // as certainly a leaked OnTime dispatch as one placed during Phase 2.
+        if (xll::TeardownStarted()) return xlretFailed;
         if (!macroName) return xlretFailed;
         ScopedXLOPER12Result xNow;
         int nowRc = xll::CallExcel(xlfNow, xNow);
@@ -233,7 +235,7 @@ void RunDeferredCalcEndCommands() {
     // this check and the ExecuteCommands/DrainAndApplyDateFormats COM calls. The
     // check is unlocked because there is no cross-thread race to guard, only the
     // post-unload leaked-schedule no-op.
-    if (xll::g_isUnloading.load() || g_phost == nullptr) {
+    if (xll::TeardownStarted() || g_phost == nullptr) {
         DeferredCalcEndQueue::Instance().Drain(); // discard
         return;
     }

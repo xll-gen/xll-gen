@@ -202,7 +202,10 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 				// The runner retries the connect (no bounce on retries).
 				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
 				// Self-abort on unload BEFORE touching Excel (no re-arm on unload).
-				"if (g_isUnloading.load(std::memory_order_acquire)) return 1;",
+				// Self-abort on ANY teardown, not just g_isUnloading (AGENTS.md §20.2.1 rule 2:
+		// Phase 1 latches g_isQuiescing and keeps g_isUnloading FALSE across Excel's RTD
+		// handshake, so the unload flag alone is not a teardown test).
+		"if (xll::TeardownStarted()) return 1;",
 				// Stops once the connect resolves (connected/gave-up).
 				"if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;",
 				// Bounded re-arm through the reused asset scheduler.
@@ -610,8 +613,10 @@ func TestRibbonAddinFirstClickRetry(t *testing.T) {
 		"res.HasError()",
 		// A bounded retry loop exists (the dropped-first-click fix).
 		"kMaxAttempts",
-		// The retry honors the unload self-abort contract at the yield points.
-		"g_isUnloading.load(std::memory_order_acquire)",
+		// The retry honors the teardown self-abort contract at the yield points.
+		// TeardownStarted() == g_isUnloading || g_isQuiescing (2026-07-29 fix):
+		// Phase 1 latches the quiesce flag and then drains this counter.
+		"xll::TeardownStarted()",
 		// Each attempt re-acquires a fresh slot (Send disowns its slot on timeout).
 		"g_phost->GetZeroCopySlot();",
 	} {

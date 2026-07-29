@@ -28,7 +28,11 @@ namespace xll {
         // Unlocked is sufficient for the same reason the deferred-command
         // runner documents: teardown and this callback both run on the STA, so
         // g_phost cannot go non-null -> freed part-way through.
-        if (g_isUnloading.load(std::memory_order_acquire) || g_phost == nullptr) return;
+        // TeardownStarted(): also self-abort while the teardown is QUIESCING
+        // (Phase 1). g_phost is still alive there, but starting new server work /
+        // arming a new xlcOnTime runner during a confirmed shutdown is exactly the
+        // background work Phase 1 exists to stop (AGENTS.md §20.2/§23.6).
+        if (TeardownStarted() || g_phost == nullptr) return;
         // Clear caches
         {
             std::lock_guard<std::mutex> lock(g_refCacheMutex);
@@ -148,7 +152,11 @@ namespace xll {
         // Unlocked is sufficient for the same reason the deferred-command
         // runner documents: teardown and this callback both run on the STA, so
         // g_phost cannot go non-null -> freed part-way through.
-        if (g_isUnloading.load(std::memory_order_acquire) || g_phost == nullptr) return;
+        // TeardownStarted(): also self-abort while the teardown is QUIESCING
+        // (Phase 1). g_phost is still alive there, but starting new server work /
+        // arming a new xlcOnTime runner during a confirmed shutdown is exactly the
+        // background work Phase 1 exists to stop (AGENTS.md §20.2/§23.6).
+        if (TeardownStarted() || g_phost == nullptr) return;
         // ---------------------------------------------------------------
         // DELIBERATELY NO CACHE WORK HERE. Read this before adding any.
         // ---------------------------------------------------------------

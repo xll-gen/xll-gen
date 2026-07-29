@@ -63,18 +63,24 @@ func TestCloseGhostPhaseSplit(t *testing.T) {
 	}
 	gtBody := code[gtIdx:rdIdx]
 
-	// Phase 1 must NOT do the destructive steps: those are deferred. If they
-	// appear inside GracefulTeardownOnce's own body, the deferral has been broken
-	// and the ghost will return (g_phost would be deleted before Excel's handshake).
+	// Phase 1 must NOT do the steps that would break Excel's handshake: g_phost
+	// must survive, g_isUnloading must stay false, and the server must not be
+	// reaped. If any of these appear inside GracefulTeardownOnce's own body the
+	// §23.6 Stage-4 deferral is broken and the ghost can return.
+	//
+	// NOTE (2026-07-29): StopWorker / the thread reap / the two §23.0 drains are
+	// NO LONGER banned here — they MOVED INTO Phase 1 on purpose (BeginQuiesce),
+	// because they are the operations that park or call back into Excel and they
+	// are unsafe once Excel starts unmapping the XLL. What stays deferred is
+	// exactly the part that would break DisconnectData: delete g_phost, the
+	// g_isUnloading latch and the server reap. See TestCloseUnloadNoParkAfterPhase1.
 	for _, banned := range []string{
-		"StopWorker",
-		"JoinWorker",
 		"delete g_phost",
-		"WaitForRtdConnectDrain",
-		"WaitForCommandDrain",
+		"g_isUnloading = true",
+		"CloseHandle(g_procInfo.hJob)",
 	} {
 		if strings.Contains(gtBody, banned) {
-			t.Errorf("GracefulTeardownOnce body must NOT contain %q — the destructive teardown is DEFERRED to RunDestructiveTeardown (§23.6 Stage 4)\n---\n%s", banned, gtBody)
+			t.Errorf("GracefulTeardownOnce body must NOT contain %q — that part of the teardown is DEFERRED to RunDestructiveTeardown so Excel's DisconnectData still reaches a live server (§23.6 Stage 4)\n---\n%s", banned, gtBody)
 		}
 	}
 
@@ -94,28 +100,21 @@ func TestCloseGhostPhaseSplit(t *testing.T) {
 	// destructive COM/teardown work off the STA raced DLL_PROCESS_DETACH and
 	// violated COM apartment rules (BLOCKER + HIGH C++ review findings). The whole
 	// asset must therefore contain NO watcher thread and NO timeout sleep loop.
-	for _, banned := range []string{
-		"g_phase2Watcher",
-		"std::this_thread::sleep_for",
-		"steady_clock",
-	} {
-		if strings.Contains(code, banned) {
-			t.Errorf("the off-STA Phase-2 watcher must be fully removed; found %q in xll_lifecycle.cpp (§23.6 remediation: Phase 2 runs on the STA from ServerTerminate)", banned)
-		}
+	if strings.Contains(code, "g_phase2Watcher") {
+		t.Errorf("the off-STA Phase-2 watcher must stay removed; found g_phase2Watcher in xll_lifecycle.cpp (§23.6 remediation: Phase 2 runs on the STA from ServerTerminate)")
 	}
-	// Phase 1 must NOT spawn any thread.
+	// Phase 1 must NOT spawn any thread. (The bounded exit-flag polls the 2026-07-29
+	// quiesce added use sleep_for/steady_clock on the CALLING thread — that is not a
+	// watcher and is explicitly allowed; the ban is on spawning one.)
 	if strings.Contains(gtBody, "std::thread") {
 		t.Errorf("GracefulTeardownOnce must NOT spawn any thread on the host-shutdown path (Phase 2 is triggered from ServerTerminate on the STA)\n---\n%s", gtBody)
 	}
 
-	// --- RunDestructiveTeardown must preserve the §23.0 ordering: it latches
-	//     g_isUnloading, stops/joins, runs BOTH drains, and deletes g_phost AFTER
-	//     the drains. ---
+	// --- RunDestructiveTeardown holds the deferred remainder: it latches
+	//     g_isUnloading, deletes g_phost and reaps the server. ---
 	rdBody := code[rdIdx:]
 	for _, want := range []string{
 		"g_isUnloading = true",
-		"StopWorker",
-		"JoinWorker",
 		"delete g_phost",
 		"CloseHandle(g_procInfo.hJob)",
 	} {
@@ -123,11 +122,21 @@ func TestCloseGhostPhaseSplit(t *testing.T) {
 			t.Errorf("RunDestructiveTeardown missing %q\n---\n%s", want, rdBody)
 		}
 	}
-	// §23.0 ordering: the command drain must precede `delete g_phost`.
-	drainIdx := strings.Index(rdBody, "WaitForCommandDrain(2000)")
-	delIdx := strings.Index(rdBody, "delete g_phost")
-	if drainIdx < 0 || delIdx < 0 || drainIdx > delIdx {
-		t.Errorf("RunDestructiveTeardown must run WaitForCommandDrain BEFORE delete g_phost (§23.0 UAF ordering)")
+	// §23.0 ordering: the drains must still precede `delete g_phost`. They now live
+	// in Phase 1 (BeginQuiesce), which is defined ABOVE GracefulTeardownOnce and
+	// therefore above RunDestructiveTeardown — so file order encodes the ordering.
+	bqIdx := strings.Index(code, "static void BeginQuiesce(bool hostShutdown)")
+	if bqIdx < 0 {
+		t.Fatalf("BeginQuiesce (Phase 1 quiesce) not found in xll_lifecycle.cpp")
+	}
+	if bqIdx > rdIdx {
+		t.Errorf("BeginQuiesce must be defined before RunDestructiveTeardown (the drains it runs must precede delete g_phost — §23.0 UAF ordering)")
+	}
+	bqBody := code[bqIdx:gtIdx]
+	for _, want := range []string{"WaitForRtdConnectDrain(2000)", "WaitForCommandDrain(2000)"} {
+		if !strings.Contains(bqBody, want) {
+			t.Errorf("BeginQuiesce missing the §23.0 drain %q — it must drain the detached senders BEFORE Phase 2's delete g_phost\n---\n%s", want, bqBody)
+		}
 	}
 }
 

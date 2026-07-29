@@ -354,6 +354,21 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
     // same key and UpdateTopic/NotifyUpdate are value-idempotent. Side-effecting
     // connect handlers must tolerate the duplicate (delivery is at-least-once;
     // see AGENTS.md §18.11 "Delivery contract"). No dedup is added.
+    // ENTRY GATE, before the thread exists (review MED #2). The in-flight counter is
+    // incremented INSIDE the lambda, so a ConnectData that arrives in the ~95 ms window
+    // between Phase 1 and ServerTerminate could spawn a thread the Phase-1 drain has
+    // already finished counting - an unbounded sender against a g_phost that Phase 2 is
+    // about to delete. Refusing here is free: Excel is tearing down, so there is no
+    // topic left to serve. The per-attempt TeardownStarted() re-checks inside the lambda
+    // stay as the cover for a teardown that begins after the thread has started.
+    if (xll::TeardownStarted()) {
+        if (pvarOut) {
+            VariantInit(pvarOut);
+            *pvarOut = xll::MakeGettingDataVariant();
+        }
+        return S_OK;
+    }
+
     std::thread([TopicID, strings, newVal]() {
         // Declared INSIDE the lambda: these are odr-used (passed by value to
         // std::chrono::milliseconds and slot.Send), so a constexpr local in the
@@ -366,12 +381,16 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
         RtdConnectInFlightGuard inflight;
 
         for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+            // TeardownStarted(), not g_isUnloading alone: the teardown's Phase 1
+            // latches g_isQuiescing and then DRAINS this counter, so a Connect
+            // thread must self-abort on the quiesce flag or the drain times out and
+            // Phase 2 has to leak g_phost (AGENTS.md §20.2/§23.6).
+            if (xll::TeardownStarted()) return;
             if (!g_phost) return;
 
             auto slot = g_phost->GetZeroCopySlot();
 
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+            if (xll::TeardownStarted()) return;
             if (!slot.IsValid()) {
                 // All host slots momentarily busy; yield and retry.
                 std::this_thread::sleep_for(std::chrono::milliseconds(kAttemptTimeoutMs));
@@ -399,7 +418,7 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
                 return;
             }
 
-            if (xll::g_isUnloading.load(std::memory_order_acquire)) return;
+            if (xll::TeardownStarted()) return;
 
             auto res = slot.Send(-((int)builder.GetSize()), (shm::MsgType)MSG_RTD_CONNECT, kAttemptTimeoutMs);
 
@@ -417,7 +436,7 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
             // kAttemptTimeoutMs waiting for a reader.
         }
 
-        if (!xll::g_isUnloading.load(std::memory_order_acquire)) {
+        if (!xll::TeardownStarted()) {
             xll::LogWarn("RTD Connect dropped (server not reachable after retries): TopicID " +
                          std::to_string(TopicID));
         }
