@@ -895,6 +895,73 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // 19. Empty-message handler error must be NORMALIZED on the wire (HIGH,
+    // 2026-07-29). Both handlers return an error whose Error() is "".
+    //
+    // The defect: the generated server writes result and error in an exclusive
+    // if/else, but `b.CreateString("")` returns a NON-ZERO offset, so an empty
+    // message produced a PRESENT error field of size 0 and NO result field. Every
+    // C++ consumer keyed off `error() && error()->size() > 0`, so such a response
+    // took the RESULT path: for a `string` return `resp->result()->str()` read
+    // length_ off offset 0 and took the Excel process down (a sync UDF is outside
+    // XLL_SAFE_BLOCK, so nothing caught the AV and the user lost unsaved work);
+    // for `int`/`float`/`bool` the absent field read back as the FlatBuffers
+    // default and the cell showed 0/0.0/FALSE with no error at all.
+    //
+    // Two independent fixes landed. This case pins the SERVER one
+    // (pkg/server.ErrorMessage): the error field must be present AND non-empty,
+    // and the result field must be absent. The C++ one — a presence-only guard
+    // plus a null-result check — is pinned by the generator markers in
+    // internal/generator/gen_error_field_test.go, because it cannot be observed
+    // from a mock host that does not run the generated wrapper.
+    //
+    // FAIL-before: without the normalization error()->size() is 0 here.
+    {
+        // 19a. string return (ID 153) — the crash half.
+        builder.Reset();
+        ipc::ErrEmptyStringRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+
+        vector<uint8_t> respBuf;
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)153, respBuf).ValueOr(-1);
+        if (sz < 0) { cerr << "FAIL: 19a send failed" << endl; return 1; }
+        auto resp = flatbuffers::GetRoot<ipc::ErrEmptyStringResponse>(respBuf.data());
+        if (!resp->error()) {
+            cerr << "FAIL: 19a an errored response carries no error field at all" << endl;
+            return 1;
+        }
+        if (resp->error()->size() == 0) {
+            cerr << "FAIL: 19a empty handler error was NOT normalized; the C++ wrapper's "
+                    "presence-only guard is now the only thing between this response and "
+                    "an empty cell (it used to be a null deref)" << endl;
+            return 1;
+        }
+        if (resp->result() != nullptr) {
+            cerr << "FAIL: 19a an errored response must not carry a result field" << endl;
+            return 1;
+        }
+    }
+    {
+        // 19b. int return (ID 154) — the silent-wrong-answer half. A scalar
+        // result cannot be checked for absence (an absent int32 reads back as 0,
+        // which is exactly the bug), so the assertion is on the error field: it
+        // must be non-empty, which is what keeps the wrapper on the error path.
+        builder.Reset();
+        ipc::ErrEmptyIntRequestBuilder req(builder);
+        builder.Finish(req.Finish());
+
+        vector<uint8_t> respBuf;
+        int sz = host.Send(builder.GetBufferPointer(), builder.GetSize(), (shm::MsgType)154, respBuf).ValueOr(-1);
+        if (sz < 0) { cerr << "FAIL: 19b send failed" << endl; return 1; }
+        auto resp = flatbuffers::GetRoot<ipc::ErrEmptyIntResponse>(respBuf.data());
+        if (!resp->error() || resp->error()->size() == 0) {
+            cerr << "FAIL: 19b empty handler error was NOT normalized; an int-returning "
+                    "cell would show a silent 0" << endl;
+            return 1;
+        }
+        ASSERT_EQ(0, resp->result(), "19b errored int response leaves result at its default");
+    }
+
     cout << "PASSED" << endl;
     return 0;
 }

@@ -706,6 +706,17 @@ func TestGenCpp_StringErrorReturn(t *testing.T) {
 // xll_async.cpp — instead of collapsing to the shared #VALUE! sentinel with the
 // message only in the Go log. numgrid returns FP12* (K%), which cannot carry a
 // string, so the error branch must NOT be emitted for it.
+//
+// UPDATED 2026-07-29. This test used to pin the guard as
+// `if (resp->error() && resp->error()->size() > 0)`. That exact conjunction was
+// the HIGH defect: an error whose Error() is the empty string still PRODUCES the
+// error field (b.CreateString("") returns a non-zero offset) with size()==0, so
+// the response fell through to resp->result() — which the Go side's exclusive
+// if/else never wrote — and a `string` return dereferenced nullptr, killing the
+// Excel process. The assertion is narrowed to PRESENCE (which is what this test
+// actually meant to pin: the error IS surfaced); the size condition is now
+// forbidden, and that is enforced by
+// gen_error_field_test.go::TestGenCpp_EmptyErrorMessageDoesNotDereferenceNullResult.
 func TestGenCpp_SyncErrorSurfacedToCell(t *testing.T) {
 	t.Parallel()
 
@@ -717,7 +728,7 @@ func TestGenCpp_SyncErrorSurfacedToCell(t *testing.T) {
 	}
 	strContent := renderCppMain(t, strCfg)
 
-	if !strings.Contains(strContent, "if (resp->error() && resp->error()->size() > 0) {") {
+	if !strings.Contains(strContent, "if (resp->error()) {") {
 		t.Fatal("sync return path must check resp->error() and surface it to the cell")
 	}
 	// The wstring itself, NOT .c_str(): NewExcelString's only overload takes

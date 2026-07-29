@@ -190,6 +190,43 @@ uint64_t HashXLOPERIntoDepth(uint64_t h, const XLOPER12* px, int depth) {
             break;
         case xltypeRef:
         case xltypeSRef: {
+            // SIZE PRE-FILTER, before Excel is asked for anything (HIGH, fixed
+            // 2026-07-29). A digest is computed for EVERY reference argument of a
+            // cache-enabled function (MakeCacheKey) and of every rtd / rtd-once
+            // function (ContentHashToken), and it is computed FIRST — ahead of
+            // ConvertGridArg, whose kTooLarge refusal is what actually protects
+            // the transport. So `=CachedSumGrid($P:$R)` used to ask xlCoerce to
+            // materialize a 3,145,728-cell XLOPER12 array (~100 MB) and then
+            // FNV-1a every one of those cells, per cell using the range and per
+            // recalculation, only to have the argument refused a few lines later.
+            // For an rtd token it is worse still: the token is computed above the
+            // `rcAlreadySent` dedup, so every recalc pays it unconditionally.
+            //
+            // That is exactly the cost AGENTS.md §19.5 names as the REASON layer 2
+            // exists ("before xlCoerce is asked to materialize ~100 MB of XLOPER12
+            // for an answer that is going to be thrown away") — the bound was just
+            // never applied on this path. kMaxGridArgCells is the same constant
+            // ConvertGridArg uses, so nothing that survives downstream is refused
+            // here and nothing refused here could have survived downstream.
+            //
+            // The fallback is HashRefIdentity, the SAME well-defined branch a
+            // coerce failure already takes: it folds the sheet id + rect table, so
+            // two distinct oversized references still hash APART (no RefCache
+            // aliasing, no RTD topic collision). The "edit a cell -> new digest"
+            // property is not observably lost, because a reference this large is
+            // rejected downstream and never yields a value to cache or ship.
+            //
+            // NOTE this covers the 'r'/'a' (range/any) tokens too, which reach the
+            // very same coerce through HashXLOPERContentWithRefIdentity. §19.5's
+            // "range/any are NOT affected" is about the PAYLOAD (coordinates, 16
+            // bytes for a whole column); their DIGEST always went down this path.
+            uint64_t refCells = 0;
+            MeasureRefArg(px, &refCells, nullptr);
+            if (refCells > kMaxGridArgCells) {
+                h = HashRefIdentity(h, px, ty);
+                break;
+            }
+
             XLOPER12 xVal;
             XLOPER12 xType; xType.xltype = xltypeInt; xType.val.w = xltypeMulti;
             if (xll::CallExcel(xlCoerce, &xVal, px, &xType) == xlretSuccess) {
@@ -411,6 +448,27 @@ uint64_t CacheManager::GetOrComputeRefHash(const XLOPER12* pRef, const std::func
     const DWORD refTy = pRef->xltype & ~(xlbitXLFree | xlbitDLLFree);
     if (refTy != xltypeRef) return computeFn(pRef);
     if (!pRef->val.mref.lpmref) return computeFn(pRef);
+
+    // SIZE PRE-FILTER over the WHOLE reference (HIGH, fixed 2026-07-29). The loop
+    // below splits an xltypeRef into ONE TEMPORARY xltypeRef PER RECT and hands
+    // each to computeFn, so HashXLOPERIntoDepth's own kMaxGridArgCells pre-filter
+    // sees only a single rect at a time. A union reference whose rects are each
+    // under the bound but whose TOTAL is far over it therefore slipped through and
+    // made Excel materialize the sum, one coerce at a time. Measure once, here, on
+    // the reference the caller actually passed.
+    //
+    // Fold the same HashRefIdentity fallback the coerce-failure path uses, so the
+    // digest still distinguishes distinct references. Placed BEFORE the
+    // refPathUsed_ store on purpose: this branch neither reads nor writes
+    // refCache_, so there is no memoization for the iterative-calculation gate to
+    // guard and no reason to make calc end pay for a GET.DOCUMENT round-trip.
+    {
+        uint64_t totalCells = 0;
+        MeasureRefArg(pRef, &totalCells, nullptr);
+        if (totalCells > kMaxGridArgCells) {
+            return HashRefIdentity(kFnvBasis, pRef, refTy);
+        }
+    }
 
     // This IS the RefCache path — record it even when the gate below bypasses
     // the map, so calc end keeps re-querying Excel and the gate can be turned

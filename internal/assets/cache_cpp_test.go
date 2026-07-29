@@ -261,6 +261,87 @@ func TestRefIdentityFoldedForCoordinatePayloads(t *testing.T) {
 	}
 }
 
+// TestDigestPathBoundsTheCoercedArea pins the size PRE-FILTER on the digest path
+// (HIGH, 2026-07-29).
+//
+// Regression it pins: HashXLOPERIntoDepth's xltypeRef/xltypeSRef branch coerced
+// whatever reference Excel handed it to cell VALUES with NO area bound, and so did
+// GetOrComputeRefHash's per-rect loop. kMaxGridArgCells was applied only in
+// ConvertGridArg — which the generated wrapper reaches AFTER the digest
+// (MakeCacheKey before ConvertGridArg for sync/async; ContentHashToken before the
+// payload build for rtd / rtd-once). So `=CachedSumGrid($P:$R)` and
+// `=RtdComposite($P:$R, ...)` asked Excel to materialize a 3,145,728-cell XLOPER12
+// (~100 MB) and hashed all of it, once per cell using the range and once per
+// recalculation, for an argument that was refused a few lines later. The rtd token
+// is computed ABOVE the per-cycle `rcAlreadySent` dedup, so it paid that
+// unconditionally on every recalc. AGENTS.md §19.5 names exactly this cost as the
+// REASON the cheap pre-filter exists ("before xlCoerce is asked to materialize
+// ~100 MB of XLOPER12 for an answer that is going to be thrown away"); it was
+// simply never applied here.
+//
+// Two properties are asserted, both structural:
+//   - the measurement happens BEFORE the coerce (otherwise it saves nothing), and
+//   - the refusal folds HashRefIdentity — the SAME well-defined branch a coerce
+//     failure takes — so two distinct oversized references still hash apart and
+//     cannot alias one RefCache entry or one RTD topic.
+//
+// Behavioral coverage (zero Excel calls, the boundary, the union whose rects are
+// individually small, distinctness) is in
+// internal/assets/testdata/cache_native_test.cpp::TestOversizedRefIsNotCoerced.
+func TestDigestPathBoundsTheCoercedArea(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	src, ok := m["src/xll_cache.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/xll_cache.cpp not found in assets")
+	}
+	code := stripLineComments(src)
+
+	// 1. The streaming digest measures, then refuses, then (only otherwise)
+	//    coerces. Assert the ORDER, since a check placed after the coerce would
+	//    pass a naive substring search while saving nothing.
+	iMeasure := strings.Index(code, "MeasureRefArg(px, &refCells, nullptr);")
+	iRefuse := strings.Index(code, "if (refCells > kMaxGridArgCells) {")
+	iCoerce := strings.Index(code, "xll::CallExcel(xlCoerce, &xVal, px, &xType)")
+	if iMeasure < 0 || iRefuse < 0 {
+		t.Fatalf("HashXLOPERIntoDepth does not pre-filter the reference area against " +
+			"kMaxGridArgCells; a whole-column argument still makes Excel materialize " +
+			"~100 MB of XLOPER12 for a digest that is thrown away")
+	}
+	if iCoerce < 0 {
+		t.Fatalf("the xlCoerce call site moved; update this test")
+	}
+	if !(iMeasure < iRefuse && iRefuse < iCoerce) {
+		t.Errorf("the area pre-filter must run BEFORE xlCoerce (measure=%d refuse=%d coerce=%d)",
+			iMeasure, iRefuse, iCoerce)
+	}
+
+	// 2. GetOrComputeRefHash measures the WHOLE reference. Its loop hands ONE
+	//    single-rect temporary per area to computeFn, so the per-rect filter above
+	//    cannot see a union whose rects are each under the bound but whose total is
+	//    far over it.
+	if !strings.Contains(code, "MeasureRefArg(pRef, &totalCells, nullptr);") ||
+		!strings.Contains(code, "if (totalCells > kMaxGridArgCells) {") {
+		t.Errorf("GetOrComputeRefHash must measure the whole reference before its rect loop: " +
+			"it splits an xltypeRef into one single-rect temporary per area, so a union of " +
+			"individually-small rects otherwise slips past the per-rect bound")
+	}
+
+	// 3. The refusal folds the reference IDENTITY, reusing the coerce-failure
+	//    branch. Anything less (a constant, or nothing) would collapse every
+	//    oversized reference onto one digest — one RefCache entry, one RTD topic.
+	for _, want := range []string{
+		"h = HashRefIdentity(h, px, ty);",
+		"return HashRefIdentity(kFnvBasis, pRef, refTy);",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("the oversized-reference fallback must fold the reference identity via %q", want)
+		}
+	}
+}
+
 // TestIterativeCalcGateWired pins the source-level wiring of the RefCache's
 // iterative-calculation gate.
 //

@@ -83,6 +83,14 @@ type connectCancel struct {
 	gen    uint64
 }
 
+// ErrStopped is returned by every send entry point once Stop has latched the
+// send gate. It is a sentinel (not a formatted string) so a long-lived pushing
+// goroutine can tell "the server is shutting down, give up for good" apart from
+// a transient failure such as a 1s RtdUpdate timeout against a busy host — the
+// distinction matters, because retrying the former forever is a spin and
+// abandoning the latter loses a live stream.
+var ErrStopped = errors.New("rtd: manager stopped (server shutting down)")
+
 // RtdManager manages RTD topic subscriptions and broadcasts.
 type RtdManager struct {
 	mu sync.RWMutex
@@ -100,6 +108,14 @@ type RtdManager struct {
 	// connectGen is a monotonic counter handing out a fresh generation to each
 	// RegisterConnectCancel. Guarded by mu.
 	connectGen uint64
+
+	// stopped + sendWG are the shutdown gate (see Stop). stopped is guarded by
+	// mu, NOT an atomic, precisely so that latching it and registering a send
+	// with sendWG are mutually exclusive: that is what makes "no send can Add
+	// after the drain has started" a guarantee instead of a hope. sendWG counts
+	// guest->host sends that are (or are about to be) touching the SHM mapping.
+	stopped bool
+	sendWG  sync.WaitGroup
 }
 
 // GlobalRtd is the singleton instance of RtdManager.
@@ -225,6 +241,98 @@ func (m *RtdManager) RegisterConnectCancel(topicID int32, cancel context.CancelF
 	}
 }
 
+// beginSend claims the right to perform ONE guest->host send: it snapshots the
+// client and registers with sendWG inside the SAME m.mu critical section that
+// Stop latches `stopped` under. Returns ErrStopped after Stop, or a
+// "not connected" error when no client has been set.
+//
+// The single critical section is the whole point. The classic
+// "atomic flag + WaitGroup.Add" shape has a window where a sender observes the
+// flag as clear, Stop then latches it and calls Wait (which returns, seeing a
+// zero counter), and only afterwards does the sender Add and touch a mapping the
+// caller has already unmapped. Doing both under mu closes it: after Stop
+// releases mu, no beginSend can succeed, so the counter can only ever fall.
+//
+// The caller MUST pair a successful beginSend with endSend (defer).
+func (m *RtdManager) beginSend() (rtdClient, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped {
+		return nil, ErrStopped
+	}
+	if m.client == nil {
+		return nil, fmt.Errorf("server not connected")
+	}
+	m.sendWG.Add(1)
+	return m.client, nil
+}
+
+// beginSends is the Publish-shaped variant: one registration covering n sends
+// issued back-to-back outside the lock. It exists so Publish does not have to
+// re-take mu per topic (it already snapshots the topic set under one RLock).
+func (m *RtdManager) beginSends(n int) (rtdClient, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped {
+		return nil, ErrStopped
+	}
+	if m.client == nil {
+		return nil, fmt.Errorf("RTD server not connected")
+	}
+	m.sendWG.Add(n)
+	return m.client, nil
+}
+
+func (m *RtdManager) endSend() { m.sendWG.Done() }
+func (m *RtdManager) endSends(n int) {
+	for i := 0; i < n; i++ {
+		m.sendWG.Done()
+	}
+}
+
+// Stop latches the send gate — every later SendUpdate / SendErrorUpdate /
+// Publish / SendOnceGrid returns ErrStopped WITHOUT touching the client — and
+// then waits for the sends already in flight to return. It reports whether the
+// drain completed within timeout.
+//
+// WHY IT EXISTS. RTD senders run on goroutines the RtdManager does not own: the
+// detached OnRtdConnect goroutine, rtd.RunOnce/RunOnceGrid, and — the common case
+// — a STREAMING handler's own pushing goroutine, which lives until its topic
+// disconnects. None of those are tracked by shm's DirectGuest.wg, so
+// `client.Close()` (which unmaps the segment after draining only ITS workers)
+// could unmap underneath any of them. shm documents that as a use-after-free
+// (shm/go/direct.go, DirectGuest.Close), and a fault on unmapped memory is a
+// `fatal error: unexpected fault address` that recover() cannot catch — so the
+// symptom is a full goroutine dump and a non-zero exit on EVERY Excel shutdown
+// that had a live RTD stream, which is the ordinary shutdown path.
+//
+// A false return means the caller MUST NOT unmap: skipping the unmap is free at
+// process exit (the OS reclaims it), whereas unmapping under a live sender is the
+// exact fault being removed. Never turn a drain timeout into a UAF.
+//
+// Stop is idempotent. Subscription state is deliberately left alone: it is not
+// what holds the mapping, and clearing it would change disconnect behavior for no
+// benefit at exit.
+func (m *RtdManager) Stop(timeout time.Duration) bool {
+	m.mu.Lock()
+	m.stopped = true
+	m.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		m.sendWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		log.Warn("rtd: Stop timed out waiting for in-flight guest->host sends", "timeout", timeout)
+		return false
+	}
+}
+
 // Publish broadcasts a value to all TopicIDs subscribed to the given key.
 //
 // The subscription map and client are snapshotted under a short read lock and
@@ -235,7 +343,6 @@ func (m *RtdManager) RegisterConnectCancel(topicID int32, cancel context.CancelF
 // are returned joined via errors.Join (nil when all sends succeed).
 func (m *RtdManager) Publish(key string, value interface{}) error {
 	m.mu.RLock()
-	client := m.client
 	ids := m.keyToIDs[key]
 	topicIDs := make([]int32, 0, len(ids))
 	for id := range ids {
@@ -247,9 +354,14 @@ func (m *RtdManager) Publish(key string, value interface{}) error {
 		return nil
 	}
 
-	if client == nil {
-		return fmt.Errorf("RTD server not connected")
+	// One registration for the whole fan-out; the sends themselves stay outside
+	// the lock as before. beginSends also replaces the old `client == nil` check,
+	// returning the same "RTD server not connected" error.
+	client, err := m.beginSends(len(topicIDs))
+	if err != nil {
+		return err
 	}
+	defer m.endSends(len(topicIDs))
 
 	// Iterate and send updates (outside the lock; continue past errors)
 	var errs []error
@@ -268,9 +380,11 @@ func (m *RtdManager) Publish(key string, value interface{}) error {
 // topic the C++ consumer caches it as the topic's one-shot result and retains it
 // per the function's declared lifecycle (once / memoize_ttl / memoize).
 func (m *RtdManager) SendUpdate(topicID int32, value interface{}) error {
-	m.mu.RLock()
-	client := m.client
-	m.mu.RUnlock()
+	client, err := m.beginSend()
+	if err != nil {
+		return err
+	}
+	defer m.endSend()
 	return sendUpdate(client, topicID, value, false)
 }
 
@@ -284,9 +398,11 @@ func (m *RtdManager) SendUpdate(topicID int32, value interface{}) error {
 // memoize_ttl cannot freeze an error, and the following recalc re-runs the
 // handler. See xll-gen AGENTS.md §19.3 and types RtdUpdate.is_error.
 func (m *RtdManager) SendErrorUpdate(topicID int32, value interface{}) error {
-	m.mu.RLock()
-	client := m.client
-	m.mu.RUnlock()
+	client, err := m.beginSend()
+	if err != nil {
+		return err
+	}
+	defer m.endSend()
 	return sendUpdate(client, topicID, value, true)
 }
 
@@ -343,13 +459,16 @@ func sendUpdate(client rtdClient, topicID int32, value interface{}, isError bool
 // grid (see RunOnceGrid's ordering note). Returns the first send error
 // (aborting the transfer), or nil once the whole payload is delivered+acked.
 func (m *RtdManager) SendOnceGrid(key string, payload []byte) error {
-	m.mu.RLock()
-	client := m.client
-	m.mu.RUnlock()
-
-	if client == nil {
-		return fmt.Errorf("server not connected")
+	// beginSend both snapshots the client and registers this (potentially
+	// multi-frame, seconds-long) transfer with the shutdown drain — this is the
+	// LONGEST-lived guest->host send in the runtime, so it is the one most likely
+	// to still be touching the mapping when the host goes away.
+	client, err := m.beginSend()
+	if err != nil {
+		return err
 	}
+	defer m.endSend()
+
 	if len(payload) == 0 {
 		return fmt.Errorf("rtd.SendOnceGrid: empty payload for key %q", key)
 	}

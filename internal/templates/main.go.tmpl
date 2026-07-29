@@ -64,10 +64,20 @@ func (s *MyService) StockQuote_RTD(ctx context.Context, topicID int32, symbol st
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
-		
+
 		for {
 			select {
+			// ctx is cancelled when THIS TOPIC disconnects. It is not enough on
+			// its own: Excel dying or crashing never disconnects a topic, so a
+			// pusher keyed only on ctx outlives the server and keeps pushing into
+			// a shared-memory segment that is being torn down.
 			case <-ctx.Done():
+				return
+			// generated.Done() is closed when the server begins shutting down
+			// (host handshake or parent-Excel death). Every goroutine a handler
+			// spawns should watch it — that is what lets the teardown drain
+			// finish, so the SHM mapping is released instead of leaked.
+			case <-{{.Package}}.Done():
 				return
 			case <-ticker.C:
 				price := 100.0 + (50.0 * (rand.Float64() - 0.5))

@@ -85,3 +85,21 @@ functions:
   - name: "ScheduleGridCmd"
     args: []
     return: "int"
+
+  # Empty-message handler error (HIGH, 2026-07-29). A handler that returns
+  # errors.New("") — or a custom error type whose message field is still unset —
+  # used to put a PRESENT error field of size 0 on the wire, because
+  # b.CreateString("") yields a non-zero offset. The C++ wrapper's guard was
+  # `error() && error()->size() > 0`, so that response was routed to the RESULT
+  # path instead: `resp->result()->str()` on the absent result field dereferenced
+  # nullptr and killed the Excel process (a sync UDF runs outside
+  # XLL_SAFE_BLOCK), while int/float/bool silently painted the FlatBuffers
+  # default 0/0.0/FALSE. Case 19 pins the SERVER half — the message is
+  # normalized, so the error field is never empty. Append-only: existing message
+  # IDs (140 + index) must not shift.
+  - name: "ErrEmptyString"
+    args: []
+    return: "string"
+  - name: "ErrEmptyInt"
+    args: []
+    return: "int"

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"runtime"
 	"runtime/debug"
@@ -50,6 +51,74 @@ func PushRtdUpdate(topicID int32, value interface{}) error {
     return rtd.GlobalRtd.SendUpdate(topicID, value)
 }
 
+
+// Teardown drain budgets. Each is an upper bound on how long shutdown may wait
+// for guest->host sends that are ALREADY in flight; with nothing in flight both
+// drains return immediately, so these do not add latency to a normal exit.
+//
+//   - async: sendWithRetry's ladder is ~2.56s of backoff plus the sends
+//     themselves, so 5s covers one flush that is riding out a dead host.
+//   - rtd: an RtdUpdate is capped at 1s, but SendOnceGrid is 5s PER FRAME and a
+//     chunked grid sends many frames in order, so it needs the wider budget.
+const (
+	asyncDrainTimeout = 5 * time.Second
+	rtdDrainTimeout   = 10 * time.Second
+)
+
+// shutdownCh is closed once teardown begins. Done() exposes it.
+var (
+	shutdownCh   = make(chan struct{})
+	shutdownOnce sync.Once
+)
+
+// Done returns a channel that is closed when the server starts shutting down —
+// either because the XLL host signalled shutdown (Serve returned from
+// client.Wait) or because the parent Excel process exited (watchParentDeath).
+//
+// A long-lived goroutine that a handler spawned should select on it. The
+// per-topic ctx passed to an RTD handler is NOT a substitute: that ctx is
+// cancelled by a topic DISCONNECT, which does not happen when Excel dies or
+// crashes, so a streaming pusher keyed only on ctx.Done() outlives the server.
+func Done() <-chan struct{} { return shutdownCh }
+
+// shutdownAndClose closes the two guest->host send paths and only THEN releases
+// the SHM mapping. It is idempotent (both teardown triggers call it).
+//
+// WHY THE ORDER IS LOAD-BEARING. shm's contract is explicit (shm/go/direct.go,
+// DirectGuest.Close): "Close must not run concurrently with an in-flight
+// SendGuestCall ... unmapping the region while such a call still reads/writes a
+// slot buffer is a use-after-free." Close drains only the workers IT started —
+// caller-side senders are untracked. Ours are the async batch flusher and every
+// RTD pusher (including goroutines the USER's handler spawned, which live until
+// their topic disconnects, i.e. not at all when Excel simply dies). The former
+// `defer client.Close()` therefore unmapped underneath them on the ORDINARY exit
+// path, and a fault on unmapped memory is a `fatal error: unexpected fault
+// address` that recover() cannot catch — a full goroutine dump plus a non-zero
+// exit code on every shutdown with a live RTD stream.
+//
+// If EITHER drain times out we deliberately SKIP client.Close(). Skipping is
+// free: the process is on its way out and the OS reclaims the mapping, the
+// section handle and the events. Unmapping anyway would promote a drain timeout
+// into exactly the fatal fault this function exists to remove, so the safety
+// valve is not optional.
+func shutdownAndClose(client *shm.Client) {
+	shutdownOnce.Do(func() {
+		// Signal user goroutines first so they stop generating new sends while
+		// the drains below wait for the in-flight ones.
+		close(shutdownCh)
+
+		asyncDrained := asyncBatcher.Stop(asyncDrainTimeout)
+		rtdDrained := rtd.GlobalRtd.Stop(rtdDrainTimeout)
+
+		if !asyncDrained || !rtdDrained {
+			log.Warn("Shutdown drain incomplete; leaving the SHM mapping to the OS instead of unmapping under a live sender",
+				"asyncDrained", asyncDrained, "rtdDrained", rtdDrained)
+			return
+		}
+
+		client.Close()
+	})
+}
 
 // watchParentDeath is the robust backstop that reaps THIS server when the
 // parent Excel process exits, even when the C++ side's Job-object
@@ -133,15 +202,22 @@ func Serve(handler XllService) {
         log.Error("Failed to connect to SHM", "error", err)
         panic(err)
     }
-    defer client.Close()
+    // NOT `defer client.Close()`. Close unmaps the shared segment, and the RTD /
+    // async senders that may still be touching a slot are not tracked by shm's
+    // own worker drain — see shutdownAndClose for the full contract.
+    defer shutdownAndClose(client)
 
     // Parent-death backstop (#2b): reap this server if the parent Excel exits
     // without the Job KILL_ON_JOB_CLOSE reap firing (locked-down env where
     // AssignProcessToJobObject was denied). Directly fixes the orphaned-server
-    // log-lock symptom (S2). Runs in its own goroutine; on parent exit it closes
-    // the SHM client and os.Exit(0). Skipped gracefully if getppid()/OpenProcess
-    // is unavailable.
-    go watchParentDeath(os.Getppid(), openParentProcess, waitForProcessExit, func() { client.Close() })
+    // log-lock symptom (S2). Runs in its own goroutine; on parent exit it drains
+    // the send paths, releases the SHM client and os.Exit(0). Skipped gracefully
+    // if getppid()/OpenProcess is unavailable.
+    //
+    // This path goes through the SAME drain as the normal exit: it is in fact the
+    // MORE dangerous of the two, because the parent died without a handshake, so
+    // an RTD pusher is almost certainly mid-send when it fires.
+    go watchParentDeath(os.Getppid(), openParentProcess, waitForProcessExit, func() { shutdownAndClose(client) })
 
     
     rtd.GlobalRtd.SetClient(client)
@@ -804,7 +880,15 @@ func handleSyncStr(ctx context.Context, req []byte, respBuf []byte, handler XllS
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -868,7 +952,15 @@ func handleSyncInt(ctx context.Context, req []byte, respBuf []byte, handler XllS
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -925,7 +1017,15 @@ func handleSyncFloat(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -982,7 +1082,15 @@ func handleSyncBool(ctx context.Context, req []byte, respBuf []byte, handler Xll
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1058,7 +1166,15 @@ func handleSyncAny(ctx context.Context, req []byte, respBuf []byte, handler XllS
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1122,7 +1238,15 @@ func handleSyncGrid(ctx context.Context, req []byte, respBuf []byte, handler Xll
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1133,7 +1257,10 @@ func handleSyncGrid(ctx context.Context, req []byte, respBuf []byte, handler Xll
 		if off, gerr := server.BuildGridFromGo(b, res); gerr != nil {
 			err = gerr
 			b.Reset()
-			errOffset = b.CreateString(err.Error())
+			// server.ErrorMessage for the same reason as the primary error site
+			// above; a validator error is never empty today, but the routing must
+			// not depend on that staying true.
+			errOffset = b.CreateString(server.ErrorMessage(err))
 		} else {
 			resOffset = off
 		}
@@ -1194,7 +1321,15 @@ func handleSyncNumGrid(ctx context.Context, req []byte, respBuf []byte, handler 
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1203,7 +1338,10 @@ func handleSyncNumGrid(ctx context.Context, req []byte, respBuf []byte, handler 
 		if off, gerr := server.BuildNumGridFromGo(b, res); gerr != nil {
 			err = gerr
 			b.Reset()
-			errOffset = b.CreateString(err.Error())
+			// server.ErrorMessage for the same reason as the primary error site
+			// above; a validator error is never empty today, but the routing must
+			// not depend on that staying true.
+			errOffset = b.CreateString(server.ErrorMessage(err))
 		} else {
 			resOffset = off
 		}
@@ -1264,7 +1402,15 @@ func handleSyncRange(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1321,7 +1467,15 @@ func handleSyncDate(ctx context.Context, req []byte, respBuf []byte, handler Xll
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1394,7 +1548,15 @@ func handleSyncMulti(ctx context.Context, req []byte, respBuf []byte, handler Xl
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1458,7 +1620,15 @@ func handleSyncCachedGrid(ctx context.Context, req []byte, respBuf []byte, handl
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1469,7 +1639,10 @@ func handleSyncCachedGrid(ctx context.Context, req []byte, respBuf []byte, handl
 		if off, gerr := server.BuildGridFromGo(b, res); gerr != nil {
 			err = gerr
 			b.Reset()
-			errOffset = b.CreateString(err.Error())
+			// server.ErrorMessage for the same reason as the primary error site
+			// above; a validator error is never empty today, but the routing must
+			// not depend on that staying true.
+			errOffset = b.CreateString(server.ErrorMessage(err))
 		} else {
 			resOffset = off
 		}
@@ -1532,7 +1705,15 @@ func handleCallerMacroRange(ctx context.Context, req []byte, respBuf []byte, han
 	b.Reset()
 	var errOffset flatbuffers.UOffsetT
 	if err != nil {
-		errOffset = b.CreateString(err.Error())
+		// server.ErrorMessage, NOT err.Error(). An error whose Error() is "" is
+		// still an error, but CreateString("") yields a PRESENT error field of
+		// size 0 — and the C++ wrapper used to require size>0, so such a
+		// response fell through to resp->result(), which the exclusive if/else
+		// below never wrote: a `string` return dereferenced nullptr and killed
+		// Excel, and int/float/bool painted a silent 0/0.0/FALSE. See
+		// pkg/server/errmsg.go for the full mechanism; the C++ guard is now
+		// presence-only, and this keeps the message diagnosable.
+		errOffset = b.CreateString(server.ErrorMessage(err))
 	}
 
 	
@@ -1593,7 +1774,12 @@ func handleAsyncStr(ctx context.Context, req []byte, respBuf []byte, handler Xll
 		res, err := handler.AsyncStr(ctx, arg_s)
 
 		if err != nil {
-			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), err.Error())
+			// server.ErrorMessage, not err.Error(): an empty message would make
+			// this look like a SUCCESS to buildAsyncBatchPayload (`res.Err != ""`
+			// selects the error branch), so the handle would be answered with an
+			// absent Any and the cell would go blank with no diagnostic. See
+			// pkg/server/errmsg.go.
+			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(err))
 		} else {
 			
 			asyncBatcher.QueueResult(handle, res, protocol.AnyValueStr, "")
@@ -1644,7 +1830,12 @@ func handleAsyncInt(ctx context.Context, req []byte, respBuf []byte, handler Xll
 		res, err := handler.AsyncInt(ctx, arg_i)
 
 		if err != nil {
-			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), err.Error())
+			// server.ErrorMessage, not err.Error(): an empty message would make
+			// this look like a SUCCESS to buildAsyncBatchPayload (`res.Err != ""`
+			// selects the error branch), so the handle would be answered with an
+			// absent Any and the cell would go blank with no diagnostic. See
+			// pkg/server/errmsg.go.
+			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(err))
 		} else {
 			
 			asyncBatcher.QueueResult(handle, res, protocol.AnyValueInt, "")
@@ -1695,14 +1886,19 @@ func handleAsyncGrid(ctx context.Context, req []byte, respBuf []byte, handler Xl
 		res, err := handler.AsyncGrid(ctx, arg_g)
 
 		if err != nil {
-			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), err.Error())
+			// server.ErrorMessage, not err.Error(): an empty message would make
+			// this look like a SUCCESS to buildAsyncBatchPayload (`res.Err != ""`
+			// selects the error branch), so the handle would be answered with an
+			// absent Any and the cell would go blank with no diagnostic. See
+			// pkg/server/errmsg.go.
+			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(err))
 		} else {
 			
 			// Validate at queue time: the batch builder does not exist yet, so a
 			// malformed grid must become an error result now (FlushAsyncBatch
 			// serializes the [][]any via fbany.Build under the Grid tag).
 			if verr := server.ValidateGrid(res); verr != nil {
-				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), verr.Error())
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(verr))
 			} else {
 				asyncBatcher.QueueResult(handle, res, protocol.AnyValueGrid, "")
 			}
@@ -1753,11 +1949,16 @@ func handleAsyncNumGrid(ctx context.Context, req []byte, respBuf []byte, handler
 		res, err := handler.AsyncNumGrid(ctx, arg_ng)
 
 		if err != nil {
-			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), err.Error())
+			// server.ErrorMessage, not err.Error(): an empty message would make
+			// this look like a SUCCESS to buildAsyncBatchPayload (`res.Err != ""`
+			// selects the error branch), so the handle would be answered with an
+			// absent Any and the cell would go blank with no diagnostic. See
+			// pkg/server/errmsg.go.
+			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(err))
 		} else {
 			
 			if verr := server.ValidateNumGrid(res); verr != nil {
-				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), verr.Error())
+				asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(verr))
 			} else {
 				asyncBatcher.QueueResult(handle, res, protocol.AnyValueNumGrid, "")
 			}
@@ -1827,7 +2028,12 @@ func handleAsyncAny(ctx context.Context, req []byte, respBuf []byte, handler Xll
 		res, err := handler.AsyncAny(ctx, arg_a)
 
 		if err != nil {
-			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), err.Error())
+			// server.ErrorMessage, not err.Error(): an empty message would make
+			// this look like a SUCCESS to buildAsyncBatchPayload (`res.Err != ""`
+			// selects the error branch), so the handle would be answered with an
+			// absent Any and the cell would go blank with no diagnostic. See
+			// pkg/server/errmsg.go.
+			asyncBatcher.QueueResult(handle, nil, protocol.AnyValue(0), server.ErrorMessage(err))
 		} else {
 			
 			tag, payload := server.MapAnyValue(res)

@@ -750,6 +750,128 @@ static void TestRefIdentityInToken() {
 }
 
 // ---------------------------------------------------------------------------
+// 4c. an OVERSIZED reference must never be handed to xlCoerce
+// ---------------------------------------------------------------------------
+//
+// Regression it pins (HIGH, 2026-07-29). Every digest entry point on this file's
+// xltypeRef/xltypeSRef branch used to coerce the reference to cell VALUES with no
+// area bound whatsoever, while ConvertGridArg — the only place kMaxGridArgCells
+// was applied — runs LATER in the generated wrapper. So =CachedSumGrid($P:$R) and
+// =RtdComposite($P:$R, ...) asked Excel to materialize a 3,145,728-cell XLOPER12
+// (~100 MB) and then FNV-1a'd all of it, once per cell using that range and once
+// per recalculation, before the argument was refused downstream anyway. The rtd
+// token is computed ABOVE the per-cycle `rcAlreadySent` dedup, so it paid this on
+// EVERY recalc unconditionally.
+//
+// What must hold:
+//   (a) an over-bound reference makes ZERO Excel calls (the whole point);
+//   (b) it still hashes APART from another over-bound reference — the fallback is
+//       HashRefIdentity, the same branch a coerce failure takes, so RefCache
+//       entries and RTD topics cannot collide;
+//   (c) a reference AT the bound is still coerced (nothing that worked breaks);
+//   (d) it holds for MakeCacheKey / GetOrComputeRefHash too, including the case
+//       the per-rect check cannot see: a UNION whose rects are each under the
+//       bound but whose TOTAL is over it (GetOrComputeRefHash splits an xltypeRef
+//       into one temporary single-rect ref per area, so only a whole-reference
+//       measurement catches this).
+static void TestOversizedRefIsNotCoerced() {
+    XLOPER12 cellsA[2] = {Num(1.0), Num(2.0)};
+    XLOPER12 coercedA = Multi(1, 2, cellsA);
+    g_coerceResult = &coercedA;
+    xll::CacheManager::Instance().ClearRefCache();
+
+    const uint64_t bound = xll::kMaxGridArgCells;
+
+    // $P:$R as Excel actually passes it: one xltypeSRef spanning every row.
+    XLOPER12 wholeCols = SRef(0, 1048575, 15, 17);
+    uint64_t measured = 0;
+    xll::MeasureRefArg(&wholeCols, &measured, nullptr);
+    Check(measured == 3145728ull,
+          "MeasureRefArg sees a whole-column reference as 3,145,728 cells (got " +
+              std::to_string(measured) + ")");
+
+    // (a) zero Excel calls, for every tag — including 'r'/'a', whose payload is
+    // COORDINATES but whose DIGEST went down this same coerce.
+    for (char tag : {'g', 'r', 'a'}) {
+        g_coerceCalls.store(0);
+        std::string tok = xll::ContentHashToken(tag, &wholeCols);
+        Check(g_coerceCalls.load() == 0,
+              std::string("'") + tag + "' token refuses a whole-column reference without coercing (coerce calls: " +
+                  std::to_string(g_coerceCalls.load()) + ")");
+        Check(!tok.empty(), std::string("'") + tag + "' token is still well-formed for an oversized reference");
+    }
+
+    // (b) distinct oversized references stay distinguishable.
+    XLOPER12 wholeColsOther = SRef(0, 1048575, 25, 27);
+    Check(xll::ContentHashToken('g', &wholeCols) != xll::ContentHashToken('g', &wholeColsOther),
+          "two distinct oversized references hash apart (identity fallback)");
+    Check(xll::ContentHashToken('g', &wholeCols) == xll::ContentHashToken('g', &wholeCols),
+          "an oversized reference's digest is deterministic");
+
+    // (c) the boundary: exactly `bound` cells still coerces, one more does not.
+    XLOPER12 atBound = SRef(0, (int)(bound - 1), 0, 0);       // bound x 1
+    XLOPER12 overBound = SRef(0, (int)bound, 0, 0);           // bound+1 x 1
+    g_coerceCalls.store(0);
+    (void)xll::ContentHashToken('g', &atBound);
+    Check(g_coerceCalls.load() == 1,
+          "a reference of exactly kMaxGridArgCells cells is still coerced (coerce calls: " +
+              std::to_string(g_coerceCalls.load()) + ")");
+    g_coerceCalls.store(0);
+    (void)xll::ContentHashToken('g', &overBound);
+    Check(g_coerceCalls.load() == 0,
+          "one cell over kMaxGridArgCells is refused (coerce calls: " +
+              std::to_string(g_coerceCalls.load()) + ")");
+
+    // (d1) MakeCacheKey over an oversized xltypeRef: the RefCache path.
+    xll::CacheManager::Instance().ClearRefCache();
+    RefHolder bigRef(0x1234, {Rect(0, 1048575, 15, 17)});
+    g_coerceCalls.store(0);
+    std::string bigKey = xll::MakeCacheKey("F", {&bigRef.op});
+    Check(g_coerceCalls.load() == 0,
+          "MakeCacheKey refuses an oversized xltypeRef without coercing (coerce calls: " +
+              std::to_string(g_coerceCalls.load()) + ")");
+    RefHolder bigRefOther(0x1234, {Rect(0, 1048575, 25, 27)});
+    Check(bigKey != xll::MakeCacheKey("F", {&bigRefOther.op}),
+          "MakeCacheKey separates two distinct oversized references");
+
+    // (d2) the union case the per-rect check cannot catch: 3 areas of
+    // (bound/2 + 1) cells each. Every rect is UNDER the bound, the total is over.
+    const int halfRows = (int)(bound / 2);
+    RefHolder unionRef(0x1234, {Rect(0, halfRows, 0, 0),
+                                Rect(0, halfRows, 1, 1),
+                                Rect(0, halfRows, 2, 2)});
+    uint64_t unionCells = 0;
+    xll::MeasureRefArg(&unionRef.op, &unionCells, nullptr);
+    Check(unionCells > bound && (uint64_t)(halfRows + 1) <= bound,
+          "the union fixture is over the bound in total while every rect is under it (" +
+              std::to_string(unionCells) + " cells in 3 rects of " + std::to_string(halfRows + 1) + ")");
+    xll::CacheManager::Instance().ClearRefCache();
+    g_coerceCalls.store(0);
+    std::string unionKey = xll::MakeCacheKey("F", {&unionRef.op});
+    Check(g_coerceCalls.load() == 0,
+          "MakeCacheKey refuses a union whose TOTAL exceeds the bound, per-rect sizes notwithstanding "
+          "(coerce calls: " + std::to_string(g_coerceCalls.load()) + ")");
+    RefHolder unionRefOther(0x1234, {Rect(0, halfRows, 5, 5),
+                                     Rect(0, halfRows, 6, 6),
+                                     Rect(0, halfRows, 7, 7)});
+    Check(unionKey != xll::MakeCacheKey("F", {&unionRefOther.op}),
+          "MakeCacheKey separates two distinct oversized unions");
+
+    // ...and a union that FITS is still coerced per rect (the bound did not turn
+    // into a blanket multi-area refusal — `range`/`any` support unions natively).
+    xll::CacheManager::Instance().ClearRefCache();
+    RefHolder smallUnion(0x1234, {Rect(0, 1, 0, 0), Rect(5, 6, 0, 0)});
+    g_coerceCalls.store(0);
+    (void)xll::MakeCacheKey("F", {&smallUnion.op});
+    Check(g_coerceCalls.load() == 2,
+          "a union that fits the bound is still coerced once per rect (coerce calls: " +
+              std::to_string(g_coerceCalls.load()) + ")");
+
+    g_coerceResult = &coercedA;
+    xll::CacheManager::Instance().ClearRefCache();
+}
+
+// ---------------------------------------------------------------------------
 // 5. defect 2 — concurrent Get/Put must be internally locked
 // ---------------------------------------------------------------------------
 
@@ -978,6 +1100,7 @@ int main(int argc, char** argv) {
     TestRefArgs();
     TestIterativeCalcBypassesRefCache();
     TestRefIdentityInToken();
+    TestOversizedRefIsNotCoerced();
     TestConcurrentGetPut();
     TestConcurrentRefHash();
 

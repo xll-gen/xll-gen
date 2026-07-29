@@ -1714,6 +1714,13 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 
     if (xlRet != xlretSuccess) {
         SAFE_LOG_ERROR("xlfRtd failed for {{.Name}}. Return code: " + std::to_string(xlRet));
+        // Overwriting xltype would ORPHAN whatever Excel-allocated payload a
+        // PREVIOUS successful call left in this static operand — the failure path
+        // used to leak the last good value on top of the per-tick leak below.
+        // The transfer at the bottom of the success path means Excel has already
+        // reclaimed it, so this is a no-op in the normal sequence; it stays
+        // because the operand is static and the two paths interleave freely.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
@@ -1733,6 +1740,16 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 #endif
     }
 
+    // xlfRtd's result is EXCEL-allocated. The streaming wrapper must return it
+    // verbatim (substituting a placeholder would mean the stream never displays,
+    // §19.3), so the only legal disposition is to transfer ownership: set
+    // xlbitXLFree and let Excel reclaim the auxiliary memory after it has read
+    // the cell value. Before this, a string-valued RTD topic leaked one
+    // Excel-heap Pascal buffer per cell PER PUSH — invisible in every log, and
+    // unbounded in a dashboard left open (the showcase Clock/StockTick push
+    // strings every 0.75-1 s). Numeric/boolean topics were unaffected: they own
+    // no auxiliary memory, which is exactly what the helper's type switch checks.
+    xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/true);
     return &xRes;
 
     {{else if eq .Mode "rtd-once"}}
@@ -1976,8 +1993,11 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once {{.Name}}. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             {{if eq .Return "numgrid"}}
-            (void)xRes;
             return NumGridToFP12(nullptr);
             {{else}}
             return &g_xlErrValue;
@@ -1989,7 +2009,12 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         // cache miss. Emit an empty 0x0 FP12 placeholder (NumGridToFP12(nullptr))
         // instead — the readiness push from RunOnceGrid recalcs the cell, which
         // then hits the grid registry above and spills the real numgrid.
-        (void)xRes;
+        //
+        // xRes is DISCARDED here, so it must be xlFree'd rather than tagged
+        // xlbitXLFree: that bit only reaches Excel via a RETURNED XLOPER12, and
+        // this wrapper returns an FP12*. An untouched discard leaked one
+        // Excel-allocated buffer per miss for every string/array-valued topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return NumGridToFP12(nullptr);
         {{else}}
         // First paint on a cache miss: return the resolved loading placeholder,
@@ -2003,7 +2028,13 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         // The error sentinels are process-global (no xlbitDLLFree, mirror
         // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
         // xlAutoFree12).
-        (void)xRes;
+        //
+        // Because xRes is DISCARDED (the placeholder is what goes to the cell),
+        // ownership can NOT be transferred with xlbitXLFree — that bit is only
+        // honored on a value Excel actually receives back. Free it directly. Not
+        // doing so leaked one Excel-allocated buffer per cache miss on every
+        // string-valued rtd-once topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         {{rtdPlaceholderReturn . $.Rtd}}
         {{end}}
     }
@@ -2107,7 +2138,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::{{.Name}}Response>(cachedData.data());
 
-{{template "returnConversion" (dict "Indent" "        " "Ret" .Return)}}
+{{template "returnConversion" (dict "Indent" "        " "Ret" .Return "Name" .Name)}}
     }
     {{end}}
 
@@ -2295,7 +2326,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     }
     {{end}}
 
-{{template "returnConversion" (dict "Indent" "    " "Ret" .Return)}}
+{{template "returnConversion" (dict "Indent" "    " "Ret" .Return "Name" .Name)}}
     {{end}}
     {{end}}
 }
@@ -2323,17 +2354,59 @@ extern "C" __declspec(dllexport) int __stdcall Cmd_{{.Name}}() {
   embedded NUL. Handler strings are arbitrary UTF-8 from Go, so embedded NULs
   are representable. Kept as a template comment so it does not repeat once per
   generated function.
-*/}}{{if ne .Ret "numgrid"}}{{.Indent}}// Surface a handler error to the cell as text (mirrors the async path in
-{{.Indent}}// xll_async.cpp). The Go server writes Response.error when the handler
-{{.Indent}}// returns a non-nil error; without this the errored response falls through
-{{.Indent}}// to resp->result() and the cell shows the shared #VALUE! sentinel with the
-{{.Indent}}// message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-{{.Indent}}// it is excluded and keeps its empty-grid error result.
-{{.Indent}}if (resp->error() && resp->error()->size() > 0) {
+
+  WHY THE ERROR GUARD IS PRESENCE-ONLY, AND WHY THE STRING PATH NULL-CHECKS
+  (HIGH, fixed 2026-07-29). Kept here rather than in the emitted code for the
+  same reason as the note above: this block is rendered once per function and,
+  with caching on, twice.
+
+  The Go server writes Response.result and Response.error in an EXCLUSIVE
+  if/else, so an errored response carries NO result field — and flatc's accessor
+  answers nullptr for an absent field. But `b.CreateString("")` returns a
+  NON-ZERO offset, so an error whose Error() is the EMPTY string still PRODUCES
+  the error field, with size()==0. The old guard was
+  `error() && error()->size() > 0`, so that response fell through to the RESULT
+  path:
+    * `string`            -> `resp->result()->str()` read length_ off offset 0
+                             and took the Excel process down. A generated sync
+                             UDF is OUTSIDE XLL_SAFE_BLOCK/__try, so nothing
+                             contained the access violation; unsaved workbooks
+                             were lost. `return "", errors.New("")` — or a custom
+                             error type whose message field is unset — was enough.
+    * `int`/`float`/`bool`-> the absent field read back as the FlatBuffers
+                             default: the cell showed 0 / 0.0 / FALSE with NO
+                             error. A silent wrong answer.
+    * `any`               -> an empty cell.
+    * `grid`              -> already defended, by GridToXLOPER12(nullptr)
+                             rendering #VALUE!.
+  The cache-HIT path reuses this same block, so it reproduced identically.
+
+  Fix, in two halves that BOTH have to ship: the guard is presence-only here,
+  and pkg/server.ErrorMessage normalizes an empty message on the Go side so the
+  cell shows something diagnosable instead of a blank string. This guard alone
+  would paint an empty cell against an older server; the Go half alone would
+  leave the nullptr dereference in an XLL built before this change.
+
+  The `if (!resp->result())` on the string path is defense in depth behind it:
+  the response is raw wire input (a truncated or foreign-built buffer can omit
+  BOTH fields), and `string` is the one return type whose absent result is an
+  immediate nullptr dereference rather than a benign default value.
+*/}}{{if ne .Ret "numgrid"}}{{.Indent}}// Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+{{.Indent}}// only — never `size() > 0`: an empty message still produces the field, and
+{{.Indent}}// requiring a size sent that response to resp->result(), which is nullptr for
+{{.Indent}}// an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+{{.Indent}}// excluded and keeps its empty-grid error result. See the template comment on
+{{.Indent}}// "returnConversion" for the full mechanism.
+{{.Indent}}if (resp->error()) {
 {{.Indent}}    std::wstring werr = StringToWString(resp->error()->str());
 {{.Indent}}    return NewExcelString(werr);
 {{.Indent}}}
 {{end}}{{.Indent}}{{if eq .Ret "string"}}
+{{.Indent}}// Wire input may omit BOTH fields; an absent result is a nullptr deref here.
+{{.Indent}}if (!resp->result()) {
+{{.Indent}}    SAFE_LOG_WARN("{{.Name}}: response carries neither result nor error");
+{{.Indent}}    return &g_xlErrValue;
+{{.Indent}}}
 {{.Indent}}std::wstring wres = StringToWString(resp->result()->str());
 {{.Indent}}return NewExcelString(wres);
 {{.Indent}}{{else if eq .Ret "int"}}

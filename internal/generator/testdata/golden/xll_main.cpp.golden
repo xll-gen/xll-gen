@@ -1695,17 +1695,22 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncStrResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
         
+        // Wire input may omit BOTH fields; an absent result is a nullptr deref here.
+        if (!resp->result()) {
+            SAFE_LOG_WARN("SyncStr: response carries neither result nor error");
+            return &g_xlErrValue;
+        }
         std::wstring wres = StringToWString(resp->result()->str());
         return NewExcelString(wres);
         
@@ -1781,17 +1786,22 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
     
+    // Wire input may omit BOTH fields; an absent result is a nullptr deref here.
+    if (!resp->result()) {
+        SAFE_LOG_WARN("SyncStr: response carries neither result nor error");
+        return &g_xlErrValue;
+    }
     std::wstring wres = StringToWString(resp->result()->str());
     return NewExcelString(wres);
     
@@ -1857,13 +1867,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncIntResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -1944,13 +1954,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -2022,13 +2032,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncFloatResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -2109,13 +2119,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -2187,13 +2197,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncBoolResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -2274,13 +2284,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -2354,13 +2364,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncAnyResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -2440,13 +2450,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -2518,13 +2528,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncGridResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -2631,13 +2641,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -2863,13 +2873,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncRangeResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -2951,13 +2961,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -3034,13 +3044,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncDateResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -3121,13 +3131,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -3243,17 +3253,22 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncMultiResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
         
+        // Wire input may omit BOTH fields; an absent result is a nullptr deref here.
+        if (!resp->result()) {
+            SAFE_LOG_WARN("SyncMulti: response carries neither result nor error");
+            return &g_xlErrValue;
+        }
         std::wstring wres = StringToWString(resp->result()->str());
         return NewExcelString(wres);
         
@@ -3385,17 +3400,22 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
     
+    // Wire input may omit BOTH fields; an absent result is a nullptr deref here.
+    if (!resp->result()) {
+        SAFE_LOG_WARN("SyncMulti: response carries neither result nor error");
+        return &g_xlErrValue;
+    }
     std::wstring wres = StringToWString(resp->result()->str());
     return NewExcelString(wres);
     
@@ -3470,13 +3490,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::SyncCachedGridResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -3556,13 +3576,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -3634,13 +3654,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
         // Deserialize response
         auto resp = flatbuffers::GetRoot<ipc::CallerMacroRangeResponse>(cachedData.data());
 
-        // Surface a handler error to the cell as text (mirrors the async path in
-        // xll_async.cpp). The Go server writes Response.error when the handler
-        // returns a non-nil error; without this the errored response falls through
-        // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-        // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-        // it is excluded and keeps its empty-grid error result.
-        if (resp->error() && resp->error()->size() > 0) {
+        // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+        // only — never `size() > 0`: an empty message still produces the field, and
+        // requiring a size sent that response to resp->result(), which is nullptr for
+        // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+        // excluded and keeps its empty-grid error result. See the template comment on
+        // "returnConversion" for the full mechanism.
+        if (resp->error()) {
             std::wstring werr = StringToWString(resp->error()->str());
             return NewExcelString(werr);
         }
@@ -3752,13 +3772,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     }
     
 
-    // Surface a handler error to the cell as text (mirrors the async path in
-    // xll_async.cpp). The Go server writes Response.error when the handler
-    // returns a non-nil error; without this the errored response falls through
-    // to resp->result() and the cell shows the shared #VALUE! sentinel with the
-    // message only in the Go log. numgrid (FP12*/K%) cannot carry a string, so
-    // it is excluded and keeps its empty-grid error result.
-    if (resp->error() && resp->error()->size() > 0) {
+    // Surface a handler error to the cell as text (mirrors xll_async.cpp). PRESENCE
+    // only — never `size() > 0`: an empty message still produces the field, and
+    // requiring a size sent that response to resp->result(), which is nullptr for
+    // an errored response. numgrid (FP12*/K%) cannot carry a string, so it is
+    // excluded and keeps its empty-grid error result. See the template comment on
+    // "returnConversion" for the full mechanism.
+    if (resp->error()) {
         std::wstring werr = StringToWString(resp->error()->str());
         return NewExcelString(werr);
     }
@@ -4380,6 +4400,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
 
     if (xlRet != xlretSuccess) {
         SAFE_LOG_ERROR("xlfRtd failed for RtdScalars. Return code: " + std::to_string(xlRet));
+        // Overwriting xltype would ORPHAN whatever Excel-allocated payload a
+        // PREVIOUS successful call left in this static operand — the failure path
+        // used to leak the last good value on top of the per-tick leak below.
+        // The transfer at the bottom of the success path means Excel has already
+        // reclaimed it, so this is a no-op in the normal sequence; it stays
+        // because the operand is static and the two paths interleave freely.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
@@ -4394,6 +4421,16 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
 #endif
     }
 
+    // xlfRtd's result is EXCEL-allocated. The streaming wrapper must return it
+    // verbatim (substituting a placeholder would mean the stream never displays,
+    // §19.3), so the only legal disposition is to transfer ownership: set
+    // xlbitXLFree and let Excel reclaim the auxiliary memory after it has read
+    // the cell value. Before this, a string-valued RTD topic leaked one
+    // Excel-heap Pascal buffer per cell PER PUSH — invisible in every log, and
+    // unbounded in a dashboard left open (the showcase Clock/StockTick push
+    // strings every 0.75-1 s). Numeric/boolean topics were unaffected: they own
+    // no auxiliary memory, which is exactly what the helper's type switch checks.
+    xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/true);
     return &xRes;
 
     
@@ -4568,6 +4605,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
 
     if (xlRet != xlretSuccess) {
         SAFE_LOG_ERROR("xlfRtd failed for RtdComposite. Return code: " + std::to_string(xlRet));
+        // Overwriting xltype would ORPHAN whatever Excel-allocated payload a
+        // PREVIOUS successful call left in this static operand — the failure path
+        // used to leak the last good value on top of the per-tick leak below.
+        // The transfer at the bottom of the success path means Excel has already
+        // reclaimed it, so this is a no-op in the normal sequence; it stays
+        // because the operand is static and the two paths interleave freely.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
@@ -4582,6 +4626,16 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
 #endif
     }
 
+    // xlfRtd's result is EXCEL-allocated. The streaming wrapper must return it
+    // verbatim (substituting a placeholder would mean the stream never displays,
+    // §19.3), so the only legal disposition is to transfer ownership: set
+    // xlbitXLFree and let Excel reclaim the auxiliary memory after it has read
+    // the cell value. Before this, a string-valued RTD topic leaked one
+    // Excel-heap Pascal buffer per cell PER PUSH — invisible in every log, and
+    // unbounded in a dashboard left open (the showcase Clock/StockTick push
+    // strings every 0.75-1 s). Numeric/boolean topics were unaffected: they own
+    // no auxiliary memory, which is exactly what the helper's type switch checks.
+    xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/true);
     return &xRes;
 
     
@@ -4747,6 +4801,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
 
     if (xlRet != xlretSuccess) {
         SAFE_LOG_ERROR("xlfRtd failed for RtdRangeAny. Return code: " + std::to_string(xlRet));
+        // Overwriting xltype would ORPHAN whatever Excel-allocated payload a
+        // PREVIOUS successful call left in this static operand — the failure path
+        // used to leak the last good value on top of the per-tick leak below.
+        // The transfer at the bottom of the success path means Excel has already
+        // reclaimed it, so this is a no-op in the normal sequence; it stays
+        // because the operand is static and the two paths interleave freely.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         xRes.xltype = xltypeErr;
         xRes.val.err = xlerrValue;
     } else {
@@ -4761,6 +4822,16 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
 #endif
     }
 
+    // xlfRtd's result is EXCEL-allocated. The streaming wrapper must return it
+    // verbatim (substituting a placeholder would mean the stream never displays,
+    // §19.3), so the only legal disposition is to transfer ownership: set
+    // xlbitXLFree and let Excel reclaim the auxiliary memory after it has read
+    // the cell value. Before this, a string-valued RTD topic leaked one
+    // Excel-heap Pascal buffer per cell PER PUSH — invisible in every log, and
+    // unbounded in a dashboard left open (the showcase Clock/StockTick push
+    // strings every 0.75-1 s). Numeric/boolean topics were unaffected: they own
+    // no auxiliary memory, which is exactly what the helper's type switch checks.
+    xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/true);
     return &xRes;
 
     
@@ -4869,6 +4940,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceScalar(int32_t i, doub
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once OnceScalar. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             
             return &g_xlErrValue;
             
@@ -4885,7 +4960,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceScalar(int32_t i, doub
         // The error sentinels are process-global (no xlbitDLLFree, mirror
         // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
         // xlAutoFree12).
-        (void)xRes;
+        //
+        // Because xRes is DISCARDED (the placeholder is what goes to the cell),
+        // ownership can NOT be transferred with xlbitXLFree — that bit is only
+        // honored on a value Excel actually receives back. Free it directly. Not
+        // doing so leaked one Excel-allocated buffer per cache miss on every
+        // string-valued rtd-once topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return &g_xlErrGettingData;
         
     }
@@ -5034,6 +5115,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once OnceGrid. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             
             return &g_xlErrValue;
             
@@ -5050,7 +5135,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
         // The error sentinels are process-global (no xlbitDLLFree, mirror
         // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
         // xlAutoFree12).
-        (void)xRes;
+        //
+        // Because xRes is DISCARDED (the placeholder is what goes to the cell),
+        // ownership can NOT be transferred with xlbitXLFree — that bit is only
+        // honored on a value Excel actually receives back. Free it directly. Not
+        // doing so leaked one Excel-allocated buffer per cache miss on every
+        // string-valued rtd-once topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return &g_xlErrGettingData;
         
     }
@@ -5198,8 +5289,11 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once OnceNumGrid. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             
-            (void)xRes;
             return NumGridToFP12(nullptr);
             
         }
@@ -5209,7 +5303,12 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
         // cache miss. Emit an empty 0x0 FP12 placeholder (NumGridToFP12(nullptr))
         // instead — the readiness push from RunOnceGrid recalcs the cell, which
         // then hits the grid registry above and spills the real numgrid.
-        (void)xRes;
+        //
+        // xRes is DISCARDED here, so it must be xlFree'd rather than tagged
+        // xlbitXLFree: that bit only reaches Excel via a RETURNED XLOPER12, and
+        // this wrapper returns an FP12*. An untouched discard leaked one
+        // Excel-allocated buffer per miss for every string/array-valued topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return NumGridToFP12(nullptr);
         
     }
@@ -5577,6 +5676,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once OnceComposite. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             
             return &g_xlErrValue;
             
@@ -5593,7 +5696,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
         // The error sentinels are process-global (no xlbitDLLFree, mirror
         // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
         // xlAutoFree12).
-        (void)xRes;
+        //
+        // Because xRes is DISCARDED (the placeholder is what goes to the cell),
+        // ownership can NOT be transferred with xlbitXLFree — that bit is only
+        // honored on a value Excel actually receives back. Free it directly. Not
+        // doing so leaked one Excel-allocated buffer per cache miss on every
+        // string-valued rtd-once topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return &g_xlErrGettingData;
         
     }
@@ -5693,6 +5802,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceMemoize(int32_t i) {
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once OnceMemoize. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             
             return &g_xlErrValue;
             
@@ -5709,7 +5822,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceMemoize(int32_t i) {
         // The error sentinels are process-global (no xlbitDLLFree, mirror
         // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
         // xlAutoFree12).
-        (void)xRes;
+        //
+        // Because xRes is DISCARDED (the placeholder is what goes to the cell),
+        // ownership can NOT be transferred with xlbitXLFree — that bit is only
+        // honored on a value Excel actually receives back. Free it directly. Not
+        // doing so leaked one Excel-allocated buffer per cache miss on every
+        // string-valued rtd-once topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return &g_xlErrGettingData;
         
     }
@@ -5809,6 +5928,10 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceTTL(int32_t i) {
 
         if (xlRet != xlretSuccess) {
             SAFE_LOG_ERROR("xlfRtd failed for rtd-once OnceTTL. Return code: " + std::to_string(xlRet));
+            // Nothing was returned into xRes by THIS call, but the operand is
+            // static and shared with the success path below, so release whatever
+            // a previous call may have left rather than abandoning it.
+            xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
             
             return &g_xlErrValue;
             
@@ -5825,7 +5948,13 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceTTL(int32_t i) {
         // The error sentinels are process-global (no xlbitDLLFree, mirror
         // g_xlErrValue); custom text uses NewExcelString (DLL-owned, reclaimed by
         // xlAutoFree12).
-        (void)xRes;
+        //
+        // Because xRes is DISCARDED (the placeholder is what goes to the cell),
+        // ownership can NOT be transferred with xlbitXLFree — that bit is only
+        // honored on a value Excel actually receives back. Free it directly. Not
+        // doing so leaked one Excel-allocated buffer per cache miss on every
+        // string-valued rtd-once topic.
+        xll::ReleaseOrTransferExcelResult(xRes, /*transferToExcel=*/false);
         return &g_xlErrGettingData;
         
     }

@@ -327,6 +327,29 @@ func (s *Service) ScheduleGridCmd(ctx context.Context) (int32, error) {
     return 1, nil
 }
 
+// emptyMessageError is an error whose Error() is the EMPTY string. It is the
+// shape a user reaches by accident — `errors.New("")`, or a custom error type
+// (`&MyErr{}`) whose message field has not been filled in — and it used to be
+// enough to kill the Excel process from a single string-returning cell. See the
+// note on ErrEmptyString/ErrEmptyInt in xll.yaml and pkg/server/errmsg.go.
+type emptyMessageError struct{}
+
+func (emptyMessageError) Error() string { return "" }
+
+// ErrEmptyString fails with an empty message from a STRING-returning handler:
+// the return type whose absent result field is an immediate nullptr dereference
+// on the C++ side.
+func (s *Service) ErrEmptyString(ctx context.Context) (string, error) {
+	return "", emptyMessageError{}
+}
+
+// ErrEmptyInt fails with an empty message from an INT-returning handler: the
+// silent-wrong-answer half of the same defect (an absent result field reads back
+// as the FlatBuffers default 0, with no error anywhere).
+func (s *Service) ErrEmptyInt(ctx context.Context) (int32, error) {
+	return 0, emptyMessageError{}
+}
+
 // RunReport is a ribbon/macro command handler. It runs fire-and-forget; the
 // mock host only asserts the delivery ack (ok=true), so we just log to prove
 // the MSG_COMMAND_INVOKE route reached the handler with the right context.
