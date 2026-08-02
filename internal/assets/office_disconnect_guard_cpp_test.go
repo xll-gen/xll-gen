@@ -1,7 +1,6 @@
 package assets
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -11,15 +10,67 @@ import (
 // guard, in the opposite order to the code, so a naive index comparison would report
 // a false failure. (Mirrors internal/generator's helper of the same purpose; the two
 // packages cannot share test-only code.)
-var (
-	reLineCommentAsset  = regexp.MustCompile(`//[^\n]*`)
-	reBlockCommentAsset = regexp.MustCompile(`(?s)/\*.*?\*/`)
-)
+//
+// WHY A SCANNER AND NOT TWO REGEX PASSES (fixed 2026-08-03). This used to be
+// `reBlockComment.ReplaceAll("")` followed by `reLineComment.ReplaceAll("")`, and
+// that is wrong on real source. `src/ribbon_connect.cpp`'s header comment contains
+// the literal `file(GLOB src/*.cpp)`, which the block-comment regex reads as an
+// OPENING `/*`. For as long as no `*/` followed it anywhere in the file the pass was
+// a silent no-op — but the moment a `/*allowBounce=*/` named-argument comment was
+// added 275 lines further down, the non-greedy match swallowed everything between
+// the two and every assertion in ribbon_connect_cpp_test.go failed at once. That
+// failure was loud. The same swallow inside an ORDER assert is NOT: two markers that
+// no longer exist in the stripped text simply report `-1 < -1`… or, worse, survive
+// in a smaller window and read as correctly ordered. A single left-to-right scan
+// that also understands string/char literals cannot mis-pair a delimiter that is
+// itself inside a comment or a literal.
+func stripCppCommentsAsset(s string) string { return stripCppCommentsScan(s) }
 
-func stripCppCommentsAsset(s string) string {
-	s = reBlockCommentAsset.ReplaceAllString(s, "")
-	s = reLineCommentAsset.ReplaceAllString(s, "")
-	return s
+// stripCppCommentsScan walks s once, dropping // line comments and /* */ block
+// comments while copying string and character literals through verbatim (so a
+// "//" or "/*" inside a literal is not mistaken for a comment opener).
+func stripCppCommentsScan(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		switch {
+		case s[i] == '/' && i+1 < len(s) && s[i+1] == '/':
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case s[i] == '/' && i+1 < len(s) && s[i+1] == '*':
+			i += 2
+			for i+1 < len(s) && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(s) {
+				i += 2
+			} else {
+				i = len(s) // unterminated block comment: drop the remainder
+			}
+		case s[i] == '"' || s[i] == '\'':
+			quote := s[i]
+			b.WriteByte(s[i])
+			i++
+			for i < len(s) {
+				c := s[i]
+				b.WriteByte(c)
+				i++
+				if c == '\\' && i < len(s) {
+					b.WriteByte(s[i])
+					i++
+					continue
+				}
+				if c == quote || c == '\n' {
+					break
+				}
+			}
+		default:
+			b.WriteByte(s[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 // Regression pin for the 2026-07-30 Office add-in-disconnect RE-ENTRANCY crash.

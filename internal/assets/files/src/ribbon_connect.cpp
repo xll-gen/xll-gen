@@ -17,12 +17,14 @@
 #include "com/ribbon_connect.h"
 
 #include "com/dispatch_helpers.h"
-#include "com/ribbon_addin.h" // RibbonAddIn, SetRibbonXml
-#include "com/ribbon_image.h" // SetRibbonImages
-#include "rtd/factory.h"      // rtd::ClassFactory
-#include "rtd/registry.h"     // rtd::RegisterServer / RegisterOfficeAddinKey
-#include "xll_lifecycle.h"    // xll::TeardownStarted
-#include "xll_log.h"          // SAFE_LOG_*
+#include "com/ribbon_addin.h"        // RibbonAddIn, SetRibbonXml
+#include "com/ribbon_image.h"        // SetRibbonImages
+#include "rtd/factory.h"             // rtd::ClassFactory
+#include "rtd/registry.h"            // rtd::RegisterServer / RegisterOfficeAddinKey
+#include "types/xlcall.h"            // xlretSuccess
+#include "xll_deferred_commands.h"   // xll::ScheduleOnTimeMacro / RibbonConnectRetryMacroName
+#include "xll_lifecycle.h"           // xll::TeardownStarted / xll::g_isUnloading
+#include "xll_log.h"                 // SAFE_LOG_*
 
 #include <cstdio>
 #include <string>
@@ -235,6 +237,94 @@ bool TryConnectRibbon(const char* phase, bool allowBounce, RibbonAttempt* pOutco
         SAFE_LOG_WARN("Ribbon: COMAddIns connect failed after 60 attempts; ribbon UI disabled.");
     }
     return false;
+}
+
+void ArmConnectRetry() {
+    // If the ribbon did NOT connect at load (ribbon.bounce: off, or a bounce
+    // that failed) the calc-end fallback is the only remaining trigger — and it
+    // never fires for a workbook that is open but never recalculates (manual
+    // calc mode / no-formula book), delaying the ribbon tab indefinitely. Arm a
+    // bounded xlcOnTime retry from the CALLER's context: xlAutoOpen is a VALID
+    // command context for xlc* (§23.6 HIGH #2), and every re-arm runs from the
+    // retry macro's own dispatch (also a command context). No-op once
+    // connected/gave-up (g_ribbonConnectState != 0). See RunConnectRetryTick /
+    // AGENTS.md §3.
+    //
+    // The g_ribbonRetryArmed CAS makes this START-ONCE: a second xlAutoOpen in
+    // the same process generation must not start a second chain against the same
+    // counters. The schedule rc is INSPECTED, not discarded — a rejected arm means
+    // the whole chain never starts, and silently degrading to "calc-end only"
+    // without a log is how this stays invisible until a user reports a missing tab.
+    bool retryExpected = false;
+    if (!xll::g_isUnloading.load(std::memory_order_acquire) &&
+        g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&
+        g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {
+        int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);
+        if (armRc != xlretSuccess) {
+            // Nothing is in flight — un-latch so a later xlAutoOpen may retry.
+            g_ribbonRetryArmed.store(false, std::memory_order_release);
+            SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=" +
+                          std::to_string(armRc) + "); falling back to the calc-end retry only, so the "
+                          "ribbon tab may be delayed until the first recalculation.");
+        }
+    }
+}
+
+void RunConnectRetryTick() {
+    // Self-abort on ANY teardown (quiesce or unload): do NOT touch Excel and do
+    // NOT re-arm. See the matching TryConnectRibbon gate above (20.2.1 rule 2).
+    if (xll::TeardownStarted()) return;
+    // Idempotent connect attempt (no bounce on retries: a workbook, if any,
+    // already exists; the bounce is only for the xlAutoOpen no-workbook case).
+    // The outcome CLASS decides which budget (if any) pays for this dispatch.
+    RibbonAttempt retryOutcome = RibbonAttempt::kNotAttempted;
+    TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);
+    // Stop once the connect resolves — connected (1) or gave-up (2).
+    if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return;
+
+    // Still pending: charge the attempt to the budget matching its CLASS, then
+    // re-arm at the matching spacing. Charging noApp to the productive budget
+    // is what made an empty Excel burn all 30 attempts in 60 s and miss the
+    // workbook the user opened afterwards (MED fix, 2026-07-26).
+    //
+    // kNotAttempted charges NOTHING and simply re-arms at the productive
+    // spacing: TryConnectRibbon bailed before touching COM (STA re-entrancy —
+    // Excel dispatched this macro while an outer connect/bounce was pumping
+    // the message loop). Billing that to the productive budget is the same
+    // accounting defect as the noApp one, one branch further out: an attempt
+    // that never happened must not shrink the window for the attempts that
+    // will. It cannot spin unbounded — it requires an outer attempt in flight
+    // on this same STA thread, and when that returns the next dispatch gets a
+    // real, chargeable outcome (or the state gate above stops the chain).
+    double nextDelaySec = kRibbonRetryIntervalSec;
+    if (retryOutcome == RibbonAttempt::kNoApp) {
+        int n = g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;
+        if (n >= kRibbonRetryNoAppMaxAttempts) {
+            SAFE_LOG_WARN("Ribbon: OnTime connect retry gave up waiting for a workbook to be opened "
+                          "(no Application object for the full bounded window); the calc-end fallback "
+                          "remains the only trigger.");
+            return;
+        }
+        if (n >= kRibbonRetryNoAppFastAttempts) nextDelaySec = kRibbonRetryNoAppIdleSec;
+    } else if (retryOutcome == RibbonAttempt::kRejected) {
+        int n = g_ribbonRetryAttempts.fetch_add(1) + 1;
+        if (n >= kRibbonRetryMaxAttempts) {
+            SAFE_LOG_WARN("Ribbon: OnTime connect retry exhausted its bounded budget; the calc-end fallback remains the only trigger.");
+            return;
+        }
+    } else {
+        SAFE_LOG_DEBUG("Ribbon: OnTime connect retry re-entered while a connect was in flight; "
+                       "no budget charged (nothing was attempted).");
+    }
+    // Inspect the re-arm rc: a rejected xlcOnTime silently ENDS the chain, so
+    // it must be visible in the log rather than looking like "still retrying".
+    int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);
+    if (reArmRc != xlretSuccess) {
+        g_ribbonRetryArmed.store(false, std::memory_order_release);
+        SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=" +
+                      std::to_string(reArmRc) + "); the retry chain ENDS here and the calc-end "
+                      "fallback remains the only trigger.");
+    }
 }
 
 } // namespace ribbon

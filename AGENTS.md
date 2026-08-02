@@ -306,10 +306,15 @@ code (Go → `pkg/server`, C++ → `internal/assets/files/{include,src}`).
 * the project-named registration strings (`L"<Project> Ribbon"` etc.);
 * `GetExcelApplicationOrBounce()` — its body is `ribbon.bounce`-branched
   (`full` / `keep-open` / `off`), i.e. real generated code;
-* the exported `__xllgen_RibbonConnectRetry()` OnTime macro and its
+* the exported `__xllgen_RibbonConnectRetry()` OnTime macro **symbol** and its
   `xlfRegister`, because Excel resolves the registered procedure by NAME against
   an exported symbol, which cannot live in an asset. That is also why the retry
   budgets/counters are `extern` in the header rather than private to the `.cpp`.
+  Its **body** is NOT generated — see §18.11.2;
+* the `xlAutoOpen` **call** to `xll::ribbon::ArmConnectRetry()`. The arm must be
+  issued from a VALID command context and `xlAutoOpen` is the one the first
+  `xlcOnTime` gets (§23.6 HIGH #2, proven on real Excel with zero workbooks open);
+  the arm's LOGIC is not generated — again §18.11.2.
 
 **The wiring contract:** the asset reads NO generated symbol. `xlAutoOpen` fills
 an `xll::ribbon::ConnectContext` (module handle, ProgID, CLSID, the three
@@ -339,7 +344,7 @@ classification sites AND their order, the re-entrancy guard, the state gate, the
 of the removed STA `WM_TIMER` residual) are pinned against the embedded asset in
 `internal/assets/ribbon_connect_cpp_test.go` (and
 `scratch_book_cpp_test.go`). WIRING (the include, the published context and its
-ordering, the three trigger sites, the runner's budget charging) stays in
+ordering, the three trigger sites, the export and arm CALL sites) stays in
 `internal/generator/gen_ribbon_connect_test.go`, which also carries a
 **do-not-re-inline** guard in the spirit of §18.6.1's
 `TestChunkSegmentLogicIsExtracted`: a re-inlined copy in the template would
@@ -350,6 +355,105 @@ shipped XLL.
 `{{if and .Ribbon.Enabled (eq .Ribbon.BounceMode "full")}}`. `BounceMode()` maps
 an unset `ribbon.bounce` to `"full"` **regardless of `Ribbon.Enabled`**, so
 gating on the bounce mode alone leaked the include into every non-ribbon project.
+
+#### 18.11.2 The OnTime retry CHAIN is a STATIC ASSET too; only the exported symbol is generated (2026-08-03)
+
+Second pass over the same cluster. `__xllgen_RibbonConnectRetry`'s BODY — the
+teardown self-abort, the connect attempt, the state gate, the two-budget outcome
+switch and the re-arm decision — and the `xlAutoOpen` ARM block — the unload gate,
+the "only if still unconnected" gate, the `g_ribbonRetryArmed` start-once CAS and
+the rejected-arm handling — had no template variables either. They are now
+**`xll::ribbon::RunConnectRetryTick()`** and **`xll::ribbon::ArmConnectRetry()`**
+in `include/com/ribbon_connect.h` + `src/ribbon_connect.cpp`. Everything §23.6
+"§3" and its two FOLLOW-UPs say about their BEHAVIOR still holds verbatim — pure
+relocation, no semantics touched, every log string and every budget number
+preserved.
+
+**What must stay in the template, and exactly why:**
+* the exported symbol `__xllgen_RibbonConnectRetry()` — Excel resolves the ON.TIME
+  procedure BY NAME against an exported entry point (§21). The shim is now the
+  same three lines `__xllgen_RunDeferredCalcEnd` has: `XLL_SAFE_BLOCK_BEGIN` → one
+  call → `XLL_SAFE_BLOCK_END(0)` → `return 1;`;
+* the `xlfRegister` (`macroType=2`) of that name via
+  `xll::RibbonConnectRetryMacroName()`;
+* the `xlAutoOpen` CALL to `ArmConnectRetry()`, for the command-context reason
+  given in §18.11.1.
+
+**The SEH boundary stays at the caller**, and moving the bodies out of those
+`__try` scopes is a strict improvement independent of the relocation: a
+function-local static or a `std::string` temporary inside a `__try` is exactly the
+hidden non-trivial construction the `XLL_SAFE_BLOCK` discipline avoids (half of
+what MED #2(d) was about).
+
+**Test split.** Body → `internal/assets/ribbon_connect_cpp_test.go`
+(`TestRibbonConnectRetryTickGates`, `TestRibbonConnectRetryTickBudgetAccounting`,
+`TestRibbonConnectRetryTickReArm`, `TestRibbonConnectArmIsStartOnceAndInspectsRc`).
+Wiring → `internal/generator/gen_ribbon_connect_test.go`
+(`TestXllMainRibbonOnTimeConnectRetry`, which now also asserts the shim contains
+NOTHING but the call, and `TestXllMainRibbonRetryArmSiteIsWiredFromXlAutoOpen`,
+which pins that the arm sits inside `xlAutoOpen` and after the load-time connect).
+`TestXllMainRibbonRetryNoAppBudget` is RETIRED IN PLACE — its assertions moved
+unweakened into the accounting test, which additionally proves the uncharged
+branch charges nothing; the doc comment stays so the empty-Excel scenario is still
+written down next to the wiring. `cmd/cpp_compile_gate_bounce_test.go`
+(full/keep-open/off) compiles the result.
+
+#### 18.11.3 `rtd.throttle_interval` is a STATIC ASSET; the millisecond value is a PARAMETER (2026-08-03)
+
+`SetRtdThrottleInterval`, the `g_rtdThrottleState` 0/1/2 gate and the 10-attempt
+bound live in **`internal/assets/files/{include/com/rtd_throttle.h,
+src/rtd_throttle.cpp}`** as `xll::throttle::TryApplyRtdThrottle(long ms, const
+char* phase)`. The block's ONLY template variable was
+`parseTimeout .Rtd.ThrottleInterval 2000`, used twice (the call argument and the
+log string); it is now the `ms` parameter, and the INFO line rebuilds the same text
+with `std::to_string(ms)` (`parseTimeout` yields an int and `config.Validate`
+bounds it to `0..MaxInt32`, so the rendered decimal is unchanged).
+
+**Namespace `xll::throttle`, deliberately NOT `xll::rtd`:** `xll_main.cpp` does
+`using namespace xll;` and then calls the TOP-LEVEL `rtd::` namespace
+(`rtd::RegisterServer`, `rtd::ClassFactory`, `rtd::GlobalModule`). An `xll::rtd`
+would make every one of those lookups ambiguous in that TU.
+
+**Gating:** `src/rtd_throttle.cpp` is `#ifdef XLL_RTD_ENABLED` (CMake defines it
+project-wide for RTD builds) because `file(GLOB src/*.cpp)` sweeps it into every
+project; the header `#error`s without the macro so the failure lands at the include
+rather than as an unresolved symbol at link. An RTD project with no
+`rtd.throttle_interval` compiles the TU and never calls it.
+
+**Template shrinkage this unlocked** (and why its negative assertions are worth
+keeping): the applier acquires the Application itself through the header-only
+`com/excel_app.h`, so a throttle-only (ribbon-off) project no longer emits the
+template's `GetExcelApplication()` wrapper, `#include <oleacc.h>`,
+`#include "com/excel_app.h"` or `#include "com/dispatch_helpers.h"` at all. Those
+include gates went from `{{if or .Ribbon.Enabled (and .Rtd.Enabled
+.Rtd.ThrottleInterval)}}` to `{{if .Ribbon.Enabled}}` / `{{if .Commands}}`. The
+CMake `oleacc` link is unaffected — it has been unconditional since the always-on
+date auto-format module started using the same route (§18.12 / `xll_date_format.cpp`).
+
+**Test split.** Body → `internal/assets/rtd_throttle_cpp_test.go` (header contract,
+the RTD gate ordering, the COM property path, the state gate + bound + both log
+strings — none of which had any coverage while it was template text). Wiring →
+`internal/generator/gen_cpp_test.go::TestGenCpp_RtdThrottle` (the include, the
+three call sites, that the configured 250ms reaches the argument, the
+do-not-re-inline guard, and the ribbon-off shrinkage above).
+**`cppCompileGateYaml` gained `rtd.throttle_interval`** — no gate compiled the
+throttle call sites before, so the signature change would have had nothing but
+string greps behind it.
+
+#### 18.11.4 `FormatDoubleRoundTrip` → `include/xll_topic.h` (2026-08-03)
+
+Same pass, smallest piece. The `%.17g` RTD topic formatter had no template
+variables and is now a header-only `inline` in `namespace xll`, so the generated
+wrappers keep calling it unqualified through their `using namespace xll;`. The
+header is **NOT** `XLL_RTD_ENABLED`-gated and the generated TU includes it
+unconditionally: it pulls in nothing but `<cwchar>`/`<string>`, and a config built
+directly in a generator test can declare an rtd function without `rtd.enabled`
+(validation is skipped there), which the compile gates render from.
+`#include <cwchar>` left the template with it. Body →
+`internal/assets/topic_cpp_test.go`; the four per-argument CALL SITES and the
+lossy-`std::to_wstring` ban stay in
+`internal/generator/gen_escape_precision_test.go`, which gained the include
+assertion and a do-not-re-inline guard.
 
 **Message-ID mirror** (same discipline as §18.6): `MSG_COMMAND_INVOKE` (`internal/assets/files/include/xll_ipc.h`) ↔ `MsgCommandInvoke` (`pkg/server/types.go`) ↔ `CommandInvokeRequest` / `CommandInvokeResponse` in `protocol.fbs` — and `protocol.fbs` lives in BOTH the templates copy (`internal/templates/protocol.fbs`) AND the external `github.com/xll-gen/types` repo copy. All four must agree (§18.1 cross-repo constraint applies).
 
@@ -1855,6 +1959,7 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
 * **DONE (2026-05-17):** `pkg/server/types.go` — doc comments added to `AnyValue`, `ScalarValue`, `OutgoingChunk`, `QueuedCommand`, `PendingAsyncResult`; `ChunkBuffer` already had one. Also folded `PendingAsyncResult.Val: interface{}` → `any`.
 * **DONE (2026-05-17):** `pkg/log/logger.go` — `os.MkdirAll` and `os.OpenFile` now wrap with `fmt.Errorf("log: ... %q: %w", path, err)` so log-init failures point at the path.
 * **NOT NEEDED (2026-05-17):** `internal/flatc/flatc.go::EnsureFlatc` already carries a doc comment (lines 22-28). Item removed from backlog after re-inspection.
+* **DONE (2026-08-03) — the "keep generated templates minimal, prefer static code" pass is FINISHED for `xll_main.cpp.tmpl`.** Four more relocations landed on top of the 2026-08-02 batch (lifecycle/jobpool/bootstrap, ribbon connect, scratch book, log bootstrap): the **OnTime retry chain** (§18.11.2), the **rtd.throttle_interval applier** (§18.11.3), the **`FormatDoubleRoundTrip` topic formatter** (§18.11.4), and the duplicate `{{if .Commands}}` include block was merged. `xll_main.cpp.tmpl` went 2190 → 2079 lines total; counting only ACTUAL CODE (C++ comments, template actions, template comments and blanks excluded) 737 → 664, i.e. **−73 lines of re-emitted-per-project logic, −10%**. `server.go.tmpl` is UNCHANGED (615 / 272): after the 2026-08-02 lifecycle/jobpool/bootstrap moves everything left in it is per-function dispatch or a `{{range}}` over user declarations — genuinely template work, so there is nothing further to take out without inventing an abstraction the generator would then have to describe. **What deliberately did NOT move, and why, so this is not re-litigated:** the `#include` blocks (they are the gating), `GetExcelApplicationOrBounce` (`ribbon.bounce`-branched body), the COM-identity trio `g_ribbonCookie`/`GetRibbonClsid`/`g_szRibbonProgID` (§18.11.1), `DllGetClassObject`/`DllRegisterServer` (CLSID literals), `GracefulComTeardownHook` (must stay byte-identical, §18.11.1), the exported symbols themselves (§21), the per-function wrappers and the dispatch switch in either template, and the `{{/* */}}` template comments — those render to NOTHING and document the template itself, so they are already in the right place. Do not "reduce" them.
 
 ### 23.2 Tunability
 * **DONE (2026-05-17):** `pkg/server/manager.go` — promoted the 30s cleanup tick and 60s TTL to `ChunkManager.CleanupInterval` and `ChunkManager.ChunkBufferTTL` fields backed by `DefaultCleanupInterval` / `DefaultChunkBufferTTL` constants. YAML wiring: `xll.yaml` `server.chunk: {max_buffer_bytes, cleanup_interval, buffer_ttl}` → `config.ChunkConfig` → generated `server.go` calls `server.NewChunkManagerFromConfig` with the values captured before the cleanup goroutine starts. Omitting `server.chunk` keeps the existing defaults — no behavior change for projects that don't opt in.
@@ -1911,6 +2016,7 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
 * **DONE (2026-07-26) — offline C++ unit gate for the segment/overlap logic.** Was: "`xll_worker.cpp` is only covered through the cmake gates and the regtest mock host." Closed by extracting the bounds check + zero-length refusal + overlap classification into the pure `xll::ClaimChunkSegment` (`internal/assets/files/include/xll_worker.h`) and gating it with `internal/assets/testdata/chunk_segments_native_test.cpp` + `internal/assets/chunk_cpp_test.go` — see §18.6.1 for the contract and the "do not re-inline" rule. The gate needs **only g++** (no types/flatbuffers/phmap headers, no FetchContent cache), because the unit under test is a pure function over `std::map`. 25 shared cases × both reassemblers + 3 native-only property tests = 576 native checks. FAIL-before confirmed by three mutations of the shipped header: `>` → `>=` on the predecessor comparison (6 accept cases flip to overlap, i.e. every normal multi-chunk transfer breaks), the additive bounds form (the uint32-wrap case is accepted and records a segment past `totalSize`), and deleting the zero-length refusal (reproduces the documented "one empty frame kills a good transfer" chain).
 * **WON'T DO for now (2026-07-26, re-evaluated after the gate above landed) — a harness that drives C++ `HandleChunk` with a real Go guest over real SHM.** The remaining value after the offline gate is integration-shaped only: framing/dispatch by `msg_type` and the `false` → `shm::MsgType::SYSTEM_ERROR` write-back. The cost is a **new C++ host binary** that links `xll_worker.cpp` — which drags in `xll_async.cpp` (`xlAsyncReturn`), `xll_rtd.cpp` (COM `IRTDUpdateEvent`), `xll_log`, `xll_lifecycle` and a live `shm::DirectHost` — plus a stubbed `Excel12v`, a new embedded CMake fixture with its own hand-maintained `flatbuffers`/`shm`/`types` pins and a new drift gate (§18.2 point 6), and a Go driver. That is regtest-scale infrastructure for three `if` branches, it only runs where MinGW+cmake exist (so it is skipped on CI exactly like every other gate here), and it is the flakiest class of test in the repo (real SHM, timeouts, child-process lifetime). The `SYSTEM_ERROR` write-back is additionally protected by a **build-breaking** coupling already documented in `xll_worker.cpp` (the handler lambda's `shm::MsgType&` parameter binds only via `ProcessGuestCalls`' template overload; narrowing it to the `GuestCallHandler` typedef fails to compile rather than silently losing the write), and the slot-level `SYSTEM_ERROR` mechanism itself is shm's contract, tested in shm's own suite.
   **Cheaper successor, if this gap is revisited:** extend the SAME offline pattern instead. The untested remainder that is worth covering is bookkeeping over two `std::map`s — the `total_size == 0` / `kMaxChunkTotalSize` / `kMaxPartialMessages` refusals, the prune-then-refuse reclaim, and the poison set's TTL expiry + `kMaxPoisonedTransfers` oldest-eviction. Extracting those into a pure registry type next to `ClaimChunkSegment` would make them g++-testable at roughly a tenth of the cost, and would leave only framing/dispatch — genuinely low-value — uncovered. Do that before building a process harness.
+* **DONE (2026-08-03) — the two C++ comment-stripping test helpers could silently DELETE the code they were asked to inspect.** `internal/generator`'s `stripCppComments` and `internal/assets`' `stripCppCommentsAsset` were both a `(?s)/\*.*?\*/` pass followed by a `//[^\n]*` pass. Block-first is wrong on real source: a `/*` that appears inside a LINE comment — and `file(GLOB src/*.cpp)` appears inside one in `src/ribbon_connect.cpp`, `src/scratch_book.cpp` and `src/ribbon_addin.cpp` — is read as a real opener, and the non-greedy match then runs to the next `*/` ANYWHERE in the file. It stayed dormant only because no `*/` followed; adding a `/*allowBounce=*/` argument comment 275 lines below one of those glob comments made the pass swallow the entire class body and every assertion in `ribbon_connect_cpp_test.go` failed at once. That failure was loud, but the same swallow inside an ORDER assert (`guardIdx < teardownIdx`) or a do-not-re-inline NEGATIVE assert is silent and reads as GREEN — which is precisely the false green those guards exist to prevent, and there are several (`TestOnDisconnectionMarksOfficeDisconnectBeforeTeardown`, `TestCancelQuitOnAutoCloseNonDestructive`, every `stripCppComments`-based re-inline guard). Both helpers are now a single left-to-right scanner that also understands string and character literals, so a delimiter inside a comment or a literal cannot be mis-paired. No test was weakened; two `regexp` imports were dropped.
 * **OPEN (LOW, still deferred from the same review):**
   * No RTD F9 smoke case in `internal/smoketest`.
   * Doxygen coverage of the new CacheManager/chunk entry points.

@@ -119,6 +119,15 @@ func TestGenGo_LogDirEscaping(t *testing.T) {
 // precision and collides distinct scalar arguments onto one topic string (and,
 // for rtd-once, one memoize/once-key). The wrapper must use the %.17g
 // round-trip helper FormatDoubleRoundTrip instead.
+//
+// WHERE THE OLD ASSERTIONS WENT (2026-08-03). FormatDoubleRoundTrip had no
+// template variables in it, so it moved to include/xll_topic.h and this test
+// keeps only the WIRING half:
+//
+//	`L"%.17g"` in the rendered template            -> internal/assets/topic_cpp_test.go::TestFormatDoubleRoundTripUsesShortestRoundTrip
+//	`std::wstring FormatDoubleRoundTrip(double v)` -> ditto (definition + inline linkage)
+//	the four call sites + the lossy-path ban       -> STAY HERE (they are per-argument codegen)
+//	                                                  plus the #include that makes them resolve
 func TestGenCpp_RtdFloatTopicRoundTrip(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
@@ -134,12 +143,25 @@ func TestGenCpp_RtdFloatTopicRoundTrip(t *testing.T) {
 	}
 	content := renderCppMain(t, cfg)
 
-	// The round-trip helper must be defined and carry the %.17g marker.
-	if !strings.Contains(content, `L"%.17g"`) {
-		t.Errorf("FormatDoubleRoundTrip helper must format with %%.17g:\n%s", content)
+	// The helper is reached through the asset header (unqualified, via the
+	// file's `using namespace xll;`). Without the include the four call sites
+	// below do not compile — this is the whole wiring contract.
+	if !strings.Contains(content, `#include "xll_topic.h"`) {
+		t.Errorf("xll_main.cpp must include xll_topic.h (FormatDoubleRoundTrip lives there):\n%s", content)
 	}
-	if !strings.Contains(content, "std::wstring FormatDoubleRoundTrip(double v)") {
-		t.Errorf("FormatDoubleRoundTrip helper definition missing:\n%s", content)
+	// Do-not-re-inline guard, in the spirit of AGENTS.md §18.6.1's
+	// TestChunkSegmentLogicIsExtracted: a re-emitted copy in the template would
+	// shadow the asset, leave the asset test green, and put untested code back in
+	// the shipped XLL.
+	code := stripCppComments(content)
+	for _, gone := range []string{
+		"static std::wstring FormatDoubleRoundTrip(",
+		`L"%.17g"`,
+	} {
+		if strings.Contains(code, gone) {
+			t.Errorf("xll_main.cpp re-inlines the relocated topic formatter (%q); it must live ONLY in "+
+				"include/xll_topic.h", gone)
+		}
 	}
 
 	// Both the rtd and rtd-once float args must use the round-trip helper.

@@ -13,7 +13,6 @@
 #include <sstream>
 #include <map>
 #include <fstream>
-#include <cwchar> // std::swprintf for FormatDoubleRoundTrip
 #include "xll_log.h"
 #include "xll_path.h"
 #include "types/mem.h"
@@ -28,6 +27,7 @@
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
 #include "xll_excel.h"
+#include "xll_topic.h"
 #include "SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
@@ -58,9 +58,8 @@
 
 
 #include "com/ribbon_addin.h"
-
-
 #include "com/dispatch_helpers.h"
+
 
 
 
@@ -76,19 +75,9 @@
 
 using namespace xll;
 
-// FormatDoubleRoundTrip renders a double as a round-trippable decimal string for
-// use as an RTD topic component (and, for rtd-once, the once-key). std::to_wstring
-// (double) formats with %f — 6 fractional digits — which TRUNCATES precision: two
-// distinct arguments (e.g. 1e-7 and 2e-7, both "0.000000") collapse to ONE topic
-// string, merging their topics and colliding their memo/once-key entries. %.17g is
-// the shortest format guaranteed to round-trip an IEEE-754 double, and Go's
-// strconv.ParseFloat parses its output (including exponent notation) unchanged, so
-// no Go-side change is required.
-[[maybe_unused]] static std::wstring FormatDoubleRoundTrip(double v) {
-    wchar_t buf[32];
-    std::swprintf(buf, sizeof(buf) / sizeof(buf[0]), L"%.17g", v);
-    return std::wstring(buf);
-}
+// FormatDoubleRoundTrip (the %.17g round-trip topic formatter the RTD wrappers
+// below call) moved to include/xll_topic.h: it had no template variables and is
+// reached unqualified through `using namespace xll;`.
 
 
 // Global CLSID
@@ -247,8 +236,6 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     // implemented here (gated on the unrun experiment).
     return xll::OnAutoClose();
 }
-
-
 
 
 

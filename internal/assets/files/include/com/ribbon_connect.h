@@ -285,5 +285,60 @@ enum class RibbonAttempt {
 bool TryConnectRibbon(const char* phase, bool allowBounce = false,
                       RibbonAttempt* pOutcome = nullptr);
 
+// ---------------------------------------------------------------------------
+// The bounded xlcOnTime retry CHAIN. Two halves, one per context.
+//
+// Both bodies were inline in xll_main.cpp.tmpl and contained no template
+// variables; they moved here on 2026-08-03 (pure relocation, same discipline as
+// the connect machinery above). What CANNOT move is the exported symbol
+// __xllgen_RibbonConnectRetry itself: Excel resolves the ON.TIME procedure BY
+// NAME against an exported entry point (AGENTS.md §21), so the generated TU
+// keeps a thin SEH-wrapped shim that calls RunConnectRetryTick() and returns 1 —
+// exactly the shape __xllgen_RunDeferredCalcEnd already had. That is also why
+// the budgets, counters and the armed latch above are extern rather than
+// private to the .cpp: they used to be read from the generated TU.
+//
+// CONTEXT CONTRACT (LOAD-BEARING, §23.6 HIGH #2). Both functions issue xlcOnTime
+// and may therefore only be called from a VALID command/macro context:
+// ArmConnectRetry from xlAutoOpen, RunConnectRetryTick from the Excel-dispatched
+// retry macro. Never from a COM-event context — Excel rejects xlc* there with
+// xlretInvXlfn.
+//
+// NEITHER FUNCTION GUARDS ITSELF WITH SEH. The caller does: both call sites in
+// the generated TU are already inside XLL_SAFE_BLOCK (the arm inside
+// xlAutoOpen's ..._CONTINUE block, the tick inside the exported macro's
+// ..._END(0) block), which is where the SEH boundary belongs — at the boundary
+// Excel calls across. Moving the bodies OUT of those __try scopes is a strict
+// improvement on its own: a function-local static or a std::string temporary
+// inside a __try is exactly the hidden non-trivial construction the
+// XLL_SAFE_BLOCK discipline avoids.
+// ---------------------------------------------------------------------------
+
+// Arms the FIRST link of the chain. Call once from xlAutoOpen, right after the
+// load-time connect attempt.
+//
+// No-op unless the ribbon is still unconnected (g_ribbonConnectState == 0), the
+// add-in is not unloading, and the g_ribbonRetryArmed START-ONCE CAS is won — so
+// a second xlAutoOpen in the same process generation (probe-unload-reuse, or
+// add-in disable→enable without a DLL unload) cannot start a second chain
+// against the same counters. On a REJECTED xlcOnTime the latch is released
+// again (nothing is in flight, so a later xlAutoOpen may legitimately retry) and
+// the rejection is logged at WARN naming the consequence — a rejected arm means
+// the chain never starts, which is otherwise indistinguishable in the log from
+// "armed and still retrying".
+void ArmConnectRetry();
+
+// One dispatch of the retry chain: the body of the generated
+// __xllgen_RibbonConnectRetry macro.
+//
+// Self-aborts on ANY teardown (quiesce or unload) without touching Excel and
+// without re-arming; otherwise makes one idempotent, non-bouncing connect
+// attempt, stops if that resolved the state (connected or gave up), charges the
+// attempt to the budget matching its OUTCOME CLASS, and re-arms itself at the
+// spacing that class implies. Terminates by state gate / self-abort / budget
+// exhaustion / a rejected re-arm — never by a C-API cancel, so it adds no new
+// teardown-cancellation surface (§20/§23).
+void RunConnectRetryTick();
+
 } // namespace ribbon
 } // namespace xll

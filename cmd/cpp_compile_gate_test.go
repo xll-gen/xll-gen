@@ -36,6 +36,13 @@ import (
 //     branch (it is fully discarded on a memoize hit) and the plain-rtd build
 //     gained a g_sentRefCache already-shipped peek, and neither the golden nor
 //     the marker tests can catch a C++ scope/compile error in that code.
+//   - rtd.throttle_interval -> the three xll::throttle::TryApplyRtdThrottle call
+//     sites (xlAutoOpen, the named-event handler, the built-in CalculationEnded).
+//     Added 2026-08-03 with the applier's move into src/rtd_throttle.cpp: NO gate
+//     compiled the throttle call sites before, so the signature change from
+//     TryApplyRtdThrottle("phase") to TryApplyRtdThrottle(ms, "phase") had
+//     nothing but string greps behind it. The asset TU itself compiles in every
+//     RTD project via the src/*.cpp glob; what needed a gate is the WIRING.
 const cppCompileGateYaml = `project:
   name: "cpp_gate"
   version: "0.1.0"
@@ -53,6 +60,10 @@ events:
 rtd:
   enabled: true
   prog_id: "CppGate.RTD"
+  # Opts the render into the xll::throttle::TryApplyRtdThrottle call sites. The
+  # value only has to be a valid duration; what is being gated is that the
+  # generated TU includes com/rtd_throttle.h and passes (ms, phase).
+  throttle_interval: "250ms"
 
 gen:
   go:

@@ -824,11 +824,32 @@ func TestGenCpp_DescriptionEscaping(t *testing.T) {
 	}
 }
 
-// TestGenCpp_RtdThrottle pins the rtd.throttle_interval wiring: with the
-// field set, xlAutoOpen applies Application.RTD.ThrottleInterval through the
-// in-process Application route (GetExcelApplication), and the CMake render
-// links oleacc even when the ribbon is disabled. Without the field, none of
-// that machinery is emitted.
+// TestGenCpp_RtdThrottle pins the rtd.throttle_interval WIRING: with the field
+// set, the generated TU includes the applier asset and calls it — from all three
+// STA entry points and with the xll.yaml value — and without the field none of it
+// is emitted.
+//
+// WHERE THE OLD ASSERTIONS WENT (2026-08-03). The applier moved to
+// include/com/rtd_throttle.h + src/rtd_throttle.cpp; the millisecond number was
+// its only template variable and is now a parameter. The BODY assertions this
+// test used to make are pinned against the embedded asset in
+// internal/assets/rtd_throttle_cpp_test.go:
+//
+//	"static bool SetRtdThrottleInterval(long ms)" -> TestRtdThrottleAppliesThroughTheApplicationObject
+//	"static IDispatch* GetExcelApplication()"     -> ditto (the asset acquires the Application itself)
+//	"#include <oleacc.h>"                         -> the asset's include of com/excel_app.h
+//	`#include "com/dispatch_helpers.h"`           -> the asset's own include
+//
+// Those four were only ever emitted for the throttle's benefit when the ribbon
+// was OFF, so a throttle-only project no longer renders them at all — asserted
+// below as the ribbon-off shrinkage, which is the point of the move. What stays
+// here is what only a RENDER can answer: the include, the three call sites, and
+// that the configured 250ms reaches the argument.
+//
+// The 0/1/2 state gate, the 10-attempt bound and both log strings are pinned in
+// internal/assets/rtd_throttle_cpp_test.go::TestRtdThrottleOneShotStateGate —
+// none of which was covered before the move, because template text is only ever
+// covered by a grep like this one.
 func TestGenCpp_RtdThrottle(t *testing.T) {
 	t.Parallel()
 	base := func(throttle string) *config.Config {
@@ -853,26 +874,72 @@ func TestGenCpp_RtdThrottle(t *testing.T) {
 
 	withThrottle := renderCppMain(t, base("250ms"))
 	for _, want := range []string{
-		"static IDispatch* GetExcelApplication()",
-		"static bool SetRtdThrottleInterval(long ms)",
-		"SetRtdThrottleInterval(250)",
-		"#include <oleacc.h>",
-		`#include "com/dispatch_helpers.h"`,
+		// The applier is reachable from the generated TU.
+		`#include "com/rtd_throttle.h"`,
+		// The xll.yaml value reaches the argument (250ms -> 250). This is the ONE
+		// thing that is genuinely per-project about the whole feature, and the
+		// relocation turned it from a baked-in literal into this argument.
+		`xll::throttle::TryApplyRtdThrottle(250, "xlAutoOpen");`,
 		// xlAutoOpen often runs before any workbook exists (no EXCEL7 child
 		// window -> Application unreachable), so the calc-end callback must
-		// carry the bounded one-shot retry.
-		`TryApplyRtdThrottle("xlAutoOpen")`,
-		`TryApplyRtdThrottle("calc end")`,
+		// carry the bounded one-shot retry — with the SAME value.
+		`xll::throttle::TryApplyRtdThrottle(250, "calc end");`,
 	} {
 		if !strings.Contains(withThrottle, want) {
 			t.Errorf("throttle render missing %q", want)
 		}
 	}
+	// Do-not-re-inline guard (AGENTS.md §18.6.1 discipline): a re-emitted copy in
+	// the template would shadow the asset, leave the asset tests green, and put
+	// untested code back into the shipped XLL.
+	throttleCode := stripCppComments(withThrottle)
+	for _, gone := range []string{
+		"static bool SetRtdThrottleInterval(",
+		"g_rtdThrottleState",
+		`L"ThrottleInterval"`,
+	} {
+		if strings.Contains(throttleCode, gone) {
+			t.Errorf("xll_main.cpp re-inlines the relocated throttle applier (%q); it must live ONLY in "+
+				"include/com/rtd_throttle.h + src/rtd_throttle.cpp", gone)
+		}
+	}
+	// The named-event handler carries the third call site; render it separately so
+	// the assertion is not silently satisfied by the built-in CalculationEnded.
+	withEvent := base("250ms")
+	withEvent.Events = []config.Event{{Type: "CalculationEnded", Handler: "OnRecalc"}}
+	if got := renderCppMain(t, withEvent); !strings.Contains(got, `xll::throttle::TryApplyRtdThrottle(250, "calc event");`) {
+		t.Errorf("a user-named CalculationEnded handler must also apply the throttle (calc event site)")
+	}
 
 	without := renderCppMain(t, base(""))
-	for _, bad := range []string{"SetRtdThrottleInterval", "GetExcelApplication", "oleacc.h"} {
+	for _, bad := range []string{
+		"TryApplyRtdThrottle",
+		"rtd_throttle.h",
+		// These three used to be emitted for the throttle when the ribbon was off.
+		// The asset acquires the Application itself, so a throttle-less AND a
+		// throttle-ONLY project now render none of them — the direct measure of
+		// what the relocation removed from the template.
+		"GetExcelApplication",
+		"oleacc.h",
+		`#include "com/dispatch_helpers.h"`,
+	} {
 		if strings.Contains(without, bad) {
 			t.Errorf("throttle-less render must not contain %q", bad)
+		}
+	}
+	// The shrinkage above is not merely "throttle-less": a project that DOES
+	// configure the throttle (ribbon off) must not emit the template-side COM
+	// scaffolding either, because the asset owns the acquisition now. If this ever
+	// regresses, the include gates drifted back to `{{if or .Ribbon.Enabled …}}`.
+	for _, bad := range []string{
+		"static IDispatch* GetExcelApplication()",
+		"#include <oleacc.h>",
+		`#include "com/excel_app.h"`,
+		`#include "com/dispatch_helpers.h"`,
+	} {
+		if strings.Contains(withThrottle, bad) {
+			t.Errorf("a throttle-only (ribbon-off) render must no longer emit %q: the applier asset "+
+				"acquires the Application through com/excel_app.h in its OWN translation unit", bad)
 		}
 	}
 

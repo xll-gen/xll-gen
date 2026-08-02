@@ -13,7 +13,6 @@
 #include <sstream>
 #include <map>
 #include <fstream>
-#include <cwchar> // std::swprintf for FormatDoubleRoundTrip
 #include "xll_log.h"
 #include "xll_path.h"
 #include "types/mem.h"
@@ -28,6 +27,7 @@
 #include "xll_ipc.h"
 #include "xll_lifecycle.h"
 #include "xll_excel.h"
+#include "xll_topic.h"
 #include "SHMAllocator.h"
 #include "shm/DirectHost.h"
 #include "shm/IPCUtils.h"
@@ -65,15 +65,22 @@
 {{end}}
 {{if .Commands}}
 #include "com/ribbon_addin.h"
-{{end}}
-{{if or .Commands (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
 #include "com/dispatch_helpers.h"
 {{end}}
-{{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
+{{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
+// rtd.throttle_interval applier. The whole block that used to sit further down
+// this file — SetRtdThrottleInterval, the 0/1/2 g_rtdThrottleState gate and the
+// 10-attempt bound — is now include/com/rtd_throttle.h + src/rtd_throttle.cpp:
+// its only template variable was the millisecond number, which is a PARAMETER
+// there and is still supplied from here at each call site.
+#include "com/rtd_throttle.h"
+{{end}}
+{{if .Ribbon.Enabled}}
 // Shared, header-only Application-IDispatch acquisition (window walk +
 // AccessibleObjectFromWindow). Also used UNCONDITIONALLY by the always-on date
 // auto-format module (src/xll_date_format.cpp); pulled in here only for the
-// ribbon / RTD-throttle features that need it on this template TU.
+// ribbon feature that needs it on this template TU (the RTD-throttle applier
+// acquires the Application inside its own asset TU).
 #include "com/excel_app.h"
 {{end}}
 {{if and .Ribbon.Enabled (eq .Ribbon.BounceMode "full")}}
@@ -94,7 +101,7 @@
 #include "ribbon_xml.h"
 #include "ribbon_images.h"
 {{end}}
-{{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
+{{if .Ribbon.Enabled}}
 // AccessibleObjectFromWindow (GetExcelApplication's OBJID_NATIVEOM route).
 #include <oleacc.h>
 {{end}}
@@ -108,19 +115,9 @@
 
 using namespace xll;
 
-// FormatDoubleRoundTrip renders a double as a round-trippable decimal string for
-// use as an RTD topic component (and, for rtd-once, the once-key). std::to_wstring
-// (double) formats with %f — 6 fractional digits — which TRUNCATES precision: two
-// distinct arguments (e.g. 1e-7 and 2e-7, both "0.000000") collapse to ONE topic
-// string, merging their topics and colliding their memo/once-key entries. %.17g is
-// the shortest format guaranteed to round-trip an IEEE-754 double, and Go's
-// strconv.ParseFloat parses its output (including exponent notation) unchanged, so
-// no Go-side change is required.
-[[maybe_unused]] static std::wstring FormatDoubleRoundTrip(double v) {
-    wchar_t buf[32];
-    std::swprintf(buf, sizeof(buf) / sizeof(buf[0]), L"%.17g", v);
-    return std::wstring(buf);
-}
+// FormatDoubleRoundTrip (the %.17g round-trip topic formatter the RTD wrappers
+// below call) moved to include/xll_topic.h: it had no template variables and is
+// reached unqualified through `using namespace xll;`.
 
 {{if .Rtd.Enabled}}
 // Global CLSID
@@ -348,10 +345,11 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoClose() {
     return xll::OnAutoClose();
 }
 
-{{if or .Ribbon.Enabled (and .Rtd.Enabled .Rtd.ThrottleInterval)}}
+{{if .Ribbon.Enabled}}
 // Thin wrapper over the shared header-only xll::com::AcquireExcelApplication
-// (include/com/excel_app.h) so the ribbon/RTD-throttle call sites below keep
-// their familiar name. The window-walk + AccessibleObjectFromWindow logic now
+// (include/com/excel_app.h) so the ribbon call sites below keep their familiar
+// name (it is also what ConnectContext.acquireApp injects into the connect
+// asset). The window-walk + AccessibleObjectFromWindow logic now
 // lives in one place because the always-on date auto-format module needs it too
 // (it sets Range.NumberFormat directly to avoid changing the user's selection).
 // Returns the Application IDispatch AddRef'd; caller releases. Must run on
@@ -479,46 +477,6 @@ static IDispatch* GetExcelApplicationOrBounce() {
     }
     return pApp;
     {{end}}
-}
-{{end}}
-
-{{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
-// Applies rtd.throttle_interval from xll.yaml: Application.RTD.ThrottleInterval
-// = <ms>. NOTE: this is a per-user, registry-persisted Excel setting — it is
-// only touched because the config explicitly opted in.
-static bool SetRtdThrottleInterval(long ms) {
-    IDispatch* pApp = GetExcelApplication();
-    if (!pApp) return false;
-
-    bool ok = false;
-    VARIANT vRtd; VariantInit(&vRtd);
-    if (SUCCEEDED(xll::com::GetProperty(pApp, L"RTD", &vRtd)) && vRtd.vt == VT_DISPATCH && vRtd.pdispVal) {
-        VARIANT vMs; VariantInit(&vMs);
-        vMs.vt = VT_I4;
-        vMs.lVal = ms;
-        ok = SUCCEEDED(xll::com::Invoke(vRtd.pdispVal, L"ThrottleInterval", DISPATCH_PROPERTYPUT, { vMs }, nullptr));
-    }
-    VariantClear(&vRtd);
-    pApp->Release();
-    return ok;
-}
-
-// One-shot apply with bounded retries. At xlAutoOpen the native object model
-// is often not reachable yet (no workbook -> no EXCEL7 child window: early
-// startup loads AND automation hosts hit this), so the calc-end callbacks —
-// which run on the main STA thread once a workbook exists — retry until it
-// sticks. Bounded so a pathological host doesn't pay the window walk forever.
-static std::atomic<int> g_rtdThrottleState{0}; // 0=pending, 1=applied, 2=gave up
-static void TryApplyRtdThrottle(const char* phase) {
-    if (g_rtdThrottleState.load(std::memory_order_acquire) != 0) return;
-    static std::atomic<int> s_attempts{0};
-    if (SetRtdThrottleInterval({{parseTimeout .Rtd.ThrottleInterval 2000}})) {
-        g_rtdThrottleState.store(1, std::memory_order_release);
-        SAFE_LOG_INFO(std::string("RTD: ThrottleInterval set to {{parseTimeout .Rtd.ThrottleInterval 2000}}ms (") + phase + ").");
-    } else if (s_attempts.fetch_add(1) + 1 >= 10) {
-        g_rtdThrottleState.store(2, std::memory_order_release);
-        SAFE_LOG_WARN("RTD: could not set ThrottleInterval (Application object unreachable after 10 attempts); keeping the current Excel setting.");
-    }
 }
 {{end}}
 
@@ -1049,35 +1007,15 @@ start_worker:
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
-    // If the ribbon did NOT connect at load (ribbon.bounce: off, or a bounce
-    // that failed) the calc-end fallback is the only remaining trigger — and it
-    // never fires for a workbook that is open but never recalculates (manual
-    // calc mode / no-formula book), delaying the ribbon tab indefinitely. Arm a
-    // bounded xlcOnTime retry from HERE: xlAutoOpen is a VALID command context
-    // for xlc* (§23.6 HIGH #2), and every re-arm runs from the retry macro's own
-    // dispatch (also a command context). No-op once connected/gave-up
-    // (xll::ribbon::g_ribbonConnectState != 0). See __xllgen_RibbonConnectRetry /
-    // AGENTS.md §3.
-    //
-    // The xll::ribbon::g_ribbonRetryArmed CAS makes this START-ONCE: a second xlAutoOpen in the
-    // same process generation must not start a second chain against the same
-    // counters. The schedule rc is INSPECTED, not discarded — a rejected arm means
-    // the whole chain never starts, and silently degrading to "calc-end only"
-    // without a log is how this stays invisible until a user reports a missing tab.
+    // Arm the bounded xlcOnTime connect retry (AGENTS.md §3). xlAutoOpen is a
+    // VALID command context for xlc* (§23.6 HIGH #2), which is exactly why the
+    // arm has to be issued from HERE and cannot be moved into the asset's own
+    // initialization. The unload gate, the "only if still unconnected" gate, the
+    // START-ONCE CAS and the rejected-arm handling are
+    // xll::ribbon::ArmConnectRetry() in src/ribbon_connect.cpp — no template
+    // variables in any of it. See also __xllgen_RibbonConnectRetry below.
     XLL_SAFE_BLOCK_BEGIN
-        bool retryExpected = false;
-        if (!g_isUnloading.load(std::memory_order_acquire) &&
-            xll::ribbon::g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&
-            xll::ribbon::g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {
-            int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), xll::ribbon::kRibbonRetryIntervalSec);
-            if (armRc != xlretSuccess) {
-                // Nothing is in flight — un-latch so a later xlAutoOpen may retry.
-                xll::ribbon::g_ribbonRetryArmed.store(false, std::memory_order_release);
-                SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=" +
-                              std::to_string(armRc) + "); falling back to the calc-end retry only, so the "
-                              "ribbon tab may be delayed until the first recalculation.");
-            }
-        }
+        xll::ribbon::ArmConnectRetry();
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
@@ -1087,7 +1025,7 @@ start_worker:
         // Application.RTD.ThrottleInterval (registry-persisted, per-user;
         // Excel default is 2000ms). Often fails here (no workbook yet) —
         // the calc-end callbacks below retry until a workbook exists.
-        TryApplyRtdThrottle("xlAutoOpen");
+        xll::throttle::TryApplyRtdThrottle({{parseTimeout .Rtd.ThrottleInterval 2000}}, "xlAutoOpen");
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
@@ -1127,7 +1065,7 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     {{if and $.Rtd.Enabled $.Rtd.ThrottleInterval}}
     // Calc-end runs on the main STA thread with a workbook open — the
     // reliable moment to apply rtd.throttle_interval (one-shot, see above).
-    TryApplyRtdThrottle("calc event");
+    xll::throttle::TryApplyRtdThrottle({{parseTimeout $.Rtd.ThrottleInterval 2000}}, "calc event");
     {{end}}
     {{if $.Ribbon.Enabled}}
     // Defensive fallback retry hook for the ribbon COMAddIns connect (idempotent;
@@ -1181,7 +1119,7 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
 {{else}}
 extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
     {{if and .Rtd.Enabled .Rtd.ThrottleInterval}}
-    TryApplyRtdThrottle("calc end");
+    xll::throttle::TryApplyRtdThrottle({{parseTimeout .Rtd.ThrottleInterval 2000}}, "calc end");
     {{end}}
     {{if .Ribbon.Enabled}}
     // Defensive fallback retry hook for the ribbon COMAddIns connect (idempotent;
@@ -1214,78 +1152,29 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
 // macro (macroType=2) in xlAutoOpen and first armed there — a VALID command
 // context — whenever the ribbon did not connect at load (ribbon.bounce: off, or
 // a bounce that failed). Excel dispatches this macro on the STA; because a
-// dispatched macro IS a valid command context, re-arming via xlcOnTime is
-// accepted here (contrast the COM-event teardown context, which Excel rejects
-// with xlretInvXlfn — §23.6 HIGH #2). TERMINATION IS BY STATE GATE / SELF-ABORT,
-// never a C-API cancel: this stops (no re-arm) once connected, once
-// xll::ribbon::TryConnectRibbon gives up (g_ribbonConnectState != 0), when
-// EITHER bounded budget is exhausted (kRibbonRetryMaxAttempts for productive
-// attempts, kRibbonRetryNoAppMaxAttempts for "no workbook open yet" attempts —
-// see the two-budget rationale at the constants in com/ribbon_connect.h, which
-// is also where this runner's state and budgets now live), when the re-arm
-// itself is rejected,
-// or on g_isUnloading. A leaked schedule that fires
-// post-unload no-ops on the g_isUnloading gate, and Excel un-registers the macro
-// on unload — so no new teardown-cancellation path is added (§20/§23 surface
-// unchanged). The exported symbol name MUST match
-// xll::RibbonConnectRetryMacroName(). Returns short (TypeText "I").
+// dispatched macro IS a valid command context, the re-arm inside the tick is
+// accepted (contrast the COM-event teardown context, which Excel rejects with
+// xlretInvXlfn — §23.6 HIGH #2).
+//
+// ONLY THE EXPORT LIVES HERE. Excel resolves the registered ON.TIME procedure BY
+// NAME against an exported symbol (AGENTS.md §21), which an asset cannot
+// provide — but the budget accounting, the outcome switch and the re-arm
+// decision had no template variables in them, so they are
+// xll::ribbon::RunConnectRetryTick() in src/ribbon_connect.cpp, next to the
+// budgets and counters they charge. This shim is the same shape as
+// __xllgen_RunDeferredCalcEnd above: SEH boundary, call, return 1.
+//
+// Termination is by STATE GATE / SELF-ABORT inside the tick — never a C-API
+// cancel: it stops (no re-arm) once connected, once TryConnectRibbon gives up,
+// when either bounded budget is exhausted, when the re-arm itself is rejected,
+// or on teardown. A leaked schedule that fires post-unload no-ops on the
+// teardown gate, and Excel un-registers the macro on unload — so no new
+// teardown-cancellation path is added (§20/§23 surface unchanged). The exported
+// symbol name MUST match xll::RibbonConnectRetryMacroName(). Returns short
+// (TypeText "I").
 extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
     XLL_SAFE_BLOCK_BEGIN
-        // Self-abort on ANY teardown (quiesce or unload): do NOT touch Excel and do
-        // NOT re-arm. See the matching TryConnectRibbon gate in
-        // src/ribbon_connect.cpp (20.2.1 rule 2).
-        if (xll::TeardownStarted()) return 1;
-        // Idempotent connect attempt (no bounce on retries: a workbook, if any,
-        // already exists; the bounce is only for the xlAutoOpen no-workbook case).
-        // The outcome CLASS decides which budget (if any) pays for this dispatch.
-        xll::ribbon::RibbonAttempt retryOutcome = xll::ribbon::RibbonAttempt::kNotAttempted;
-        xll::ribbon::TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);
-        // Stop once the connect resolves — connected (1) or gave-up (2).
-        if (xll::ribbon::g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;
-
-        // Still pending: charge the attempt to the budget matching its CLASS, then
-        // re-arm at the matching spacing. Charging noApp to the productive budget
-        // is what made an empty Excel burn all 30 attempts in 60 s and miss the
-        // workbook the user opened afterwards (MED fix, 2026-07-26).
-        //
-        // kNotAttempted charges NOTHING and simply re-arms at the productive
-        // spacing: TryConnectRibbon bailed before touching COM (STA re-entrancy —
-        // Excel dispatched this macro while an outer connect/bounce was pumping
-        // the message loop). Billing that to the productive budget is the same
-        // accounting defect as the noApp one, one branch further out: an attempt
-        // that never happened must not shrink the window for the attempts that
-        // will. It cannot spin unbounded — it requires an outer attempt in flight
-        // on this same STA thread, and when that returns the next dispatch gets a
-        // real, chargeable outcome (or the state gate above stops the chain).
-        double nextDelaySec = xll::ribbon::kRibbonRetryIntervalSec;
-        if (retryOutcome == xll::ribbon::RibbonAttempt::kNoApp) {
-            int n = xll::ribbon::g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;
-            if (n >= xll::ribbon::kRibbonRetryNoAppMaxAttempts) {
-                SAFE_LOG_WARN("Ribbon: OnTime connect retry gave up waiting for a workbook to be opened "
-                              "(no Application object for the full bounded window); the calc-end fallback "
-                              "remains the only trigger.");
-                return 1;
-            }
-            if (n >= xll::ribbon::kRibbonRetryNoAppFastAttempts) nextDelaySec = xll::ribbon::kRibbonRetryNoAppIdleSec;
-        } else if (retryOutcome == xll::ribbon::RibbonAttempt::kRejected) {
-            int n = xll::ribbon::g_ribbonRetryAttempts.fetch_add(1) + 1;
-            if (n >= xll::ribbon::kRibbonRetryMaxAttempts) {
-                SAFE_LOG_WARN("Ribbon: OnTime connect retry exhausted its bounded budget; the calc-end fallback remains the only trigger.");
-                return 1;
-            }
-        } else {
-            SAFE_LOG_DEBUG("Ribbon: OnTime connect retry re-entered while a connect was in flight; "
-                           "no budget charged (nothing was attempted).");
-        }
-        // Inspect the re-arm rc: a rejected xlcOnTime silently ENDS the chain, so
-        // it must be visible in the log rather than looking like "still retrying".
-        int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);
-        if (reArmRc != xlretSuccess) {
-            xll::ribbon::g_ribbonRetryArmed.store(false, std::memory_order_release);
-            SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=" +
-                          std::to_string(reArmRc) + "); the retry chain ENDS here and the calc-end "
-                          "fallback remains the only trigger.");
-        }
+        xll::ribbon::RunConnectRetryTick();
     XLL_SAFE_BLOCK_END(0)
     return 1;
 }

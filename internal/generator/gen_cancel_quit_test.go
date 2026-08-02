@@ -1,7 +1,6 @@
 package generator
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
@@ -13,15 +12,59 @@ import (
 // negative assertions below match on CODE only. These tests document the
 // destructive steps in prose ("must NOT delete g_phost"), so a naive substring
 // search would false-positive on the comments themselves.
-var (
-	reLineComment  = regexp.MustCompile(`//[^\n]*`)
-	reBlockComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
-)
-
+//
+// WHY A SCANNER AND NOT TWO REGEX PASSES (fixed 2026-08-03). The two-pass form
+// (block regex, then line regex) treats a `/*` that appears INSIDE a line comment
+// — e.g. the very common `src/*.cpp` in a CMake-glob explanation — as a real
+// opener, and the non-greedy match then runs to the next `*/` anywhere in the
+// file, deleting every line of code in between. It bit the sibling helper in
+// internal/assets the moment a `/*allowBounce=*/` argument comment landed below
+// such a line (see the write-up there). A do-not-re-inline guard runs its
+// negative assertions over THIS function's output, so a silent swallow here reads
+// as "the re-inlined copy is absent" — the exact false green the guard exists to
+// prevent.
 func stripCppComments(s string) string {
-	s = reBlockComment.ReplaceAllString(s, "")
-	s = reLineComment.ReplaceAllString(s, "")
-	return s
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		switch {
+		case s[i] == '/' && i+1 < len(s) && s[i+1] == '/':
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case s[i] == '/' && i+1 < len(s) && s[i+1] == '*':
+			i += 2
+			for i+1 < len(s) && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(s) {
+				i += 2
+			} else {
+				i = len(s) // unterminated block comment: drop the remainder
+			}
+		case s[i] == '"' || s[i] == '\'':
+			quote := s[i]
+			b.WriteByte(s[i])
+			i++
+			for i < len(s) {
+				c := s[i]
+				b.WriteByte(c)
+				i++
+				if c == '\\' && i < len(s) {
+					b.WriteByte(s[i])
+					i++
+					continue
+				}
+				if c == quote || c == '\n' {
+					break
+				}
+			}
+		default:
+			b.WriteByte(s[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 // TestCancelQuitOnAutoCloseNonDestructive pins the cancel-quit teardown fix
