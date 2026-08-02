@@ -35,15 +35,25 @@ func TestGenerate_Fixes(t *testing.T) {
 	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_worker.cpp"),
 		[]string{
 			"if (msgType == (shm::MsgType)MSG_BATCH_ASYNC_RESPONSE)", // MSG_BATCH_ASYNC_RESPONSE
-			"return 1;",                                              // ACK
+			"return 1;", // ACK
 		}, nil)
 
+	// The async worker pool moved to pkg/server (server.JobPool), so what the
+	// generated server must show is the WIRING: a non-blocking submit whose
+	// rejection the caller answers itself. The properties this used to approximate
+	// with "select {" / "default:" -- submit never blocks the dispatch thread, a
+	// panicking job does not kill its worker, the drain waits then gives up -- are
+	// executed by TestJobPool_* in pkg/server.
 	checkContent(t, filepath.Join(projectDir, "generated/server.go"),
 		[]string{
-			"select {",
+			"server.NewJobPool(",
+			"jobPool.Submit(func() {",
+			"jobPool.Drain(server.JobDrainTimeout)",
+		},
+		[]string{
+			// The pool must not be re-inlined into the template.
 			"case jobQueue <- func() {",
-			"default:",
-		}, nil)
+		})
 
 	// Check xll_log.cpp fixes
 	checkContent(t, filepath.Join(projectDir, "generated", "cpp", "src", "xll_log.cpp"),
@@ -90,7 +100,7 @@ func TestRepro_MemoryLeak(t *testing.T) {
 				"new char[sizeof(XLMREF12)",       // Correct Allocation for Ref
 			},
 			[]string{
-				"x->xltype = xltypeInt;",  // Missing xlbitDLLFree
+				"x->xltype = xltypeInt;", // Missing xlbitDLLFree
 				"x->xltype = xltypeNum;",
 				"x->xltype = xltypeBool;",
 				"x->xltype = xltypeErr;",

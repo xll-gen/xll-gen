@@ -225,10 +225,18 @@ if(WIN32)
 endif()
 {{ end }}
 
-{{ if .Commands }}
 # Command/ribbon IPC sender (xll::ribbon namespace) lives in src/ribbon_addin.cpp,
-# already swept up by the file(GLOB SOURCES ... src/*.cpp) above. The RibbonAddIn
-# COM class inside that TU compiles only when XLL_RIBBON_ENABLED is defined.
+# already swept up by the file(GLOB SOURCES ... src/*.cpp) above.
+#
+# XLL_RIBBON_ENABLED is defined on `.Ribbon.Enabled` ALONE, deliberately NOT
+# nested inside `.Commands`. THREE asset TUs now have their entire body behind
+# this macro -- src/ribbon_addin.cpp, src/ribbon_connect.cpp, src/scratch_book.cpp
+# -- and xll_main.cpp #defines it TU-locally for itself. A ribbon-without-commands
+# config would therefore render the full ribbon path into xll_main.cpp and then
+# fail to LINK against all three assets. config.go rejects that combination, so it
+# is unreachable in production, but generator tests build Config structs directly
+# and skip validation; the old nesting made that a link error instead of a
+# no-op. (2026-08-02, xll-cpp-reviewer LOW.)
 {{ if .Ribbon.Enabled }}
 target_compile_definitions(${PROJECT_NAME} PRIVATE XLL_RIBBON_ENABLED)
 if(WIN32)
@@ -245,7 +253,6 @@ if(WIN32)
         gdiplus
     )
 endif()
-{{ end }}
 {{ end }}
 
 {{ if eq .Build.Singlefile "xll" }}

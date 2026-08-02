@@ -2,14 +2,19 @@
 // particular the injected ConnectContext (what the generated TU must publish and
 // why GetExcelApplicationOrBounce stayed behind) and the deliberate cookie
 // ownership split.
-#include "com/ribbon_connect.h"
-
 // Compiled only for ribbon builds, mirroring src/ribbon_addin.cpp and
 // src/scratch_book.cpp: this TU is swept up by file(GLOB src/*.cpp) in every
 // project, but the RibbonAddIn COM class it instantiates is itself declared only
 // under XLL_RIBBON_ENABLED (and the COM libraries it needs are linked only when
 // the ribbon is on).
+//
+// The gate opens BEFORE com/ribbon_connect.h: that header #errors when the macro
+// is absent, precisely so a non-ribbon TU cannot declare symbols whose
+// definitions this file does not compile. Including it above the gate would make
+// every non-ribbon build fail here instead.
 #ifdef XLL_RIBBON_ENABLED
+
+#include "com/ribbon_connect.h"
 
 #include "com/dispatch_helpers.h"
 #include "com/ribbon_addin.h" // RibbonAddIn, SetRibbonXml
@@ -51,7 +56,16 @@ ConnectContext g_ctx;
 // future template does. Not a behavior change: on every real project this
 // predicate is true at every call.
 bool ContextReady(const char* site) {
-    if (g_ctx.progId && g_ctx.comFriendlyName && g_ctx.addinFriendlyName &&
+    // hModule is checked FIRST because it is the one field whose absence does
+    // NOT fail loudly. It flows into rtd::RegisterServer, where a null HMODULE
+    // makes GetModuleFileNameW resolve to the HOST process path — so the HKCU
+    // InprocServer32 for our CLSID would be written pointing at EXCEL.EXE. That
+    // is a persistent, user-scope registry entry that outlives the session and
+    // sends a later CoCreateInstance at the wrong image. Every other field
+    // either crashes or refuses immediately, which is why this one is easy to
+    // leave out of a readiness check and the worst one to leave out.
+    // (clsid has no sentinel value, so it cannot be checked here.)
+    if (g_ctx.hModule && g_ctx.progId && g_ctx.comFriendlyName && g_ctx.addinFriendlyName &&
         g_ctx.addinDescription && g_ctx.ribbonXml && g_ctx.getImages &&
         g_ctx.acquireApp && g_ctx.acquireAppOrBounce && g_ctx.pClassObjectCookie) {
         return true;
@@ -114,7 +128,25 @@ bool TryConnectRibbon(const char* phase, bool allowBounce, RibbonAttempt* pOutco
     if (xll::TeardownStarted()) return false;
     // Unpublished context: nothing was attempted, so nothing may be charged (the
     // pOutcome default above already says kNotAttempted).
-    if (!ContextReady("TryConnectRibbon")) return false;
+    //
+    // But it MUST also be terminal, which the other kNotAttempted exits are not
+    // required to be. Those are self-limiting — the unload bail resolves as the
+    // teardown proceeds, and the STA re-entrancy bail can only happen while an
+    // OUTER attempt is in flight on this same thread, which will itself produce
+    // a real outcome. An unpublished context is neither: it is a permanent
+    // condition, so without latching, __xllgen_RibbonConnectRetry would charge
+    // nothing, see g_ribbonConnectState stay 0, and re-arm itself every
+    // kRibbonRetryIntervalSec for the whole Excel session — the "an add-in that
+    // polls the host forever is its own defect" outcome AGENTS.md §3 bounds.
+    // Latching state=2 matches how the one-time registration failures (steps
+    // 1-3 below) report an unrecoverable configuration fault: the caller's state
+    // gate stops the chain on the very next dispatch. Do NOT instead give
+    // kNotAttempted a budget — that reopens the accounting hole §23.6
+    // FOLLOW-UP #2 closed.
+    if (!ContextReady("TryConnectRibbon")) {
+        g_ribbonConnectState.store(2, std::memory_order_release);
+        return false;
+    }
 
     // Re-entrancy guard. The temp-workbook bounce (xlcNew/xlcWorkbookInsert) and
     // the COMAddIns Connect both pump the STA message loop, so an Excel callback

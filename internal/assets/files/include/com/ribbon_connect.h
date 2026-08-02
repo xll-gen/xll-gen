@@ -39,6 +39,16 @@
 // the message loop, so Excel can dispatch a callback mid-connect) — they are not
 // cross-thread synchronization.
 
+// GATING. The definitions of everything declared below live in
+// src/ribbon_connect.cpp, which is #ifdef XLL_RIBBON_ENABLED. Declaring them in
+// a non-ribbon TU therefore compiles cleanly and then fails at LINK with
+// unresolved xll::ribbon::SetConnectContext / g_ribbonConnectState — a
+// diagnostic one step removed from the cause. Fail at the include instead, the
+// way com/ribbon_addin.h gates its class.
+#ifndef XLL_RIBBON_ENABLED
+#error "com/ribbon_connect.h requires XLL_RIBBON_ENABLED (its definitions are compiled only for ribbon builds)"
+#endif
+
 #include <windows.h>
 #include <oaidl.h>
 #include <atomic>

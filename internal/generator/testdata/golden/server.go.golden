@@ -7,9 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
-	"sync"
 	"time"
-	"runtime"
 	"runtime/debug"
 	"goldenmod/generated/ipc"
 	"github.com/xll-gen/xll-gen/pkg/log"
@@ -174,29 +172,12 @@ func Serve(handler XllService) {
 	
 	
 
-	workerCount := runtime.NumCPU()
-	if n := 4; n > 0 {
-		workerCount = n
-	}
-
-	jobQueue := make(chan func(), workerCount)
-	var jobWg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
-		jobWg.Add(1)
-		go func() {
-			defer jobWg.Done()
-			for job := range jobQueue {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Error("Worker panic recovered", "error", r, "stack", string(debug.Stack()))
-						}
-					}()
-					job()
-				}()
-			}
-		}()
-	}
+	// The async worker pool lives in pkg/server (server.JobPool): the workers,
+	// the per-job panic isolation, the non-blocking submit and the shutdown
+	// drain are library code with unit tests of their own. Only the worker COUNT
+	// varies per project, and 0 renders when server.workers is unset, which the
+	// pool reads as NumCPU.
+	jobPool := server.NewJobPool(4)
 
 	var dispatch func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType)
 	dispatch = func(data []byte, respBuf []byte, mType shm.MsgType) (int32, shm.MsgType) {
@@ -587,12 +568,10 @@ func Serve(handler XllService) {
                 
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
-                select {
-                case jobQueue <- func() {
+                if !jobPool.Submit(func() {
                     defer cancel()
                     handleAsyncStr(ctx, reqCopy, nil, handler, nil, client, mType, refCache)
-                }:
-                default:
+                }) {
                     log.Warn("Async worker pool full, returning Busy error", "func", "AsyncStr")
                     // Fast-fail: the queued closure (which owns the deferred
                     // cancel) never runs on this path, so release the timeout
@@ -617,12 +596,10 @@ func Serve(handler XllService) {
                 
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
-                select {
-                case jobQueue <- func() {
+                if !jobPool.Submit(func() {
                     defer cancel()
                     handleAsyncInt(ctx, reqCopy, nil, handler, nil, client, mType, refCache)
-                }:
-                default:
+                }) {
                     log.Warn("Async worker pool full, returning Busy error", "func", "AsyncInt")
                     // Fast-fail: the queued closure (which owns the deferred
                     // cancel) never runs on this path, so release the timeout
@@ -647,12 +624,10 @@ func Serve(handler XllService) {
                 
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
-                select {
-                case jobQueue <- func() {
+                if !jobPool.Submit(func() {
                     defer cancel()
                     handleAsyncGrid(ctx, reqCopy, nil, handler, nil, client, mType, refCache)
-                }:
-                default:
+                }) {
                     log.Warn("Async worker pool full, returning Busy error", "func", "AsyncGrid")
                     // Fast-fail: the queued closure (which owns the deferred
                     // cancel) never runs on this path, so release the timeout
@@ -677,12 +652,10 @@ func Serve(handler XllService) {
                 
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
-                select {
-                case jobQueue <- func() {
+                if !jobPool.Submit(func() {
                     defer cancel()
                     handleAsyncNumGrid(ctx, reqCopy, nil, handler, nil, client, mType, refCache)
-                }:
-                default:
+                }) {
                     log.Warn("Async worker pool full, returning Busy error", "func", "AsyncNumGrid")
                     // Fast-fail: the queued closure (which owns the deferred
                     // cancel) never runs on this path, so release the timeout
@@ -707,12 +680,10 @@ func Serve(handler XllService) {
                 
                 reqCopy := make([]byte, len(data))
                 copy(reqCopy, data)
-                select {
-                case jobQueue <- func() {
+                if !jobPool.Submit(func() {
                     defer cancel()
                     handleAsyncAny(ctx, reqCopy, nil, handler, nil, client, mType, refCache)
-                }:
-                default:
+                }) {
                     log.Warn("Async worker pool full, returning Busy error", "func", "AsyncAny")
                     // Fast-fail: the queued closure (which owns the deferred
                     // cancel) never runs on this path, so release the timeout
@@ -755,14 +726,14 @@ func Serve(handler XllService) {
 	// UNMAPS the shared segment -- the async/rtd drains it performs do not cover
 	// a handler that is mid-send, only the batchers. Same ordering rule the
 	// comment on shutdownAndClose states: stop the producers, then drain.
-	// The tidy one: `for job := range jobQueue` never ended, so workerCount
-	// goroutines lived for the whole process.
+	// The tidy one: the worker loops never ended, so they lived for the whole
+	// process.
 	//
-	// Closing here is safe: the only senders to jobQueue are the dispatch
-	// handlers, which shm calls from the worker routines that client.Wait() has
-	// just seen exit. No send can follow, so no send-on-closed-channel.
-	close(jobQueue)
-	if !server.WaitGroupTimeout(&jobWg, server.JobDrainTimeout) {
+	// Draining here is safe: the only submitters are the dispatch handlers, which
+	// shm calls from the worker routines that client.Wait() has just seen exit.
+	// No submit can follow -- and JobPool.Submit refuses one anyway rather than
+	// panicking on a closed channel.
+	if !jobPool.Drain(server.JobDrainTimeout) {
 		lifecycle.MarkJobDrainFailed()
 		log.Warn("Async job workers did not finish within the drain budget; "+
 			"shutdownAndClose will leave the SHM mapping to the OS rather than unmap "+

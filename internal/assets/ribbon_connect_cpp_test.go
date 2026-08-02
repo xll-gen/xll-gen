@@ -434,3 +434,44 @@ func TestRibbonConnectHasNoIdleTimerResidual(t *testing.T) {
 		}
 	}
 }
+
+// TestRibbonConnectContextReadyIsTerminal pins the two xll-cpp-reviewer MED
+// findings on the ContextReady bail (2026-08-02). Nothing covered this branch
+// when it was introduced — the outcome-classification test above would pass with
+// ContextReady deleted entirely.
+func TestRibbonConnectContextReadyIsTerminal(t *testing.T) {
+	t.Parallel()
+	_, code := ribbonConnectSources(t)
+
+	// MED-1. Every OTHER kNotAttempted exit is self-limiting: the unload bail
+	// resolves as teardown proceeds, and the STA re-entrancy bail requires an
+	// outer attempt in flight that will itself produce a real outcome. An
+	// unpublished context is permanent, so if the bail does not latch the state
+	// gate, __xllgen_RibbonConnectRetry charges nothing, sees state stay 0, and
+	// re-arms itself every kRibbonRetryIntervalSec for the whole Excel session.
+	idx := strings.Index(code, `if (!ContextReady("TryConnectRibbon"))`)
+	if idx < 0 {
+		t.Fatal("TryConnectRibbon no longer guards on ContextReady")
+	}
+	tail := code[idx:]
+	end := strings.Index(tail, "\n    }")
+	if end < 0 {
+		t.Fatal("could not delimit the ContextReady bail")
+	}
+	if !strings.Contains(tail[:end], "g_ribbonConnectState.store(2, std::memory_order_release)") {
+		t.Errorf("the unpublished-context bail does not latch the give-up state, so the "+
+			"OnTime retry chain would re-arm forever against a permanent condition:\n%s", tail[:end])
+	}
+
+	// MED-2. hModule is the one context field whose absence does not fail loudly:
+	// it flows into rtd::RegisterServer, where a null HMODULE makes
+	// GetModuleFileNameW resolve to the HOST path, so the HKCU InprocServer32 for
+	// our CLSID gets written pointing at EXCEL.EXE — a persistent, user-scope
+	// registry entry that outlives the session.
+	ready := code[strings.Index(code, "bool ContextReady(const char* site) {"):]
+	ready = ready[:strings.Index(ready, "return true;")]
+	if !strings.Contains(ready, "g_ctx.hModule") {
+		t.Errorf("ContextReady does not check hModule; an unwired module handle would "+
+			"silently register EXCEL.EXE as the ribbon InprocServer32:\n%s", ready)
+	}
+}
