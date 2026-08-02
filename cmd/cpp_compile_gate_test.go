@@ -188,7 +188,7 @@ func TestRtdOnceNumGridCppCompiles(t *testing.T) {
 		t.Fatalf("cmake configure failed: %v\n%s", err, out)
 	}
 
-	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_gate")
+	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_gate", "--parallel", cppGateBuildJobs())
 	out, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated XLL failed to compile (the rtd-once numgrid BLOCKER regression):\n%s", out)
@@ -225,7 +225,7 @@ func TestRtdOnceNumGridCppCompiles(t *testing.T) {
 	if out, err := cfgDebug.CombinedOutput(); err != nil {
 		t.Fatalf("cmake configure (XLL_DEBUG=ON) failed: %v\n%s", err, out)
 	}
-	buildDebug := exec.Command(cmakeBin, "--build", debugBuildDir, "--target", "cpp_gate")
+	buildDebug := exec.Command(cmakeBin, "--build", debugBuildDir, "--target", "cpp_gate", "--parallel", cppGateBuildJobs())
 	if out, err := buildDebug.CombinedOutput(); err != nil {
 		t.Fatalf("generated XLL failed to compile with XLL_DEBUG=ON (debug-only code in xll_main.cpp.tmpl is broken):\n%s", out)
 	}

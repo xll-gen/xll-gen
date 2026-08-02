@@ -122,7 +122,7 @@ func TestRtdDateCppCompiles(t *testing.T) {
 		t.Fatalf("cmake configure failed: %v\n%s", err, out)
 	}
 
-	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_rtd_date_gate")
+	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_rtd_date_gate", "--parallel", cppGateBuildJobs())
 	out, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated rtd+date XLL failed to compile/link (Defect C: rtd/rtd-once date topic):\n%s", out)

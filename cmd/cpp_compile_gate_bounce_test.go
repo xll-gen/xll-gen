@@ -143,7 +143,7 @@ func TestRibbonBounceModesCppCompile(t *testing.T) {
 				t.Fatalf("cmake configure failed (bounce %s): %v\n%s", tc.mode, err, out)
 			}
 
-			buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", tc.proj)
+			buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", tc.proj, "--parallel", cppGateBuildJobs())
 			out, err := buildCmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("generated ribbon XLL (bounce %s) failed to compile/link — likely a dangling reference to a template-elided symbol:\n%s", tc.mode, out)

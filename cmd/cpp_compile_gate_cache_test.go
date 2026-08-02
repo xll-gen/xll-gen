@@ -144,7 +144,7 @@ func TestCacheKeyCppCompiles(t *testing.T) {
 		t.Fatalf("cmake configure failed: %v\n%s", err, out)
 	}
 
-	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_cache_gate")
+	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_cache_gate", "--parallel", cppGateBuildJobs())
 	out, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated cache-enabled XLL failed to compile/link (cache-key ladder date/numgrid fix):\n%s", out)

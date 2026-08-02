@@ -129,7 +129,7 @@ func TestSyncDateCppCompiles(t *testing.T) {
 		t.Fatalf("cmake configure failed: %v\n%s", err, out)
 	}
 
-	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_date_gate")
+	buildCmd := exec.Command(cmakeBin, "--build", buildDir, "--target", "cpp_date_gate", "--parallel", cppGateBuildJobs())
 	out, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated sync-only date XLL failed to compile/link (date COM Range.NumberFormat rework):\n%s", out)
