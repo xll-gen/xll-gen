@@ -17,7 +17,9 @@ namespace xll {
 
 static std::string g_logPath;
 static LogLevel g_logLevel = LogLevel::INFO; // Default
-static std::mutex g_logMutex;
+// timed_mutex, not mutex: the teardown loggers must be able to bound how long
+// they will wait for it. See WriteLogUnconditional.
+static std::timed_mutex g_logMutex;
 
 // Extern unloading flag (defined in xll_lifecycle.cpp)
 extern std::atomic<bool> g_isUnloading;
@@ -32,7 +34,10 @@ static void ReplaceString(std::wstring& str, const std::wstring& from, const std
     }
 }
 
-static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg);
+// boundedWait: cap how long we will wait for g_logMutex, then DROP the line.
+// Only the teardown loggers pass true -- see the comment on the lock below.
+static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg,
+                                  bool boundedWait = false);
 
 static void WriteLog(const std::string& levelStr, const std::string& msg) {
     // If unloading, avoid touching filesystem/logging resources.
@@ -40,9 +45,32 @@ static void WriteLog(const std::string& levelStr, const std::string& msg) {
     WriteLogUnconditional(levelStr, msg);
 }
 
-static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg) {
+static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg,
+                                  bool boundedWait) {
     if (g_logPath.empty()) return;
-    std::lock_guard<std::mutex> lock(g_logMutex);
+
+    // WHY THE TEARDOWN PATH BOUNDS THIS WAIT.
+    //
+    // xll_log.h documents the teardown loggers as safe to call from Phase 2,
+    // whose rule is "bounded kernel calls only, nothing may park". But this
+    // function takes a lock and then does file I/O under it, and WriteLog's
+    // g_isUnloading early-out is checked BEFORE the lock -- so a detached
+    // thread that passed that check a moment earlier can be sitting inside this
+    // critical section when Phase 2 calls LogTeardown. A plain lock there is an
+    // unbounded park inside the one function that promised not to park.
+    //
+    // Bounded wait rather than try_lock: g_logMutex is normally held only for a
+    // single append, so try_lock would drop teardown lines on ordinary
+    // microsecond contention -- and those lines exist precisely because their
+    // absence was misread once already (AGENTS.md §20.2). 50 ms keeps every
+    // realistic case and still caps the pathological one. Dropping a log line
+    // beats hanging Excel.
+    std::unique_lock<std::timed_mutex> lock(g_logMutex, std::defer_lock);
+    if (boundedWait) {
+        if (!lock.try_lock_for(std::chrono::milliseconds(50))) return;
+    } else {
+        lock.lock();
+    }
     // Use filesystem::path for proper Unicode handling on Windows
     std::filesystem::path p = std::filesystem::u8path(g_logPath);
     std::ofstream logFile(p, std::ios_base::app | std::ios_base::out);
@@ -88,7 +116,7 @@ void LogInfo(const std::string& msg) {
 // Level-gated at INFO so `log.level: warn/error/none` still silences it.
 void LogTeardown(const std::string& msg) {
     if (g_logLevel >= LogLevel::INFO) {
-        WriteLogUnconditional("TEARDOWN", msg);
+        WriteLogUnconditional("TEARDOWN", msg, /*boundedWait=*/true);
     }
 }
 
@@ -96,7 +124,7 @@ void LogTeardown(const std::string& msg) {
 // which is where the teardown's failure lines have to be visible.
 void LogTeardownWarn(const std::string& msg) {
     if (g_logLevel >= LogLevel::WARN) {
-        WriteLogUnconditional("TEARDOWN-WARN", msg);
+        WriteLogUnconditional("TEARDOWN-WARN", msg, /*boundedWait=*/true);
     }
 }
 

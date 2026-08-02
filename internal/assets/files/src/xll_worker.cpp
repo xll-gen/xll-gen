@@ -387,7 +387,17 @@ void WorkerLoop() {
             }
 
             return 0; // Unknown
-        }, 50); // 50ms timeout
+        // The second argument is shm's `limit` — the MAXIMUM NUMBER OF GUEST
+        // CALLS drained per invocation (GuestCallWorker::ProcessGuestCalls,
+        // `int limit = -1` = unbounded), NOT a timeout. This call does not
+        // block: it returns immediately when no slot is ready, so the loop
+        // below is a pure spin and burns a core for the life of the add-in.
+        // Bounding the batch keeps the shutdown check at the top of the loop
+        // reachable, which is why StopWorker() is observed promptly. Adding a
+        // wait here is a design change (it has to interlock with shm's
+        // doorbell / hostState gate, SPEC §3.5) — tracked in the backlog, do
+        // not just drop a sleep in.
+        }, /*maxBatchSize=*/50);
 
         // Avoid logging during unload to prevent touching freed logging resources
         if (processed && !g_isUnloading) {

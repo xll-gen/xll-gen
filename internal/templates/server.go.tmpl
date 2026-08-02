@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"runtime"
 	"runtime/debug"
@@ -65,15 +66,25 @@ func PushRtdUpdate(topicID int32, value interface{}) error {
 //     themselves, so 5s covers one flush that is riding out a dead host.
 //   - rtd: an RtdUpdate is capped at 1s, but SendOnceGrid is 5s PER FRAME and a
 //     chunked grid sends many frames in order, so it needs the wider budget.
+//   - job: the async worker pool. Its budget only has to cover ONE user handler
+//     that is already running plus whatever it is sending; the async/rtd drains
+//     that follow cover the sends themselves.
 const (
 	asyncDrainTimeout = 5 * time.Second
 	rtdDrainTimeout   = 10 * time.Second
+	jobDrainTimeout   = 5 * time.Second
 )
 
 // shutdownCh is closed once teardown begins. Done() exposes it.
 var (
 	shutdownCh   = make(chan struct{})
 	shutdownOnce sync.Once
+	// Set when the job-worker drain in Serve timed out, i.e. a user handler may
+	// still be running and still touching the SHM client. shutdownAndClose reads
+	// it and declines to unmap, exactly as it does for its own drains. Written
+	// once before shutdownAndClose can observe it, but atomic because
+	// watchParentDeath can call shutdownAndClose from another goroutine.
+	jobDrainFailed atomic.Bool
 )
 
 // Done returns a channel that is closed when the server starts shutting down —
@@ -115,9 +126,11 @@ func shutdownAndClose(client *shm.Client) {
 		asyncDrained := asyncBatcher.Stop(asyncDrainTimeout)
 		rtdDrained := rtd.GlobalRtd.Stop(rtdDrainTimeout)
 
-		if !asyncDrained || !rtdDrained {
+		jobsDrained := !jobDrainFailed.Load()
+
+		if !asyncDrained || !rtdDrained || !jobsDrained {
 			log.Warn("Shutdown drain incomplete; leaving the SHM mapping to the OS instead of unmapping under a live sender",
-				"asyncDrained", asyncDrained, "rtdDrained", rtdDrained)
+				"asyncDrained", asyncDrained, "rtdDrained", rtdDrained, "jobsDrained", jobsDrained)
 			return
 		}
 
@@ -244,8 +257,11 @@ func Serve(handler XllService) {
 	}
 
 	jobQueue := make(chan func(), workerCount)
+	var jobWg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
+		jobWg.Add(1)
 		go func() {
+			defer jobWg.Done()
 			for job := range jobQueue {
 				func() {
 					defer func() {
@@ -427,8 +443,39 @@ func Serve(handler XllService) {
 
 	client.Handle(dispatch)
 
-	client.Start()
+	// Start reports the "Handle was never called" wiring bug instead of
+	// panicking. Today the Handle above is unconditional so this is always nil,
+	// but the failure mode if that ever stops holding is invisible: the server
+	// comes up with NO worker goroutines and every UDF times out with nothing in
+	// the log. Fail loudly at the same altitude as the ConnectSHM failure above
+	// (the deferred shutdownAndClose still runs).
+	if err := client.Start(); err != nil {
+		log.Error("Failed to start SHM worker routines", "error", err)
+		panic(err)
+	}
 	client.Wait()
+
+	// Drain the job workers BEFORE the deferred shutdownAndClose runs.
+	//
+	// Two reasons. The safety one: a job runs user handler code that can still
+	// be sending on `client`, and shutdownAndClose ends in client.Close(), which
+	// UNMAPS the shared segment -- the async/rtd drains it performs do not cover
+	// a handler that is mid-send, only the batchers. Same ordering rule the
+	// comment on shutdownAndClose states: stop the producers, then drain.
+	// The tidy one: `for job := range jobQueue` never ended, so workerCount
+	// goroutines lived for the whole process.
+	//
+	// Closing here is safe: the only senders to jobQueue are the dispatch
+	// handlers, which shm calls from the worker routines that client.Wait() has
+	// just seen exit. No send can follow, so no send-on-closed-channel.
+	close(jobQueue)
+	if !server.WaitGroupTimeout(&jobWg, jobDrainTimeout) {
+		jobDrainFailed.Store(true)
+		log.Warn("Async job workers did not finish within the drain budget; "+
+			"shutdownAndClose will leave the SHM mapping to the OS rather than unmap "+
+			"under a handler that may still be sending",
+			"timeout", jobDrainTimeout)
+	}
 }
 
 // ... handle functions ...

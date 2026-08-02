@@ -353,6 +353,23 @@ namespace xll {
         return LaunchProcess(cmd, cwd, logPath, outInfo, emptyEnv);
     }
 
+    // NEVER put a modal dialog in here.
+    //
+    // This runs on the background monitor thread. A MessageBoxW here pumps a
+    // modal loop that only a human can end, and the teardown JOINS this thread
+    // -- so a crashed Go server plus an unattended machine turned close-time
+    // teardown into an indefinite park, on the STA, holding Excel. That hazard
+    // is what forced the teardown's monitor wait to be bounded-then-detached in
+    // v0.8.41 (AGENTS.md §20.2.1); it is also why "just keep a blocking join on
+    // the disable path" was not available as an option. The dialog was also
+    // wrong on its own terms: it was raised from a thread with no window of its
+    // own, so it had no owner and could appear behind Excel.
+    //
+    // The diagnostic itself is not lost -- it goes to the native log at ERROR,
+    // log tail included, which is where every other launch/teardown failure in
+    // this file already reports. Surfacing it back to the user (ribbon banner /
+    // cell error) is tracked separately; it must be driven from the STA, not
+    // from here.
     void MonitorProcess(const ProcessInfo& info, const std::wstring& logPath) {
         HANDLE handles[2] = { info.hProcess, info.hShutdownEvent };
         DWORD res = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
@@ -363,9 +380,8 @@ namespace xll {
                 GetExitCodeProcess(info.hProcess, &exitCode);
 
                 std::wstringstream ss;
-                ss << L"The Go server process has terminated unexpectedly (Exit Code: " << exitCode << L").\n";
-                ss << L"The Add-in will no longer function correctly.\n\n";
-                ss << L"Last log entries:\n";
+                ss << L"the Go server process terminated unexpectedly (exit code " << exitCode << L"). ";
+                ss << L"The add-in will no longer function correctly. Last log entries follow.\n";
 
                 HANDLE hRead = CreateFileW(logPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
                 if (hRead != INVALID_HANDLE_VALUE) {
@@ -391,7 +407,7 @@ namespace xll {
                     ss << L"(Unable to read log file)";
                 }
 
-                MessageBoxW(NULL, ss.str().c_str(), L"Server Crash", MB_OK | MB_ICONERROR);
+                LogError("Server crash: " + WideToUtf8(ss.str()));
             }
         }
     }

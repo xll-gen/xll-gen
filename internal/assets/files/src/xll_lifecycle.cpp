@@ -861,9 +861,17 @@ xll::FreshLoadVerdict xll::PrepareForFreshLoad() {
     }
 
     ResetLifecycleStateForFreshLoad();
-    LogTeardown("xlAutoOpen: a previous teardown had latched the lifecycle flags and the "
-                "image is PINNED (no DLL_PROCESS_ATTACH to clear them) - state reset for "
-                "this fresh load (AGENTS.md §20.2.1).");
+    // Do NOT claim the pin here. No DLL_PROCESS_ATTACH has run since that teardown,
+    // but there are two different reasons for that and this code cannot tell them
+    // apart: the image really is PINNED after a confirmed host shutdown
+    // (AGENTS.md §20.2.1), OR the XLL was simply never unloaded because the session
+    // continued - the COM add-in disable -> re-enable path, where the absence of an
+    // ATTACH is ordinary and has nothing to do with the pin. Naming the pin sent
+    // readers of the re-enable log looking for a bug that was not there.
+    LogTeardown("xlAutoOpen: a previous teardown in this process had latched the lifecycle "
+                "flags and no DLL_PROCESS_ATTACH has cleared them (image pinned after a host "
+                "shutdown, or the XLL was never unloaded - e.g. add-in disable then re-enable) "
+                "- state reset for this fresh load (AGENTS.md §20.2.1).");
     return FreshLoadVerdict::kResetAfterTeardown;
 }
 

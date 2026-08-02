@@ -111,9 +111,26 @@ func TestGenServer_TeardownDrainsBeforeUnmapping(t *testing.T) {
 	//    it: skipping costs nothing at process exit (the OS reclaims the mapping),
 	//    while unmapping under a live sender is the fatal fault. Assert there is a
 	//    `return` between the drain check and client.Close().
-	iGuard := strings.Index(body, "if !asyncDrained || !rtdDrained {")
+	// Every drain must be in the guard. Matching on the drain VARIABLES rather
+	// than on one frozen condition string: the previous exact-match on
+	// "if !asyncDrained || !rtdDrained {" had to be edited the moment a third
+	// drain (the job-worker pool) was added, and an exact match invites a future
+	// edit to "fix the test" by dropping a term instead of noticing that a drain
+	// stopped being consulted.
+	iGuard := strings.Index(body, "if !asyncDrained ||")
 	if iGuard < 0 {
-		t.Fatalf("shutdownAndClose does not inspect both drain results:\n%s", body)
+		t.Fatalf("shutdownAndClose does not inspect the drain results:\n%s", body)
+	}
+	guardEnd := strings.Index(body[iGuard:], "{")
+	if guardEnd < 0 {
+		t.Fatalf("could not delimit the drain guard:\n%s", body)
+	}
+	guard := body[iGuard : iGuard+guardEnd]
+	for _, drain := range []string{"asyncDrained", "rtdDrained", "jobsDrained"} {
+		if !strings.Contains(guard, drain) {
+			t.Errorf("the unmap guard does not consult %s, so that drain timing out would "+
+				"still let client.Close() unmap under a live sender:\n\t%s", drain, guard)
+		}
 	}
 	between := body[iGuard:iClose]
 	if !strings.Contains(between, "return") {
