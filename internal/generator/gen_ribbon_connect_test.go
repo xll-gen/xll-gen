@@ -27,6 +27,35 @@ func ribbonConnectCfg() *config.Config {
 	}
 }
 
+// WHERE THE OLD ASSERTIONS WENT (2026-08-02). The ribbon COM connect machinery
+// moved out of xll_main.cpp.tmpl into include/com/ribbon_connect.h +
+// src/ribbon_connect.cpp (it had no template variables in it, so every project was
+// getting a byte-identical copy re-emitted into its generated tree). The BODY
+// invariants this file used to grep out of the rendered template are now pinned
+// against the embedded asset, in internal/assets/ribbon_connect_cpp_test.go:
+//
+//	TryConnectRibbon signature / defaults        -> TestRibbonConnectHeaderContract
+//	enum class RibbonAttempt + the four classes  -> TestRibbonConnectHeaderContract
+//	the four *pOutcome sites and their ORDER     -> TestRibbonConnectOutcomeClassification
+//	s_inConnect STA re-entrancy guard            -> TestRibbonConnectReentrancyGuard
+//	bounce-vs-direct Application acquisition     -> TestRibbonConnectAcquiresAppThroughTheContext
+//	the 0/1/2 state gate + the 60-attempt cap    -> TestRibbonConnectStateGateAndGiveUpCap
+//	every connect log string                     -> TestRibbonConnectStateGateAndGiveUpCap
+//	the five retry-budget constants + counters   -> TestRibbonConnectRetryBudgetConstants
+//	the removed STA WM_TIMER residual            -> TestRibbonConnectHasNoIdleTimerResidual
+//
+// That is a strengthening, not a loss: those were greps over generated text that
+// only ever proved the template still SAID the right thing, and they were
+// duplicated identically across three bounce-mode renders. What CANNOT move is
+// whether a given project is WIRED to the asset at all — the context it must
+// publish, the three trigger sites, and the budget accounting inside the exported
+// OnTime macro (which has to stay in the generated TU because Excel resolves the
+// registered procedure by name against it). That is what remains here.
+//
+// The scratch-workbook halves (GetActiveWorkbookName, ScratchCloseEventSuppressor)
+// moved earlier in the same pass; their body assertions are in
+// internal/assets/scratch_book_cpp_test.go.
+
 // TestXllMainRibbonDeferredConnect is the Bug 1 regression: the ribbon COMAddIns
 // connect needs the in-process Application object, which is reachable only via
 // the XLDESK -> EXCEL7 child window. When the XLL loads with NO workbook open,
@@ -42,62 +71,40 @@ func ribbonConnectCfg() *config.Config {
 // temp workbook closing. This REPLACES the former STA WM_TIMER retry loop, which
 // was an accepted forced-unload crash residual (AGENTS.md §20.2).
 //
-// This test pins:
+// This test pins the parts that are still GENERATED:
 //   - the bounce helper GetExcelApplicationOrBounce exists and uses the verified
 //     xlc* opcodes through xll::CallExcel;
+//   - the close is issued only by IDENTITY (the captured active-workbook name);
 //   - xlAutoOpen drives the connect through TryConnectRibbon with allowBounce=true;
 //   - the calc-end handler retries WITHOUT bouncing (defensive fallback);
-//   - the CalculationEnded event is still registered whenever the ribbon is enabled;
-//   - the no-workbook-yet ("noApp") case does NOT consume the give-up budget;
-//   - the removed STA timer machinery (SetTimer/TimerProc/Arm/Stop) is GONE.
+//   - the CalculationEnded event is still registered whenever the ribbon is enabled.
 func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	t.Parallel()
 	src := renderCppMain(t, ribbonConnectCfg())
 
 	for _, want := range []string{
-		// The retryable connect helper exists and threads allowBounce + the
-		// outcome-class out-param (see TestXllMainRibbonRetryNoAppBudget and
-		// TestXllMainRibbonRetryUnattemptedNotCharged).
-		"static bool TryConnectRibbon(const char* phase, bool allowBounce = false,",
-		"RibbonAttempt* pOutcome = nullptr) {",
-		// …and the outcome classes are an enum class (a bool cannot express the
-		// third, UNCHARGEABLE class).
-		"enum class RibbonAttempt {",
-		"kNotAttempted = 0,",
-		// The temp-workbook bounce helper exists.
+		// The relocated machinery is reachable from the generated TU.
+		`#include "com/ribbon_connect.h"`,
+		// The temp-workbook bounce helper STAYS generated (ribbon.bounce-branched).
 		"static IDispatch* GetExcelApplicationOrBounce()",
 		// It uses the verified xlc* command opcodes via xll::CallExcel.
 		"xll::CallExcel(xlcNew, nullptr, 5)",
 		"xll::CallExcel(xlcWorkbookInsert, nullptr, 6)",
 		"xll::CallExcel(xlcFileClose, nullptr, false)",
-		// HIGH (data-loss) hardening: the bounce captures the ACTIVE workbook
-		// name via GET.DOCUMENT(88) (xlfGetDocument, selector 88) and closes the
-		// scratch book BY IDENTITY — only when it is still the active one.
-		"static std::wstring GetActiveWorkbookName()",
-		"xll::CallExcel(xlfGetDocument, xName, 88)",
-		"PascalToWString(xName.get()->val.str)",
-		"std::wstring scratchName = GetActiveWorkbookName();",
-		"std::wstring activeNow = GetActiveWorkbookName();",
+		// HIGH (data-loss) hardening: the bounce captures the ACTIVE workbook name
+		// (GET.DOCUMENT(88), now xll::ribbon::GetActiveWorkbookName in
+		// src/scratch_book.cpp) and closes the scratch book BY IDENTITY — only
+		// while it is still the active one.
+		"std::wstring scratchName = xll::ribbon::GetActiveWorkbookName();",
+		"std::wstring activeNow = xll::ribbon::GetActiveWorkbookName();",
 		// The close is guarded by the identity comparison, never issued blindly.
 		"if (activeNow.empty() || activeNow != scratchName) {",
-		// MED hardening: TryConnectRibbon is non-re-entrant during the bounce.
-		"static std::atomic<bool> s_inConnect{false};",
-		"if (!s_inConnect.compare_exchange_strong(expected, true)) return false;",
-		// SetRibbonConnected routes through the bounce only when allowed.
-		"GetExcelApplicationOrBounce() : GetExcelApplication();",
-		// xlAutoOpen drives the connect through it WITH the bounce enabled.
-		`TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`,
+		// xlAutoOpen drives the connect through the asset WITH the bounce enabled.
+		`xll::ribbon::TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`,
 		// The bounce helper honors graceful degradation (warn, not crash).
 		"SAFE_LOG_WARN(",
-		// The no-workbook-yet case is detected, does NOT burn the give-up budget,
-		// and is REPORTED to the caller so the OnTime retry can honor the same rule.
-		"bool noApp = false;",
-		"if (noApp) {",
-		"if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;",
 		// Calc-end retries the connect as a defensive fallback (no bounce).
-		`TryConnectRibbon("calc end");`,
-		// The connect state is a single atomic guard (pending/connected/gave-up).
-		"g_ribbonConnectState",
+		`xll::ribbon::TryConnectRibbon("calc end");`,
 		// CalculationEnded is registered as the fallback retry hook for ribbon builds.
 		"needRibbonRetry:",
 		`xll::CallExcel(xlEventRegister, nullptr, L"CalculationEnded", xleventCalculationEnded);`,
@@ -107,21 +114,26 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		}
 	}
 
-	// The STA WM_TIMER retry machinery (the removed crash residual) must be
-	// entirely absent from a ribbon-enabled render. A reintroduction of any of
-	// these symbols brings back the forced-unload 0xC0000005 (AGENTS.md §20.2).
+	// The relocated body must NOT be re-inlined into the template. Same discipline
+	// as AGENTS.md §18.6.1's TestChunkSegmentLogicIsExtracted: without this, a
+	// re-inlined copy would shadow the asset, the asset tests would keep passing,
+	// and the shipped connect path would be untested code again.
+	code := stripCppComments(src)
 	for _, gone := range []string{
-		"ArmRibbonConnectTimer",
-		"StopRibbonConnectTimer",
-		"RibbonConnectTimerProc",
-		"g_ribbonConnectTimer",
-		"kRibbonConnectTimerId",
-		"kRibbonConnectTimerMs",
-		"SetTimer(",
-		"KillTimer(",
+		"static bool TryConnectRibbon(",
+		"static bool SetRibbonConnected(",
+		"enum class RibbonAttempt",
+		"static std::atomic<bool> s_inConnect",
+		"static constexpr int    kRibbonRetryMaxAttempts",
+		"static std::atomic<int> g_ribbonConnectState",
+		"static std::atomic<bool> g_ribbonRegistered",
+		"CoRegisterClassObject(GetRibbonClsid()",
+		"rtd::RegisterOfficeAddinKey(g_szRibbonProgID,",
 	} {
-		if strings.Contains(src, gone) {
-			t.Errorf("xll_main.cpp (ribbon) still contains removed STA timer symbol %q (the §20.2 unmap-crash residual must stay gone)", gone)
+		if strings.Contains(code, gone) {
+			t.Errorf("xll_main.cpp re-inlines the relocated connect machinery (%q); it must live "+
+				"ONLY in include/com/ribbon_connect.h + src/ribbon_connect.cpp, or the shipped "+
+				"code stops being the code the asset tests cover", gone)
 		}
 	}
 
@@ -129,14 +141,6 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 	if strings.Contains(src, `TryConnectRibbon("calc end", true)`) ||
 		strings.Contains(src, `TryConnectRibbon("calc end", /*allowBounce=*/true)`) {
 		t.Errorf("calc-end retry must not enable the temp-workbook bounce (allowBounce must default to false there)")
-	}
-
-	// The connect must NOT be wired as a single inline best-effort call in
-	// xlAutoOpen without the retry path. The old code logged exactly this on a
-	// failed connect; the new code never does (failures go through
-	// TryConnectRibbon's bounded-attempt warning instead).
-	if strings.Contains(src, `SAFE_LOG_WARN("Ribbon: COMAddIns connect failed; ribbon UI disabled.");`) {
-		t.Errorf("xll_main.cpp still contains the old one-shot connect failure path (no retry)")
 	}
 
 	// Negative: ribbon-disabled render must not reference the connect helpers.
@@ -151,15 +155,157 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 		},
 	}
 	noRibbonSrc := renderCppMain(t, noRibbon)
-	if strings.Contains(noRibbonSrc, "TryConnectRibbon") {
-		t.Errorf("ribbon-disabled render must not reference TryConnectRibbon")
+	for _, gone := range []string{
+		"TryConnectRibbon",
+		"GetExcelApplicationOrBounce",
+		"needRibbonRetry",
+		"ribbon_connect.h",
+		"SetConnectContext",
+		// The scratch-book helpers are ribbon-only too; a non-ribbon project must
+		// not even pull the header in (that regressed once — BounceMode() maps an
+		// unset ribbon.bounce to "full" regardless of Ribbon.Enabled, so the
+		// include had to be gated on BOTH).
+		"scratch_book.h",
+	} {
+		if strings.Contains(noRibbonSrc, gone) {
+			t.Errorf("ribbon-disabled render must not reference %q", gone)
+		}
 	}
-	if strings.Contains(noRibbonSrc, "GetExcelApplicationOrBounce") {
-		t.Errorf("ribbon-disabled render must not reference the temp-workbook bounce helper")
+}
+
+// TestXllMainPublishesRibbonConnectContext is the wiring gate for the relocation.
+//
+// src/ribbon_connect.cpp cannot see a single generated symbol: the COM identity,
+// the project-named registration strings, the embedded ribbon XML/images and the
+// ribbon.bounce-branched Application acquisition all live in the generated TU. It
+// receives them through ONE xll::ribbon::SetConnectContext call. A field left
+// unassigned is a null pointer inside the COM registration path — which the asset
+// refuses (ContextReady) rather than crashing on, so the symptom would be a
+// silently missing ribbon tab plus one warning. Assert every field is filled.
+//
+// ORDER is load-bearing twice over:
+//   - BEFORE xll::SetGracefulTeardownHook, because the hook's step (0) calls
+//     xll::ribbon::SetRibbonConnected(false), which acquires the Application
+//     through the injected acquireApp;
+//   - BEFORE the first TryConnectRibbon, obviously.
+func TestXllMainPublishesRibbonConnectContext(t *testing.T) {
+	t.Parallel()
+	src := renderCppMain(t, ribbonConnectCfg())
+
+	for _, want := range []string{
+		"xll::ribbon::ConnectContext ribbonCtx;",
+		"ribbonCtx.hModule            = g_hModule;",
+		"ribbonCtx.progId             = g_szRibbonProgID;",
+		"ribbonCtx.clsid              = GetRibbonClsid();",
+		`ribbonCtx.comFriendlyName    = L"TestProj Ribbon";`,
+		`ribbonCtx.addinFriendlyName  = L"TestProj";`,
+		`ribbonCtx.addinDescription   = L"TestProj ribbon helper";`,
+		"ribbonCtx.ribbonXml          = kXllRibbonXml;",
+		"ribbonCtx.getImages          = &GetXllRibbonImages;",
+		"ribbonCtx.acquireApp         = &GetExcelApplication;",
+		"ribbonCtx.acquireAppOrBounce = &GetExcelApplicationOrBounce;",
+		// The CoRegisterClassObject cookie stays a global HERE and is written
+		// through the context — see "COOKIE OWNERSHIP" in com/ribbon_connect.h. It
+		// is deliberate: the teardown hook revokes g_ribbonCookie directly, and
+		// that hook's statement order is the fix for a 100%-reproducible mso.dll
+		// NULL-vtable crash (gen_office_disconnect_guard_test.go), so the
+		// relocation left the hook byte-identical.
+		"ribbonCtx.pClassObjectCookie = &g_ribbonCookie;",
+		"xll::ribbon::SetConnectContext(ribbonCtx);",
+		// The cookie itself is still declared in the generated TU.
+		"DWORD g_ribbonCookie = 0;",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("xll_main.cpp does not publish the ribbon connect context field %q", want)
+		}
 	}
-	if strings.Contains(noRibbonSrc, "needRibbonRetry") {
-		t.Errorf("ribbon-disabled render must not emit the needRibbonRetry hook")
+
+	// Cross-check against the header so a NEW ConnectContext field cannot be added
+	// without a matching assignment here. Deriving the field list from the shipped
+	// header (rather than restating it) is what makes this a drift guard instead of
+	// a second copy of the same list.
+	for _, field := range connectContextFields(t) {
+		if !strings.Contains(src, "ribbonCtx."+field+" ") && !strings.Contains(src, "ribbonCtx."+field+"=") {
+			t.Errorf("ConnectContext declares the field %q but xll_main.cpp never assigns it; an "+
+				"unpublished field is a null pointer in the COM registration path (the asset "+
+				"refuses it, so the symptom is a silently missing ribbon tab)", field)
+		}
 	}
+
+	publishIdx := strings.Index(src, "xll::ribbon::SetConnectContext(ribbonCtx);")
+	hookIdx := strings.Index(src, "xll::SetGracefulTeardownHook(&GracefulComTeardownHook);")
+	connectIdx := strings.Index(src, `xll::ribbon::TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`)
+	if publishIdx < 0 || hookIdx < 0 || connectIdx < 0 {
+		t.Fatalf("missing markers (publish=%d hook=%d connect=%d)", publishIdx, hookIdx, connectIdx)
+	}
+	if publishIdx > hookIdx {
+		t.Errorf("SetConnectContext must run BEFORE SetGracefulTeardownHook (publish@%d hook@%d): "+
+			"the hook's explicit COMAddIns disconnect acquires the Application through the "+
+			"injected acquireApp", publishIdx, hookIdx)
+	}
+	if publishIdx > connectIdx {
+		t.Errorf("SetConnectContext must run BEFORE the first TryConnectRibbon (publish@%d connect@%d)",
+			publishIdx, connectIdx)
+	}
+
+	// The teardown hook still calls the (now namespaced) disconnect.
+	if !strings.Contains(src, "xll::ribbon::SetRibbonConnected(false)") {
+		t.Errorf("GracefulComTeardownHook must still disconnect through xll::ribbon::SetRibbonConnected(false)")
+	}
+}
+
+// connectContextFields extracts the member names of xll::ribbon::ConnectContext
+// from the embedded header, so TestXllMainPublishesRibbonConnectContext fails when
+// a field is added to the struct without being wired in the template.
+func connectContextFields(t *testing.T) []string {
+	t.Helper()
+	m, err := assets.Assets()
+	if err != nil {
+		t.Fatalf("assets.Assets(): %v", err)
+	}
+	hdr, ok := m["include/com/ribbon_connect.h"]
+	if !ok {
+		t.Fatalf("embedded include/com/ribbon_connect.h not found in assets")
+	}
+	start := strings.Index(hdr, "struct ConnectContext {")
+	if start < 0 {
+		t.Fatalf("com/ribbon_connect.h: struct ConnectContext not found")
+	}
+	// "\n};" and not "};": a `CLSID clsid{};` member contains "};" mid-line.
+	end := strings.Index(hdr[start:], "\n};")
+	if end < 0 {
+		t.Fatalf("com/ribbon_connect.h: unterminated struct ConnectContext")
+	}
+	body := hdr[start+len("struct ConnectContext {") : start+end]
+	// One member per line: `Type name = init;`, `Type name{};` or the
+	// function-pointer shape `Ret (*name)() = init;`.
+	reFnPtr := regexp.MustCompile(`\(\*(\w+)\)\(\)`)
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		decl := strings.TrimSpace(line)
+		if decl == "" || strings.HasPrefix(decl, "//") || !strings.HasSuffix(decl, ";") {
+			continue
+		}
+		decl = strings.TrimSuffix(decl, ";")
+		if i := strings.Index(decl, "="); i >= 0 {
+			decl = decl[:i]
+		}
+		decl = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(decl), "{}"))
+		if mm := reFnPtr.FindStringSubmatch(decl); mm != nil {
+			out = append(out, mm[1])
+			continue
+		}
+		fields := strings.Fields(decl)
+		if len(fields) < 2 {
+			continue
+		}
+		out = append(out, strings.TrimLeft(fields[len(fields)-1], "*&"))
+	}
+	if len(out) < 11 {
+		t.Fatalf("only parsed %d ConnectContext fields (%v) out of the struct body; the field-drift "+
+			"guard needs all of them:\n%s", len(out), out, body)
+	}
+	return out
 }
 
 // TestXllMainRibbonOnTimeConnectRetry pins the bounded xlcOnTime connect-retry
@@ -173,6 +319,12 @@ func TestXllMainRibbonDeferredConnect(t *testing.T) {
 // self-aborts (no C-API cancel) on connect/give-up/budget/unload — so it adds no
 // new teardown-cancellation surface (§20/§23; the schedule/cancel-from-event
 // wall is §23.6 HIGH #2).
+//
+// The runner and its registration STAY in the generated TU: Excel resolves the
+// registered ON.TIME procedure by name against the exported symbol, so the export
+// cannot move into an asset. Its budget CONSTANTS and COUNTERS did move (see
+// internal/assets/ribbon_connect_cpp_test.go::TestRibbonConnectRetryBudgetConstants);
+// what is asserted here is that the runner reads and charges THOSE.
 //
 // Runs the marker set against BOTH the default (full) render and the off render:
 // off is the mode most in need of the retry (it never bounces at all), and the
@@ -193,29 +345,26 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := renderCppMain(t, tc.cfg)
 			for _, want := range []string{
-				// The bounded budget constants exist (name + count/spacing).
-				"kRibbonRetryMaxAttempts       = 30",
-				"kRibbonRetryIntervalSec       = 2.0",
 				// The retry macro is exported with the shared single-source name.
 				`extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry()`,
 				"xll::RibbonConnectRetryMacroName()",
-				// The runner retries the connect (no bounce on retries).
-				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
-				// Self-abort on unload BEFORE touching Excel (no re-arm on unload).
+				// The runner retries the connect through the asset (no bounce on retries).
+				`xll::ribbon::TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
 				// Self-abort on ANY teardown, not just g_isUnloading (AGENTS.md §20.2.1 rule 2:
-		// Phase 1 latches g_isQuiescing and keeps g_isUnloading FALSE across Excel's RTD
-		// handshake, so the unload flag alone is not a teardown test).
-		"if (xll::TeardownStarted()) return 1;",
-				// Stops once the connect resolves (connected/gave-up).
-				"if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;",
-				// Bounded re-arm through the reused asset scheduler.
-				"g_ribbonRetryAttempts.fetch_add(1) + 1;",
-				"if (n >= kRibbonRetryMaxAttempts) {",
+				// Phase 1 latches g_isQuiescing and keeps g_isUnloading FALSE across Excel's RTD
+				// handshake, so the unload flag alone is not a teardown test) — BEFORE touching
+				// Excel, so a leaked schedule never re-arms.
+				"if (xll::TeardownStarted()) return 1;",
+				// Stops once the connect resolves (connected/gave-up), reading the asset's gate.
+				"if (xll::ribbon::g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;",
+				// Bounded re-arm, charging the asset's counter against the asset's budget.
+				"xll::ribbon::g_ribbonRetryAttempts.fetch_add(1) + 1;",
+				"if (n >= xll::ribbon::kRibbonRetryMaxAttempts) {",
 				"xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);",
 				// The macro is registered (macroType=2) so xlcOnTime can target it.
 				"Failed to register ribbon-connect OnTime retry macro.",
 				// xlAutoOpen arms the first retry ONLY when not yet connected.
-				"g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&",
+				"xll::ribbon::g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&",
 			} {
 				if !strings.Contains(src, want) {
 					t.Errorf("[%s] xll_main.cpp (ribbon) missing %q", tc.name, want)
@@ -270,13 +419,15 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 // no budget left, and calc-end never fires for such a book — so the ribbon tab
 // was STILL delayed indefinitely. The feature did not fix its own target case.
 //
-// The fix threads a `bool* pNoApp` out-param through TryConnectRibbon and gives
-// the noApp class its own, much longer, time-shaped budget with a relaxed poll
-// interval, while the productive (Application reachable, Connect rejected) class
-// keeps the original tight 30-attempt budget. Both budgets stay FINITE.
+// The fix threads an outcome CLASS out of TryConnectRibbon and gives the noApp
+// class its own, much longer, time-shaped budget with a relaxed poll interval,
+// while the productive (Application reachable, Connect rejected) class keeps the
+// original tight 30-attempt budget. Both budgets stay FINITE.
 //
-// This test pins the separation itself; a regression that folds the two classes
-// back into one counter fails here.
+// The budgets and counters now live in the asset; what this test pins is the
+// RUNNER's use of them — which class charges which counter, and that both hard
+// stops are honored. (The values themselves:
+// internal/assets/ribbon_connect_cpp_test.go::TestRibbonConnectRetryBudgetConstants.)
 func TestXllMainRibbonRetryNoAppBudget(t *testing.T) {
 	t.Parallel()
 
@@ -294,25 +445,26 @@ func TestXllMainRibbonRetryNoAppBudget(t *testing.T) {
 			src := renderCppMain(t, tc.cfg)
 
 			for _, want := range []string{
-				// A SEPARATE noApp budget exists, with its own spacing and hard stop.
-				"kRibbonRetryNoAppFastAttempts",
-				"kRibbonRetryNoAppIdleSec",
-				"kRibbonRetryNoAppMaxAttempts",
-				// …and its own counter, distinct from the productive one.
-				"g_ribbonRetryNoAppAttempts",
-				"g_ribbonRetryAttempts",
 				// The runner asks TryConnectRibbon which class the failure was.
-				"RibbonAttempt retryOutcome = RibbonAttempt::kNotAttempted;",
-				`TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
+				"xll::ribbon::RibbonAttempt retryOutcome = xll::ribbon::RibbonAttempt::kNotAttempted;",
+				`xll::ribbon::TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);`,
 				// …and branches on it before charging anything.
-				"if (retryOutcome == RibbonAttempt::kNoApp) {",
-				"g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;",
-				"if (n >= kRibbonRetryNoAppMaxAttempts) {",
-				// The poll relaxes once the fast window is spent (still bounded).
-				"if (n >= kRibbonRetryNoAppFastAttempts) nextDelaySec = kRibbonRetryNoAppIdleSec;",
+				"if (retryOutcome == xll::ribbon::RibbonAttempt::kNoApp) {",
+				// The noApp class charges the SEPARATE noApp counter against the
+				// SEPARATE noApp hard stop…
+				"xll::ribbon::g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;",
+				"if (n >= xll::ribbon::kRibbonRetryNoAppMaxAttempts) {",
+				// …and the poll relaxes once the fast window is spent (still bounded).
+				"if (n >= xll::ribbon::kRibbonRetryNoAppFastAttempts) nextDelaySec = xll::ribbon::kRibbonRetryNoAppIdleSec;",
+				// The productive class charges the productive counter/budget.
+				"} else if (retryOutcome == xll::ribbon::RibbonAttempt::kRejected) {",
+				"xll::ribbon::g_ribbonRetryAttempts.fetch_add(1) + 1;",
+				"if (n >= xll::ribbon::kRibbonRetryMaxAttempts) {",
 				// The re-arm honors the per-class spacing.
-				"double nextDelaySec = kRibbonRetryIntervalSec;",
+				"double nextDelaySec = xll::ribbon::kRibbonRetryIntervalSec;",
 				"xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);",
+				// kNotAttempted charges NOTHING and only logs at debug (§3 FOLLOW-UP #2).
+				"Ribbon: OnTime connect retry re-entered while a connect was in flight; ",
 			} {
 				if !strings.Contains(src, want) {
 					t.Errorf("[%s] xll_main.cpp ribbon OnTime retry missing %q", tc.name, want)
@@ -321,117 +473,38 @@ func TestXllMainRibbonRetryNoAppBudget(t *testing.T) {
 
 			// The pre-fix shape: a single unconditional charge to the productive
 			// budget, with no noApp branch. If this reappears, the empty-Excel
-			// scenario burns its 30 attempts in 60 s again.
+			// scenario burns its 30 attempts in 60 s again. Also the pre-fix bool
+			// out-param, which billed an unattempted connect (§3 FOLLOW-UP #2).
 			for _, gone := range []string{
 				"s_retryAttempts",
-				"s_retryAttempts.fetch_add(1) + 1 >= kRibbonRetryMaxAttempts",
+				"if (retryNoApp) {",
+				"bool retryNoApp = false;",
 			} {
 				if strings.Contains(src, gone) {
-					t.Errorf("[%s] xll_main.cpp still contains the pre-fix single-budget retry counter %q; "+
-						"a noApp attempt must not consume the connect-failure budget", tc.name, gone)
+					t.Errorf("[%s] xll_main.cpp still contains the pre-fix retry accounting shape %q; "+
+						"an attempt that never touched COM must not consume the connect-failure budget",
+						tc.name, gone)
 				}
 			}
 
 			// Neither budget may become unbounded: an add-in that polls Excel
 			// forever is its own defect. Both hard stops must be present.
-			if !strings.Contains(src, "if (n >= kRibbonRetryMaxAttempts) {") {
+			if !strings.Contains(src, "if (n >= xll::ribbon::kRibbonRetryMaxAttempts) {") {
 				t.Errorf("[%s] the productive retry budget lost its hard stop", tc.name)
 			}
 			if strings.Contains(src, "for (;;)") || strings.Contains(src, "while (true)") {
 				t.Errorf("[%s] the ribbon retry must never spin unbounded", tc.name)
 			}
-		})
-	}
-}
 
-// TestXllMainRibbonRetryUnattemptedNotCharged is the LOW regression for the
-// LAST unbilled-attempt accounting hole (2026-07-26, same defect class as the
-// noApp split above, one branch further out).
-//
-// TryConnectRibbon has two exits that return BEFORE ever calling
-// SetRibbonConnected — i.e. before touching COM at all:
-//
-//	1. the g_isUnloading bail (unreachable from the OnTime runner, which gates on
-//	   the same flag first);
-//	2. the STA RE-ENTRANCY bail (s_inConnect CAS failure) — very much reachable:
-//	   the COMAddIns Connect and the temp-workbook bounce both PUMP the STA
-//	   message loop, so Excel can dispatch a queued OnTime macro while a connect
-//	   is mid-flight; that dispatch re-enters TryConnectRibbon on the same thread
-//	   and is turned away.
-//
-// Before the fix both exits reported themselves as an ordinary failure (pNoApp
-// left false), so the runner charged one of its 30 productive attempts for a
-// connect that never happened. The fix replaces the bool out-param with an
-// explicit outcome CLASS; only kRejected is chargeable, kNoApp goes to the noApp
-// budget, and kNotAttempted charges NOTHING.
-func TestXllMainRibbonRetryUnattemptedNotCharged(t *testing.T) {
-	t.Parallel()
-
-	offCfg := ribbonConnectCfg()
-	offCfg.Ribbon.Bounce = "off"
-
-	for _, tc := range []struct {
-		name string
-		cfg  *config.Config
-	}{
-		{"default", ribbonConnectCfg()},
-		{"off", offCfg},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			src := renderCppMain(t, tc.cfg)
-
-			for _, want := range []string{
-				// The three-way (four-way with kConnected) outcome class exists…
-				"enum class RibbonAttempt {",
-				"kNotAttempted = 0,",
-				"kNoApp,",
-				"kRejected,",
-				"kConnected,",
-				// …TryConnectRibbon defaults the out-param to kNotAttempted, so an
-				// exit that forgets to classify itself is UNCHARGED, never
-				// mis-charged.
-				"if (pOutcome) *pOutcome = RibbonAttempt::kNotAttempted;",
-				"if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;",
-				"if (pOutcome) *pOutcome = RibbonAttempt::kRejected;",
-				"if (pOutcome) *pOutcome = RibbonAttempt::kConnected;",
-				// …and the runner charges the productive budget ONLY for kRejected.
-				"} else if (retryOutcome == RibbonAttempt::kRejected) {",
-				"g_ribbonRetryAttempts.fetch_add(1) + 1;",
-			} {
-				if !strings.Contains(src, want) {
-					t.Errorf("[%s] xll_main.cpp ribbon retry missing %q", tc.name, want)
-				}
-			}
-
-			// The pre-fix shape: an `else` that charges the productive budget for
-			// EVERY non-noApp outcome, including the never-attempted ones.
-			if strings.Contains(src, "if (retryNoApp) {") || strings.Contains(src, "bool retryNoApp = false;") {
-				t.Errorf("[%s] the runner still uses the bool noApp out-param; a re-entrancy bail "+
-					"(nothing attempted) is then billed to the 30-attempt productive budget", tc.name)
-			}
-
-			// kRejected must be classified at the site that actually RAN the
-			// Connect: after SetRibbonConnected returned false and after the noApp
-			// early-return. Anything earlier would re-introduce the mis-billing.
-			connectIdx := strings.Index(src, "if (SetRibbonConnected(true, &noApp, allowBounce)) {")
-			noAppIdx := strings.Index(src, "if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;")
-			rejectedIdx := strings.Index(src, "if (pOutcome) *pOutcome = RibbonAttempt::kRejected;")
-			reentryIdx := strings.Index(src, "if (!s_inConnect.compare_exchange_strong(expected, true)) return false;")
-			if connectIdx < 0 || noAppIdx < 0 || rejectedIdx < 0 || reentryIdx < 0 {
-				t.Fatalf("[%s] missing markers (connect=%d noApp=%d rejected=%d reentry=%d)",
-					tc.name, connectIdx, noAppIdx, rejectedIdx, reentryIdx)
-			}
-			if !(reentryIdx < connectIdx && connectIdx < noAppIdx && noAppIdx < rejectedIdx) {
-				t.Errorf("[%s] outcome classification is out of order (reentry=%d connect=%d noApp=%d rejected=%d): "+
-					"kRejected must only be reported after an actual SetRibbonConnected attempt",
-					tc.name, reentryIdx, connectIdx, noAppIdx, rejectedIdx)
-			}
-			// The re-entrancy bail must NOT classify itself as anything but the
-			// default: no assignment may sit between the CAS and the guard object.
-			between := src[reentryIdx:connectIdx]
-			if strings.Contains(between, "*pOutcome = RibbonAttempt::kRejected") ||
-				strings.Contains(between, "*pOutcome = RibbonAttempt::kNoApp") {
-				t.Errorf("[%s] the STA re-entrancy bail must stay kNotAttempted (charge nothing)", tc.name)
+			// The three outcome branches must be exhaustive and in the documented
+			// order: noApp, then rejected, then the uncharged else. A missing else
+			// would silently make kNotAttempted stop the chain.
+			noAppIdx := strings.Index(src, "if (retryOutcome == xll::ribbon::RibbonAttempt::kNoApp) {")
+			rejIdx := strings.Index(src, "} else if (retryOutcome == xll::ribbon::RibbonAttempt::kRejected) {")
+			elseIdx := strings.Index(src, "Ribbon: OnTime connect retry re-entered while a connect was in flight; ")
+			if noAppIdx < 0 || rejIdx < 0 || elseIdx < 0 || !(noAppIdx < rejIdx && rejIdx < elseIdx) {
+				t.Errorf("[%s] the runner's outcome branches are missing or out of order "+
+					"(noApp=%d rejected=%d uncharged=%d)", tc.name, noAppIdx, rejIdx, elseIdx)
 			}
 		})
 	}
@@ -450,26 +523,25 @@ func TestXllMainRibbonRetryUnattemptedNotCharged(t *testing.T) {
 //     of __xllgen_RibbonConnectRetry. A second xlAutoOpen in the same process
 //     generation (probe-unload-reuse, or add-in disable→enable without a DLL
 //     unload) while still unconnected armed a SECOND chain sharing that counter:
-//     double the dispatch rate, half the effective budget each. The counters move
-//     to file scope and a start-once CAS latch (g_ribbonRetryArmed) makes the arm
-//     idempotent.
+//     double the dispatch rate, half the effective budget each. The counters moved
+//     to file scope — and, since 2026-08-02, into src/ribbon_connect.cpp, which is
+//     strictly stronger for the same reason (one definition per PROCESS, not per
+//     rendered template) — and a start-once CAS latch (g_ribbonRetryArmed) makes
+//     the arm idempotent.
 func TestXllMainRibbonRetryArmRcAndSingleChain(t *testing.T) {
 	t.Parallel()
 	src := renderCppMain(t, ribbonConnectCfg())
 
 	for _, want := range []string{
-		// (2) File-scope state, not function-local statics in an SEH __try.
-		"static std::atomic<bool> g_ribbonRetryArmed{false};",
-		"static std::atomic<int>  g_ribbonRetryAttempts{0};",
-		"static std::atomic<int>  g_ribbonRetryNoAppAttempts{0};",
-		// (2) Start-once CAS at the arm site: at most one chain per process.
+		// (2) Start-once CAS at the arm site, over the asset's latch: at most one
+		//     chain per process.
 		"bool retryExpected = false;",
-		"g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {",
+		"xll::ribbon::g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {",
 		// (1) The initial arm inspects the rc and un-latches so a later
 		//     xlAutoOpen may legitimately try again (nothing is in flight).
-		"int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);",
+		"int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), xll::ribbon::kRibbonRetryIntervalSec);",
 		"if (armRc != xlretSuccess) {",
-		"g_ribbonRetryArmed.store(false, std::memory_order_release);",
+		"xll::ribbon::g_ribbonRetryArmed.store(false, std::memory_order_release);",
 		"Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=",
 		// (1) The re-arm inside the runner does the same.
 		"int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);",
@@ -482,11 +554,12 @@ func TestXllMainRibbonRetryArmRcAndSingleChain(t *testing.T) {
 	}
 
 	// The pre-fix arm site: a bare fire-and-forget call whose rc was dropped.
-	if strings.Contains(src, "        xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);\n") {
+	if strings.Contains(src, "        xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), xll::ribbon::kRibbonRetryIntervalSec);\n") {
 		t.Errorf("xll_main.cpp still discards the arm rc from ScheduleOnTimeMacro; " +
 			"a rejected arm would kill the retry chain silently")
 	}
-	// The counter must not live inside the macro body as a local static.
+	// (2) No counter may live inside the macro body as a local static. Now that the
+	//     counters are asset globals this is a "did not regress back" guard.
 	retryIdx := strings.Index(src, `__stdcall __xllgen_RibbonConnectRetry()`)
 	if retryIdx < 0 {
 		t.Fatalf("__xllgen_RibbonConnectRetry not found in the ribbon render")

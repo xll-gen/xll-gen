@@ -55,3 +55,41 @@ inline void LogDebug(const std::string& msg) {}
 #endif
 
 } // namespace xll
+
+// Safe logging macros: no-op during forced unload to avoid touching freed
+// resources.
+//
+// These used to be defined in xll_main.cpp.tmpl, which meant only the generated
+// TU could use them and every asset had to call xll::LogWarn directly — i.e. the
+// asset code silently lost the unload guard the template code had. Defining them
+// beside the loggers they wrap makes the guarded form the default everywhere.
+//
+// The guard reads xll::g_isUnloading, which is DEFINED in src/xll_lifecycle.cpp.
+// It is declared here rather than by including xll_lifecycle.h, for two reasons:
+//   1. xll_lifecycle.h already includes THIS header (for LogError, used by its
+//      inline LogException), so including it back would be a cycle that only
+//      happens to work because of where the two includes sit in each file.
+//   2. xll_lifecycle.h transitively pulls in xll_launch.h and shm/Logger.h. A TU
+//      that only wants to LOG should not need the shm include path — the offline
+//      g++ harnesses in internal/assets (cache_cpp_test.go, gridarg_cpp_test.go)
+//      compile single asset TUs with types/flatbuffers/phmap only, and stop
+//      compiling the moment logging drags the lifecycle chain in.
+// Declaring it here still means a call site cannot use the macros un-guarded by
+// accident, which was the point of moving them out of the template.
+#include <atomic>
+
+namespace xll {
+extern std::atomic<bool> g_isUnloading;
+} // namespace xll
+
+#ifndef SAFE_LOG_CALL
+#define SAFE_LOG_CALL(level, msg) do { if (!xll::g_isUnloading) xll::level(msg); } while(0)
+#define SAFE_LOG_INFO(msg) SAFE_LOG_CALL(LogInfo, msg)
+#define SAFE_LOG_WARN(msg) SAFE_LOG_CALL(LogWarn, msg)
+#define SAFE_LOG_ERROR(msg) SAFE_LOG_CALL(LogError, msg)
+#ifdef XLL_DEBUG_LOGGING
+#define SAFE_LOG_DEBUG(msg) SAFE_LOG_CALL(LogDebug, msg)
+#else
+#define SAFE_LOG_DEBUG(msg) do {} while(0)
+#endif
+#endif // SAFE_LOG_CALL

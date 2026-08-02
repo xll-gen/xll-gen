@@ -16,6 +16,24 @@ func bounceCfg(mode string) *config.Config {
 	return cfg
 }
 
+// WHERE SOME OF THE OLD ASSERTIONS WENT (2026-08-02). GetActiveWorkbookName,
+// ScratchCloseEventSuppressor and RestorePendingEventSuppression moved out of
+// xll_main.cpp.tmpl into include/com/scratch_book.h + src/scratch_book.cpp (no
+// template variables in them). Their BODY invariants — the GET.DOCUMENT(88)
+// lookup, the file-static pending record, the armed-flag-gated restore of the
+// captured ORIGINALS, the logged-not-swallowed failed put — are pinned against
+// the embedded asset in internal/assets/scratch_book_cpp_test.go
+// (TestScratchBookNamesTheActiveWorkbook, TestScratchCloseSuppressorRestoreContract).
+//
+// What stays here is what is genuinely per-project: WHICH bounce mode emits the
+// close at all, that the guard is constructed BEFORE xlcFileClose, and that
+// xlAutoOpen replays the idempotent restore after the SEH block.
+//
+// The negative assertions therefore run on CODE only (stripCppComments): the
+// template documents the relocation in prose that names the very symbols the
+// keep-open/off modes must not CALL, so a raw substring search false-positives on
+// the breadcrumb comment.
+
 // TestRibbonBounceKeepOpen pins ribbon.bounce: keep-open — the DLP
 // mitigation mode. The scratch workbook is created (xlcNew) so the EXCEL7
 // window materializes and the COMAddIns connect can run at xlAutoOpen, but it
@@ -32,7 +50,7 @@ func TestRibbonBounceKeepOpen(t *testing.T) {
 		// The bounce still creates the scratch workbook...
 		"xll::CallExcel(xlcNew, nullptr, 5)",
 		// ...and still re-acquires the Application and connects at xlAutoOpen.
-		`TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`,
+		`xll::ribbon::TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`,
 		// The mode is observable in the log.
 		"ribbon.bounce: keep-open",
 	} {
@@ -41,19 +59,21 @@ func TestRibbonBounceKeepOpen(t *testing.T) {
 		}
 	}
 
+	code := stripCppComments(src)
 	for _, gone := range []string{
 		// The close CALL must be entirely absent — this is the whole point.
-		// (Asserted on the call site, not the bare token: explanatory comments
-		// in other rendered paths may legitimately mention the opcode name.)
 		"xll::CallExcel(xlcFileClose",
-		// No close => no close-by-identity machinery.
+		// No close => no close-by-identity machinery. Now that the helper is an
+		// asset, the thing that must be absent is the CALL, and the header include
+		// with it (full mode is the only mode that needs either).
 		"GetActiveWorkbookName",
+		"scratch_book.h",
 		"xlfGetDocument",
 		"scratchName",
 		// The scratch book stays visible: keep it a plain 1-sheet Book1.
 		"xll::CallExcel(xlcWorkbookInsert",
 	} {
-		if strings.Contains(src, gone) {
+		if strings.Contains(code, gone) {
 			t.Errorf("xll_main.cpp (bounce keep-open) must not contain %q (the scratch workbook must never be closed)", gone)
 		}
 	}
@@ -72,7 +92,7 @@ func TestRibbonBounceOff(t *testing.T) {
 		// The helper still exists (registration + direct-acquire path)...
 		"static IDispatch* GetExcelApplicationOrBounce()",
 		// ...and the calc-end fallback remains the connect path.
-		`TryConnectRibbon("calc end");`,
+		`xll::ribbon::TryConnectRibbon("calc end");`,
 		// The opt-out is observable in the log.
 		"ribbon.bounce: off",
 	} {
@@ -81,15 +101,16 @@ func TestRibbonBounceOff(t *testing.T) {
 		}
 	}
 
+	code := stripCppComments(src)
 	for _, gone := range []string{
-		// No workbook may be created OR closed in this mode. (Asserted on the
-		// call sites — comments elsewhere may mention the opcode names.)
+		// No workbook may be created OR closed in this mode.
 		"xll::CallExcel(xlcNew",
 		"xll::CallExcel(xlcWorkbookInsert",
 		"xll::CallExcel(xlcFileClose",
 		"GetActiveWorkbookName",
+		"scratch_book.h",
 	} {
-		if strings.Contains(src, gone) {
+		if strings.Contains(code, gone) {
 			t.Errorf("xll_main.cpp (bounce off) must not contain %q (the bounce is disabled)", gone)
 		}
 	}
@@ -107,25 +128,10 @@ func TestRibbonBounceFullSuppressesEventsAroundClose(t *testing.T) {
 	src := renderCppMain(t, bounceCfg("full"))
 
 	for _, want := range []string{
-		// The RAII guard type exists and is instantiated before the close.
-		"struct ScratchCloseEventSuppressor",
-		"ScratchCloseEventSuppressor suppressEvents(pApp);",
-		// It flips BOTH properties via the dispatch helpers (state lives in
-		// the file-static pending record, not the object — §20.3 SEH path)...
-		`xll::com::GetProperty(p.app, L"EnableEvents", &p.oldEnableEvents)`,
-		`xll::com::GetProperty(p.app, L"DisplayAlerts", &p.oldDisplayAlerts)`,
-		// ...the record holds an AddRef'd app so it outlives the frame on the
-		// dtor-skipped SEH path...
-		"static PendingEventSuppression g_pendingSuppression;",
-		"p.app->AddRef();",
-		// ...and the idempotent restore replays the captured originals (not a
-		// blind =true), gated on the armed flags, LOGGING a failed put.
-		`if (p.armedEvents) {`,
-		`xll::com::Invoke(p.app, L"EnableEvents", DISPATCH_PROPERTYPUT, { p.oldEnableEvents }, nullptr);`,
-		`xll::com::Invoke(p.app, L"DisplayAlerts", DISPATCH_PROPERTYPUT, { p.oldDisplayAlerts }, nullptr);`,
-		"failed to restore Application.EnableEvents",
-		// The dtor routes through the same idempotent restore.
-		"~ScratchCloseEventSuppressor() { RestorePendingEventSuppression(); }",
+		// The guard's declaration is reachable (asset header, full mode only)...
+		`#include "com/scratch_book.h"`,
+		// ...and it is instantiated before the close.
+		"xll::ribbon::ScratchCloseEventSuppressor suppressEvents(pApp);",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("xll_main.cpp (bounce full) missing %q", want)
@@ -134,7 +140,7 @@ func TestRibbonBounceFullSuppressesEventsAroundClose(t *testing.T) {
 
 	// The guard instantiation must precede the close call site in the render
 	// (RAII scope covers the close).
-	guardIdx := strings.Index(src, "ScratchCloseEventSuppressor suppressEvents(pApp);")
+	guardIdx := strings.Index(src, "xll::ribbon::ScratchCloseEventSuppressor suppressEvents(pApp);")
 	closeIdx := strings.Index(src, "xll::CallExcel(xlcFileClose, nullptr, false)")
 	if guardIdx < 0 || closeIdx < 0 || guardIdx > closeIdx {
 		t.Errorf("event-suppressor guard must be instantiated before xlcFileClose (guard@%d, close@%d)", guardIdx, closeIdx)
@@ -144,16 +150,18 @@ func TestRibbonBounceFullSuppressesEventsAroundClose(t *testing.T) {
 	// the SAFE_BLOCK wrapping the connect attempt, so a dtor-skipping SEH
 	// unwind from inside the bounce still gets EnableEvents/DisplayAlerts
 	// restored. The call must come after the xlAutoOpen connect attempt.
-	connectIdx := strings.Index(src, `TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`)
-	restoreIdx := strings.LastIndex(src, "RestorePendingEventSuppression();")
+	connectIdx := strings.Index(src, `xll::ribbon::TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);`)
+	restoreIdx := strings.LastIndex(src, "xll::ribbon::RestorePendingEventSuppression();")
 	if connectIdx < 0 || restoreIdx < 0 || restoreIdx < connectIdx {
 		t.Errorf("xlAutoOpen must invoke RestorePendingEventSuppression() after the connect attempt (connect@%d, restore@%d)", connectIdx, restoreIdx)
 	}
 
-	// keep-open / off have no close -> the guard must not be rendered.
+	// keep-open / off have no close -> neither the guard nor its header may be
+	// rendered. On CODE only: the template's relocation breadcrumb names the type
+	// in prose for every mode.
 	for _, mode := range []string{"keep-open", "off"} {
-		modeSrc := renderCppMain(t, bounceCfg(mode))
-		if strings.Contains(modeSrc, "ScratchCloseEventSuppressor") {
+		modeCode := stripCppComments(renderCppMain(t, bounceCfg(mode)))
+		if strings.Contains(modeCode, "ScratchCloseEventSuppressor") {
 			t.Errorf("xll_main.cpp (bounce %s) must not emit ScratchCloseEventSuppressor (no close in this mode)", mode)
 		}
 	}

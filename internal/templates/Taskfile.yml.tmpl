@@ -7,6 +7,22 @@ version: '3'
 env:
   GOAMD64: v3
 
+# Parallel C++ compile jobs.
+#
+# The CMake Makefile generators (MinGW Makefiles, Unix Makefiles) build SERIALLY
+# unless given a job count, so a clean XLL build compiled one translation unit at
+# a time -- the add-in sources plus flatbuffers, zstd and types. Measured on a
+# 24-core machine, passing a job count cut xll-gen's own C++ compile gates from
+# 433s to 162s; a generated project's build has the same shape.
+#
+# Bounded rather than a bare `--parallel`: with the Makefile generators an omitted
+# job count means "unlimited", which spawns one compiler per ready target (zstd
+# alone is 100+ files) and thrashes a small machine. Override per invocation:
+#
+#     task build CPP_JOBS=4
+vars:
+  CPP_JOBS: '8'
+
 tasks:
   default:
     cmds:
@@ -29,14 +45,14 @@ tasks:
     deps: [ build-go-server ] # Ensure .exe is built first
     cmds:
       - task: configure-cpp
-      - cmake --build build/cpp --config Release
+      - cmake --build build/cpp --config Release --parallel {{"{{"}}.CPP_JOBS{{"}}"}}
 
   build-cpp-debug:
     desc: Build C++ XLL (Debug)
     deps: [ build-go-server-debug ]
     cmds:
       - task: configure-cpp-debug
-      - cmake --build build/cpp --config Debug
+      - cmake --build build/cpp --config Debug --parallel {{"{{"}}.CPP_JOBS{{"}}"}}
 
   configure-cpp:
     desc: Configure the C++ project with CMake
@@ -85,14 +101,14 @@ tasks:
     cmds:
       - task: build-go
       - cmake -S {{.Package}}/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release -DXLL_DEBUG=OFF
-      - cmake --build build/cpp --config Release
+      - cmake --build build/cpp --config Release --parallel {{"{{"}}.CPP_JOBS{{"}}"}}
 
   build-cpp-debug:
     desc: Build C++ XLL (Debug)
     cmds:
       - task: build-go-debug
       - cmake -S {{.Package}}/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Debug -DXLL_DEBUG=ON
-      - cmake --build build/cpp --config Debug
+      - cmake --build build/cpp --config Debug --parallel {{"{{"}}.CPP_JOBS{{"}}"}}
 
   build-go:
     desc: Build Go server

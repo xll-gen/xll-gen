@@ -76,7 +76,21 @@
 // ribbon / RTD-throttle features that need it on this template TU.
 #include "com/excel_app.h"
 {{end}}
+{{if and .Ribbon.Enabled (eq .Ribbon.BounceMode "full")}}
+// Scratch-workbook bounce helpers (active-workbook name + the event-suppression
+// guard around the scratch close). See com/scratch_book.h for the SEH restore
+// contract that makes the free-function replay mandatory.
+#include "com/scratch_book.h"
+{{end}}
 {{if .Ribbon.Enabled}}
+// Ribbon COM add-in connect machinery: SetRibbonConnected / TryConnectRibbon,
+// the 0/1/2 state gate, the two retry budgets and their counters. It had no
+// template variables in it, so it lives in com/ribbon_connect.h +
+// src/ribbon_connect.cpp; the handful of things only THIS file knows (COM
+// identity, project-named registration strings, the generated ribbon XML/images,
+// and the ribbon.bounce-branched Application acquisition) are injected once via
+// xll::ribbon::SetConnectContext in xlAutoOpen below.
+#include "com/ribbon_connect.h"
 #include "ribbon_xml.h"
 #include "ribbon_images.h"
 {{end}}
@@ -85,16 +99,9 @@
 #include <oleacc.h>
 {{end}}
 
-// Safe logging macros: no-op during forced unload to avoid touching freed resources.
-#define SAFE_LOG_CALL(level, msg) do { if (!g_isUnloading) level(msg); } while(0)
-#define SAFE_LOG_INFO(msg) SAFE_LOG_CALL(LogInfo, msg)
-#define SAFE_LOG_WARN(msg) SAFE_LOG_CALL(LogWarn, msg)
-#define SAFE_LOG_ERROR(msg) SAFE_LOG_CALL(LogError, msg)
-#ifdef XLL_DEBUG_LOGGING
-#define SAFE_LOG_DEBUG(msg) SAFE_LOG_CALL(LogDebug, msg)
-#else
-#define SAFE_LOG_DEBUG(msg) do {} while(0)
-#endif
+// The SAFE_LOG_* macros (no-op during forced unload) now live beside the loggers
+// they wrap, in xll_log.h, so the asset TUs get the same unload guard this file
+// has always had instead of calling xll::LogWarn bare.
 
 // Disable "unreferenced formal parameter" warning
 #pragma warning(disable: 4100)
@@ -200,15 +207,14 @@ extern "C" {
 {{end}}
 
 {{if .Ribbon.Enabled}}
-// Forward declaration: xlAutoClose (below) disconnects the ribbon add-in, but
-// SetRibbonConnected is defined after xlAutoOpen further down this file.
-//
-// allowBounce (default false): when true AND the in-process Application object
-// is not reachable (no workbook -> no EXCEL7 child window), do the synchronous
-// temp-workbook bounce to materialize it. Only the xlAutoOpen first-attempt
-// path passes true; the calc-end retry path (a workbook already exists there)
-// must never bounce. See GetExcelApplicationOrBounce below.
-static bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allowBounce = false);
+// SetRibbonConnected / TryConnectRibbon and their state moved to
+// include/com/ribbon_connect.h + src/ribbon_connect.cpp (no template variables in
+// them), so the forward declaration that used to sit here — the teardown hook
+// below needed it because the definition came after xlAutoOpen — is gone with it.
+// The allowBounce contract and the give-up-budget semantics live with the code
+// there; the bounce itself (GetExcelApplicationOrBounce, further down) STAYS here
+// because it is ribbon.bounce-branched generated code, and reaches the asset as a
+// function pointer in the injected xll::ribbon::ConnectContext.
 {{end}}
 
 {{if or .Ribbon.Enabled .Commands .Rtd.Enabled}}
@@ -258,7 +264,7 @@ static void GracefulComTeardownHook(bool revokeRtdClassObject) {
         if (xll::ribbon::OfficeDisconnectInProgress()) {
             SAFE_LOG_INFO("Ribbon: explicit COMAddIns disconnect SKIPPED — Office is already inside its own "
                           "add-in disconnect for us; re-entering it corrupts Office's COMAddIn state.");
-        } else if (!SetRibbonConnected(false)) {
+        } else if (!xll::ribbon::SetRibbonConnected(false)) {
             SAFE_LOG_WARN("Ribbon: explicit disconnect failed; Excel may release the add-in late.");
         }
         if (g_ribbonCookie != 0) {
@@ -381,119 +387,9 @@ static IDispatch* GetExcelApplication() {
 // WorkbookBeforeClose with a modal prompt — closing an unclassified
 // scratch book mid-xlAutoOpen can crash or hang Excel); "off" never bounces
 // (the COMAddIns connect waits for the calc-end fallback).
-{{if eq .Ribbon.BounceMode "full"}}
-// Returns the name of the currently ACTIVE workbook via the XLM macro function
-// GET.DOCUMENT(88) (xlfGetDocument, selector 88 = "name of the active document/
-// workbook", e.g. L"Book1"), or an empty string if it cannot be determined.
-// Selector 88 verified in types/include/types/xlcall.h (#define xlfGetDocument 188)
-// against the XLM GET.DOCUMENT reference (type_num 88 -> active workbook name).
-// The result is an Excel-allocated Pascal string, so it is held in a
-// ScopedXLOPER12Result (xlFree on destruction) and decoded with PascalToWString —
-// the same idiom used for the macro caller number-format path in this template.
-static std::wstring GetActiveWorkbookName() {
-    ScopedXLOPER12Result xName;
-    if (xll::CallExcel(xlfGetDocument, xName, 88) != xlretSuccess) return std::wstring();
-    if ((xName.get()->xltype & xltypeStr) == 0 || !xName.get()->val.str) return std::wstring();
-    return PascalToWString(xName.get()->val.str);
-}
-
-// Suppresses Application.EnableEvents / .DisplayAlerts for the scratch-book
-// close and restores the ORIGINAL captured values afterwards.
-//
-// WHY: DLP/document-classification add-ins hook
-// WorkbookBeforeClose with a modal classification prompt; firing that
-// mid-xlAutoOpen — before Excel's UI (and the add-in itself) has finished
-// initializing — can crash or hang Excel (IMPROVEMENT_BACKLOG §2 xll-gen,
-// 2026-07-20). EnableEvents=false stops the Application event sink entirely
-// (covers third-party COM add-in sinks); DisplayAlerts=false additionally
-// suppresses Excel-native prompts. ribbon.bounce: keep-open removes the close
-// altogether; this guard hardens the DEFAULT (full) mode.
-//
-// RESTORE PATHS (§20.3 caveat — xll-cpp-reviewer 2026-07-20). The RAII dtor
-// covers normal exit and C++ unwind, but an ASYNC SEH FAULT inside
-// xlcFileClose (the very scenario this guard defends against) unwinds via
-// XLL_SAFE_BLOCK's __except WITHOUT running intervening C++ dtors on /EHsc.
-// Leaving EnableEvents=false would silence every add-in's Workbook events for
-// the rest of the session, so the suppression state does NOT live in the
-// object: it lives in the file-static g_pendingSuppression record (AddRef'd
-// app + captured originals + armed flags), and the restore is the idempotent
-// free function RestorePendingEventSuppression(). The dtor calls it (normal
-// path), and xlAutoOpen calls it again right AFTER the SAFE_BLOCK that wraps
-// the connect attempt — the belt-and-braces replay for the dtor-skipped SEH
-// path (a no-op when the dtor already ran). This also covers partial
-// construction: the record arms property-by-property, so a fault between the
-// two puts still leaves the first one replayable.
-//
-// Best-effort by design: if a property cannot be read (unexpected VT) or the
-// put fails, the corresponding armed flag stays false, nothing is restored
-// for it, and the close proceeds exactly as it did before this guard existed.
-// VT_BOOL VARIANTs own no resources, but VariantClear is load-bearing hygiene:
-// a hostile IDispatch may have returned a non-BOOL (VT_DISPATCH/VT_BSTR) that
-// failed the VT_BOOL arm check yet still owns resources.
-struct PendingEventSuppression {
-    IDispatch* app = nullptr; // AddRef'd while a suppression is pending
-    VARIANT oldEnableEvents;
-    VARIANT oldDisplayAlerts;
-    bool armedEvents = false;
-    bool armedAlerts = false;
-};
-static PendingEventSuppression g_pendingSuppression; // STA-only access (bounce + xlAutoOpen)
-
-// Idempotent: replays the captured originals for whatever is still armed,
-// LOGS (not swallows) a failed restore put, releases the AddRef'd app, and
-// clears the record. Restores ONLY what was actually flipped (armed flags),
-// with the original captured values — never a blind =true, which would
-// clobber a user/automation host that had them off on purpose.
-static void RestorePendingEventSuppression() {
-    PendingEventSuppression& p = g_pendingSuppression;
-    if (p.app) {
-        if (p.armedEvents) {
-            HRESULT hr = xll::com::Invoke(p.app, L"EnableEvents", DISPATCH_PROPERTYPUT, { p.oldEnableEvents }, nullptr);
-            if (FAILED(hr)) SAFE_LOG_WARN("Ribbon bounce: failed to restore Application.EnableEvents after the scratch-book close (hr=" + std::to_string(hr) + "); Workbook events may stay suppressed for this session.");
-        }
-        if (p.armedAlerts) {
-            HRESULT hr = xll::com::Invoke(p.app, L"DisplayAlerts", DISPATCH_PROPERTYPUT, { p.oldDisplayAlerts }, nullptr);
-            if (FAILED(hr)) SAFE_LOG_WARN("Ribbon bounce: failed to restore Application.DisplayAlerts after the scratch-book close (hr=" + std::to_string(hr) + ").");
-        }
-        p.app->Release();
-        p.app = nullptr;
-    }
-    p.armedEvents = false;
-    p.armedAlerts = false;
-    VariantClear(&p.oldEnableEvents);
-    VariantClear(&p.oldDisplayAlerts);
-}
-
-struct ScratchCloseEventSuppressor {
-    explicit ScratchCloseEventSuppressor(IDispatch* a) {
-        PendingEventSuppression& p = g_pendingSuppression;
-        VariantInit(&p.oldEnableEvents);
-        VariantInit(&p.oldDisplayAlerts);
-        p.armedEvents = false;
-        p.armedAlerts = false;
-        if (!a) return; // no Application object -> nothing to suppress
-        p.app = a;
-        p.app->AddRef(); // the record outlives this frame on the SEH path
-        VARIANT vFalse; VariantInit(&vFalse);
-        vFalse.vt = VT_BOOL;
-        vFalse.boolVal = VARIANT_FALSE;
-        if (SUCCEEDED(xll::com::GetProperty(p.app, L"EnableEvents", &p.oldEnableEvents)) && p.oldEnableEvents.vt == VT_BOOL) {
-            p.armedEvents = SUCCEEDED(xll::com::Invoke(p.app, L"EnableEvents", DISPATCH_PROPERTYPUT, { vFalse }, nullptr));
-        }
-        if (SUCCEEDED(xll::com::GetProperty(p.app, L"DisplayAlerts", &p.oldDisplayAlerts)) && p.oldDisplayAlerts.vt == VT_BOOL) {
-            p.armedAlerts = SUCCEEDED(xll::com::Invoke(p.app, L"DisplayAlerts", DISPATCH_PROPERTYPUT, { vFalse }, nullptr));
-        }
-        if (!p.armedEvents && !p.armedAlerts) {
-            // Nothing flipped: clear the record now so the belt-and-braces
-            // replay has nothing to do (and the AddRef does not linger).
-            RestorePendingEventSuppression();
-        }
-    }
-    ~ScratchCloseEventSuppressor() { RestorePendingEventSuppression(); }
-    ScratchCloseEventSuppressor(const ScratchCloseEventSuppressor&) = delete;
-    ScratchCloseEventSuppressor& operator=(const ScratchCloseEventSuppressor&) = delete;
-};
-{{end}}
+// GetActiveWorkbookName / ScratchCloseEventSuppressor / RestorePendingEventSuppression
+// moved to include/com/scratch_book.h + src/scratch_book.cpp (no template
+// variables in them). The SEH restore contract lives with the code there.
 
 static IDispatch* GetExcelApplicationOrBounce() {
     IDispatch* pApp = GetExcelApplication();
@@ -546,7 +442,7 @@ static IDispatch* GetExcelApplicationOrBounce() {
     // between create and close (Excel started as `excel.exe somedoc.xlsx` with
     // ordering not contractual), an unconditional close would silently lose the
     // user's work. Capturing the name lets us refuse the close in that case.
-    std::wstring scratchName = GetActiveWorkbookName();
+    std::wstring scratchName = xll::ribbon::GetActiveWorkbookName();
 
     // The EXCEL7 window now exists; re-acquire the Application.
     pApp = GetExcelApplication();
@@ -558,7 +454,7 @@ static IDispatch* GetExcelApplicationOrBounce() {
     if (scratchName.empty()) {
         SAFE_LOG_WARN("Ribbon: temp-workbook bounce could not capture the scratch workbook name; leaving it open rather than risk discarding a user document.");
     } else {
-        std::wstring activeNow = GetActiveWorkbookName();
+        std::wstring activeNow = xll::ribbon::GetActiveWorkbookName();
         if (activeNow.empty() || activeNow != scratchName) {
             SAFE_LOG_WARN("Ribbon: temp-workbook bounce scratch workbook is no longer active (a user document may have become active); leaving the scratch workbook open to avoid discarding unsaved changes.");
         } else {
@@ -569,7 +465,7 @@ static IDispatch* GetExcelApplicationOrBounce() {
             // add-ins, modal classification prompts) cannot fire mid-xlAutoOpen;
             // the RAII destructor restores the original values at scope end,
             // immediately after the close returns.
-            ScratchCloseEventSuppressor suppressEvents(pApp);
+            xll::ribbon::ScratchCloseEventSuppressor suppressEvents(pApp);
             int rcClose = xll::CallExcel(xlcFileClose, nullptr, false);
             if (rcClose != xlretSuccess) {
                 SAFE_LOG_WARN("Ribbon: temp-workbook bounce could not close the scratch workbook (xlcFileClose rc=" + std::to_string(rcClose) + ").");
@@ -627,274 +523,22 @@ static void TryApplyRtdThrottle(const char* phase) {
 {{end}}
 
 {{if .Ribbon.Enabled}}
-// Sets Application.COMAddIns.Item(progId).Connect = <connected>. Used both
-// to connect at xlAutoOpen and — critically — to DISCONNECT at xlAutoClose:
-// revoking the class object does not release the live add-in instance Excel
-// holds; without an explicit Connect=false Excel can keep a vtable pointer
-// into this DLL past FreeLibrary and crash on quit (Excel-DNA does the same
-// explicit disconnect for its helper add-in).
+// The ribbon COM add-in connect machinery that used to live here — the
+// Application.COMAddIns Connect (SetRibbonConnected), the retryable bootstrap
+// (TryConnectRibbon) with its 0/1/2 state gate, s_inConnect re-entrancy guard,
+// 60-attempt cap and RibbonAttempt outcome class, plus the two xlcOnTime retry
+// budgets and their counters — is now include/com/ribbon_connect.h +
+// src/ribbon_connect.cpp. It contained no template variables, so it is compiled
+// once as an asset instead of being re-emitted into every generated project, and
+// the measured findings recorded in its comments (AGENTS.md §18.11, §20.3, §23.6
+// "§3" + FOLLOW-UPs) live with the code they describe.
 //
-// pNoApp (optional, out): set to true when the failure is solely because the
-// in-process Application object is not reachable yet (no workbook window -> no
-// EXCEL7 child). Callers use this to avoid burning the give-up budget on the
-// no-workbook-yet case (the user may open a workbook minutes later).
-//
-// allowBounce: when true, acquire the Application via GetExcelApplicationOrBounce
-// (synchronous temp-workbook bounce when no workbook is open). Only the
-// xlAutoOpen first-attempt path passes true; calc-end retries must not bounce
-// (a workbook already exists there) and pass false.
-static bool SetRibbonConnected(bool connected, bool* pNoApp, bool allowBounce) {
-    if (pNoApp) *pNoApp = false;
-    IDispatch* pApp = allowBounce ? GetExcelApplicationOrBounce() : GetExcelApplication();
-    if (!pApp) {
-        if (pNoApp) *pNoApp = true;
-        return false;
-    }
-
-    bool ok = false;
-    {
-        VARIANT vAddins; VariantInit(&vAddins);
-        if (SUCCEEDED(xll::com::GetProperty(pApp, L"COMAddIns", &vAddins)) && vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
-            VARIANT vProg; VariantInit(&vProg);
-            vProg.vt = VT_BSTR;
-            vProg.bstrVal = SysAllocString(g_szRibbonProgID);
-            VARIANT vItem; VariantInit(&vItem);
-            if (SUCCEEDED(xll::com::Invoke(vAddins.pdispVal, L"Item", DISPATCH_METHOD | DISPATCH_PROPERTYGET, { vProg }, &vItem))
-                && vItem.vt == VT_DISPATCH && vItem.pdispVal) {
-                VARIANT vConn; VariantInit(&vConn);
-                vConn.vt = VT_BOOL;
-                vConn.boolVal = connected ? VARIANT_TRUE : VARIANT_FALSE;
-                ok = SUCCEEDED(xll::com::Invoke(vItem.pdispVal, L"Connect", DISPATCH_PROPERTYPUT, { vConn }, nullptr));
-            }
-            VariantClear(&vItem);
-            VariantClear(&vProg);  // frees the BSTR (caller owns args per dispatch_helpers contract)
-        }
-        VariantClear(&vAddins);
-    }
-    pApp->Release();
-    return ok;
-}
-
-// Ribbon COM add-in bootstrap, made idempotent + retryable. The COMAddIns
-// connect (step 4) needs the in-process Application object, which is reachable
-// only through the XLDESK -> EXCEL7 child window. When the XLL loads with NO
-// workbook open (add-in auto-loaded at Excel startup), that child window does
-// not exist yet, so GetExcelApplication() returns nullptr.
-//
-// Primary mechanism: the xlAutoOpen first attempt passes allowBounce=true, so
-// SetRibbonConnected -> GetExcelApplicationOrBounce synchronously materializes
-// a workbook (Excel-DNA's temp-workbook bounce) and the connect succeeds even
-// with no document open. This replaces the former STA WM_TIMER retry loop,
-// which was an accepted crash residual on forced unload (AGENTS.md §20.2).
-//
-// Defensive fallback: the calc-end callback retries TryConnectRibbon WITHOUT
-// bouncing (allowBounce=false). It is an Excel-registered event callback (no
-// idle-timer unmap hazard) and only matters in the rare case the bounce itself
-// fails (e.g. C API unavailable). It is harmless and idempotent.
-//
-// State is a single atomic: 0=pending, 1=connected, 2=gave up after bounded
-// attempts. Registry/class-object steps (1-3) are themselves idempotent, but
-// we only redo the cheap, workbook-dependent connect (step 4) on retry once
-// the one-time registration has succeeded.
-static std::atomic<int> g_ribbonConnectState{0}; // 0=pending, 1=connected, 2=gave up
-static std::atomic<bool> g_ribbonRegistered{false};
-
-// Bounded xlcOnTime connect-retry budget (AGENTS.md §3 / §20 / §23). Fills the
-// gap the calc-end fallback misses: when the ribbon does NOT connect at load
-// (ribbon.bounce: off, or a bounce that failed) the ONLY remaining trigger is
-// TryConnectRibbon("calc end") — which never runs if a workbook is open but
-// never recalculates (manual calc mode / no-formula book), so the ribbon tab
-// would be delayed indefinitely. The retry macro (__xllgen_RibbonConnectRetry)
-// re-arms itself from its OWN Excel-dispatched macro context — a VALID command
-// context for xlc* (§23.6 HIGH #2) — and TERMINATES BY STATE GATE / SELF-ABORT
-// (connect success, give-up, budget exhaustion, or g_isUnloading), never by a
-// C-API cancel, so it adds NO new teardown-cancellation surface (§20/§23).
-// Bounded so an idle no-workbook Excel cannot retry forever.
-//
-// TWO BUDGETS, because the retry has TWO distinct failure classes and they have
-// completely different expected durations (MED fix, 2026-07-26):
-//
-//   * PRODUCTIVE failure — the Application object IS reachable (an EXCEL7 window
-//     exists) but COMAddIns Connect was rejected. That is a real fault; polling
-//     it for minutes helps nobody, so it keeps the original tight budget.
-//   * "noApp" — no Application object yet, i.e. Excel is sitting empty and the
-//     user simply has not opened a workbook. That is NOT a failure at all;
-//     TryConnectRibbon has always deliberately declined to charge it against its
-//     own give-up budget (see the `if (noApp)` early return below). The retry
-//     runner used to charge it anyway, so an empty Excel burned all 30 attempts
-//     in 60 s — and the very scenario this retry exists for (empty Excel +
-//     bounce: off, user opens a manual-calc / no-formula workbook ~90 s later)
-//     found the budget already spent AND no calc-end to fall back on. The noApp
-//     class therefore gets its own, far longer, time-shaped budget.
-//
-// The noApp budget stays responsive for the first ~30 s (a workbook opened right
-// after startup gets the tab within ~2 s) and then relaxes to a 10 s poll so a
-// long idle wait costs ~6 dispatches/minute instead of 30. Total noApp window:
-// 15*2 s + 60*10 s = 630 s (~10.5 min). It is deliberately FINITE — an add-in
-// that polls Excel forever is its own defect (§23) — so an Excel left empty for
-// longer than that gives up and falls back to calc-end only. See AGENTS.md §3
-// for the documented residual hole.
-static constexpr int    kRibbonRetryMaxAttempts       = 30;   // productive attempts (~60 s @ 2.0 s)
-static constexpr double kRibbonRetryIntervalSec       = 2.0;  // spacing while progress is possible
-static constexpr int    kRibbonRetryNoAppFastAttempts = 15;   // first ~30 s of "no workbook yet" stay at 2.0 s
-static constexpr double kRibbonRetryNoAppIdleSec      = 10.0; // …then relax the poll
-static constexpr int    kRibbonRetryNoAppMaxAttempts  = 75;   // hard stop: 15*2 s + 60*10 s = 630 s
-
-// Retry-chain state at FILE SCOPE (MED fix, 2026-07-26). These were function-local
-// statics inside __xllgen_RibbonConnectRetry's SEH __try block. Two problems with
-// that: (1) a second xlAutoOpen in the same process generation (probe-unload-reuse,
-// or add-in disable→enable without a DLL unload) while still unconnected armed a
-// SECOND self-re-arming chain sharing the same counter — halving the effective
-// budget and doubling the dispatch rate; (2) a function-local static's guard
-// variable is initialized inside an SEH __try scope, which is exactly the kind of
-// hidden non-trivial construction the XLL_SAFE_BLOCK discipline avoids. File-scope
-// atomics with constant initializers have neither problem.
-//
-// g_ribbonRetryArmed is a START-ONCE latch, not a liveness flag: the CAS at the
-// xlAutoOpen arm site means at most ONE chain ever exists. It is cleared only when
-// the xlcOnTime schedule itself was REJECTED (nothing is in flight, so a later
-// xlAutoOpen may legitimately try again); the terminal states (connected, gave up,
-// budget exhausted) leave it latched so nothing can restart an already-decided chain.
-static std::atomic<bool> g_ribbonRetryArmed{false};       // start-once latch for the chain
-static std::atomic<int>  g_ribbonRetryAttempts{0};        // productive attempts consumed
-static std::atomic<int>  g_ribbonRetryNoAppAttempts{0};   // "no workbook yet" attempts consumed
-
-// Outcome CLASS of one TryConnectRibbon call. The bool return only says
-// "connected or not"; a caller that owns a retry budget needs to know WHICH KIND
-// of not, because only ONE of them is a chargeable failure:
-//
-//   * kConnected    — done; the state gate stops the chain.
-//   * kRejected     — the COMAddIns Connect ran and was REJECTED. The only class
-//                     a connect-failure budget may charge.
-//   * kNoApp        — the Connect was SKIPPED: no Application object yet (Excel
-//                     is empty). Not a failure; charged to the separate, much
-//                     longer noApp budget (see the constants above).
-//   * kNotAttempted — we returned WITHOUT EVER REACHING SetRibbonConnected: the
-//                     unload bail, or the STA re-entrancy bail (an Excel callback
-//                     dispatched while a Connect/bounce is pumping the message
-//                     loop re-enters this function on the same thread and the
-//                     s_inConnect CAS turns it away). Nothing was attempted, so
-//                     NOTHING may be charged — this is the same accounting defect
-//                     as the 2026-07-26 noApp fix, one branch further out: a
-//                     queued OnTime macro dispatched mid-pump used to burn one of
-//                     the 30 productive attempts without ever touching COM.
-//                     Deliberately given NO budget of its own: it can only occur
-//                     while an OUTER attempt is in flight on this same STA
-//                     thread, so it is self-limiting — the outer call either
-//                     resolves the state (chain stops) or returns a real,
-//                     chargeable outcome that the next dispatch observes.
-//
-// The one-time registration failures (steps 1-3) also skip SetRibbonConnected but
-// latch g_ribbonConnectState=2, so the caller's state gate short-circuits before
-// the class is ever consulted; they report kNotAttempted for the same reason.
-//
-// enum class, so a caller cannot accidentally treat the class as a bool.
-enum class RibbonAttempt {
-    kNotAttempted = 0, // never reached the COMAddIns Connect — charge NOTHING
-    kNoApp,            // Connect skipped: no Application object yet
-    kRejected,         // Connect attempted and rejected — the chargeable class
-    kConnected,        // Connect succeeded
-};
-
-// pOutcome (optional out): the attempt's class (above). Always written on every
-// exit, so a caller never reads a stale value.
-static bool TryConnectRibbon(const char* phase, bool allowBounce = false,
-                             RibbonAttempt* pOutcome = nullptr) {
-    if (pOutcome) *pOutcome = RibbonAttempt::kNotAttempted;
-    if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return true;
-    // TeardownStarted(), not g_isUnloading alone: a confirmed teardown latches
-    // g_isQuiescing in Phase 1 and deliberately keeps g_isUnloading FALSE across
-    // Excel's whole RTD handshake, so the unload flag alone would let a connect
-    // attempt run mid-teardown (AGENTS.md 20.2.1 rule 2). Unreachable today from the
-    // retry runner, which gates on the same predicate first; kept consistent so the
-    // next caller cannot reintroduce the hole.
-    if (xll::TeardownStarted()) return false;
-
-    // Re-entrancy guard. The temp-workbook bounce (xlcNew/xlcWorkbookInsert) and
-    // the COMAddIns Connect both pump the STA message loop, so an Excel callback
-    // (e.g. CalculationEnded -> TryConnectRibbon("calc end")) can re-enter this
-    // function on the SAME thread while a connect is mid-flight — reaching a
-    // second concurrent COMAddIns…Connect. Single STA thread, so this is
-    // re-entrancy, not a data race; bail out (still "pending") if already inside.
-    //
-    // This exit stays kNotAttempted: an OnTime retry dispatched from inside the
-    // outer connect's message pump must not pay for a connect it never made.
-    static std::atomic<bool> s_inConnect{false};
-    bool expected = false;
-    if (!s_inConnect.compare_exchange_strong(expected, true)) return false;
-    struct ConnectGuard {
-        std::atomic<bool>& flag;
-        ~ConnectGuard() { flag.store(false, std::memory_order_release); }
-    } connectGuard{s_inConnect};
-
-    // One-time, workbook-independent registration (steps 1-3). Done once;
-    // guarded so retries skip straight to the connect.
-    if (!g_ribbonRegistered.load(std::memory_order_acquire)) {
-        xll::ribbon::SetRibbonXml(kXllRibbonXml);
-        xll::ribbon::SetRibbonImages(GetXllRibbonImages());
-
-        // 1. HKCU COM registration (CLSID/InprocServer32 + ProgID).
-        if (FAILED(rtd::RegisterServer(g_hModule, GetRibbonClsid(), g_szRibbonProgID, L"{{.ProjectName}} Ribbon"))) {
-            SAFE_LOG_WARN("Ribbon: HKCU COM registration failed (locked-down registry?); ribbon UI disabled.");
-            g_ribbonConnectState.store(2, std::memory_order_release);
-            return false;
-        }
-        // 2. Office Addins key so COMAddIns enumerates us.
-        if (FAILED(rtd::RegisterOfficeAddinKey(g_szRibbonProgID, L"{{.ProjectName}}", L"{{.ProjectName}} ribbon helper"))) {
-            SAFE_LOG_WARN("Ribbon: Office Addins key registration failed; ribbon UI disabled.");
-            g_ribbonConnectState.store(2, std::memory_order_release);
-            return false;
-        }
-        // 3. In-memory class object so CoCreateInstance resolves without a
-        //    registry CLSID lookup (mirrors the RTD pattern).
-        rtd::ClassFactory<RibbonAddIn>* pFactory = new rtd::ClassFactory<RibbonAddIn>();
-        HRESULT hr = CoRegisterClassObject(GetRibbonClsid(), pFactory, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, &g_ribbonCookie);
-        pFactory->Release();
-        if (FAILED(hr)) {
-            char hrBuf[16];
-            snprintf(hrBuf, sizeof(hrBuf), "0x%08lX", static_cast<unsigned long>(hr));
-            SAFE_LOG_WARN(std::string("Ribbon: CoRegisterClassObject failed: ") + hrBuf);
-            g_ribbonConnectState.store(2, std::memory_order_release);
-            return false;
-        }
-        g_ribbonRegistered.store(true, std::memory_order_release);
-    }
-
-    // 4. Connect through Application.COMAddIns (synchronous; Excel calls
-    //    GetCustomUI during this call). Needs the EXCEL7 window. When
-    //    allowBounce is true (xlAutoOpen path) the temp-workbook bounce inside
-    //    GetExcelApplicationOrBounce materializes that window when no document
-    //    is open, so this normally succeeds on the very first attempt.
-    bool noApp = false;
-    if (SetRibbonConnected(true, &noApp, allowBounce)) {
-        if (pOutcome) *pOutcome = RibbonAttempt::kConnected;
-        g_ribbonConnectState.store(1, std::memory_order_release);
-        SAFE_LOG_INFO(std::string("Ribbon: COM add-in connected (") + phase + ").");
-        return true;
-    }
-
-    // Still no Application object (only reachable if the bounce failed, or on a
-    // calc-end / OnTime retry before a workbook exists): the user simply hasn't
-    // opened a workbook. Do NOT consume the give-up budget — the defensive
-    // calc-end fallback and the OnTime retry keep trying until a workbook
-    // appears. Report the class outward so the OnTime runner can honor the same
-    // rule with ITS budget (it used to charge these, exhausting ~60 s of retries
-    // against an empty Excel).
-    if (noApp) {
-        if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;
-        return false;
-    }
-
-    // Real connect failure (Application reachable but Connect rejected): bound
-    // it so a pathological host doesn't retry forever.
-    if (pOutcome) *pOutcome = RibbonAttempt::kRejected;
-    static std::atomic<int> s_attempts{0};
-    if (s_attempts.fetch_add(1) + 1 >= 60) {
-        g_ribbonConnectState.store(2, std::memory_order_release);
-        SAFE_LOG_WARN("Ribbon: COMAddIns connect failed after 60 attempts; ribbon UI disabled.");
-    }
-    return false;
-}
+// This file still owns everything that is genuinely generated: the COM identity
+// (GetRibbonClsid / g_szRibbonProgID / g_ribbonCookie, above), the project-named
+// registration strings, the embedded ribbon XML + images, the
+// ribbon.bounce-branched GetExcelApplicationOrBounce (above), and the exported
+// __xllgen_RibbonConnectRetry macro (below). They reach the asset through the
+// single xll::ribbon::SetConnectContext call in xlAutoOpen.
 {{end}}
 
 // XLL Interface Functions
@@ -1000,6 +644,38 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     SAFE_LOG_INFO("xlAutoOpen: Loading XLL...");
 
     xll::CallExcel(xlGetName, xDLL);
+
+    {{if .Ribbon.Enabled}}
+    // Publish the ribbon connect context to src/ribbon_connect.cpp. This is the
+    // WHOLE contract between this generated TU and the relocated connect
+    // machinery: COM identity, the project-named registration strings, the
+    // embedded ribbon XML/images accessors, the two ribbon.bounce-branched
+    // Application acquisition functions, and the CoRegisterClassObject cookie the
+    // teardown hook revokes (kept a global HERE on purpose — see
+    // com/ribbon_connect.h "COOKIE OWNERSHIP").
+    //
+    // MUST run BEFORE SetGracefulTeardownHook below: the hook's step (0) calls
+    // xll::ribbon::SetRibbonConnected(false), which acquires the Application
+    // through acquireApp. And obviously before the first TryConnectRibbon.
+    // Idempotent — a second xlAutoOpen in the same process generation
+    // (probe-unload-reuse, or a PINNED image re-load) simply republishes the same
+    // values.
+    {
+        xll::ribbon::ConnectContext ribbonCtx;
+        ribbonCtx.hModule            = g_hModule;
+        ribbonCtx.progId             = g_szRibbonProgID;
+        ribbonCtx.clsid              = GetRibbonClsid();
+        ribbonCtx.comFriendlyName    = L"{{.ProjectName}} Ribbon";
+        ribbonCtx.addinFriendlyName  = L"{{.ProjectName}}";
+        ribbonCtx.addinDescription   = L"{{.ProjectName}} ribbon helper";
+        ribbonCtx.ribbonXml          = kXllRibbonXml;
+        ribbonCtx.getImages          = &GetXllRibbonImages;
+        ribbonCtx.acquireApp         = &GetExcelApplication;
+        ribbonCtx.acquireAppOrBounce = &GetExcelApplicationOrBounce;
+        ribbonCtx.pClassObjectCookie = &g_ribbonCookie;
+        xll::ribbon::SetConnectContext(ribbonCtx);
+    }
+    {{end}}
 
     {{if or .Ribbon.Enabled .Commands .Rtd.Enabled}}
     // Register the COM/ribbon/RTD destructive-teardown hook so that
@@ -1171,7 +847,7 @@ start_worker:
     {{range $i, $fn := .Functions}}{{range .Args}}{{if eq .Type "any"}}needCalcEnded=true;{{end}}{{end}}{{end}}
     {{if .Ribbon.Enabled}}
     // Ribbon keeps the calc-end callback as a DEFENSIVE FALLBACK retry hook for
-    // the COMAddIns connect (see TryConnectRibbon). The xlAutoOpen temp-workbook
+    // the COMAddIns connect (see xll::ribbon::TryConnectRibbon). The xlAutoOpen temp-workbook
     // bounce normally connects on the first attempt even with no workbook open;
     // this hook only matters if that bounce fails. Unlike the removed STA timer
     // it is an Excel-registered event callback, so it has no unmap hazard.
@@ -1377,7 +1053,7 @@ start_worker:
         // First (and normally only) attempt on the STA thread, with the
         // temp-workbook bounce enabled. The calc-end handler is a defensive
         // fallback for the rare case the bounce itself fails.
-        TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);
+        xll::ribbon::TryConnectRibbon("xlAutoOpen", /*allowBounce=*/true);
     XLL_SAFE_BLOCK_END_CONTINUE
     {{if eq .Ribbon.BounceMode "full"}}
     // §20.3 belt-and-braces: if the bounce's xlcFileClose faulted, the SEH
@@ -1386,7 +1062,7 @@ start_worker:
     // captured EnableEvents/DisplayAlerts originals now. Idempotent: a no-op
     // when the dtor already ran on the normal path.
     XLL_SAFE_BLOCK_BEGIN
-        RestorePendingEventSuppression();
+        xll::ribbon::RestorePendingEventSuppression();
     XLL_SAFE_BLOCK_END_CONTINUE
     {{end}}
 
@@ -1397,9 +1073,10 @@ start_worker:
     // bounded xlcOnTime retry from HERE: xlAutoOpen is a VALID command context
     // for xlc* (§23.6 HIGH #2), and every re-arm runs from the retry macro's own
     // dispatch (also a command context). No-op once connected/gave-up
-    // (g_ribbonConnectState != 0). See __xllgen_RibbonConnectRetry / AGENTS.md §3.
+    // (xll::ribbon::g_ribbonConnectState != 0). See __xllgen_RibbonConnectRetry /
+    // AGENTS.md §3.
     //
-    // The g_ribbonRetryArmed CAS makes this START-ONCE: a second xlAutoOpen in the
+    // The xll::ribbon::g_ribbonRetryArmed CAS makes this START-ONCE: a second xlAutoOpen in the
     // same process generation must not start a second chain against the same
     // counters. The schedule rc is INSPECTED, not discarded — a rejected arm means
     // the whole chain never starts, and silently degrading to "calc-end only"
@@ -1407,12 +1084,12 @@ start_worker:
     XLL_SAFE_BLOCK_BEGIN
         bool retryExpected = false;
         if (!g_isUnloading.load(std::memory_order_acquire) &&
-            g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&
-            g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {
-            int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), kRibbonRetryIntervalSec);
+            xll::ribbon::g_ribbonConnectState.load(std::memory_order_acquire) == 0 &&
+            xll::ribbon::g_ribbonRetryArmed.compare_exchange_strong(retryExpected, true)) {
+            int armRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), xll::ribbon::kRibbonRetryIntervalSec);
             if (armRc != xlretSuccess) {
                 // Nothing is in flight — un-latch so a later xlAutoOpen may retry.
-                g_ribbonRetryArmed.store(false, std::memory_order_release);
+                xll::ribbon::g_ribbonRetryArmed.store(false, std::memory_order_release);
                 SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=" +
                               std::to_string(armRc) + "); falling back to the calc-end retry only, so the "
                               "ribbon tab may be delayed until the first recalculation.");
@@ -1474,7 +1151,7 @@ extern "C" __declspec(dllexport) void __stdcall {{.Handler}}() {
     // a no-op once connected). The xlAutoOpen temp-workbook bounce normally
     // connects already; this only matters if that bounce failed. No bounce here
     // (allowBounce defaults false): a workbook exists by the time calc runs.
-    TryConnectRibbon("calc event");
+    xll::ribbon::TryConnectRibbon("calc event");
     {{end}}
     {{if eq .Type "CalculationEnded"}}
     // A user-renamed CalculationEnded handler still owns ALL system-side
@@ -1528,7 +1205,7 @@ extern "C" __declspec(dllexport) void __stdcall CalculationEnded() {
     // a no-op once connected). The xlAutoOpen temp-workbook bounce normally
     // connects already; this only matters if that bounce failed. No bounce here
     // (allowBounce defaults false): a workbook exists by the time calc runs.
-    TryConnectRibbon("calc end");
+    xll::ribbon::TryConnectRibbon("calc end");
     {{end}}
     HandleCalculationEnded();
 }
@@ -1558,10 +1235,12 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
 // accepted here (contrast the COM-event teardown context, which Excel rejects
 // with xlretInvXlfn — §23.6 HIGH #2). TERMINATION IS BY STATE GATE / SELF-ABORT,
 // never a C-API cancel: this stops (no re-arm) once connected, once
-// TryConnectRibbon gives up (g_ribbonConnectState != 0), when EITHER bounded
-// budget is exhausted (kRibbonRetryMaxAttempts for productive attempts,
-// kRibbonRetryNoAppMaxAttempts for "no workbook open yet" attempts — see the
-// two-budget rationale at the constants), when the re-arm itself is rejected,
+// xll::ribbon::TryConnectRibbon gives up (g_ribbonConnectState != 0), when
+// EITHER bounded budget is exhausted (kRibbonRetryMaxAttempts for productive
+// attempts, kRibbonRetryNoAppMaxAttempts for "no workbook open yet" attempts —
+// see the two-budget rationale at the constants in com/ribbon_connect.h, which
+// is also where this runner's state and budgets now live), when the re-arm
+// itself is rejected,
 // or on g_isUnloading. A leaked schedule that fires
 // post-unload no-ops on the g_isUnloading gate, and Excel un-registers the macro
 // on unload — so no new teardown-cancellation path is added (§20/§23 surface
@@ -1570,15 +1249,16 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RunDeferredCalcEnd() {
 extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
     XLL_SAFE_BLOCK_BEGIN
         // Self-abort on ANY teardown (quiesce or unload): do NOT touch Excel and do
-        // NOT re-arm. See the TryConnectRibbon gate above (20.2.1 rule 2).
+        // NOT re-arm. See the matching TryConnectRibbon gate in
+        // src/ribbon_connect.cpp (20.2.1 rule 2).
         if (xll::TeardownStarted()) return 1;
         // Idempotent connect attempt (no bounce on retries: a workbook, if any,
         // already exists; the bounce is only for the xlAutoOpen no-workbook case).
         // The outcome CLASS decides which budget (if any) pays for this dispatch.
-        RibbonAttempt retryOutcome = RibbonAttempt::kNotAttempted;
-        TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);
+        xll::ribbon::RibbonAttempt retryOutcome = xll::ribbon::RibbonAttempt::kNotAttempted;
+        xll::ribbon::TryConnectRibbon("ontime retry", /*allowBounce=*/false, &retryOutcome);
         // Stop once the connect resolves — connected (1) or gave-up (2).
-        if (g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;
+        if (xll::ribbon::g_ribbonConnectState.load(std::memory_order_acquire) != 0) return 1;
 
         // Still pending: charge the attempt to the budget matching its CLASS, then
         // re-arm at the matching spacing. Charging noApp to the productive budget
@@ -1594,19 +1274,19 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
         // will. It cannot spin unbounded — it requires an outer attempt in flight
         // on this same STA thread, and when that returns the next dispatch gets a
         // real, chargeable outcome (or the state gate above stops the chain).
-        double nextDelaySec = kRibbonRetryIntervalSec;
-        if (retryOutcome == RibbonAttempt::kNoApp) {
-            int n = g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;
-            if (n >= kRibbonRetryNoAppMaxAttempts) {
+        double nextDelaySec = xll::ribbon::kRibbonRetryIntervalSec;
+        if (retryOutcome == xll::ribbon::RibbonAttempt::kNoApp) {
+            int n = xll::ribbon::g_ribbonRetryNoAppAttempts.fetch_add(1) + 1;
+            if (n >= xll::ribbon::kRibbonRetryNoAppMaxAttempts) {
                 SAFE_LOG_WARN("Ribbon: OnTime connect retry gave up waiting for a workbook to be opened "
                               "(no Application object for the full bounded window); the calc-end fallback "
                               "remains the only trigger.");
                 return 1;
             }
-            if (n >= kRibbonRetryNoAppFastAttempts) nextDelaySec = kRibbonRetryNoAppIdleSec;
-        } else if (retryOutcome == RibbonAttempt::kRejected) {
-            int n = g_ribbonRetryAttempts.fetch_add(1) + 1;
-            if (n >= kRibbonRetryMaxAttempts) {
+            if (n >= xll::ribbon::kRibbonRetryNoAppFastAttempts) nextDelaySec = xll::ribbon::kRibbonRetryNoAppIdleSec;
+        } else if (retryOutcome == xll::ribbon::RibbonAttempt::kRejected) {
+            int n = xll::ribbon::g_ribbonRetryAttempts.fetch_add(1) + 1;
+            if (n >= xll::ribbon::kRibbonRetryMaxAttempts) {
                 SAFE_LOG_WARN("Ribbon: OnTime connect retry exhausted its bounded budget; the calc-end fallback remains the only trigger.");
                 return 1;
             }
@@ -1618,7 +1298,7 @@ extern "C" __declspec(dllexport) short __stdcall __xllgen_RibbonConnectRetry() {
         // it must be visible in the log rather than looking like "still retrying".
         int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);
         if (reArmRc != xlretSuccess) {
-            g_ribbonRetryArmed.store(false, std::memory_order_release);
+            xll::ribbon::g_ribbonRetryArmed.store(false, std::memory_order_release);
             SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=" +
                           std::to_string(reArmRc) + "); the retry chain ENDS here and the calc-end "
                           "fallback remains the only trigger.");

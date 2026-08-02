@@ -66,16 +66,10 @@
 
 
 
-// Safe logging macros: no-op during forced unload to avoid touching freed resources.
-#define SAFE_LOG_CALL(level, msg) do { if (!g_isUnloading) level(msg); } while(0)
-#define SAFE_LOG_INFO(msg) SAFE_LOG_CALL(LogInfo, msg)
-#define SAFE_LOG_WARN(msg) SAFE_LOG_CALL(LogWarn, msg)
-#define SAFE_LOG_ERROR(msg) SAFE_LOG_CALL(LogError, msg)
-#ifdef XLL_DEBUG_LOGGING
-#define SAFE_LOG_DEBUG(msg) SAFE_LOG_CALL(LogDebug, msg)
-#else
-#define SAFE_LOG_DEBUG(msg) do {} while(0)
-#endif
+
+// The SAFE_LOG_* macros (no-op during forced unload) now live beside the loggers
+// they wrap, in xll_log.h, so the asset TUs get the same unload guard this file
+// has always had instead of calling xll::LogWarn bare.
 
 // Disable "unreferenced formal parameter" warning
 #pragma warning(disable: 4100)
@@ -365,6 +359,8 @@ extern "C" __declspec(dllexport) int __stdcall xlAutoOpen() {
     SAFE_LOG_INFO("xlAutoOpen: Loading XLL...");
 
     xll::CallExcel(xlGetName, xDLL);
+
+    
 
     
     // Register the COM/ribbon/RTD destructive-teardown hook so that

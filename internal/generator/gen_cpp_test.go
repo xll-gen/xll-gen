@@ -563,7 +563,18 @@ func TestGenCpp_CallerMacroSplit(t *testing.T) {
 // TestXllMainRibbonImageWiring pins the Task-5 template wiring: the ribbon image
 // table is installed at bootstrap, the GDI+ engine is torn down in xlAutoClose,
 // the generated header is included, and CMake links gdiplus. Also a negative
-// case: a ribbon-DISABLED render must not reference SetRibbonImages.
+// case: a ribbon-DISABLED render must not reference the image accessor.
+//
+// The `SetRibbonImages(GetXllRibbonImages())` CALL moved into
+// src/ribbon_connect.cpp with the rest of the connect bootstrap (2026-08-02); it
+// still runs at the same point (inside the one-time registration block) and is
+// still lazy, but the generated TU now hands the ACCESSOR over as a function
+// pointer in the injected ConnectContext. So the wiring pinned here is the
+// pointer, not the call — the call itself is pinned by
+// internal/assets/ribbon_connect_cpp_test.go. Keeping it a function pointer is
+// deliberate and separately asserted there: materializing the vector in the
+// context would build and copy every embedded icon at xlAutoOpen, even on a load
+// that never registers.
 func TestXllMainRibbonImageWiring(t *testing.T) {
 	t.Parallel()
 	ribbonCfg := &config.Config{
@@ -581,7 +592,7 @@ func TestXllMainRibbonImageWiring(t *testing.T) {
 	mainSrc := renderCppMain(t, ribbonCfg)
 	for _, want := range []string{
 		`#include "ribbon_images.h"`,
-		"xll::ribbon::SetRibbonImages(GetXllRibbonImages());",
+		"ribbonCtx.getImages          = &GetXllRibbonImages;",
 		"xll::ribbon::ShutdownRibbonImageEngine();",
 	} {
 		if !strings.Contains(mainSrc, want) {
@@ -606,7 +617,7 @@ func TestXllMainRibbonImageWiring(t *testing.T) {
 		t.Errorf("CMakeLists.txt ribbon block must link gdiplus")
 	}
 
-	// Negative: a ribbon-disabled render gates SetRibbonImages behind
+	// Negative: a ribbon-disabled render gates the image accessor behind
 	// {{if .Ribbon.Enabled}}, so it must be absent.
 	noRibbonCfg := &config.Config{
 		Project: config.ProjectConfig{Name: "TestProj", Version: "0.1"},
@@ -619,8 +630,10 @@ func TestXllMainRibbonImageWiring(t *testing.T) {
 		},
 	}
 	noRibbonSrc := renderCppMain(t, noRibbonCfg)
-	if strings.Contains(noRibbonSrc, "SetRibbonImages") {
-		t.Errorf("ribbon-disabled render must not reference SetRibbonImages")
+	for _, gone := range []string{"SetRibbonImages", "GetXllRibbonImages"} {
+		if strings.Contains(noRibbonSrc, gone) {
+			t.Errorf("ribbon-disabled render must not reference %q", gone)
+		}
 	}
 }
 

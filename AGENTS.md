@@ -278,8 +278,78 @@ Native ribbon buttons and XLL commands (macros) form one tightly-coupled cluster
 1.  **Config**: `internal/config/config.go` defines `Command` / `RibbonConfig` (+ command-name charset validation, structured-vs-raw-XML mutual exclusion, `buttons[].command` → `commands[].name` cross-check, `commands`/`functions` name-collision check).
 2.  **Ribbon package**: `internal/ribbon/` (customUI XML generation, XML validation including the raw-XML `onAction` cross-check, and embedding the XML as a C++ string literal).
 3.  **Templates**: `internal/templates/{interface.go.tmpl, server.go.tmpl, xll_main.cpp.tmpl, CMakeLists.txt.tmpl}` (generated handler interface method per command, dispatch wiring, command `xlfRegister` with `macroType=2`, and any new link/source entries).
-4.  **C++ assets**: `internal/assets/files/include/com/*` + `src/ribbon_addin.cpp` (the `RibbonAddIn` COM class — `IDTExtensibility2` + `IRibbonExtensibility` + `IDispatch`).
+4.  **C++ assets**: `internal/assets/files/include/com/*` + `src/ribbon_addin.cpp` (the `RibbonAddIn` COM class — `IDTExtensibility2` + `IRibbonExtensibility` + `IDispatch`), `src/ribbon_connect.cpp` (the COM add-in connect bootstrap — see §18.11.1) and `src/scratch_book.cpp` (the temp-workbook bounce helpers).
 5.  **Generator**: `internal/generator/gen_cpp.go` emits `ribbon_xml.h` (the embedded ribbon XML literal).
+
+#### 18.11.1 The connect machinery is a STATIC ASSET, not template code (2026-08-02)
+
+`SetRibbonConnected`, `TryConnectRibbon`, the `0/1/2` state gate
+(`g_ribbonConnectState` / `g_ribbonRegistered`), the `s_inConnect` STA
+re-entrancy guard, the 60-attempt give-up cap, the `RibbonAttempt` outcome class
+and the two `xlcOnTime` retry budgets + their counters live in
+**`internal/assets/files/include/com/ribbon_connect.h` +
+`src/ribbon_connect.cpp`**. Everything §18.11 / §20.3 / §23.6 "§3" says about
+their BEHAVIOR still holds verbatim — the 2026-08-02 change was a pure
+relocation, no semantics touched — but any prose below that names
+`xll_main.cpp.tmpl` as the *file* is stale for these symbols. Same for
+`GetActiveWorkbookName` / `ScratchCloseEventSuppressor` /
+`RestorePendingEventSuppression`, which moved to `include/com/scratch_book.h` +
+`src/scratch_book.cpp` in the same pass.
+
+**Why:** none of it contained template variables, so every generated project was
+receiving a byte-identical re-emitted copy that only a golden-string grep could
+test. Standing project direction: keep generated templates minimal, prefer static
+code (Go → `pkg/server`, C++ → `internal/assets/files/{include,src}`).
+
+**What STAYS generated in `xll_main.cpp.tmpl`, and must:**
+* the COM identity — `GetRibbonClsid()`, `g_szRibbonProgID`, `g_ribbonCookie`;
+* the project-named registration strings (`L"<Project> Ribbon"` etc.);
+* `GetExcelApplicationOrBounce()` — its body is `ribbon.bounce`-branched
+  (`full` / `keep-open` / `off`), i.e. real generated code;
+* the exported `__xllgen_RibbonConnectRetry()` OnTime macro and its
+  `xlfRegister`, because Excel resolves the registered procedure by NAME against
+  an exported symbol, which cannot live in an asset. That is also why the retry
+  budgets/counters are `extern` in the header rather than private to the `.cpp`.
+
+**The wiring contract:** the asset reads NO generated symbol. `xlAutoOpen` fills
+an `xll::ribbon::ConnectContext` (module handle, ProgID, CLSID, the three
+registration strings, `kXllRibbonXml`, `&GetXllRibbonImages`,
+`&GetExcelApplication`, `&GetExcelApplicationOrBounce`, `&g_ribbonCookie`) and
+publishes it ONCE via `xll::ribbon::SetConnectContext`, **before**
+`xll::SetGracefulTeardownHook` (whose hook calls
+`xll::ribbon::SetRibbonConnected(false)`, which needs `acquireApp`) and before
+the first `TryConnectRibbon`. `getImages` is a function POINTER on purpose so the
+embedded icons are still built lazily, at most once, inside the registration
+block. Adding a `ConnectContext` field without wiring it in the template fails
+`internal/generator/gen_ribbon_connect_test.go::TestXllMainPublishesRibbonConnectContext`
+(the field list is derived from the shipped header, not restated).
+
+**`g_ribbonCookie` stays in the TEMPLATE** and the asset writes it through
+`ConnectContext::pClassObjectCookie`. Deliberate: it keeps
+`GracefulComTeardownHook` **byte-identical**, and that hook's statement order is
+the fix for a 100%-reproducible `mso.dll` NULL-vtable crash (see the
+Confirmed-Correct Decisions entry "Office add-in disconnect re-entrancy"). Two
+crash releases came out of that path; a relocation must not perturb it, not even
+to route two statements through accessors. Full rationale in the "COOKIE
+OWNERSHIP" comment in `com/ribbon_connect.h`.
+
+**Test split.** BODY invariants (signatures/defaults, the four `*pOutcome`
+classification sites AND their order, the re-entrancy guard, the state gate, the
+60-cap, every log string, the five budget constants and their VALUES, the absence
+of the removed STA `WM_TIMER` residual) are pinned against the embedded asset in
+`internal/assets/ribbon_connect_cpp_test.go` (and
+`scratch_book_cpp_test.go`). WIRING (the include, the published context and its
+ordering, the three trigger sites, the runner's budget charging) stays in
+`internal/generator/gen_ribbon_connect_test.go`, which also carries a
+**do-not-re-inline** guard in the spirit of §18.6.1's
+`TestChunkSegmentLogicIsExtracted`: a re-inlined copy in the template would
+shadow the asset, leave the asset tests green, and put untested code back in the
+shipped XLL.
+
+**Corollary for the `com/scratch_book.h` include:** it is gated
+`{{if and .Ribbon.Enabled (eq .Ribbon.BounceMode "full")}}`. `BounceMode()` maps
+an unset `ribbon.bounce` to `"full"` **regardless of `Ribbon.Enabled`**, so
+gating on the bounce mode alone leaked the include into every non-ribbon project.
 
 **Message-ID mirror** (same discipline as §18.6): `MSG_COMMAND_INVOKE` (`internal/assets/files/include/xll_ipc.h`) ↔ `MsgCommandInvoke` (`pkg/server/types.go`) ↔ `CommandInvokeRequest` / `CommandInvokeResponse` in `protocol.fbs` — and `protocol.fbs` lives in BOTH the templates copy (`internal/templates/protocol.fbs`) AND the external `github.com/xll-gen/types` repo copy. All four must agree (§18.1 cross-repo constraint applies).
 
@@ -1400,7 +1470,10 @@ close is skipped and a warning logged — leaking a blank scratch book is strict
 than discarding a user's unsaved document, so the bounce can never cause data loss.
 `TryConnectRibbon` is also guarded against STA re-entrancy (a `CalculationEnded`
 callback firing mid-bounce) via a function-static `std::atomic<bool> s_inConnect`, so a
-second `COMAddIns…Connect` cannot land while the bounce is in flight.
+second `COMAddIns…Connect` cannot land while the bounce is in flight. (`TryConnectRibbon`,
+`s_inConnect` and the close-by-identity helper `GetActiveWorkbookName` are static ASSETS since
+2026-08-02 — §18.11.1; `GetExcelApplicationOrBounce` itself stays in `xll_main.cpp.tmpl` because
+its body is `ribbon.bounce`-branched.)
 
 The calc-end retry (`TryConnectRibbon("calc end")`, `allowBounce=false`) is KEPT as
 a hazard-free defensive fallback: it is an Excel-registered event callback (no unmap
@@ -1431,8 +1504,11 @@ directly and skip default application):
   fault inside `xlcFileClose` unwinds via `__except` WITHOUT running C++ dtors on
   /EHsc; xll-cpp-reviewer HIGH, 2026-07-20). Restores only what was actually flipped
   (armed flags, property-by-property so partial construction is covered), never a
-  blind `=true`; a failed restore put is logged, not swallowed. Pinned by
-  `TestRibbonBounceFullSuppressesEventsAroundClose`; compiled by
+  blind `=true`; a failed restore put is logged, not swallowed. The guard itself now lives in
+  `internal/assets/files/{include/com/scratch_book.h,src/scratch_book.cpp}` (§18.11.1), so its BODY is
+  pinned by `internal/assets/scratch_book_cpp_test.go::TestScratchCloseSuppressorRestoreContract`
+  while `TestRibbonBounceFullSuppressesEventsAroundClose` pins the per-mode WIRING (which mode
+  instantiates it, guard-before-close, and the post-SAFE_BLOCK replay); compiled by
   `cmd/cpp_compile_gate_bounce_test.go` (full is the only mode that renders it).
 - **`keep-open`** — create the scratch workbook, connect, and **never close it** (no
   `xlcFileClose` is even emitted; the close-by-identity machinery
@@ -2040,7 +2116,7 @@ already deleted.**
     (belt-and-braces for the workbook-already-recalculating case). Reuses the deferred-commands
     infra: new `xll::ScheduleOnTimeMacro(macroName, delaySeconds)` +
     `xll::RibbonConnectRetryMacroName()` in `xll_deferred_commands.{h,cpp}` (reusing that TU's
-    `XlretName` decode). Template `internal/templates/xll_main.cpp.tmpl` gains the retry-budget
+    `XlretName` decode). Template `internal/templates/xll_main.cpp.tmpl` gained the retry-budget
     constants, the macro registration, the `xlAutoOpen` arm, and the `__xllgen_RibbonConnectRetry`
     export — all gated `{{if .Ribbon.Enabled}}`. Files:
     `internal/assets/files/{include,src}/xll_deferred_commands.{h,cpp}`,
@@ -2109,7 +2185,9 @@ already deleted.**
       every name-grepping generator test, and shows up only at runtime as an unresolvable ON.TIME macro
       (no ribbon tab / no deferred command drain). Now guarded from both ends, for BOTH macros
       (`__xllgen_RibbonConnectRetry` and the mirrored `__xllgen_RunDeferredCalcEnd`).
-    - **Files:** `internal/templates/xll_main.cpp.tmpl`,
+    - **Files (as of this entry; the connect machinery and the retry budgets have since moved to
+      `internal/assets/files/{include/com/ribbon_connect.h,src/ribbon_connect.cpp}` — §18.11.1):**
+      `internal/templates/xll_main.cpp.tmpl`,
       `internal/assets/files/src/xll_deferred_commands.cpp`,
       `internal/assets/files/include/xll_deferred_commands.h`.
     - **Regression:** `internal/generator/gen_ribbon_connect_test.go::TestXllMainRibbonRetryNoAppBudget`
@@ -2162,7 +2240,10 @@ already deleted.**
     logs at debug). `kNotAttempted` deliberately gets NO budget of its own: it can only arise while an
     OUTER attempt is in flight on this same STA thread, so it is self-limiting — when that outer call
     returns, the next dispatch either sees a resolved state (chain stops on the state gate) or gets a
-    real, chargeable outcome. **Files:** `internal/templates/xll_main.cpp.tmpl` only.
+    real, chargeable outcome. **Files (as of this entry):** `internal/templates/xll_main.cpp.tmpl` only;
+    `TryConnectRibbon` and the `RibbonAttempt` enum now live in
+    `internal/assets/files/{include/com/ribbon_connect.h,src/ribbon_connect.cpp}` (§18.11.1), and the
+    classification-order pin moved to `internal/assets/ribbon_connect_cpp_test.go::TestRibbonConnectOutcomeClassification`.
     **Regression:** `internal/generator/gen_ribbon_connect_test.go::TestXllMainRibbonRetryUnattemptedNotCharged`
     (enum + all four classification sites + the runner's `else if (retryOutcome == RibbonAttempt::kRejected)`,
     the classification ORDER — `kRejected` only after an actual `SetRibbonConnected` — and that the
