@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"runtime"
 	"runtime/debug"
@@ -20,7 +19,6 @@ import (
 	"github.com/xll-gen/types/go/protocol"
 	"github.com/xll-gen/shm/go"
 	flatbuffers "github.com/google/flatbuffers/go"
-	"golang.org/x/sys/windows"
 )
 
 // Force usage of time and protocol to avoid unused import error
@@ -53,145 +51,27 @@ func PushRtdUpdate(topicID int32, value interface{}) error {
 }
 
 
-// Teardown drain budgets. Each is an upper bound on how long shutdown may wait
-// for guest->host sends that are ALREADY in flight; with nothing in flight both
-// drains return immediately, so these do not add latency to a normal exit.
-//
-//   - async: sendWithRetry's ladder is ~2.56s of backoff plus the sends
-//     themselves, so 5s covers one flush that is riding out a dead host.
-//   - rtd: an RtdUpdate is capped at 1s, but SendOnceGrid is 5s PER FRAME and a
-//     chunked grid sends many frames in order, so it needs the wider budget.
-//   - job: the async worker pool. Its budget only has to cover ONE user handler
-//     that is already running plus whatever it is sending; the async/rtd drains
-//     that follow cover the sends themselves.
-const (
-	asyncDrainTimeout = 5 * time.Second
-	rtdDrainTimeout   = 10 * time.Second
-	jobDrainTimeout   = 5 * time.Second
-)
-
-// shutdownCh is closed once teardown begins. Done() exposes it.
-var (
-	shutdownCh   = make(chan struct{})
-	shutdownOnce sync.Once
-	// Set when the job-worker drain in Serve timed out, i.e. a user handler may
-	// still be running and still touching the SHM client. shutdownAndClose reads
-	// it and declines to unmap, exactly as it does for its own drains. Written
-	// once before shutdownAndClose can observe it, but atomic because
-	// watchParentDeath can call shutdownAndClose from another goroutine.
-	jobDrainFailed atomic.Bool
-)
+// Teardown lives in pkg/server (server.Lifecycle): the drain ordering, the
+// "a timed-out drain must not unmap" safety valve and the parent-death watcher
+// are ordinary library code with unit tests, not re-emitted template text. What
+// stays here is the WIRING -- which drains this project actually has.
+var lifecycle = server.NewLifecycle(asyncBatcher, rtd.GlobalRtd)
 
 // Done returns a channel that is closed when the server starts shutting down —
 // either because the XLL host signalled shutdown (Serve returned from
-// client.Wait) or because the parent Excel process exited (watchParentDeath).
+// client.Wait) or because the parent Excel process exited.
 //
 // A long-lived goroutine that a handler spawned should select on it. The
 // per-topic ctx passed to an RTD handler is NOT a substitute: that ctx is
 // cancelled by a topic DISCONNECT, which does not happen when Excel dies or
 // crashes, so a streaming pusher keyed only on ctx.Done() outlives the server.
-func Done() <-chan struct{} { return shutdownCh }
+func Done() <-chan struct{} { return lifecycle.Done() }
 
-// shutdownAndClose closes the two guest->host send paths and only THEN releases
-// the SHM mapping. It is idempotent (both teardown triggers call it).
-//
-// WHY THE ORDER IS LOAD-BEARING. shm's contract is explicit (shm/go/direct.go,
-// DirectGuest.Close): "Close must not run concurrently with an in-flight
-// SendGuestCall ... unmapping the region while such a call still reads/writes a
-// slot buffer is a use-after-free." Close drains only the workers IT started —
-// caller-side senders are untracked. Ours are the async batch flusher and every
-// RTD pusher (including goroutines the USER's handler spawned, which live until
-// their topic disconnects, i.e. not at all when Excel simply dies). The former
-// `defer client.Close()` therefore unmapped underneath them on the ORDINARY exit
-// path, and a fault on unmapped memory is a `fatal error: unexpected fault
-// address` that recover() cannot catch — a full goroutine dump plus a non-zero
-// exit code on every shutdown with a live RTD stream.
-//
-// If EITHER drain times out we deliberately SKIP client.Close(). Skipping is
-// free: the process is on its way out and the OS reclaims the mapping, the
-// section handle and the events. Unmapping anyway would promote a drain timeout
-// into exactly the fatal fault this function exists to remove, so the safety
-// valve is not optional.
-func shutdownAndClose(client *shm.Client) {
-	shutdownOnce.Do(func() {
-		// Signal user goroutines first so they stop generating new sends while
-		// the drains below wait for the in-flight ones.
-		close(shutdownCh)
+func shutdownAndClose(client *shm.Client) { lifecycle.ShutdownAndClose(client) }
 
-		asyncDrained := asyncBatcher.Stop(asyncDrainTimeout)
-		rtdDrained := rtd.GlobalRtd.Stop(rtdDrainTimeout)
-
-		jobsDrained := !jobDrainFailed.Load()
-
-		if !asyncDrained || !rtdDrained || !jobsDrained {
-			log.Warn("Shutdown drain incomplete; leaving the SHM mapping to the OS instead of unmapping under a live sender",
-				"asyncDrained", asyncDrained, "rtdDrained", rtdDrained, "jobsDrained", jobsDrained)
-			return
-		}
-
-		client.Close()
-	})
-}
-
-// watchParentDeath is the robust backstop that reaps THIS server when the
-// parent Excel process exits, even when the C++ side's Job-object
-// KILL_ON_JOB_CLOSE reap is denied (locked-down environments where
-// AssignProcessToJobObject fails — see xll_launch.cpp #2a). It directly fixes
-// the orphaned-server symptom (S2): an orphaned server keeps the inherited
-// _go.log handle open, leaving the file undeletable while NO Excel process
-// exists.
-//
-// It opens the parent process (PID = os.Getppid()) with SYNCHRONIZE rights and
-// blocks on WaitForSingleObject(INFINITE). When the parent exits, it runs a
-// clean shutdown (onExit, which closes the SHM client) and terminates the
-// process. Failure modes (Getppid()==0, OpenProcess denied) are handled
-// gracefully: the watcher is simply skipped with a warning — the Job reap
-// remains the primary mechanism in that case.
-//
-// osExit is indirected (defaults to os.Exit) so the parent-death watcher's
-// terminate step is unit-testable without killing the test binary. Production
-// behavior is identical to calling os.Exit directly.
-var osExit = os.Exit
-
-// openParent / waitOne are indirected so the logic is unit-testable without a
-// real parent process (see server_parent_watch_test.go).
-func watchParentDeath(parentPID int, openParent func(pid int) (windows.Handle, error), waitOne func(windows.Handle) error, onExit func()) {
-	if parentPID == 0 {
-		log.Warn("Parent-death watcher skipped: getppid returned 0 (no parent handle)")
-		return
-	}
-	h, err := openParent(parentPID)
-	if err != nil {
-		log.Warn("Parent-death watcher skipped: could not open parent process", "ppid", parentPID, "error", err)
-		return
-	}
-	defer windows.CloseHandle(h)
-
-	log.Info("Parent-death watcher armed", "ppid", parentPID)
-	if err := waitOne(h); err != nil {
-		log.Warn("Parent-death watcher wait failed; not reaping", "error", err)
-		return
-	}
-	log.Info("Parent (Excel) exited — shutting down server cleanly", "ppid", parentPID)
-	if onExit != nil {
-		onExit()
-	}
-	osExit(0)
-}
-
-func openParentProcess(pid int) (windows.Handle, error) {
-	return windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
-}
-
-func waitForProcessExit(h windows.Handle) error {
-	ev, err := windows.WaitForSingleObject(h, windows.INFINITE)
-	if err != nil {
-		return err
-	}
-	if ev == uint32(windows.WAIT_FAILED) {
-		return fmt.Errorf("WaitForSingleObject returned WAIT_FAILED")
-	}
-	return nil
+func watchParentDeath(client *shm.Client) {
+	lifecycle.WatchParentDeath(os.Getppid(), server.OpenParentProcess, server.WaitForProcessExit,
+		func() { shutdownAndClose(client) })
 }
 
 func Serve(handler XllService) {
@@ -230,7 +110,7 @@ func Serve(handler XllService) {
     // This path goes through the SAME drain as the normal exit: it is in fact the
     // MORE dangerous of the two, because the parent died without a handshake, so
     // an RTD pusher is almost certainly mid-send when it fires.
-    go watchParentDeath(os.Getppid(), openParentProcess, waitForProcessExit, func() { shutdownAndClose(client) })
+    go watchParentDeath(client)
 
     
     rtd.GlobalRtd.SetClient(client)
@@ -882,12 +762,12 @@ func Serve(handler XllService) {
 	// handlers, which shm calls from the worker routines that client.Wait() has
 	// just seen exit. No send can follow, so no send-on-closed-channel.
 	close(jobQueue)
-	if !server.WaitGroupTimeout(&jobWg, jobDrainTimeout) {
-		jobDrainFailed.Store(true)
+	if !server.WaitGroupTimeout(&jobWg, server.JobDrainTimeout) {
+		lifecycle.MarkJobDrainFailed()
 		log.Warn("Async job workers did not finish within the drain budget; "+
 			"shutdownAndClose will leave the SHM mapping to the OS rather than unmap "+
 			"under a handler that may still be sending",
-			"timeout", jobDrainTimeout)
+			"timeout", server.JobDrainTimeout)
 	}
 }
 

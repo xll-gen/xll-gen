@@ -13,32 +13,46 @@ import (
 // (AssignProcessToJobObject fails — see xll_launch.cpp #2a), so the server is
 // never reaped.
 //
-// FIX (#2b): the generated server starts a parent-death watcher goroutine that
-// opens the parent Excel process (PID = os.Getppid()) with SYNCHRONIZE and
-// blocks on WaitForSingleObject(INFINITE); when the parent exits it closes the
-// SHM client and os.Exit(0). This is the backstop that reaps the server even
-// when the Job reap is denied.
+// FIX (#2b): a parent-death watcher goroutine opens the parent Excel process
+// (PID = os.Getppid()) with SYNCHRONIZE and blocks on
+// WaitForSingleObject(INFINITE); when the parent exits it closes the SHM client
+// and exits. This is the backstop that reaps the server even when the Job reap
+// is denied.
 //
-// This test pins that the template wires the watcher. It FAILS on the parent
-// commit (no watcher) and PASSES after the fix.
+// WHERE THE OLD ASSERTIONS WENT (2026-08-02). The watcher body moved into
+// pkg/server (server.Lifecycle.WatchParentDeath), so the Win32 details this
+// test used to grep for — SYNCHRONIZE rights, OpenProcess, the INFINITE wait,
+// exiting with 0 — are no longer generated text. They are now covered by code
+// that actually runs:
+//
+//	skip when there is no parent      -> TestLifecycle_WatchParentDeath_SkipsWithoutAParent
+//	skip when OpenProcess is denied   -> TestLifecycle_WatchParentDeath_SkipsWhenOpenFails
+//	do not reap on a failed wait      -> TestLifecycle_WatchParentDeath_DoesNotReapWhenTheWaitFails
+//	onExit runs, then Exit(0)         -> TestLifecycle_WatchParentDeath_ReapsAfterTheParentExits
+//	SYNCHRONIZE / OpenProcess / INFINITE -> server.OpenParentProcess,
+//	                                        server.WaitForProcessExit (compiled, single definition)
+//
+// Note what the old grep could NOT check and the new tests do: that onExit runs
+// BEFORE the process terminates. A watcher that exited first would skip the SHM
+// close entirely and reproduce the very orphan symptom it exists to fix, and
+// every needle above would still have been present.
+//
+// What remains here is the wiring this template is still responsible for.
 func TestServer_ParentDeathWatcher_Wired(t *testing.T) {
 	t.Parallel()
 
 	srv := renderTemplate(t, "server.go.tmpl", serverData(nil))
 
-	// The watcher must use the parent PID, the SYNCHRONIZE-rights OpenProcess,
-	// and the blocking wait. These are the load-bearing pieces of the backstop.
 	checks := []struct {
 		needle string
 		why    string
 	}{
-		{"os.Getppid()", "watcher must derive the parent PID from os.Getppid()"},
-		{"watchParentDeath", "Serve() must start the parent-death watcher"},
-		{"windows.SYNCHRONIZE", "must open the parent with SYNCHRONIZE rights"},
-		{"windows.OpenProcess", "must OpenProcess the parent handle"},
-		{"windows.INFINITE", "must block on the parent handle with an INFINITE wait"},
-		{"osExit(0)", "must terminate cleanly once the parent (Excel) exits"},
-		{"golang.org/x/sys/windows", "must import golang.org/x/sys/windows for the Win32 calls"},
+		{"os.Getppid()", "the watcher must derive the parent PID from os.Getppid()"},
+		{"server.OpenParentProcess", "must use the library's SYNCHRONIZE-rights OpenProcess"},
+		{"server.WaitForProcessExit", "must use the library's blocking parent wait"},
+		{"lifecycle.WatchParentDeath(", "the watcher must run through the lifecycle"},
+		{"func() { shutdownAndClose(client) }", "onExit must close the SHM client via the drain, " +
+			"not leave it to process exit — that is the orphan symptom"},
 	}
 	for _, c := range checks {
 		if !strings.Contains(srv, c.needle) {

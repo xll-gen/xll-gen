@@ -53,10 +53,23 @@ func TestGenServer_TeardownDrainsBeforeUnmapping(t *testing.T) {
 	rendered := renderTemplate(t, "server.go.tmpl", serverDataFor(teardownCfg()))
 	assertParses(t, "server.go", rendered)
 
-	// The negative assertions run on CODE only: shutdownAndClose documents the
-	// rejected shapes in prose ("NOT `defer client.Close()`"), so a naive
-	// substring search would false-positive on the comments explaining the fix.
-	// stripCppComments handles // line comments, which is all Go needs here.
+	// WHERE THE OLD ASSERTIONS WENT (2026-08-02). The teardown body moved out of
+	// the template into pkg/server (server.Lifecycle), so the invariants this
+	// test used to check by substring are now checked by EXECUTING the code:
+	//
+	//   once-guarded                -> TestLifecycle_IsIdempotent
+	//   signal before draining      -> TestLifecycle_SignalsBeforeDraining
+	//   budgets, and rtd > async    -> TestLifecycle_UsesTheDocumentedBudgets
+	//   a failed drain skips Close  -> TestLifecycle_AnyFailedDrainVetoesTheUnmap
+	//                                  (every failing combination, not one string)
+	//
+	// That is a strengthening, not a loss: those were greps over generated text
+	// and are now behavioral. What CANNOT move is whether a given project is
+	// wired to the lifecycle at all -- that is what remains here.
+	//
+	// The negative assertions run on CODE only: the template documents the
+	// rejected shapes in prose, so a naive substring search would false-positive
+	// on the comments explaining the fix.
 	srv := stripCppComments(rendered)
 
 	// 1. The unguarded Close call sites are GONE. Both of them.
@@ -66,103 +79,64 @@ func TestGenServer_TeardownDrainsBeforeUnmapping(t *testing.T) {
 	}
 	if strings.Contains(srv, "func() { client.Close() }") {
 		t.Errorf("the parent-death watcher still closes the client directly; it must go " +
-			"through the drain (that path is the MORE dangerous one — the parent died " +
+			"through the drain (that path is the MORE dangerous one - the parent died " +
 			"with no handshake, so a pusher is likely mid-send)")
 	}
-
-	// 2. Exactly ONE client.Close() remains, inside shutdownAndClose.
-	if got := strings.Count(srv, "client.Close()"); got != 1 {
-		t.Errorf("client.Close() appears %d times, want exactly 1 (inside shutdownAndClose)", got)
+	// No client.Close() may appear in generated code at all now: the only one in
+	// the system is inside server.Lifecycle.ShutdownAndClose, behind the valve.
+	if got := strings.Count(srv, "client.Close()"); got != 0 {
+		t.Errorf("client.Close() appears %d times in generated code, want 0 - releasing the "+
+			"mapping is the lifecycle's decision, and a second call site would bypass its "+
+			"drain valve", got)
 	}
 
-	// 3. Both teardown triggers route through the same idempotent function.
+	// 2. Both teardown triggers route through the same idempotent entry point.
 	if !strings.Contains(srv, "defer shutdownAndClose(client)") {
 		t.Errorf("Serve does not defer shutdownAndClose:\n%s", srv)
 	}
 	if !strings.Contains(srv, "func() { shutdownAndClose(client) })") {
 		t.Errorf("the parent-death watcher's onExit does not route through shutdownAndClose")
 	}
-	if !strings.Contains(srv, "shutdownOnce.Do(func() {") {
-		t.Errorf("shutdownAndClose is not once-guarded; both triggers can fire")
+	if !strings.Contains(srv, "lifecycle.ShutdownAndClose(client)") {
+		t.Errorf("shutdownAndClose does not delegate to the lifecycle:\n%s", srv)
 	}
 
-	// 4. ORDERING inside shutdownAndClose: signal user goroutines, drain async,
-	//    drain rtd, and only then unmap.
-	body := srv[strings.Index(srv, "func shutdownAndClose("):]
-	body = body[:strings.Index(body, "\n}")]
-	iSignal := strings.Index(body, "close(shutdownCh)")
-	iAsync := strings.Index(body, "asyncBatcher.Stop(")
-	iRtd := strings.Index(body, "rtd.GlobalRtd.Stop(")
-	iClose := strings.Index(body, "client.Close()")
-	for _, s := range []struct {
-		name string
-		idx  int
-	}{{"close(shutdownCh)", iSignal}, {"asyncBatcher.Stop", iAsync}, {"rtd.GlobalRtd.Stop", iRtd}, {"client.Close", iClose}} {
-		if s.idx < 0 {
-			t.Fatalf("shutdownAndClose is missing %s:\n%s", s.name, body)
-		}
-	}
-	if !(iSignal < iAsync && iAsync < iRtd && iRtd < iClose) {
-		t.Errorf("shutdownAndClose ordering wrong (signal=%d async=%d rtd=%d close=%d); the "+
-			"unmap must come LAST:\n%s", iSignal, iAsync, iRtd, iClose, body)
+	// 3. The lifecycle is constructed with THIS project's drains. An RTD project
+	//    that passed nil would silently skip the RTD drain and unmap under a live
+	//    pusher -- the original defect, reintroduced through the wiring rather
+	//    than through the body.
+	if !strings.Contains(srv, "server.NewLifecycle(asyncBatcher, rtd.GlobalRtd)") {
+		t.Errorf("an RTD-enabled project must wire BOTH drains into the lifecycle "+
+			"(want server.NewLifecycle(asyncBatcher, rtd.GlobalRtd)):\n%s", srv)
 	}
 
-	// 5. THE SAFETY VALVE. A drain timeout must SKIP the unmap, never proceed to
-	//    it: skipping costs nothing at process exit (the OS reclaims the mapping),
-	//    while unmapping under a live sender is the fatal fault. Assert there is a
-	//    `return` between the drain check and client.Close().
-	// Every drain must be in the guard. Matching on the drain VARIABLES rather
-	// than on one frozen condition string: the previous exact-match on
-	// "if !asyncDrained || !rtdDrained {" had to be edited the moment a third
-	// drain (the job-worker pool) was added, and an exact match invites a future
-	// edit to "fix the test" by dropping a term instead of noticing that a drain
-	// stopped being consulted.
-	iGuard := strings.Index(body, "if !asyncDrained ||")
-	if iGuard < 0 {
-		t.Fatalf("shutdownAndClose does not inspect the drain results:\n%s", body)
-	}
-	guardEnd := strings.Index(body[iGuard:], "{")
-	if guardEnd < 0 {
-		t.Fatalf("could not delimit the drain guard:\n%s", body)
-	}
-	guard := body[iGuard : iGuard+guardEnd]
-	for _, drain := range []string{"asyncDrained", "rtdDrained", "jobsDrained"} {
-		if !strings.Contains(guard, drain) {
-			t.Errorf("the unmap guard does not consult %s, so that drain timing out would "+
-				"still let client.Close() unmap under a live sender:\n\t%s", drain, guard)
-		}
-	}
-	between := body[iGuard:iClose]
-	if !strings.Contains(between, "return") {
-		t.Errorf("a failed drain does not skip client.Close(); a drain timeout must never be "+
-			"promoted into a use-after-free:\n%s", body)
+	// 4. A job-worker drain failure still reaches the valve.
+	if !strings.Contains(srv, "lifecycle.MarkJobDrainFailed()") {
+		t.Errorf("a job-worker drain timeout is not reported to the lifecycle, so the unmap " +
+			"would proceed under a handler that may still be sending")
 	}
 
-	// 6. Done() is exported so a handler's long-lived goroutine can stop pushing.
+	// 5. Done() is exported so a handler's long-lived goroutine can stop pushing.
 	//    The per-topic ctx is not a substitute (it is cancelled by a DISCONNECT,
 	//    which never happens when Excel dies).
-	if !strings.Contains(srv, "func Done() <-chan struct{} { return shutdownCh }") {
+	if !strings.Contains(srv, "func Done() <-chan struct{} { return lifecycle.Done() }") {
 		t.Errorf("server.go does not export Done():\n%s", srv)
 	}
 }
 
-// TestGenServer_DrainBudgetsAreDeclared: the budgets must be explicit constants,
-// not literals buried in the call, so they can be reviewed against the send
-// timeouts they have to cover (sendWithRetry ~2.56s of backoff; SendOnceGrid 5s
-// PER FRAME for a chunked grid).
-func TestGenServer_DrainBudgetsAreDeclared(t *testing.T) {
+// TestGenServer_NonRtdProjectWiresNoRtdDrain: the nil drain is meaningful, not a
+// placeholder -- a project generated without RTD has no manager to stop, and
+// treating that absence as a FAILED drain would permanently disable the unmap.
+func TestGenServer_NonRtdProjectWiresNoRtdDrain(t *testing.T) {
 	t.Parallel()
-	srv := renderTemplate(t, "server.go.tmpl", serverDataFor(teardownCfg()))
+	cfg := teardownCfg()
+	cfg.Rtd.Enabled = false
+	cfg.Functions = cfg.Functions[:2] // drop the rtd function
+	srv := renderTemplate(t, "server.go.tmpl", serverDataFor(cfg))
+	assertParses(t, "server.go", srv)
 
-	for _, want := range []string{
-		"asyncDrainTimeout = 5 * time.Second",
-		"rtdDrainTimeout   = 10 * time.Second",
-		"asyncBatcher.Stop(asyncDrainTimeout)",
-		"rtd.GlobalRtd.Stop(rtdDrainTimeout)",
-	} {
-		if !strings.Contains(srv, want) {
-			t.Errorf("server.go is missing %q:\n%s", want, srv)
-		}
+	if !strings.Contains(srv, "server.NewLifecycle(asyncBatcher, nil)") {
+		t.Errorf("a non-RTD project must wire a nil rtd drain:\n%s", srv)
 	}
 }
 
