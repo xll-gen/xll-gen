@@ -25,6 +25,10 @@ var _ = protocol.Bool{}
 var _ = rand.Int63
 var _ = flatbuffers.NewBuilder
 var _ = strings.Join
+{{/* fmt's only UNCONDITIONAL uses were the two logger-bootstrap Printf
+     fallbacks that moved to server.InitServerLogging; every remaining one sits
+     inside {{if .Functions}} / {{if .Rtd.Enabled}}, so a project with neither
+     would not compile without this. See AGENTS.md 18.12.1. */}}var _ = fmt.Sprintf
 {{if .Functions}}var _ = &ipc.{{(index .Functions 0).Name}}Request{}{{end}}
 
 var (
@@ -82,15 +86,12 @@ func Serve(handler XllService) {
 	// flag.Parse) so Serve composes with any flags the user's own main defines.
 	shmName := server.ResolveSHMName("{{.ProjectName}}")
 
-    if os.Getenv("XLL_LOG_TO_STDOUT") == "1" {
-        if err := log.Init("", "{{.Logging.Level}}"); err != nil {
-            fmt.Printf("Failed to initialize stdout logger: %v\n", err)
-        }
-    } else {
-        if _, err := server.InitLog({{printf "%q" .Logging.Dir}}, "{{.Logging.Level}}", "{{.ProjectName}}"); err != nil {
-            fmt.Printf("Failed to initialize logger: %v\n", err)
-        }
-    }
+    // The logger bootstrap lives in pkg/server (server.InitServerLogging): the
+    // sink choice (the C++ launcher redirects our stdout into <proj>_go.log, so
+    // opening that file again here would give it two writers), the logging.dir
+    // resolution and the "report the failure but keep loading" rule are library
+    // code with unit tests. Only these three xll.yaml values are generated.
+    server.InitServerLogging({{printf "%q" .Logging.Dir}}, "{{.Logging.Level}}", "{{.ProjectName}}")
 
     log.Info("Connecting to SHM", "name", shmName)
     client, err := server.ConnectSHM(shmName)

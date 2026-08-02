@@ -19,6 +19,71 @@ bool InitLog(const std::wstring& configuredPath, const std::string& level, const
 
 std::wstring ExpandEnvVarsW(const std::wstring& pattern);
 
+// --- Native log bootstrap ---------------------------------------------------
+//
+// The whole xlAutoOpen logging preamble used to be inline in
+// internal/templates/xll_main.cpp.tmpl: the ${BIN_DIR} derivation, the
+// logging.dir resolution, the log file name, the InitLog call and its
+// failure MessageBox. None of that LOGIC was generated — only the four
+// xll.yaml values it consumes — so every generated project received a
+// byte-identical re-emitted copy that nothing but a golden-string grep could
+// test. It lives here now, and the arguments below are the whole contract with
+// the generated TU. (Standing project direction: keep generated templates
+// minimal, prefer static code. Same move as com/ribbon_connect.h and
+// com/scratch_book.h — AGENTS.md §18.11.1.)
+
+// The ONE-DIRECTORY CONTRACT (AGENTS.md §18.12). logging.dir resolves to a
+// single directory that holds BOTH log files: <proj>_native.log (this XLL) and
+// <proj>_go.log (the launched Go server's redirected stdout, written by
+// xll_launch.cpp from LaunchConfig::logDir). Do NOT reintroduce a per-side
+// default — the Go log hardcoded to the launch cwd while the native log honored
+// logging.dir was the original split-log bug in singlefile mode.
+struct NativeLogPaths {
+    // ${BIN_DIR}: the XLL's own directory, EXCEPT in singlefile mode where it is
+    // the extraction directory <temp_dir>\<project> — the dir ExtractEmbeddedExe
+    // unpacks the Go server into, so the default logging.dir of ${BIN_DIR} keeps
+    // the exe and BOTH logs in one place.
+    std::wstring binDir;
+    // The resolved logging.dir, trailing separators stripped. Feeds InitLog here
+    // and LaunchConfig::logDir for the Go log.
+    std::wstring dir;
+    // dir + L"\\" + <project> + L"_native.log".
+    std::wstring path;
+};
+
+// Pure resolution — no filesystem, no Excel, no globals beyond the process
+// environment that ExpandEnvVarsW reads. xllDir is GetXllDir()'s answer, passed
+// in rather than queried so this is deterministically testable offline (see
+// internal/assets/testdata/log_paths_native_test.cpp) and so the single
+// module-path query stays visible at the one call site that makes it.
+//
+// Accepted forms of configuredDir, in the order they are tested:
+//   - the legacy BARE tokens L"XLL_DIR" and L"TEMP_DIR" (whole-string match,
+//     kept for projects generated before the ${} syntax existed);
+//   - otherwise ${XLL_DIR} / ${BIN_DIR} are substituted and the result is run
+//     through ExpandEnvVarsW, so ${TEMP} and any other environment variable
+//     work too;
+//   - empty falls back to binDir.
+NativeLogPaths ResolveNativeLogPaths(const std::wstring& configuredDir,
+                                     const std::string& projectName,
+                                     const std::string& tempPattern,
+                                     bool isSingleFile,
+                                     const std::wstring& xllDir);
+
+// ResolveNativeLogPaths(GetXllDir()) + InitLog + the outcome report, i.e. the
+// single call xlAutoOpen makes. Returns the resolved paths so the caller can
+// hand `dir` to LaunchConfig::logDir.
+//
+// A FAILED INIT IS NOT FATAL and must stay that way: logging is critical for
+// debugging but not for core functionality, so the failure surfaces as a
+// MessageBox (the log itself is the thing that just failed, so it cannot carry
+// the message) and xlAutoOpen proceeds to load the add-in.
+NativeLogPaths InitNativeLogging(const std::wstring& configuredDir,
+                                 const std::string& level,
+                                 const std::string& projectName,
+                                 const std::string& tempPattern,
+                                 bool isSingleFile);
+
 void LogError(const std::string& msg);
 void LogWarn(const std::string& msg);
 void LogInfo(const std::string& msg);

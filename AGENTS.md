@@ -408,16 +408,21 @@ Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort 
 
 `logging.dir` resolves to **ONE directory** that holds BOTH log files:
 `<proj>_native.log` (C++ XLL) and `<proj>_go.log` (the launched Go server's
-redirected stdout/stderr). The resolution happens once, in the generated
-`xlAutoOpen` (`internal/templates/xll_main.cpp.tmpl`), and flows to all consumers:
+redirected stdout/stderr). The resolution happens once, at `xlAutoOpen`, and
+flows to all consumers:
 
-1.  **Template** (`xll_main.cpp.tmpl`): resolves `logging.dir` (`${XLL_DIR}`,
-    `${BIN_DIR}`, `${TEMP}`, legacy bare tokens `XLL_DIR`/`TEMP_DIR`) into
-    `logDir`; empty → `binDir`. In **singlefile** mode `${BIN_DIR}` = the
-    extraction dir `<temp_dir>\<project>` (the dir `ExtractEmbeddedExe` uses),
-    NOT the temp root — this is what keeps exe + both logs together. The
-    resolved `logDir` feeds both `InitLog(...)` (native log) and
-    `LaunchConfig.logDir` (Go log).
+1.  **Native bootstrap** (`internal/assets/files/src/xll_log.cpp`):
+    `ResolveNativeLogPaths` resolves `logging.dir` (`${XLL_DIR}`, `${BIN_DIR}`,
+    `${TEMP}` and any other `${VAR}`, plus the legacy bare tokens
+    `XLL_DIR`/`TEMP_DIR`, which are WHOLE-STRING matches) into
+    `NativeLogPaths::dir`; empty → `binDir`. In **singlefile** mode
+    `${BIN_DIR}` = the extraction dir `<temp_dir>\<project>` (the dir
+    `ExtractEmbeddedExe` uses), NOT the temp root — this is what keeps exe +
+    both logs together. `InitNativeLogging` is the single entry point
+    `xlAutoOpen` calls: resolve → `InitLog(...)` (native log) → report. The
+    resolved `dir` also feeds `LaunchConfig.logDir` (Go log). The generated
+    `xlAutoOpen` (`internal/templates/xll_main.cpp.tmpl`) only SUPPLIES the four
+    xll.yaml values and forwards `logPaths.dir` — see §18.12.1.
 2.  **Launcher** (`internal/assets/files/src/xll_launch.cpp::ResolveServerPath`):
     `outLogPath = cfg.logDir + L"\\<proj>_go.log"`; empty `logDir` falls back to
     the launch cwd (legacy), and an uncreatable configured dir also falls back
@@ -426,10 +431,16 @@ redirected stdout/stderr). The resolution happens once, in the generated
     the parent directory of the final path; its singlefile fallback branch
     (empty/`BIN_DIR`/`TEMP_DIR` configured path) also targets
     `<temp_dir>\<project>\`.
-4.  **Standalone Go** (`pkg/server/bootstrap.go::InitLog`): used only when the
-    server runs WITHOUT the launcher (no `XLL_LOG_TO_STDOUT=1`); expands
-    `${XLL_DIR}`/`${BIN_DIR}` plus generic `${VAR}` env placeholders the same
-    way.
+4.  **Go bootstrap** (`pkg/server/bootstrap.go::InitServerLogging`): picks the
+    sink. `XLL_LOG_TO_STDOUT=1` — set by the launcher, which has ALREADY
+    redirected this process's stdout into `<logDir>\<proj>_go.log` — means log
+    to STDOUT and do NOT open that file a second time (two writers interleave
+    partial lines, and the extra handle locks the file independently of the
+    inherited one, which is the S2 orphaned-server symptom with a handle bolted
+    on). Anything else means no launcher (dev `go run`, regtest, a user's own
+    main), so `InitLog` expands `${XLL_DIR}`/`${BIN_DIR}` plus generic `${VAR}`
+    env placeholders the same way and opens `<logDir>\<proj>_go.log` itself. A
+    failed init is printed to stdout and SURVIVED, never fatal.
 
 **Constraint**: changing how `logging.dir` is resolved (new placeholder,
 default, or singlefile layout) requires walking all four locations above plus
@@ -439,6 +450,53 @@ the docs (`README.md` "Server Logs", `TUTORIAL.md` troubleshooting,
 reintroduce a per-side default (e.g. Go log hardcoded to the launch cwd while
 the native log honors `logging.dir`) — the split-log inconsistency in
 singlefile mode was the original bug.
+
+#### 18.12.1 Both log bootstraps are STATIC code, not template code (2026-08-02)
+
+The C++ `xlAutoOpen` logging preamble (the `${BIN_DIR}` derivation, the
+`logging.dir` resolution, the `<proj>_native.log` name, the `InitLog` call and
+its failure `MessageBox`) and the Go `Serve` logger block (the
+`XLL_LOG_TO_STDOUT` if/else, the two `log.Init` sites and the two
+`fmt.Printf` fallbacks) are no longer emitted into generated projects. They live
+in **`internal/assets/files/{include/xll_log.h,src/xll_log.cpp}`**
+(`xll::ResolveNativeLogPaths` / `xll::InitNativeLogging`) and
+**`pkg/server/bootstrap.go`** (`server.InitServerLogging`). Everything the
+prose above says about their BEHAVIOR still holds verbatim — the change was a
+pure relocation, no semantics touched.
+
+**Why:** neither block contained template variables in its LOGIC, only the
+values it consumed, so every generated project received a byte-identical
+re-emitted copy that nothing but a golden-string grep could test. Same move,
+same reasoning as §18.11.1 (ribbon connect / scratch book).
+
+**What STAYS generated, and must:**
+* the four C++ values — `logging.dir` (wide literal, `escapeCppString`),
+  `logging.level`, the project name, and the `tempPattern`/`isSingleFile` pair
+  that `LaunchConfig` needs anyway;
+* the three Go values, `logging.dir` emitted via `%q`;
+* `cfg.logDir = logPaths.dir` — the single-directory contract is WIRING, and it
+  is the one thing a relocation could silently drop.
+
+**Where the tests are.** BODY invariants: `pkg/server/bootstrap_test.go` (sink
+choice, level threading, placeholder expansion, the survive-a-bad-dir fallback
+message), `internal/assets/log_bootstrap_cpp_test.go` (declarations, the
+`InitLog` call, the MessageBox, the non-fatal rule) and
+`internal/assets/testdata/log_paths_native_test.cpp` — an offline g++ harness
+that EXECUTES `ResolveNativeLogPaths` and additionally diffs it against a
+verbatim copy of the deleted template lines over a 27-case matrix, which is what
+discharges "the relocation changed no behavior". WIRING:
+`internal/generator/gen_log_bootstrap_test.go`, which also carries the
+**do-not-re-inline** guard in the spirit of §18.6.1's
+`TestChunkSegmentLogicIsExtracted`: a re-inlined copy in either template would
+shadow the static code, leave those tests green, and put untested code back in
+the shipped XLL / generated server.
+
+**Trap this move already stepped on:** the two `fmt.Printf` fallbacks were
+`fmt`'s only UNCONDITIONAL uses in `server.go.tmpl` — every other one sits
+inside `{{if .Functions}}` / `{{if .Rtd.Enabled}}`. Removing them broke a project
+with neither on an unused-import error, so the template's "force usage" block
+gained `var _ = fmt.Sprintf`
+(`gen_log_bootstrap_test.go::TestGenServer_LogBootstrapCompilesWithoutFunctionsOrRtd`).
 
 ## 19. Excel XLL Registration Rules
 

@@ -15,6 +15,48 @@ import (
 // C++ side's ExpandEnvVarsW so e.g. ${TEMP} resolves identically in both logs.
 var envPlaceholderRe = regexp.MustCompile(`\$\{(\w+)\}`)
 
+// StdoutLogEnvVar is the environment variable the C++ launcher sets on the
+// server process it spawns (internal/assets/files/src/xll_launch.cpp:
+// env[L"XLL_LOG_TO_STDOUT"] = L"1"). Named rather than inlined so the two sides
+// of that contract are greppable as one symbol.
+const StdoutLogEnvVar = "XLL_LOG_TO_STDOUT"
+
+// InitServerLogging is the generated server's entire logger bootstrap. It used
+// to be an if/else inline in internal/templates/server.go.tmpl; the logic
+// carried no template variables, only the three xll.yaml values it now takes as
+// arguments, so every generated project got a re-emitted copy that nothing but
+// a golden-string grep covered.
+//
+// WHICH SINK, AND WHY IT IS NOT A CONFIG OPTION:
+//
+//   - StdoutLogEnvVar == "1" means we were launched BY THE XLL, and the
+//     launcher already redirected this process's stdout/stderr into
+//     <logDir>\<proj>_go.log (xll_launch.cpp, LaunchProcess). So we log to
+//     STDOUT and must NOT open that file ourselves: two writers on one path
+//     interleave partial lines, and the second handle would keep the file
+//     locked independently of the inherited one — which is the orphaned-server
+//     "log file cannot be deleted" symptom (S2, AGENTS.md §23.6) with an extra
+//     handle bolted on.
+//   - Anything else means no launcher (a dev `go run`, regtest, a user's own
+//     main), so we resolve logging.dir ourselves and open the file. See InitLog
+//     and AGENTS.md §18.12.
+//
+// A FAILED INIT IS REPORTED AND SURVIVED, never fatal. An add-in that works but
+// cannot write a log is strictly better than one that refuses to start because
+// its log directory is read-only. The report goes through fmt.Printf rather
+// than log, because log is precisely what just failed to initialize.
+func InitServerLogging(logDir string, level string, projectName string) {
+	if os.Getenv(StdoutLogEnvVar) == "1" {
+		if err := log.Init("", level); err != nil {
+			fmt.Printf("Failed to initialize stdout logger: %v\n", err)
+		}
+		return
+	}
+	if _, err := InitLog(logDir, level, projectName); err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+	}
+}
+
 func InitLog(logDir string, level string, projectName string) (string, error) {
 	exePath, _ := os.Executable()
 	binDir := filepath.Dir(exePath)

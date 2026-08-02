@@ -26,12 +26,29 @@ func TestGenCpp_LogAndTempDirEscaping(t *testing.T) {
 	}
 	content := renderCppMain(t, cfg)
 
+	// WHERE THE OLD ASSERTIONS WENT (2026-08-02). The log-bootstrap BODY moved
+	// out of the template into the xll_log.cpp asset (xll::InitNativeLogging),
+	// so two of the three literals below no longer exist as separate statements.
+	// This test is still the ESCAPING gate — the literals are asserted in their
+	// NEW home, which is the argument list of the single relocated call:
+	//
+	//	`std::wstring logDir = L"C:\\temp\\logs";`
+	//	                      -> the InitNativeLogging configuredDir argument
+	//	                         (below); the resolution it fed is executed by
+	//	                         internal/assets/testdata/log_paths_native_test.cpp
+	//	`binDir = ExpandEnvVarsW(L"C:\\tmp\\extract");`
+	//	                      -> build.temp_dir now reaches the resolver through
+	//	                         the SAME narrow `tempPattern` literal that
+	//	                         LaunchConfig::tempDir already used, so the wide
+	//	                         duplicate is gone. The narrow literal's escaping
+	//	                         is still asserted, and it is now the ONLY place
+	//	                         build.temp_dir is emitted — a strictly smaller
+	//	                         escaping surface.
 	for _, want := range []string{
 		// logging.dir wide literal — backslashes escaped, path preserved.
-		`std::wstring logDir = L"C:\\temp\\logs";`,
-		// build.temp_dir, narrow + wide literals (singlefile branch).
+		`L"C:\\temp\\logs", "info", "TestProj",`,
+		// build.temp_dir, narrow literal (singlefile branch).
 		`tempPattern = "C:\\tmp\\extract";`,
-		`binDir = ExpandEnvVarsW(L"C:\\tmp\\extract");`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("expected escaped literal %q, not found in:\n%s", want, content)
@@ -51,9 +68,15 @@ func TestGenCpp_LogAndTempDirEscaping(t *testing.T) {
 }
 
 // TestGenGo_LogDirEscaping is the Go-side twin: logging.dir flows into
-// server.InitLog via %q, so a backslash Windows path is emitted as a valid Go
-// string literal (`"C:\\temp\\logs"`) rather than raw text that would break the
-// interpreted string literal.
+// server.InitServerLogging via %q, so a backslash Windows path is emitted as a
+// valid Go string literal (`"C:\\temp\\logs"`) rather than raw text that would
+// break the interpreted string literal.
+//
+// WHERE THE OLD ASSERTION WENT (2026-08-02): the call used to be
+// `server.InitLog(...)` inside a template-rendered XLL_LOG_TO_STDOUT if/else.
+// That branch moved to pkg/server (server.InitServerLogging, executed by
+// pkg/server/bootstrap_test.go); the %q escaping stayed here, on the one
+// argument that still carries it.
 func TestGenGo_LogDirEscaping(t *testing.T) {
 	t.Parallel()
 	// Build the server.go data struct directly (serverDataFor hardcodes a plain
@@ -85,7 +108,7 @@ func TestGenGo_LogDirEscaping(t *testing.T) {
 	// The Go render must parse — an un-escaped backslash path would not.
 	assertParses(t, "server.go", srv)
 
-	want := `server.InitLog("C:\\temp\\logs", "info", "TestProj")`
+	want := `server.InitServerLogging("C:\\temp\\logs", "info", "TestProj")`
 	if !strings.Contains(srv, want) {
 		t.Errorf("server.go must emit logging.dir via %%q: expected %q:\n%s", want, srv)
 	}

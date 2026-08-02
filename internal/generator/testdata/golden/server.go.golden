@@ -25,6 +25,7 @@ var _ = protocol.Bool{}
 var _ = rand.Int63
 var _ = flatbuffers.NewBuilder
 var _ = strings.Join
+var _ = fmt.Sprintf
 var _ = &ipc.SyncStrRequest{}
 
 var (
@@ -77,15 +78,12 @@ func Serve(handler XllService) {
 	// flag.Parse) so Serve composes with any flags the user's own main defines.
 	shmName := server.ResolveSHMName("GoldenProj")
 
-    if os.Getenv("XLL_LOG_TO_STDOUT") == "1" {
-        if err := log.Init("", "info"); err != nil {
-            fmt.Printf("Failed to initialize stdout logger: %v\n", err)
-        }
-    } else {
-        if _, err := server.InitLog("logs", "info", "GoldenProj"); err != nil {
-            fmt.Printf("Failed to initialize logger: %v\n", err)
-        }
-    }
+    // The logger bootstrap lives in pkg/server (server.InitServerLogging): the
+    // sink choice (the C++ launcher redirects our stdout into <proj>_go.log, so
+    // opening that file again here would give it two writers), the logging.dir
+    // resolution and the "report the failure but keep loading" rule are library
+    // code with unit tests. Only these three xll.yaml values are generated.
+    server.InitServerLogging("logs", "info", "GoldenProj")
 
     log.Info("Connecting to SHM", "name", shmName)
     client, err := server.ConnectSHM(shmName)

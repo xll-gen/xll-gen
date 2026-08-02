@@ -1,5 +1,6 @@
 #include "xll_log.h"
-#include "types/utility.h" // For StringToWString
+#include "types/utility.h" // For StringToWString / WideToUtf8 / GetXllDir
+#include "xll_path.h"      // For ReplaceAll (the same helper the template used)
 #include <windows.h>
 #include <fstream>
 #include <chrono>
@@ -234,6 +235,69 @@ bool InitLog(const std::wstring& configuredPath, const std::string& level, const
 
     g_logPath = WideToUtf8(path);
     return true;
+}
+
+// --- Native log bootstrap ---------------------------------------------------
+// Relocated verbatim from internal/templates/xll_main.cpp.tmpl's xlAutoOpen
+// preamble (2026-08-02); see xll_log.h for why, and AGENTS.md §18.12 for the
+// four places the single-directory contract has to stay in step.
+
+NativeLogPaths ResolveNativeLogPaths(const std::wstring& configuredDir,
+                                     const std::string& projectName,
+                                     const std::string& tempPattern,
+                                     bool isSingleFile,
+                                     const std::wstring& xllDir) {
+    NativeLogPaths out;
+    const std::wstring wProjName = StringToWString(projectName);
+
+    out.binDir = xllDir;
+    if (isSingleFile) {
+        // Singlefile: ${BIN_DIR} is the extraction directory <temp_dir>\<project>
+        // (where ExtractEmbeddedExe unpacks the Go server), so the default
+        // logging.dir of ${BIN_DIR} keeps the exe and BOTH logs in one place.
+        out.binDir = ExpandEnvVarsW(StringToWString(tempPattern));
+        while (!out.binDir.empty() && (out.binDir.back() == L'\\' || out.binDir.back() == L'/')) out.binDir.pop_back();
+        out.binDir += L"\\" + wProjName;
+    }
+
+    // Resolve logging.dir into ONE directory shared by both log files:
+    // <dir>\<proj>_native.log (the XLL) and <dir>\<proj>_go.log (server stdout).
+    std::wstring logDir = configuredDir;
+    if (logDir == L"XLL_DIR") {
+        logDir = xllDir;
+    } else if (logDir == L"TEMP_DIR") {
+        logDir = ExpandEnvVarsW(L"${TEMP}");
+    } else {
+        // Support placeholders like ${XLL_DIR}, ${BIN_DIR} and ${TEMP}
+        ReplaceAll(logDir, L"${XLL_DIR}", xllDir);
+        ReplaceAll(logDir, L"${BIN_DIR}", out.binDir);
+        logDir = ExpandEnvVarsW(logDir);
+    }
+    if (logDir.empty()) logDir = out.binDir;
+    while (!logDir.empty() && (logDir.back() == L'\\' || logDir.back() == L'/')) logDir.pop_back();
+
+    out.dir = logDir;
+    out.path = logDir + L"\\" + wProjName + L"_native.log";
+    return out;
+}
+
+NativeLogPaths InitNativeLogging(const std::wstring& configuredDir,
+                                 const std::string& level,
+                                 const std::string& projectName,
+                                 const std::string& tempPattern,
+                                 bool isSingleFile) {
+    NativeLogPaths paths = ResolveNativeLogPaths(configuredDir, projectName, tempPattern,
+                                                 isSingleFile, GetXllDir());
+
+    std::string logInitError;
+    if (!InitLog(paths.path, level, tempPattern, projectName, isSingleFile, logInitError)) {
+        // If logging fails to initialize, we show a message box but proceed.
+        // Logging is critical for debugging but not for core functionality.
+        MessageBoxA(NULL, ("Failed to initialize logging: " + logInitError).c_str(), "XLL Initialization Warning", MB_OK | MB_ICONWARNING);
+    } else {
+        SAFE_LOG_INFO("Logging Initialized Successfully. LogPath: " + WideToUtf8(paths.path));
+    }
+    return paths;
 }
 
 } // namespace xll
