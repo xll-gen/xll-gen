@@ -36,6 +36,7 @@ var doctorCmd = &cobra.Command{
 		printHeader("🩺 Running System Diagnosis...")
 
 		checkSystem()
+		checkProjectPathLength()
 		checkCompiler()
 		checkFlatc()
 		checkGo()
@@ -339,4 +340,44 @@ func compareVersions(a, b []int) int {
 		}
 	}
 	return 0
+}
+
+// xllPathBudget is the working-directory length above which `doctor` warns.
+//
+// Excel silently refuses to load an XLL from a long path: no dialog, no warning,
+// no native log, no server process. Measured 2026-07-29 — the same add-in loaded
+// fine from a 55-character path and not at all from ~175 characters, with
+// RequireAddinSig=0 and an empty DisabledItems, so it was neither the signature
+// policy nor resiliency. The only symptom is "Excel is up but there is no server
+// exe", which reads exactly like a product defect and cost a debugging session.
+//
+// The number: MAX_PATH is 260, and the deepest artifact under the project root
+// is roughly `build\cpp\_deps\<dep>-src\include\...` plus the generated tree, so
+// the build needs well over 100 characters of headroom before the XLL itself is
+// even placed. 150 leaves that headroom while staying quiet for ordinary
+// locations. It is advisory: this is a WARN, never a gate, because the real
+// threshold depends on the deepest path each dependency creates and we would
+// rather be occasionally noisy than silent in the case that actually bites.
+//
+// NOT the same thing as the long-path opt-in: even with LongPathsEnabled, Excel's
+// own add-in loader is the component that gives up, so a passing registry flag is
+// not evidence this is safe.
+const xllPathBudget = 150
+
+// checkProjectPathLength warns when the current directory is deep enough that
+// Excel may silently decline to load the built XLL.
+func checkProjectPathLength() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return // nothing actionable; other checks carry the diagnosis
+	}
+	if n := len(wd); n > xllPathBudget {
+		printWarning("Project path", fmt.Sprintf("%d characters — long enough that Excel may refuse to load the built XLL SILENTLY (no dialog, no log, no server process)", n))
+		printWarning("Recommendation", "If the add-in appears not to load and the native log is missing entirely, move the project somewhere shorter (e.g. C:\\dev\\<project>) and rebuild before looking for a product defect.")
+		return
+	}
+	printSuccess("Project path", fmt.Sprintf("%d characters", len(wd)))
 }
