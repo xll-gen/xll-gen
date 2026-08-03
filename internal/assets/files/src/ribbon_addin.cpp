@@ -79,7 +79,7 @@ namespace xll { namespace ribbon {
         // dropping a ribbon click here costs nothing. The in-lambda re-checks remain the
         // cover for a teardown that starts mid-flight.
         if (xll::TeardownStarted()) {
-            // POST-TEARDOWN USE (backlog line 134/191): a ribbon click after Phase 2
+            // POST-TEARDOWN USE (AGENTS.md §20.3): a ribbon click after Phase 2
             // COMPLETED means the add-in was destroyed and the session went on
             // living — the commonest way in is the user unticking this add-in in the
             // COM Add-ins dialog, which runs the full destructive teardown while the
@@ -421,16 +421,36 @@ HRESULT __stdcall RibbonAddIn::OnAddInsUpdate(SAFEARRAY**) { return S_OK; }
 HRESULT __stdcall RibbonAddIn::OnStartupComplete(SAFEARRAY**) { return S_OK; }
 
 HRESULT __stdcall RibbonAddIn::OnBeginShutdown(SAFEARRAY**) {
-    // CONFIRMED-shutdown signal: fires only on a REAL quit, AFTER the Save/Cancel
-    // decision is resolved, and NEVER on a cancelled quit (design §3.4). This is
-    // the graceful pre-teardown moment — it runs on the STA thread (COM/C++-safe,
-    // not the loader lock), so the §23.0 drains and the clean server shutdown
-    // happen here rather than at DETACH. Idempotent via the GracefulTeardownOnce
-    // CAS. Decoupled via the exported lifecycle hook.
+    // Shutdown signal: fires AFTER the Save/Cancel decision is resolved and NEVER
+    // on a cancelled quit (design §3.4). This is the graceful pre-teardown moment
+    // — it runs on the STA thread (COM/C++-safe, not the loader lock), so the
+    // §23.0 drains and the clean server shutdown happen here rather than at
+    // DETACH. Idempotent via the GracefulTeardownOnce CAS. Decoupled via the
+    // exported lifecycle hook. Never an add-in disable, so it is unambiguously a
+    // HOST shutdown as far as the §23.6 RTD revoke-skip is concerned — hence
+    // isHostShutdown=true.
     //
-    // OnBeginShutdown fires ONLY on a real Excel quit (never an add-in disable),
-    // so this is unambiguously a HOST SHUTDOWN — pass true to trigger the §23.6
-    // RTD revoke-skip that lets Excel start its RTD teardown handshake.
+    // IT DOES NOT GUARANTEE THE PROCESS IS GOING AWAY, and this comment used to
+    // claim it did ("fires only on a REAL quit"). Measured 2026-08-03, 3 of 3:
+    // an external COM client that holds an Application reference and calls
+    // Application.Quit() gets this callback delivered, the destructive teardown
+    // runs, the Go server is reaped and the add-in stops answering — and
+    // EXCEL.EXE keeps running with the session alive. A UDF that returned 5 a
+    // second earlier then fails.
+    //
+    // Left as-is deliberately (decision 2026-08-03). The blast radius is COM
+    // automation clients, which is essentially our own harnesses: a user closing
+    // Excel by the X button or File > Exit is unaffected, verified repeatedly by
+    // ghost-check. Against that, every alternative — deferring the destructive
+    // phase to DETACH, or detecting the survival afterwards and re-initialising —
+    // rewrites the ordering that v0.8.41 validated at 0/40 in the code region
+    // that produced TWO separate 100%-reproducible Excel crashes (v0.8.41
+    // use-after-unload, v0.8.42 put_Connect re-entrancy). Not a trade worth
+    // making for a scenario no end user reaches.
+    //
+    // If you are here because an automation client saw a dead add-in: release the
+    // Application reference BEFORE calling Quit, or close the window instead.
+    // AGENTS.md §20.3 owns the full signal-set caveat.
     xll::GracefulTeardownOnce(/*isHostShutdown=*/true);
     return S_OK;
 }

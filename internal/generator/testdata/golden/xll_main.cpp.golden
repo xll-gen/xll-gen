@@ -1677,7 +1677,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -1863,7 +1863,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -2036,7 +2036,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -2209,7 +2209,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -2382,7 +2382,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -2554,7 +2554,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -2753,7 +2753,7 @@ extern "C" __declspec(dllexport) FP12* __stdcall SyncNumGrid(FP12* ng) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -2915,7 +2915,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -3091,7 +3091,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -3269,7 +3269,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -3549,7 +3549,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -3728,7 +3728,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -3934,7 +3934,7 @@ extern "C" __declspec(dllexport) void __stdcall AsyncStr(LPXLOPER12 s, LPXLOPER1
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4041,7 +4041,7 @@ extern "C" __declspec(dllexport) void __stdcall AsyncInt(int32_t i, LPXLOPER12 a
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4147,7 +4147,7 @@ extern "C" __declspec(dllexport) void __stdcall AsyncGrid(LPXLOPER12 g, LPXLOPER
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4285,7 +4285,7 @@ extern "C" __declspec(dllexport) void __stdcall AsyncNumGrid(FP12* ng, LPXLOPER1
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4392,7 +4392,7 @@ extern "C" __declspec(dllexport) void __stdcall AsyncAny(LPXLOPER12 a, LPXLOPER1
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4499,7 +4499,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4626,7 +4626,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -4839,7 +4839,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -5043,7 +5043,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceScalar(int32_t i, doub
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -5188,7 +5188,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -5371,7 +5371,7 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -5546,7 +5546,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -5948,7 +5948,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceMemoize(int32_t i) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
@@ -6082,7 +6082,7 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceTTL(int32_t i) {
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every

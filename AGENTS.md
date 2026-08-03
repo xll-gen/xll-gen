@@ -115,6 +115,118 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 *   In all C++ code (templates and assets), use **flat includes**: `#include "xll_log.h"`.
 *   Never bake the directory structure (like `include/` or `src/`) into the `#include` directive.
 
+### 16.4 Template minimality — a STANDING rule for new code (2026-08-02 user policy)
+
+**A file in `internal/templates/` gets only what genuinely needs a template
+variable. Everything else goes to static code: `pkg/server` (Go) or
+`internal/assets/files` (C++).** This is not a one-off cleanup that finished; it
+is the rule that applies to the next block you are about to add.
+
+**Why template code is the worse place to put logic:**
+1. It has no unit tests — only golden-string comparison, which cannot observe
+   ORDER, OUTCOME, or anything that does not appear as text (§18.12.3 lists five
+   invariants greps could not see).
+2. It is re-emitted and re-compiled into every generated project.
+3. A type error in it does not surface until `TestGeneratedServerCompiles` or the
+   serialized C++ compile gate — far from where it was written.
+
+**The test that decides:** does this block reference a config value, a
+per-function/per-command shape, or a project identity in its LOGIC — does the
+generated CODE differ in shape, not just in a constant? If the only template
+content is **config VALUES with no template logic**, that is a parameter, not
+template logic. Move the block and pass the values in. `xll::RegisterOnTimeMacro`,
+`server.RunAndDrain` and `server.JobPool` all started as template blocks with
+**zero** template actions of any kind in their bodies; `xll::ResolveNativeLogPaths`
+is the other, more common case and the one worth learning from — at v0.8.45 its
+block carried three actions (`{{escapeCppString .Logging.Dir}}`, `{{.ProjectName}}`,
+`{{.Logging.Level}}`) and it still moved, because all three are VALUES substituted
+into an unchanging body. Do not cite it as an example of a zero-variable block; it
+is the example of why "has a `{{ }}` in it" is not the criterion.
+
+**Prefer a header-only helper when the body should be EXECUTED by a test.** The
+`xlfRegister` extraction went into `include/xll_lifecycle.h` rather than
+`src/xll_lifecycle.cpp` precisely because compiling the `.cpp` offline drags in
+shm, the worker and the ribbon add-in, while the header needs only the types
+headers plus the shm include path — which is what made an executing offline g++
+harness possible at all (§18.12.3).
+
+**⚠ The cost of this direction — the release order is not optional.** A symbol
+moved into `pkg/server` lives in the **pinned** `xll-gen` module, so a generated
+project cannot see it until its own pin moves. Moving `waitGroupTimeout` to
+`server.WaitGroupTimeout` broke the showcase with
+`undefined: server.WaitGroupTimeout` while it still pinned v0.8.42. So: **tag
+xll-gen first, then bump the consumer's pin** (`go get`), never the reverse.
+Every such move also needs the goldens regenerated and
+`TestGeneratedServerCompiles` run. This trade — more library-version coupling in
+exchange for testable code — is accepted deliberately; the other pin sites that
+must move on a release are enumerated in **§18.2 "Shared Dependencies"** (§18.1 is
+the `protocol.fbs` SSOT section, not the pin list).
+
+**What must STAY generated, and the closed rejection list.** Do not re-propose
+moving these; each was read and rejected with a recorded reason:
+`main.go.tmpl` / `xll.yaml.tmpl` (user-edited scaffolds — moving them defeats
+their purpose), `CMakeLists.txt.tmpl` (deliberately NOT hidden behind
+`include()`; users read and edit it), per-function dispatch and `{{range}}`
+bodies, `GetExcelApplicationOrBounce` (the body IS the `ribbon.bounce` branch),
+and `g_ribbonCookie` / `g_rtdCookie` (moving them routes the v0.8.42 `mso.dll`
+crash fix through accessors). The per-block records and the measured residue
+tables are §18.11.1, §18.12.1 and §18.12.3.
+
+**Status (2026-08-03): the sweep is DONE and the backlog item is closed.**
+Measured at v0.8.54, real code only (comments, blanks and pure-template lines
+excluded; `{{/* */}}` stripped first because it quotes `{{if}}` and breaks naive
+depth tracking): `xll_main.cpp.tmpl` 1052 → **768** lines, `server.go.tmpl`
+452 → **350**. Of what remains, **54%** and **69%** respectively sit inside a
+`{{range}}`/`{{define}}` — per-function, per-command, per-event and
+per-return-type code that is irreducibly generated. Outside the `#include`
+block, the 22 remaining action-free runs of ≥6 lines average 10 lines and top
+out at 20, and every one of the eleven runs ≥10 lines is on the rejection list
+above, is `xlAutoOpen`'s own control flow (the `goto launch_server` /
+`goto start_worker` labels — function-local, interleaved with
+`cfg.command = "{{...}}"` — or its prologue/epilogue and `return 1`), is a
+by-name-resolved export (§21), or is a `{{range .Functions}}` body.
+
+**⚠ The run convention above is STRICT, so "top out at 20" is a LOWER BOUND, and
+saying so is the difference between a measurement and a talking point.** A run
+breaks on **any** template action between two code lines — including a
+`{{if}}`/`{{end}}` gate that emits no code of its own. Under the gate-tolerant
+convention (a code-free gate does not break the run) the same v0.8.54 files give
+much longer regions: `xll_main.cpp.tmpl` has a **119-code-line region spanning
+L153-568**, and `server.go.tmpl` has **52-** (L465-541) and **37-line** (L392-448)
+regions. Quote whichever you like, but say which. **The conclusion is unchanged
+under both**, and that is why the strict number was safe to publish: server.go's
+two big gate-tolerant regions are *both inside `{{range $i, $fn := .Functions}}`*
+(opened at L330), i.e. exactly the per-function code that cannot leave a template,
+and xll_main's 119-line region is a chain of `{{if .Ribbon.Enabled}}`-class gates
+around COM identity and `xlAutoOpen` control flow — all already on the rejection
+list.
+
+**Judge regressions by REAL CODE, never by raw line count.** Between v0.8.48 and
+v0.8.53 `xll_main.cpp.tmpl` grew **2078 → 2133 raw** lines (`wc -l`) while its
+real code moved 804 → 806; the growth was comments. The file still has more
+comment lines (871) than code lines (768) at v0.8.54. Any "template-independent %"
+quoted off raw line counts is wrong for that reason — that error is what produced
+the discredited "78%/81%" figures.
+
+**⚠ The numbers in this section are `wc -l` for RAW and the post-`{{/* */}}`-strip
+total for everything else; do not mix them.** Stripping template comments first is
+required (they quote `{{if}}` and break naive depth tracking) but it removes lines,
+so the two totals differ by ~60 lines and an earlier revision of this section
+published the stripped totals (2015 / 2070) while calling them raw.
+
+**⚠ Older line counts elsewhere in this file and in the workspace backlog were
+taken under a DIFFERENT convention and are not comparable to these. This section
+is the one to cite.** They are not errors, they are a different definition, and
+the definition is now known: **§23.1's series does not count a code line that
+carries a template action as code, while this section does.** That single
+difference reproduces exactly — at v0.8.47 `server.go.tmpl` measures 361 code
+lines here and 361 − 89 with-action = **272**, which is §23.1's number to the
+line; §23.1's "2190 → 2079 lines total" is `wc -l` (2189 → 2078) with a
+trailing-line off-by-one. Its xll_main code figures (737 → 664) sit a constant 39
+lines above the same subtraction (698 → 625), so a small tie-break rule differs
+too. The backlog's "2190행 중 코드 689행" is a third variant of the same
+subtraction. Nothing here is contradicted; three rulers were used on one object.
+
 ## 17. Dependencies & External Types
 
 As of v0.1.0, core Excel types and utilities have been extracted to the upstream library [github.com/xll-gen/types](https://github.com/xll-gen/types).
@@ -561,7 +673,8 @@ Detached `SendCommandInvoke` threads follow the SAME `g_isUnloading` self-abort 
 
 #### 18.11.5 The ribbon's HKCU registration has an INSTALLED lifetime, not a SESSION one (2026-08-03)
 
-**The question this answers** (backlog line 120): *after a COM add-in disable, does
+**The question this answers** (raised in the workspace backlog; §20.3 explains why
+such references are not carried as line numbers): *after a COM add-in disable, does
 the entry come back in the COM Add-ins UI list?* **No — and it was decidable from
 the code, without Excel.**
 
@@ -979,6 +1092,13 @@ and pure-template lines; `{{/* */}}` comments stripped first because they quote
 
 `xll_main.cpp.tmpl` has MORE comment lines (876) than code lines (763). Any
 "template-independent %" quoted off raw line counts is wrong for that reason.
+
+**This table is the PHASE-5 DELTA, not the current state.** v0.8.54 also carried
+the rtd-only import fix (§18.12.2), which put lines back: re-measured at the
+v0.8.54 tag the figures are **768** and **350**, not 763 and 349. For the
+campaign totals, the composition of what remains, and the standing rule this all
+turned into, see **§16.4** — that section, not this one, is what a future change
+should be checked against.
 
 **Deliberately NOT moved** (each was read and rejected, not overlooked):
 * `xll_main.cpp.tmpl` L590-635, the `xll::PrepareForFreshLoad()` verdict switch
@@ -1926,8 +2046,9 @@ true, and no second `xlAutoOpen` ever ran.
 
 3. **Drivers — confirmed-shutdown signals only** (`RibbonAddIn`,
    `ribbon_addin.cpp`, COM-add-in builds only):
-   * `OnBeginShutdown` → `GracefulTeardownOnce()` (fires only on a REAL quit,
-     after the cancel decision; never on a cancelled quit).
+   * `OnBeginShutdown` → `GracefulTeardownOnce()` (fires after the cancel decision
+     is resolved; never on a cancelled quit). It does **NOT** mean the process is
+     going away — see **THE HOLE** below before you rely on it.
    * `OnDisconnection` → `GracefulTeardownOnce()` on **both** `ext_dm_HostShutdown`
      (host shutdown) and `ext_dm_UserClosed` (add-in disabled, session continues).
    The CAS makes these idempotent with each other and with the DETACH backstop.
@@ -1938,14 +2059,100 @@ true, and no second `xlAutoOpen` ever ran.
    its explicit `COMAddIns…Connect = false` while that is set. Rationale, evidence and
    the two ways to get this wrong: §22 "Office add-in disconnect re-entrancy".
 
-   **`OnBeginShutdown` is a promise about the ADD-IN's shutdown, NOT the PROCESS's —
-   and the signal set CANNOT be narrowed (closed 2026-08-03, backlog line 134/191;
-   do not re-propose).** Both entries described one defect: a COM client that keeps
-   its `Application` reference and calls `Application.Quit()` gets `OnBeginShutdown`
-   delivered, the confirmed-shutdown teardown runs to completion (PIN, Phase 1,
-   Phase 2 EXIT, Go server reaped — all logged) and `EXCEL.EXE` **survives 8/8**. So
-   the ghost is NOT an incomplete teardown. Unticking the add-in in the COM Add-ins
-   dialog reaches the same dead state through `ext_dm_UserClosed` (§18.11.5).
+   **THE HOLE: `OnBeginShutdown` is a promise about the ADD-IN's shutdown, NOT the
+   PROCESS's.** A COM client that keeps its `Application` reference and calls
+   `Application.Quit()` gets `OnBeginShutdown` delivered; the confirmed-shutdown
+   teardown then runs to completion (PIN, Phase 1, Phase 2 EXIT, Go server reaped —
+   all logged) **in a process that keeps running**. So the ghost is NOT an incomplete
+   teardown — the teardown was flawless, the premise under it was false. Unticking the
+   add-in in the COM Add-ins dialog reaches the same dead state through
+   `ext_dm_UserClosed` (§18.11.5).
+
+   **THE MEASUREMENT (2026-08-03, showcase release build, 3 of 3 rounds).** Four
+   clauses, measured **separately on purpose** so that none of them is inferred from
+   another (an earlier run had recorded clause B alone at 8/8):
+
+   | | measured | result |
+   |---|---|---|
+   | **A** | `OnBeginShutdown` delivered and the teardown ran | **yes** — native log |
+   | **B** | `EXCEL.EXE` survived the `Quit` | **yes** |
+   | **C** | the add-in stopped answering | **yes** — `=Add(2,3)` gave `5` before, `0x800A03EC` after |
+   | **D** | the Go server was reaped (1 → 0) | **yes** |
+
+   **DECIDED 2026-08-03 — DOCUMENT IT AND IMPROVE THE DIAGNOSTIC; DO NOT CHANGE THE
+   BEHAVIOUR. Do not re-propose.** (This closes the workspace backlog's
+   *"[MED·신규·기존 결함] COM 클라이언트가 `Application` 참조를 유지한 채
+   `Application.Quit()`을 호출하면…"* entry. Cite backlog entries by TITLE, never by
+   line number: that file is untracked, lives outside every repo, and is rewritten by
+   concurrent agents — the "line 134/191" this paragraph used to carry had already
+   drifted onto two unrelated items by the time it was read back.)
+
+   The **accepted consequence** is that an automation client which quits Excel while
+   holding the reference loses the add-in for the remainder of that session — every UDF
+   fails, RTD and ribbon commands are dead — with `xll::ReportPostTeardownUse` as the
+   one-shot record that it happened and the teardown log line below as the up-front
+   warning. Two reasons this is the trade we take: the blast radius is COM **automation
+   clients** (essentially our own harnesses) — a user closing by the window's X or
+   File ▸ Exit is unaffected, verified repeatedly by ghost-check; and every behavioural
+   alternative (deferring the destructive phase to DETACH, or detecting the survival
+   afterwards and re-initialising) rewrites the ordering that v0.8.41 validated at
+   **0/40** inside the code region that produced TWO separate 100%-reproducible Excel
+   crashes (v0.8.41 use-after-unload, v0.8.42 `put_Connect` re-entrancy).
+
+   **"Until the XLL is reloaded" is NOT a promise, and the shipped log line no longer
+   makes one.** Reloading into that session is conditional in two ways, neither of them
+   measured — nothing in `tools/` has ever attempted a reload after this teardown:
+   * `xll::PrepareForFreshLoad` returns `kUnrecoverable` and `xlAutoOpen` logs
+     *"REFUSING to load"* whenever the teardown had to DETACH a background thread
+     instead of reaping it (`!g_backgroundThreadsReaped`). That is the deliberate
+     refusal from §20.2.1 — coming back half-alive is the failure mode it exists to
+     prevent — and it makes recovery a property of how the teardown went, not of what
+     the user does next.
+   * On this path the image is **pinned** (below), so the `.xll` file itself cannot be
+     replaced for the rest of the session even when the reset would succeed.
+
+   What always works is restarting Excel. Say that, not "reload to recover".
+
+   **THE SECOND CONSEQUENCE, recorded because the closed backlog entry carried it and
+   the measurement did NOT cover it: this path PINS THE IMAGE, so dev-mode "rebuild
+   with Excel open" is broken in a surviving process.** `GracefulTeardownOnce` runs
+   `if (isHostShutdown) PinModuleToPreventUnmap();` (`src/xll_lifecycle.cpp`, just
+   above `BeginQuiesce`) — so after a held-reference `Application.Quit()` the XLL can
+   no longer be unloaded or overwritten in that Excel process, and a developer's next
+   build fails on a locked file rather than on anything that looks like this defect.
+   **Status: UNMEASURED.** Clauses A–D above did not include "try to replace the
+   `.xll` afterwards"; this is read off the source, not off a run. Two facts that bound
+   it: the `ext_dm_UserClosed` / add-in-disable path takes **no** pin, so the
+   disable → rebuild → re-enable dev loop is untouched; and the pin is exactly what
+   §20.2.1 added to stop the 2026-07-29 close-time use-after-unload, so it is load-
+   bearing, not incidental.
+
+   **ADJUDICATED — the backlog entry's own proposal ("narrow the PIN condition to
+   *confirmed shutdown + exit actually in progress*") is REFUSED, for the same
+   construction reason as the signal-set narrowing below, plus one of its own.** "Exit
+   actually in progress" is not knowable at the point the pin must be taken — the pin
+   has to precede `BeginQuiesce` precisely because Excel may `FreeLibrary` us at any
+   moment after it, and the only authoritative discriminator (`lpReserved` at
+   `DLL_PROCESS_DETACH`) arrives strictly later. Worse, **a taken pin destroys the
+   evidence that would have decided it**: once pinned, a `FreeLibrary` only decrements
+   the reference count and `DLL_PROCESS_DETACH` never runs, so the process never
+   reaches the one place the answer exists. There is no version of this narrowing that
+   is not a survival probe, and a survival probe is the behaviour change this section
+   decided against. **The carve-out** — the only re-proposal that would not be a
+   re-litigation — is a *dev-mode-only* build-time opt-out of the pin (never a runtime
+   decision), and it would need its own design pass, its own sign-off, and an explicit
+   acknowledgement that it re-opens the v0.8.41 use-after-unload window in that build.
+
+   **WHAT AN AUTOMATION CLIENT SHOULD DO INSTEAD.** Release the `Application` reference
+   **before** calling `Quit()` (drop/`ReleaseComObject` every Excel object you hold,
+   then `Quit`), or do not call `Quit` at all — close the workbooks and the window and
+   let Excel exit on its own (the window route is the one ghost-check drives, and it is
+   unaffected). If you must call `Quit` while holding the reference, treat the add-in as
+   gone the moment the call returns: reload the XLL before using it again, and do not
+   read a UDF result across that boundary. **Do not read more into the release-first
+   advice than is written:** what was measured, four clauses, is the FAILING route above
+   — the release-first route is the standard COM rule for making Excel actually exit,
+   not something this section has measured to the same standard.
 
    The narrowing question — can "confirmed shutdown" become "confirmed AND actually
    exiting"? — is **impossible by construction**. The ONLY authoritative
@@ -1991,6 +2198,33 @@ true, and no second `xlAutoOpen` ever ran.
    * A FAIL-before gate must assert **the presence of the post-teardown-use line**,
      never a verdict enum: treating `kCleanLoad` as FAIL misreads the NORMAL case
      (an `Application.Quit()` that delivers no `OnBeginShutdown`, nothing latched).
+   * **The teardown log no longer claims the process is exiting (2026-08-03).**
+     `GracefulTeardownOnce`'s opening line used to read *"confirmed shutdown —
+     beginning teardown…"*, which a reader takes as "Excel is going away" — the exact
+     sentence the measurement above falsifies, printed over a session that continues.
+     Which case it is is **not knowable at that point** (see the narrowing paragraph:
+     the only discriminator, `lpReserved` at DETACH, arrives strictly later), so the
+     line now reports the one thing that IS knowable — **which signal drove us** — and
+     on the host-shutdown signal names BOTH outcomes it is compatible with, telling the
+     reader to resolve it by the observation we cannot make from inside (is `EXCEL.EXE`
+     still alive?). The `ext_dm_UserClosed` branch has no such ambiguity and says
+     flatly that the session continues. Pinned by
+     `internal/assets/teardown_log_signal_cpp_test.go`, which asserts the old sentence
+     is GONE, that the branch is on `isHostShutdown`, and that the host-shutdown text
+     still carries the survival caveat. Do not re-collapse it into one claim, and do
+     not resolve the ambiguity with a runtime survival check — that is the behaviour
+     change this section decided against. The test enforces that second point over the
+     WHOLE announce region (function opening → `BeginQuiesce`) against a named
+     allowlist, not over the two branch bodies: a probe hoisted one line above the
+     `if`, its result read by the branch, is the shape someone would actually write and
+     the arm-scoped version of the check passed it.
+   * **Neither log line promises that a reload recovers (2026-08-03, same rework).**
+     Both used to end in *"reload the XLL to recover"*. See the "Until the XLL is
+     reloaded" paragraph above for the two conditions that makes false; the lines now
+     name the conditions and point here, and the host-shutdown arm says what always
+     works (restart Excel). Do not shorten them back — a log line that over-promises a
+     recovery is the same defect class as the "confirmed shutdown" sentence this
+     rework removed.
 
    **NOT taken, and it needs its own design pass + sign-off:**
    `xll::EnsureSessionAlive()` from the same guard, routing through
@@ -2359,6 +2593,48 @@ reviews and confirmed correct — do not "fix", "harden", or re-propose:
   `internal/assets/cache_cpp_test.go::TestGetOrComputeRefHashHashesNonRefArgs`
   plus the native harness case "SRef argument content reaches the cache key".
 
+* **The UDF hot path stays on a per-call `GetZeroCopySlot()`; do NOT adopt shm's
+  per-thread `HeldSlot`** (analyzed 2026-07-04, re-analyzed the same day →
+  *declined, confirmed*; moved here from the workspace backlog 2026-08-03 because
+  a settled decision left as an open checkbox reads as forever-incomplete). The recurring
+  proposal is "claim the slot once per thread and reuse it (`AcquireHeldSlot` /
+  `SendHeld`) instead of claiming per call". Reasons it was declined, in the order
+  that matters:
+  * **The gain is under 1% — this is the decisive point, not a tie-breaker.** Real
+    UDF RTT includes FlatBuffer serialization plus the Go handler's actual
+    computation (that offload *is* the product), so it is µs to tens of µs. The
+    claim cycle that holding removes is ~9 ns. That is rounding error, and it
+    cannot be measured at all without an Excel harness — so the change would ship
+    unverifiable.
+  * **RTD is not a beneficiary at all.** `ConnectData` spawns a **one-shot detached
+    thread per connection** (`internal/assets/files/src/xll_rtd.cpp`), so a
+    per-thread held slot would be claimed and released once — strictly worse than
+    claiming once. `DisconnectData` and the ribbon path are low-frequency.
+  * **The only real beneficiary — the UDF dispatch
+    (`internal/templates/xll_main.cpp.tmpl`, `auto slot = g_host.GetZeroCopySlot();`,
+    ~L1808) — is exactly where holding risks starvation.** `hostCfg.numHostSlots =
+    workers * 2 + 2` (same file, ~L714) is driven by the `workers` config, while
+    Excel's calculation-thread count defaults to the logical-processor count (up to
+    1024). With a small `workers`, permanent per-thread holding leaves the
+    remaining calculation threads waiting forever — an Excel hang, traded for <1%.
+  * **It newly exposes the §20 crash class.** `thread_local` `HeldSlot`
+    destructors run under the `DLL_PROCESS_DETACH` loader lock, which is the
+    unload-safety hazard §20 exists to keep the XLL out of. Adoption would add
+    per-thread held-slot lifetime management + a fallback path + §20-safe release
+    — new crash surface for no measurable win.
+  * **Do NOT cite "shm has no try-acquire" as the reason — that objection is
+    dead.** shm v0.8.6 added non-blocking `TryAcquireSlot` / `TryAcquireHeldSlot`
+    (`shm/include/shm/DirectHost.h`). The decision survives without it.
+  * **This is NOT a deprecation of shm's held-slot API.** `HeldSlot` / `SendHeld`
+    / `TryAcquireHeldSlot` stay as they are, and they are the right tool for
+    tight-loop, low-RTT **non-Excel** hosts. The decision is only that *this*
+    consumer does not adopt them on *this* path.
+  * **Re-proposal conditions (either one reopens it; nothing else does):** ⓐ claim
+    contention is demonstrated by an actual profile under a recalc storm, or ⓑ a
+    low-RTT host-send use case appears in xll-gen (something whose RTT is not
+    dominated by serialization + handler work). A re-proposal that only re-derives
+    the ~9 ns saving has not met either.
+
 ### Over-defensive-logic audit (2026-06-25) — the boundary rule
 
 A cross-repo audit hunted for guards made redundant by a caller's
@@ -2426,7 +2702,7 @@ Open items from the same audit (remaining MED + all LOW) live in the lower §23.
 * **DONE (2026-05-17):** `pkg/server/types.go` — doc comments added to `AnyValue`, `ScalarValue`, `OutgoingChunk`, `QueuedCommand`, `PendingAsyncResult`; `ChunkBuffer` already had one. Also folded `PendingAsyncResult.Val: interface{}` → `any`.
 * **DONE (2026-05-17):** `pkg/log/logger.go` — `os.MkdirAll` and `os.OpenFile` now wrap with `fmt.Errorf("log: ... %q: %w", path, err)` so log-init failures point at the path.
 * **NOT NEEDED (2026-05-17):** `internal/flatc/flatc.go::EnsureFlatc` already carries a doc comment (lines 22-28). Item removed from backlog after re-inspection.
-* **DONE (2026-08-03) — the "keep generated templates minimal, prefer static code" pass is FINISHED for `xll_main.cpp.tmpl`.** Four more relocations landed on top of the 2026-08-02 batch (lifecycle/jobpool/bootstrap, ribbon connect, scratch book, log bootstrap): the **OnTime retry chain** (§18.11.2), the **rtd.throttle_interval applier** (§18.11.3), the **`FormatDoubleRoundTrip` topic formatter** (§18.11.4), and the duplicate `{{if .Commands}}` include block was merged. `xll_main.cpp.tmpl` went 2190 → 2079 lines total; counting only ACTUAL CODE (C++ comments, template actions, template comments and blanks excluded) 737 → 664, i.e. **−73 lines of re-emitted-per-project logic, −10%**. `server.go.tmpl` is UNCHANGED (615 / 272): after the 2026-08-02 lifecycle/jobpool/bootstrap moves everything left in it is per-function dispatch or a `{{range}}` over user declarations — genuinely template work, so there is nothing further to take out without inventing an abstraction the generator would then have to describe. **What deliberately did NOT move, and why, so this is not re-litigated:** the `#include` blocks (they are the gating), `GetExcelApplicationOrBounce` (`ribbon.bounce`-branched body), the COM-identity trio `g_ribbonCookie`/`GetRibbonClsid`/`g_szRibbonProgID` (§18.11.1), `DllGetClassObject`/`DllRegisterServer` (CLSID literals), `GracefulComTeardownHook` (must stay byte-identical, §18.11.1), the exported symbols themselves (§21), the per-function wrappers and the dispatch switch in either template, and the `{{/* */}}` template comments — those render to NOTHING and document the template itself, so they are already in the right place. Do not "reduce" them.
+* **DONE (2026-08-03) — the "keep generated templates minimal, prefer static code" pass is FINISHED for `xll_main.cpp.tmpl`.** ⚠ **The counts in this bullet are SUPERSEDED by §16.4** — they use a different definition of "code" (a code line carrying a template action is not counted), which is why they run ~40-90 lines below §16.4's series for the same files and tags. §16.4 explains the mapping. Do not compare the two. Four more relocations landed on top of the 2026-08-02 batch (lifecycle/jobpool/bootstrap, ribbon connect, scratch book, log bootstrap): the **OnTime retry chain** (§18.11.2), the **rtd.throttle_interval applier** (§18.11.3), the **`FormatDoubleRoundTrip` topic formatter** (§18.11.4), and the duplicate `{{if .Commands}}` include block was merged. `xll_main.cpp.tmpl` went 2190 → 2079 lines total; counting only ACTUAL CODE (C++ comments, template actions, template comments and blanks excluded) 737 → 664, i.e. **−73 lines of re-emitted-per-project logic, −10%**. `server.go.tmpl` is UNCHANGED (615 / 272): after the 2026-08-02 lifecycle/jobpool/bootstrap moves everything left in it is per-function dispatch or a `{{range}}` over user declarations — genuinely template work, so there is nothing further to take out without inventing an abstraction the generator would then have to describe. **What deliberately did NOT move, and why, so this is not re-litigated:** the `#include` blocks (they are the gating), `GetExcelApplicationOrBounce` (`ribbon.bounce`-branched body), the COM-identity trio `g_ribbonCookie`/`GetRibbonClsid`/`g_szRibbonProgID` (§18.11.1), `DllGetClassObject`/`DllRegisterServer` (CLSID literals), `GracefulComTeardownHook` (must stay byte-identical, §18.11.1), the exported symbols themselves (§21), the per-function wrappers and the dispatch switch in either template, and the `{{/* */}}` template comments — those render to NOTHING and document the template itself, so they are already in the right place. Do not "reduce" them.
 
 ### 23.2 Tunability
 * **DONE (2026-05-17):** `pkg/server/manager.go` — promoted the 30s cleanup tick and 60s TTL to `ChunkManager.CleanupInterval` and `ChunkManager.ChunkBufferTTL` fields backed by `DefaultCleanupInterval` / `DefaultChunkBufferTTL` constants. YAML wiring: `xll.yaml` `server.chunk: {max_buffer_bytes, cleanup_interval, buffer_ttl}` → `config.ChunkConfig` → generated `server.go` calls `server.NewChunkManagerFromConfig` with the values captured before the cleanup goroutine starts. Omitting `server.chunk` keeps the existing defaults — no behavior change for projects that don't opt in.
@@ -3367,7 +3643,9 @@ all fixed; the design (host-shutdown-only pin + flag split + no-park) was confir
   client that KEEPS its `Application` reference delivers `OnBeginShutdown` even though Excel does
   **not** exit — so the confirmed-shutdown teardown runs and the add-in is left torn down in a
   session that continues. That is a §20.3 hole in the "confirmed shutdown" signal set, not in this
-  change; it needs its own fix.
+  change. **Closed 2026-08-03 as documented-not-fixed:** §20.3 carries the four-clause measurement,
+  the accepted consequence, and what an automation client must do instead. Do not re-propose a
+  behavioural fix here.
 
 ## 24. CLAUDE.md / Agent Tool Compatibility
 

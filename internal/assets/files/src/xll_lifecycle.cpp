@@ -729,7 +729,67 @@ void xll::GracefulTeardownOnce(bool isHostShutdown) {
             return;
         }
 
-        LogInfo("GracefulTeardownOnce: confirmed shutdown — beginning teardown...");
+        // WHAT THIS LINE MAY CLAIM, AND WHY IT NAMES TWO OUTCOMES (reworded 2026-08-03).
+        //
+        // It used to read "confirmed shutdown — beginning teardown...". That sentence
+        // is read as "Excel is exiting", and it is wrong in precisely the case that
+        // most needs a diagnostic: an automation client that holds an Application
+        // reference and calls Application.Quit() gets OnBeginShutdown delivered, this
+        // function runs to completion, the Go server is reaped — and EXCEL.EXE KEEPS
+        // RUNNING with the add-in destroyed and the session alive (measured 2026-08-03,
+        // 3 of 3 rounds; the four clauses are itemised in AGENTS.md §20.3). Someone
+        // reading a teardown log then sees "confirmed shutdown" stamped over a session
+        // that went on living, with nothing in the log to tell the two cases apart.
+        //
+        // THE HONEST FORM IS NOT A BETTER GUESS. Which case this is CANNOT be known
+        // here: the only authoritative discriminator anywhere in the process is
+        // lpReserved at DLL_PROCESS_DETACH, and it arrives strictly after everything
+        // below (§20.3 enumerates why every other candidate — UserControl,
+        // Windows.Count, Visible, ServerTerminate — fails). So the line reports what IS
+        // knowable at this instant — WHICH SIGNAL drove us — and, for the host-shutdown
+        // signal, names BOTH outcomes it is compatible with instead of asserting one.
+        // The reader resolves it after the fact by the one observation we cannot make
+        // from in here: whether EXCEL.EXE is still alive.
+        //
+        // Do NOT collapse this back into a single claim, and do NOT "improve" it by
+        // adding a runtime survival check to decide between the branches. The teardown
+        // ordering is deliberately frozen — it is what v0.8.41 validated at 0/40 inside
+        // the code region that produced two separate 100%-reproducible Excel crashes
+        // (decision 2026-08-03, §20.3).
+        //
+        // WHY NEITHER LINE PROMISES THAT A RELOAD FIXES IT. Both used to end in "reload
+        // the XLL to recover", flat. That is not a fact this code is entitled to state:
+        // xll::PrepareForFreshLoad REFUSES the fresh load (kUnrecoverable, "REFUSING to
+        // load") whenever the teardown had to DETACH a background thread instead of
+        // reaping it, and on the host-shutdown arm the image is pinned as well, so the
+        // .xll file itself cannot be replaced for the rest of the session. Nobody has
+        // measured a reload after either teardown. So the lines say what to TRY and
+        // point at the section that owns the conditions — a log line that over-promises
+        // a recovery is the same class of defect as the "confirmed shutdown" sentence
+        // this whole rework exists to remove.
+        if (isHostShutdown) {
+            LogInfo("GracefulTeardownOnce: HOST-SHUTDOWN signal (OnBeginShutdown / "
+                    "OnDisconnection[ext_dm_HostShutdown]) — beginning teardown. This signal is "
+                    "compatible with EITHER of two outcomes and cannot distinguish them here: (1) "
+                    "Excel is exiting, the normal case; or (2) an automation client called "
+                    "Application.Quit() while still holding an Application reference, in which case "
+                    "EXCEL.EXE KEEPS RUNNING and this add-in is dead for the rest of the session "
+                    "(every UDF fails). If EXCEL.EXE is still alive after this teardown finishes, it "
+                    "was (2) — release the Application reference before Quit, or close the window "
+                    "instead. Recovery in that session means a reload of the XLL, which is NOT "
+                    "guaranteed: it is refused outright if this teardown could not reap a background "
+                    "thread, the image is pinned so the file cannot be replaced, and the route is "
+                    "unmeasured. Restarting Excel always works. See AGENTS.md §20.3.");
+        } else {
+            LogInfo("GracefulTeardownOnce: ADD-IN-DISCONNECT signal "
+                    "(OnDisconnection[ext_dm_UserClosed], e.g. this add-in unticked in the COM "
+                    "Add-ins dialog) — beginning teardown. The Excel session CONTINUES; this add-in "
+                    "is dead until it is re-loaded (re-ticking it in the COM Add-ins dialog is the "
+                    "designed route — no image pin is taken on this path — but the reload is refused "
+                    "if this teardown could not reap a background thread). Not a host shutdown. See "
+                    "AGENTS.md §20.3.");
+        }
+
         // PHASE 1 QUIESCE — FIRST, before ANYTHING else in this function.
         //
         // It must precede the teardown hook because on its non-skip path the hook's

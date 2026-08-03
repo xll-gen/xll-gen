@@ -6,7 +6,8 @@ import (
 )
 
 // TestReportPostTeardownUseContract pins xll::ReportPostTeardownUse — the
-// visibility fix for backlog line 134/191 (duplicate entries of one defect).
+// visibility fix for the held-reference Application.Quit() defect (AGENTS.md §20.3;
+// it reached the backlog as two duplicate entries of one defect).
 //
 // THE STATE IT REPORTS. A confirmed-shutdown signal arrived, the full teardown ran
 // (PIN, Phase 1, Phase 2, `delete g_phost`, Go server reaped), and Excel is

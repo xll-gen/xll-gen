@@ -8,8 +8,9 @@ import (
 	"github.com/xll-gen/xll-gen/internal/config"
 )
 
-// TestUdfNullHostBranchReportsPostTeardownUse pins the VISIBILITY half of backlog
-// line 134/191 (they are one item).
+// TestUdfNullHostBranchReportsPostTeardownUse pins the VISIBILITY half of the
+// held-reference Application.Quit() defect (AGENTS.md §20.3 — the backlog carried
+// it as two entries; they are one item).
 //
 // THE DEFECT. A COM client that keeps its `Application` reference and calls
 // `Application.Quit()` gets `OnBeginShutdown` delivered while Excel does NOT exit.

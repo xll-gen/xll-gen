@@ -1205,7 +1205,7 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     if (g_phost == nullptr) {
         // A null host in a REGISTERED function means the destructive teardown
         // already completed and Excel is nevertheless still calling us — the
-        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // mid-session destruction described in xll-gen's AGENTS.md §20.3. Report ONCE per
         // session (the latch lives in the asset, because this guard is per-CELL)
         // through the one logger g_isUnloading does not swallow. Without this the
         // whole failure is silent: the native log ends at "Phase 2 EXIT" and every

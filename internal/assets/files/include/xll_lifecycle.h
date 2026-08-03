@@ -362,7 +362,7 @@ namespace xll {
     // destructive teardown completed — i.e. Excel is demonstrably still alive
     // (it just called us) but g_phost and the Go server are gone.
     //
-    // WHY THIS EXISTS (backlog line 134/191, 2026-08-03). "Confirmed shutdown" is a
+    // WHY THIS EXISTS (AGENTS.md §20.3, 2026-08-03). "Confirmed shutdown" is a
     // promise about the ADD-IN's shutdown, not the PROCESS's, and it CANNOT be
     // narrowed to "confirmed AND actually exiting": the only authoritative
     // discriminator in the process is `lpReserved` at DLL_PROCESS_DETACH, which

@@ -202,7 +202,7 @@ func TestCloseUnloadDrainsFeedReapFlag(t *testing.T) {
 		body = body[:e]
 	}
 	// The gate is a BLOCK since 2026-08-03 (it also reports post-teardown use —
-	// backlog line 134/191, pinned by lifecycle_post_teardown_cpp_test.go), so
+	// AGENTS.md §20.3, pinned by lifecycle_post_teardown_cpp_test.go), so
 	// assert the gate and its refusal separately rather than one literal statement.
 	// What must hold is unchanged: the refusal happens BEFORE the thread exists.
 	gate := strings.Index(body, "if (xll::TeardownStarted())")
