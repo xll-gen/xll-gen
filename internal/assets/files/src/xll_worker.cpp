@@ -328,6 +328,31 @@ void WorkerLoop() {
         // async returns) while g_phost is still alive — see xll_lifecycle.h.
         if (g_isUnloading || g_isQuiescing) break;
 
+        // PARK until a guest call arrives, instead of spinning. shm v0.8.21
+        // exposes its §3.5 doorbell gate for exactly this: hostState on the guest
+        // slots is published ONLY from inside that wait, so until this XLL called
+        // it, the Go sender's `hostState == HOST_STATE_WAITING` doorbell could
+        // never fire — which is why the spin was not merely wasteful but
+        // load-bearing for latency. A hand-rolled wait here would have expired on
+        // its own timeout on every single call. Do NOT replace this with a sleep.
+        //
+        // Hot path is unchanged: the gate spin-catches an in-window arrival with no
+        // syscall on either side, so the ~150 ns RTT stands. The cost lands on the
+        // FIRST call after an idle gap longer than shm's spin window — one
+        // SetEvent + one wake — which for this add-in's traffic (RTD pushes behind
+        // a throttle, async batch returns, reassembled grids) is invisible.
+        //
+        // kWorkerParkMs SITS BELOW kThreadReapBudgetMs (xll_lifecycle.cpp): a
+        // MISSED wake must still let this thread exit inside the teardown reap
+        // budget. If it did not, Phase 1 would DETACH a thread parked inside
+        // WaitForSingleObject in code that lives in the XLL image, and on the
+        // add-in-disable path that forces the module pin — i.e. the XLL stays
+        // mapped for the rest of the session. StopWorker()'s wake is the other,
+        // independent cover; neither is sufficient alone.
+        constexpr unsigned kWorkerParkMs = 100;
+        g_host.WaitForGuestCall(kWorkerParkMs);
+        if (g_isUnloading || g_isQuiescing) break;
+
         // Signature: (const uint8_t* reqBuf, int32_t reqSize, uint8_t* respBuf,
         //             uint32_t maxRespSize, shm::MsgType& msgType)
         //
@@ -389,14 +414,13 @@ void WorkerLoop() {
             return 0; // Unknown
         // The second argument is shm's `limit` — the MAXIMUM NUMBER OF GUEST
         // CALLS drained per invocation (GuestCallWorker::ProcessGuestCalls,
-        // `int limit = -1` = unbounded), NOT a timeout. This call does not
-        // block: it returns immediately when no slot is ready, so the loop
-        // below is a pure spin and burns a core for the life of the add-in.
-        // Bounding the batch keeps the shutdown check at the top of the loop
-        // reachable, which is why StopWorker() is observed promptly. Adding a
-        // wait here is a design change (it has to interlock with shm's
-        // doorbell / hostState gate, SPEC §3.5) — tracked in the backlog, do
-        // not just drop a sleep in.
+        // `int limit = -1` = unbounded), NOT a timeout. This call still does not
+        // block; it returns immediately when no slot is ready. The waiting is done
+        // by WaitForGuestCall at the top of the loop (added 2026-08-03) — before
+        // that, this loop was a pure spin that burned a core for the life of the
+        // add-in. Bounding the batch still matters: it keeps the shutdown check at
+        // the top of the loop reachable, which is why StopWorker() is observed
+        // promptly even mid-drain.
         }, /*maxBatchSize=*/50);
 
         // Avoid logging during unload to prevent touching freed logging resources
@@ -427,6 +451,18 @@ void StartWorker() {
 
 void StopWorker() {
     g_workerRunning = false;
+    // Pop the worker out of its park. The flag store above is invisible to a
+    // thread already blocked in the OS wait, so without this the subsequent join
+    // waits out up to kWorkerParkMs — and a teardown whose reap budget were ever
+    // shortened below that would DETACH a thread still executing inside the XLL
+    // image. Structural twin of BeginQuiesce signalling g_procInfo.hShutdownEvent
+    // to pop the monitor thread, rather than relying on a timeout.
+    //
+    // Guarded on g_phost: StopWorker is reachable on teardown paths where the host
+    // is already gone, and this must not be the thing that faults there.
+    if (g_phost) {
+        g_host.WakeGuestCallWaiter();
+    }
 }
 
 void JoinWorker() {

@@ -956,6 +956,21 @@ xll::FreshLoadVerdict xll::PrepareForFreshLoad() {
 // function parks again - which is the crash. Re-verify against shm/GuestCallWorker.h
 // on any shm bump.
 //
+// STILL TRUE AFTER shm v0.8.21 / the WorkerLoop park (2026-08-03), and worth stating
+// because the obvious reading is that it changed. WorkerLoop now BLOCKS in
+// DirectHost::WaitForGuestCall, so the worker can be parked when teardown begins.
+// That does not put a park in this function, for two separate reasons:
+//   * GuestCallWorker::Stop() wakes and joins only inside
+//     `if (guestWorkerRunning.exchange(false))`, and this XLL still never calls
+//     Start(), so that flag is false and Stop() remains a no-op here.
+//   * `delete g_phost` is gated on g_backgroundThreadsReaped. Phase 1 calls
+//     StopWorker() (which SIGNALS the parked worker, not just the flag) and then
+//     waits the bounded reap; if the worker did not come out, the host object is
+//     LEAKED rather than deleted. So a worker still parked on an event that lives
+//     inside g_phost can never have that memory freed under it.
+// The park quantum is deliberately shorter than the reap budget so even a MISSED
+// wake resolves inside Phase 1 - see kWorkerParkMs in xll_worker.cpp.
+//
 // Everything that parks or re-enters Excel now lives in Phase 1 (BeginQuiesce),
 // which runs inside OnBeginShutdown — before Excel begins its RTD/COM teardown.
 // The §23.0 ordering is preserved: the drains happen in Phase 1, strictly BEFORE
