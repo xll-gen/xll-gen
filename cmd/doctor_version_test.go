@@ -58,30 +58,92 @@ func TestFlatbuffersVersionConsistency(t *testing.T) {
 // the SOURCE dir; shm and flatbuffers otherwise always come from these pins.
 //
 // This is the 6th shared-dependency pin location (AGENTS.md §18.2).
+//
+// It covers TWO hand-maintained CMake files, both un-templated:
+//
+//  1. internal/regtest/testdata/CMakeLists.txt — xll-gen's OWN mock-host build.
+//  2. internal/templates/regtest_CMakeLists.txt.tmpl — the mock-host build
+//     written into EVERY GENERATED PROJECT by `xll-gen regtest`. Despite the
+//     .tmpl extension it is copied VERBATIM by
+//     internal/regtest/generator.go::generateSimCMake (deliberately: it holds no
+//     template actions, and running static CMake through text/template would
+//     make any future `{{` an action), so `{{ .Deps.SHM }}` would ship literally
+//     and cannot be used — the tag is hardcoded and this gate is what keeps it
+//     honest. (If a later refactor DOES render that file, this gate must be
+//     taught to accept the `{{ .Deps.X }}` form for it; until then a literal
+//     action there is correctly reported as an unpinned tag, because verbatim
+//     copying would ship it to users as one.
+//     internal/regtest/generator_pin_test.go asserts the same thing about the
+//     bytes generateSimCMake actually writes, which is what users get.)
+//
+// (2) had been left at `GIT_TAG main` since it was written and was the LAST shm
+// pin site with no gate. It stayed harmless only because shm's SHM_VERSION was
+// frozen across the whole v0.7.x–v0.8.x range; nothing about a floating branch
+// pin was safe, it was merely untested. It becomes fatal the moment shm main
+// carries a new SHM_VERSION: the C++ mock host then attaches with the new wire
+// version while the generated project's Go server is resolved to versions.SHM by
+// internal/generator/dependencies.go, and SPEC §2.1 makes a version mismatch a
+// HARD FAILURE at attach — NewDirectGuest returns "protocol version mismatch"
+// and regtest does not start at all. A half-pinned consumer does not degrade.
+//
+// Two properties are enforced per file:
+//   - every KNOWN repo's GIT_TAG equals its versions.go pin, and
+//   - every GIT_TAG whatsoever looks like a release tag (vN.N.N), so a repo not
+//     in the pins map cannot be re-floated to a branch/HEAD either.
 func TestRegtestCMakePinsMatchVersions(t *testing.T) {
-	cmakePath := filepath.Join("..", "internal", "regtest", "testdata", "CMakeLists.txt")
-	data, err := os.ReadFile(cmakePath)
-	if err != nil {
-		t.Fatal(err)
+	// Per file: which repos must match which versions.go constant. The
+	// generated-project template does not fetch `types` (the mock host there
+	// only needs shm + flatbuffers), hence the differing key sets.
+	files := []struct {
+		path string
+		pins map[string]string
+	}{
+		{
+			path: filepath.Join("..", "internal", "regtest", "testdata", "CMakeLists.txt"),
+			pins: map[string]string{
+				"flatbuffers": versions.FlatBuffers,
+				"shm":         versions.SHM,
+				"types":       versions.Types,
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "templates", "regtest_CMakeLists.txt.tmpl"),
+			pins: map[string]string{
+				"flatbuffers": versions.FlatBuffers,
+				"shm":         versions.SHM,
+			},
+		},
 	}
-	content := string(data)
 
-	// Each FetchContent_Declare has "GIT_REPOSITORY .../<name>.git" followed
-	// (across newlines) by "GIT_TAG <tag>". Capture the tag per known repo.
-	pins := map[string]string{
-		"flatbuffers": versions.FlatBuffers,
-		"shm":         versions.SHM,
-		"types":       versions.Types,
-	}
-	for repo, want := range pins {
-		re := regexp.MustCompile(`/` + regexp.QuoteMeta(repo) + `\.git\s+GIT_TAG\s+(\S+)`)
-		m := re.FindStringSubmatch(content)
-		if len(m) < 2 {
-			t.Errorf("could not find GIT_TAG for %s in %s", repo, cmakePath)
-			continue
+	releaseTag := regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+`)
+
+	for _, f := range files {
+		data, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if got := m[1]; got != want {
-			t.Errorf("regtest CMakeLists.txt %s GIT_TAG = %q, but versions.go pins %q — sync the hand-maintained pin (AGENTS.md §18.2)", repo, got, want)
+		content := string(data)
+
+		// Each FetchContent_Declare has "GIT_REPOSITORY .../<name>.git" followed
+		// (across newlines) by "GIT_TAG <tag>". Capture the tag per known repo.
+		for repo, want := range f.pins {
+			re := regexp.MustCompile(`/` + regexp.QuoteMeta(repo) + `\.git\s+GIT_TAG\s+(\S+)`)
+			m := re.FindStringSubmatch(content)
+			if len(m) < 2 {
+				t.Errorf("could not find GIT_TAG for %s in %s", repo, f.path)
+				continue
+			}
+			if got := m[1]; got != want {
+				t.Errorf("%s: %s GIT_TAG = %q, but versions.go pins %q — sync the hand-maintained pin (AGENTS.md §18.2)", f.path, repo, got, want)
+			}
+		}
+
+		// Nothing in these files may float, even a repo absent from the map
+		// above. `GIT_TAG main` here is what this gate exists to prevent.
+		for _, m := range regexp.MustCompile(`(?m)^\s*GIT_TAG\s+(\S+)`).FindAllStringSubmatch(content, -1) {
+			if !releaseTag.MatchString(m[1]) {
+				t.Errorf("%s: GIT_TAG %q is not a pinned release tag — a floating ref lets the C++ end of the SHM attach move independently of the Go end, which SPEC §2.1 turns into a hard attach failure, not a soft degrade (AGENTS.md §18.2)", f.path, m[1])
+			}
 		}
 	}
 }

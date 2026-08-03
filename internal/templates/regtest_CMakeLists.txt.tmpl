@@ -19,10 +19,19 @@ FetchContent_MakeAvailable(flatbuffers)
 # SHM
 # GIT_SUBMODULES "" skips the benchmark-only aeron submodule (no .gitmodules
 # URL entry in released tags); the interface library does not need it.
+#
+# GIT_TAG MUST be a released tag equal to internal/versions/versions.go's SHM,
+# never a branch. This mock host and the generated project's Go server are the
+# TWO ENDS OF ONE SHM ATTACH: the Go side is resolved by
+# internal/generator/dependencies.go (`go get github.com/xll-gen/shm@`+SHM),
+# so a floating pin here lets the C++ end move to a newer SHM_VERSION on its
+# own. SPEC §2.1 makes a version mismatch a HARD FAILURE at attach, so the
+# result is not degraded IPC — NewDirectGuest refuses and regtest cannot run at
+# all. Gated by cmd/doctor_version_test.go::TestRegtestCMakePinsMatchVersions.
 FetchContent_Declare(
   shm
   GIT_REPOSITORY https://github.com/xll-gen/shm.git
-  GIT_TAG main
+  GIT_TAG v0.8.21
   GIT_SUBMODULES ""
 )
 FetchContent_MakeAvailable(shm)
