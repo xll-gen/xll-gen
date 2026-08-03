@@ -55,8 +55,10 @@ func hookBody(t *testing.T, src string) string {
 // surviving from another hive had nothing left to activate.
 //
 // The Addins key's lifetime is therefore "INSTALLED", not "SESSION": it is
-// created by TryConnectRibbon (LoadBehavior=0, so nothing autoloads at startup —
-// the key is inert until something connects it) and removed only by
+// created by TryConnectRibbon (LoadBehavior=0 on a fresh install, so nothing
+// autoloads at startup — the key is inert until something connects it; an existing
+// LoadBehavior is preserved from 2026-08-03 on, see
+// internal/assets/registry_addin_key_cpp_test.go) and removed only by
 // DllUnregisterServer, the documented uninstall entry point.
 //
 // WHAT MUST NOT MOVE. Everything ABOVE the deleted lines is the 2026-07-30

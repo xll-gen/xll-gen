@@ -1,9 +1,54 @@
 package assets
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var reEmptyLogPathIf = regexp.MustCompile(`if\s*\(\s*g_logPath\.empty\(\)\s*\)\s*`)
+
+// emptyLogPathBranch returns the BODY of xll_log.cpp's
+// `if (g_logPath.empty()) …` branch, given comment-stripped source, in whatever
+// brace style it happens to be written in (braced block, or a single statement
+// with no braces at all).
+//
+// It exists because the assertion it feeds used to be
+// `!strings.Contains(code, "if (g_logPath.empty()) return;")` — a check that says
+// "the drop-everything branch is gone" but only recognises ONE spelling of it.
+// Re-writing the drop as `if (g_logPath.empty()) { return; }` restored the exact
+// defect with the assertion still green. Reading the branch body and requiring
+// the fallback INSIDE it is the property that was meant.
+func emptyLogPathBranch(code string) (string, bool) {
+	loc := reEmptyLogPathIf.FindStringIndex(code)
+	if loc == nil {
+		return "", false
+	}
+	rest := code[loc[1]:]
+	if rest == "" {
+		return "", false
+	}
+	if rest[0] != '{' {
+		// Braceless single-statement branch.
+		if i := strings.IndexByte(rest, ';'); i >= 0 {
+			return rest[:i+1], true
+		}
+		return "", false
+	}
+	depth := 0
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[:i+1], true
+			}
+		}
+	}
+	return "", false
+}
 
 // Comment stripping is load-bearing for the ORDER asserts below, not a nicety: the
 // doc comment above OnDisconnection names both `xll::GracefulTeardownOnce` and the
@@ -86,10 +131,10 @@ func stripCppCommentsScan(s string) string {
 // which the nested disconnect executed, 0/6 after the fix.
 //
 // THE FIX has two halves in two different translation units, and BOTH must hold:
-//   * `RibbonAddIn::OnDisconnection` publishes "Office is inside its own disconnect"
+//   - `RibbonAddIn::OnDisconnection` publishes "Office is inside its own disconnect"
 //     for the whole duration of the teardown it drives — which means the RAII guard
 //     must be constructed BEFORE `xll::GracefulTeardownOnce`, not after (this file).
-//   * the generated hook READS that flag and skips its explicit disconnect
+//   - the generated hook READS that flag and skips its explicit disconnect
 //     (`internal/generator/gen_cancel_quit_test.go::TestCancelQuitHookSkipsReentrantDisconnect`).
 //
 // WHY AN ORDER ASSERT AND NOT A SUBSTRING ONE. The pre-existing hook assertion only
@@ -194,8 +239,11 @@ func TestOnDisconnectionMarksOfficeDisconnectBeforeTeardown(t *testing.T) {
 // SURVIVE the session that created them. That is the whole point — a user who
 // unticks the box has to be able to tick it back — but it also means Office can
 // COM-activate RibbonAddIn in a session where xlAutoOpen NEVER RAN: no ribbon XML,
-// no images, no SHM host, no Go server. LoadBehavior stays 0 so nothing autoloads
-// at startup, but one tick in the dialog is enough to get there.
+// no images, no SHM host, no Go server. LoadBehavior is 0 on a fresh install so
+// nothing autoloads at startup, but one tick in the dialog is enough to get there
+// — and since 2026-08-03 RegisterOfficeAddinKey preserves the LoadBehavior=3
+// Office records for that tick (registry_addin_key_cpp_test.go), so after one tick
+// Office may also activate us during its own startup.
 //
 // OnConnection was a bare `return S_OK`, so that tick produced a half add-in that
 // looks connected and does nothing. It must now consult
@@ -282,6 +330,59 @@ func TestOnConnectionRefusesWithoutConnectContext(t *testing.T) {
 	if !strings.Contains(body, "SAFE_LOG_WARN") {
 		t.Errorf("the refusal must log once at WARN, or a user who ticked the box gets a silent "+
 			"no-op with nothing to diagnose\n---\n%s", body)
+	}
+
+	// …AND THE WARN MUST HAVE A SINK. (2026-08-03. The rationale above used to
+	// stop at "it logs at WARN", and that was FALSE for this guard.)
+	//
+	// SAFE_LOG_WARN -> LogWarn -> WriteLogUnconditional, which opened with
+	// `if (g_logPath.empty()) return;`. g_logPath is written only by InitLog,
+	// reached only from InitNativeLogging, called only from xlAutoOpen — and the
+	// entire premise of this branch is that xlAutoOpen NEVER RAN. So the refusal
+	// line was discarded exactly in the state the guard covers, and no assertion
+	// over THIS file could have caught it. The fix is in the logger: it falls back
+	// to the debug-output channel while there is no log file. Asserted here, in the
+	// test that owns the requirement, because src/xll_log.cpp has no other reason
+	// to keep that branch and deleting it would silently re-break this guard.
+	// Behaviour is covered by TestNativeLogDebugSinkBehavior.
+	//
+	// STRUCTURAL, NOT TEXTUAL (corrected 2026-08-03). The first version of this
+	// check was `!Contains(code, "if (g_logPath.empty()) return;")`, which a
+	// brace-reformatted `if (g_logPath.empty()) { return; }` walks straight past —
+	// the defect back, the assertion green. It now reads the branch BODY and
+	// requires the fallback call to be in it, which is the property the paragraph
+	// above claims.
+	logSrc, ok := m["src/xll_log.cpp"]
+	if !ok {
+		t.Fatalf("embedded asset src/xll_log.cpp not found")
+	}
+	branch, found := emptyLogPathBranch(stripCppCommentsAsset(logSrc))
+	if !found {
+		t.Fatalf("src/xll_log.cpp no longer has an `if (g_logPath.empty())` branch in " +
+			"WriteLogUnconditional; this guard's WARN depends on what that branch does, so this " +
+			"test cannot be left to guess")
+	}
+	if !strings.Contains(branch, "WriteDebugOutputFallback(") {
+		t.Errorf("src/xll_log.cpp drops every line while g_logPath is empty, so this refusal's WARN "+
+			"is silently discarded — the log file is opened by InitNativeLogging inside xlAutoOpen, "+
+			"and this branch runs precisely when xlAutoOpen never ran. The logger must fall back to "+
+			"the debug-output channel (see WriteDebugOutputFallback / TestNativeLogDebugSinkContract).\n"+
+			"the branch as written:\n%s", branch)
+	}
+	// The comment above the guard has to say WHERE to read the line. Pointing a
+	// user at <proj>_native.log — which in this session does not exist — is the
+	// misdirection the original comment shipped with.
+	ocRawIdx := strings.Index(src, "HRESULT __stdcall RibbonAddIn::OnConnection(")
+	if ocRawIdx < 0 {
+		t.Fatalf("RibbonAddIn::OnConnection not found in the raw ribbon_addin.cpp")
+	}
+	rawComment := src[:ocRawIdx]
+	if i := strings.LastIndex(rawComment, "\n}"); i > 0 {
+		rawComment = rawComment[i:]
+	}
+	if !strings.Contains(rawComment, "OutputDebugString") {
+		t.Errorf("the comment above OnConnection must name the sink the refusal line actually "+
+			"reaches (OutputDebugStringW, because there is no log file in this state)\n---\n%s", rawComment)
 	}
 
 	// The late-bound IDispatch path must not bypass the refusal: Invoke used to

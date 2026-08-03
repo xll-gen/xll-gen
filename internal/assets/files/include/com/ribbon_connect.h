@@ -138,8 +138,11 @@ void SetConnectContext(const ConnectContext& ctx);
 // created them. That is the point — a user who unticks the box must be able to
 // tick it back — but it also means Office can COM-activate RibbonAddIn in a
 // session where xlAutoOpen never ran: no ribbon XML published, no images, no
-// SHM host, no Go server. LoadBehavior stays 0 so nothing autoloads at startup,
-// but a tick in the dialog is enough. Half an add-in is worse than none, so
+// SHM host, no Go server. LoadBehavior is 0 on a fresh install so nothing
+// autoloads at startup, but a tick in the dialog is enough — and since
+// 2026-08-03 RegisterOfficeAddinKey PRESERVES the LoadBehavior=3 that Office
+// records for that tick instead of overwriting it, so after one tick Office may
+// activate us during its own startup too. Half an add-in is worse than none, so
 // OnConnection refuses with E_FAIL when this is false.
 //
 // Deliberately NOT a "did xlAutoOpen run" flag of its own: the context IS the

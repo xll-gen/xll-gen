@@ -35,7 +35,6 @@ type ScalarValue struct {
 // unchanged. The C++ mirror in internal/assets/files/include/xll_ipc.h and
 // the §18.6 mirror discipline are unchanged; pkg/msgid is the Go-side source.
 const (
-	MsgAck = msgid.MsgAck
 	// System error signals are sourced from shm directly — see
 	// shm.MsgTypeSystemError (value 127). The local mirror that used to
 	// live here was removed in xll-gen v0.3.8 / shm v0.6.0+.
@@ -57,6 +56,11 @@ const (
 	// RTD-once grid result (guest->host one-shot grid delivery) — must stay in
 	// sync with MSG_RTD_ONCE_GRID in internal/assets/files/include/xll_ipc.h.
 	MsgRtdOnceGrid = msgid.MsgRtdOnceGrid
+
+	// Acknowledgement (139) — must stay in sync with MSG_ACK in
+	// internal/assets/files/include/xll_ipc.h. It was 2 until 2026-08-03,
+	// which is shm's MsgType::HEARTBEAT_RESP; see pkg/msgid.
+	MsgAck = msgid.MsgAck
 
 	// User Messages Start
 	MsgUserStart = msgid.MsgUserStart

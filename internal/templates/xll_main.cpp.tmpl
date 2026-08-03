@@ -302,10 +302,12 @@ static void GracefulComTeardownHook(bool revokeRtdClassObject) {
         // source, so unticking the box deleted the row the user needs to tick it
         // back on, and the CLSID delete left even a row surviving from another hive
         // with nothing to activate. The Addins key's lifetime is INSTALLED, not
-        // SESSION: TryConnectRibbon creates it with LoadBehavior=0 (so nothing
-        // autoloads at Excel startup — the key is inert until something connects
-        // it) and DllUnregisterServer, the documented uninstall entry point,
-        // removes it. Accepted cost: an uninstalled/moved XLL leaves a dialog row
+        // SESSION: TryConnectRibbon creates it with LoadBehavior=0 on a fresh
+        // install (so nothing autoloads at Excel startup — the key is inert until
+        // something connects it), PRESERVES that value on every later load
+        // (2026-08-03: it used to overwrite it, which undid the user's tick in the
+        // COM Add-ins dialog), and DllUnregisterServer, the documented uninstall
+        // entry point, removes it. Accepted cost: an uninstalled/moved XLL leaves a dialog row
         // behind until DllUnregisterServer runs. The guard against a ticked stale
         // row producing a half-initialised add-in is
         // RibbonAddIn::OnConnection's xll::ribbon::ConnectContextPublished()

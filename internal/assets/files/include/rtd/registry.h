@@ -115,8 +115,38 @@ namespace rtd {
 
     /**
      * @brief Registers the COM add-in under Excel's HKCU Addins key so
-     * Application.COMAddIns can see it. LoadBehavior=0: we connect
-     * programmatically from xlAutoOpen, never on Excel startup.
+     * Application.COMAddIns can see it.
+     *
+     * LoadBehavior is written ONLY when the value does not already exist. The two
+     * cases are genuinely different and this function runs on EVERY xlAutoOpen:
+     *
+     *  - FRESH INSTALL (value absent): write 0. We connect programmatically from
+     *    xlAutoOpen, never at Excel startup, so the key this function leaves behind
+     *    must autoload nothing — it is inert until something connects it.
+     *  - ANY LATER LOAD (value present): PRESERVE it, whatever it is. That byte
+     *    belongs to Office and to the user: ticking the box in the COM Add-ins
+     *    dialog is recorded as LoadBehavior=3, and an unconditional 0 here undoes
+     *    that tick on the next load, silently.
+     *
+     * The preserve half only became necessary with the 2026-08-03 fix that stopped
+     * the graceful teardown deleting this key (AGENTS.md §18.11.5): while the key
+     * was recreated from scratch every session there was never a prior value to
+     * destroy. Its lifetime is INSTALLED, not SESSION, so now there is.
+     *
+     * The probe passes a NULL data buffer deliberately — it asks whether the value
+     * EXISTS, not what it holds. A typed DWORD read would report a LoadBehavior of
+     * some other type as absent and clobber it, and a value we did not write is not
+     * ours to correct. For the same reason the write is gated on
+     * ERROR_FILE_NOT_FOUND specifically rather than on "the probe did not succeed":
+     * every other failure means we could not establish absence, and the safe answer
+     * to that is to leave the registry alone.
+     *
+     * FriendlyName/Description are unconditional by contrast: they describe the
+     * add-in rather than its load policy, so refreshing them on every load is right.
+     *
+     * Gated by registry_addin_key_native_test.cpp (behavior, real registry against a
+     * per-process RegOverridePredefKey sandbox) and
+     * internal/assets/registry_addin_key_cpp_test.go (read-before-write shape).
      */
     inline HRESULT RegisterOfficeAddinKey(const wchar_t* progID, const wchar_t* friendlyName, const wchar_t* description) {
         if (!progID || !*progID) return E_INVALIDARG;
@@ -124,11 +154,14 @@ namespace rtd {
         key += progID;
 
         HKEY hKey;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
             return E_FAIL;
 
-        DWORD loadBehavior = 0;
-        RegSetValueExW(hKey, L"LoadBehavior", 0, REG_DWORD, (const BYTE*)&loadBehavior, sizeof(loadBehavior));
+        DWORD existingType = 0, existingSize = 0;
+        if (RegQueryValueExW(hKey, L"LoadBehavior", nullptr, &existingType, nullptr, &existingSize) == ERROR_FILE_NOT_FOUND) {
+            DWORD loadBehavior = 0;
+            RegSetValueExW(hKey, L"LoadBehavior", 0, REG_DWORD, (const BYTE*)&loadBehavior, sizeof(loadBehavior));
+        }
         if (friendlyName)
             RegSetValueExW(hKey, L"FriendlyName", 0, REG_SZ, (const BYTE*)friendlyName, static_cast<DWORD>((wcslen(friendlyName) + 1) * sizeof(wchar_t)));
         if (description)

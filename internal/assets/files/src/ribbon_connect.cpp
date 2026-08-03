@@ -196,9 +196,12 @@ void DumpConnectEnvironmentOnce(IDispatch* pApp) {
 
     std::string out = "Ribbon: connect environment (one-shot) — ";
 
-    // 1. The Addins key we ourselves wrote, and its LoadBehavior. It stays 0 by
-    //    design (we connect programmatically, never at Excel startup), so a 0 here
-    //    is CORRECT — what matters is whether the key is present at all.
+    // 1. The Addins key we ourselves wrote, and its LoadBehavior. We write 0 on a
+    //    FRESH install (we connect programmatically, never at Excel startup) and
+    //    PRESERVE whatever is there afterwards (2026-08-03) — Office records a
+    //    user's tick in the COM Add-ins dialog as 3. So NEITHER value is a fault
+    //    here: 0 is the untouched default and 3 is a user who ticked the box. What
+    //    matters is whether the key is present at all. Reported, not judged.
     std::wstring addinsKey = L"Software\\Microsoft\\Office\\Excel\\Addins\\";
     addinsKey += (g_ctx.progId ? g_ctx.progId : L"");
     HKEY hAddin = nullptr;

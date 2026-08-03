@@ -46,9 +46,91 @@ static void WriteLog(const std::string& levelStr, const std::string& msg) {
     WriteLogUnconditional(levelStr, msg);
 }
 
+// THE NO-LOG-FILE SINK (2026-08-03).
+//
+// g_logPath is written in exactly ONE place: InitLog, reached only through
+// InitNativeLogging, called only from xlAutoOpen. Every line logged while it is
+// still empty used to be DISCARDED IN SILENCE, and there are two states where
+// that is precisely the wrong outcome:
+//
+//   1. A COM activation in a session where xlAutoOpen NEVER RAN. The COM
+//      Add-ins dialog row and the HKCU InprocServer32 deliberately survive an
+//      add-in disable (see RibbonAddIn::OnConnection in src/ribbon_addin.cpp),
+//      so Office can activate the ribbon class with no XLL loaded at all. The
+//      refusal guard there logs at WARN — and its message was dropped EXACTLY
+//      in the state the guard exists to cover, because no log file had ever
+//      been opened. That is the defect this fallback fixes.
+//   2. A FAILED InitLog. g_logPath stays empty on failure (by design — a path we
+//      could not open must not be written to), so today the user gets one
+//      message box and then a session-long blackout of every subsequent line.
+//
+// WHY HERE AND NOT AT THE ONE CALL SITE. This is the single choke point every
+// logger already funnels through, so no call site has to know whether the file
+// sink is up yet, and both states above are covered by one branch instead of a
+// hand-placed OutputDebugStringW per early/late caller (the next one would be
+// forgotten). It is not noisy either: the branch is reachable ONLY while
+// g_logPath is empty, i.e. the few statements before InitLog in a normal load,
+// after which it is inert forever. Every gate stays upstream and still applies —
+// g_isUnloading in WriteLog and in the SAFE_LOG_* macros, and the g_logLevel
+// gate in each logger.
+//
+// WHAT THAT LEVEL GATE MEANS IN EACH STATE — the gate applies, but in state (1)
+// the CONFIGURED level has not been loaded yet, so do not read this as
+// "`logging.level: none` silences the fallback":
+//   * State (1) (no xlAutoOpen): InitLog never ran, so g_logLevel is still the
+//     HARDCODED LogLevel::INFO default at the top of this file. A project
+//     configured with `logging.level: none` therefore STILL emits the refusal
+//     WARN here. That is deliberate — the config was never read, and the
+//     alternative is the silent no-op this fallback exists to end — but it is a
+//     real behaviour difference from a normally-loaded session.
+//   * State (2) (failed InitLog): InitLog parses the level BEFORE it touches the
+//     path, so the configured level is already in force and `logging.level: none`
+//     does silence the fallback. TestFailedInitKeepsTheFallbackLive pins this.
+//
+// TEARDOWN SAFETY. The branch returns BEFORE the timed_mutex and before any file
+// I/O, so it adds no lock and no disk access to the Phase 2 "bounded kernel
+// calls only" rule (AGENTS.md §20.2). It also writes nothing to disk, so it
+// cannot reopen the one-directory question of §18.12.
+//
+// …BUT OutputDebugStringW IS ONLY FREE WITH NOBODY LISTENING, and the teardown
+// loggers do reach this branch (LogTeardown / LogTeardownWarn pass
+// boundedWait=true, and TestTeardownLoggersFallBackToo pins that they still get
+// a sink when there is no log file). With no debugger and no debug-output
+// viewer running it goes nowhere and returns immediately. With a VIEWER running
+// it takes the system-wide DBWinMutex and waits on the reader's ack event —
+// classically bounded at 10 s, i.e. ~200x the 50 ms this function deliberately
+// caps the teardown lock wait at below. So on the teardown path the fallback IS
+// a wider bound than the file sink's, in the narrow state where all three of
+// (no log file) + (a debug-output viewer running) + (forced unload) hold.
+// Accepted rather than skipped for boundedWait callers: skipping would restore
+// the session-long blackout for teardown lines after a failed InitLog, which is
+// the exact silence §20.2 was mis-diagnosed from once already. Recorded here so
+// the widened bound is a documented trade, not a surprise.
+static void WriteDebugOutputFallback(const std::string& levelStr, const std::string& msg) {
+    const std::string line = "[xll] [" + levelStr + "] " + msg + "\n";
+
+    // UTF-8 -> UTF-16 by hand rather than via StringToWString: that helper THROWS
+    // std::length_error on an oversized input, and a logger that can throw is not
+    // usable from the paths this one exists for. A conversion that fails degrades
+    // to the raw bytes rather than to nothing.
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, nullptr, 0);
+    if (needed > 0) {
+        std::wstring w(static_cast<size_t>(needed), L'\0');
+        if (MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, &w[0], needed) == needed) {
+            OutputDebugStringW(w.c_str());
+            return;
+        }
+    }
+    OutputDebugStringA(line.c_str());
+}
+
 static void WriteLogUnconditional(const std::string& levelStr, const std::string& msg,
                                   bool boundedWait) {
-    if (g_logPath.empty()) return;
+    if (g_logPath.empty()) {
+        // No log file yet (or ever) — see WriteDebugOutputFallback above.
+        WriteDebugOutputFallback(levelStr, msg);
+        return;
+    }
 
     // WHY THE TEARDOWN PATH BOUNDS THIS WAIT.
     //

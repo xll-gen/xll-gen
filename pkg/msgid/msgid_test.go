@@ -13,7 +13,6 @@ func TestMessageIDValues(t *testing.T) {
 		got  int
 		want int
 	}{
-		{"MsgAck", MsgAck, 2},
 		{"MsgBatchAsyncResponse", MsgBatchAsyncResponse, 128},
 		{"MsgChunk", MsgChunk, 129},
 		{"MsgSetRefCache", MsgSetRefCache, 130},
@@ -25,6 +24,7 @@ func TestMessageIDValues(t *testing.T) {
 		{"MsgRtdHeartbeat", MsgRtdHeartbeat, 136},
 		{"MsgCommandInvoke", MsgCommandInvoke, 137},
 		{"MsgRtdOnceGrid", MsgRtdOnceGrid, 138},
+		{"MsgAck", MsgAck, 139},
 		{"MsgUserStart", MsgUserStart, 140},
 	}
 	for _, c := range cases {

@@ -13,8 +13,14 @@ extern std::map<std::string, bool> g_sentRefCache;
 extern std::mutex g_refCacheMutex;
 
 // Message IDs
-// System (0-127)
-#define MSG_ACK 2
+//
+// These are APPLICATION-layer IDs: each one travels as the shm slot's msgType,
+// so it shares one numbering space with shm's MsgType enum (shm/IPCUtils.h).
+// 0-127 are RESERVED by the transport (NORMAL 0, HEARTBEAT_REQ 1,
+// HEARTBEAT_RESP 2, SHUTDOWN 3, FLATBUFFER 10, GUEST_CALL 11, STREAM_START 13,
+// STREAM_CHUNK 14, SYSTEM_ERROR 127) and must never be allocated below.
+// Everything here must stay >= APP_START (128) and byte-identical to the Go
+// mirror in pkg/msgid (AGENTS.md 18.6).
 
 // User/App (128+)
 #define MSG_BATCH_ASYNC_RESPONSE 128
@@ -34,6 +40,11 @@ extern std::mutex g_refCacheMutex;
 
 // RTD-once grid result (guest->host one-shot grid/numgrid delivery) (138)
 #define MSG_RTD_ONCE_GRID 138
+
+// Acknowledgement (139). Was 2 until 2026-08-03, which is shm's
+// MsgType::HEARTBEAT_RESP; moved into the application range so an ACK response
+// cannot be read as a transport heartbeat.
+#define MSG_ACK 139
 
 // User Functions Start
 #define MSG_USER_START 140

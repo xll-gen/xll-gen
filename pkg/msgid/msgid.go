@@ -10,10 +10,15 @@
 // server.Msg* keep compiling unchanged.
 package msgid
 
+// Every constant here is an APPLICATION-layer ID: it travels as the shm slot's
+// msgType, so it shares one numbering space with shm's own MsgType enum
+// (shm/include/shm/IPCUtils.h). Values below MsgTypeAppStart = 128 are
+// RESERVED by the transport — NORMAL 0, HEARTBEAT_REQ 1, HEARTBEAT_RESP 2,
+// SHUTDOWN 3, FLATBUFFER 10, GUEST_CALL 11, STREAM_START 13, STREAM_CHUNK 14,
+// SYSTEM_ERROR 127 — and must never be allocated here. MsgAck used to sit at
+// 2 (== HEARTBEAT_RESP) and was moved to 139 on 2026-08-03; the gate that now
+// enforces the floor is internal/assets' TestMessageIDsAreApplicationLevel.
 const (
-	// MsgAck is the acknowledgement message (mirrors MSG_ACK).
-	MsgAck = 2
-
 	// System error signals are sourced from shm directly — see
 	// shm.MsgTypeSystemError (value 127). No mirror is defined here.
 
@@ -51,6 +56,17 @@ const (
 	// MSG_RTD_ONCE_GRID). It occupies the free slot between MsgCommandInvoke
 	// (137) and MsgUserStart (140).
 	MsgRtdOnceGrid = 138
+
+	// MsgAck is the acknowledgement message (mirrors MSG_ACK). It occupies the
+	// last free slot below MsgUserStart (140).
+	//
+	// It was 2 until 2026-08-03, which is shm's MsgType::HEARTBEAT_RESP: the
+	// ACK responses that pkg/server's HandleChunk / HandleSetRefCache hand back
+	// through SendAckOrChunk carried that value as the ACTUAL shm response
+	// msgType, so any host that branched on the transport meaning would have
+	// mis-routed them. No wire-version bump accompanies the renumber — this is
+	// an application-layer ID and SHM_VERSION describes the transport bytes.
+	MsgAck = 139
 
 	// MsgUserStart is the first message ID allocated to user functions
 	// (mirrors MSG_USER_START). User function i gets MsgUserStart + i.

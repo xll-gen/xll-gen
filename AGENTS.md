@@ -257,6 +257,12 @@ Message IDs are distributed across multiple definitions and must match exactly.
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
 **Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
 
+**Every ID here is APPLICATION-layer, and it shares ONE numbering space with shm's transport enum.** An xll-gen message ID is not a private tag: it is written into the shm slot header as `msgType` (`SendAckOrChunk` returns it; the generated dispatch switch matches on it), so it sits in the same space as `shm::MsgType` (`shm/include/shm/IPCUtils.h`). Values **below `APP_START` = 128 are reserved by the transport** — `NORMAL` 0, `HEARTBEAT_REQ` 1, `HEARTBEAT_RESP` 2, `SHUTDOWN` 3, `FLATBUFFER` 10, `GUEST_CALL` 11, `STREAM_START` 13, `STREAM_CHUNK` 14, `SYSTEM_ERROR` 127 — and must never be allocated to a `MSG_*`. `MsgAck` / `MSG_ACK` violated this: it was **2**, i.e. `HEARTBEAT_RESP`, and rode out as the real response `msgType` on `HandleChunk`'s and `HandleSetRefCache`'s ACK replies, so a host that ever branched on the transport meaning would mis-route them. **Renumbered to 139 on 2026-08-03** (the last free slot below `MsgUserStart` 140). That renumber deliberately did **NOT** bump `SHM_VERSION`: `SHM_VERSION` describes the transport *bytes*, and no wire struct changed.
+
+**Current allocation** (both mirrors): 128 `MSG_BATCH_ASYNC_RESPONSE`, 129 `MSG_CHUNK`, 130 `MSG_SETREFCACHE`, 131 `MSG_CALCULATION_ENDED`, 132 `MSG_CALCULATION_CANCELED`, 133-136 RTD (`CONNECT`/`DISCONNECT`/`UPDATE`/`HEARTBEAT`), 137 `MSG_COMMAND_INVOKE`, 138 `MSG_RTD_ONCE_GRID`, 139 `MSG_ACK`, 140+ `MSG_USER_START` + i. **The 128-139 range is now FULL** — the next system ID has to raise `MSG_USER_START`, which by the constraint above means both templates, `funcmap.go`, `pkg/server` and `mock_host.cpp` move with it.
+
+**The mirror is machine-gated, not prose-gated (2026-08-03).** `pkg/msgid/msgid_test.go` only pins the Go values against a second hand-written copy of the same numbers, so it can never notice the C++ side drifting. The real gate is `internal/assets/msgid_mirror_test.go`. **Both sides are read from source, neither is hand-copied into the test**: the C++ side by parsing the `MSG_*` `#define`s out of the **shipped** `include/xll_ipc.h` (same technique as `TestChunkReceiverCapsMatchGoConstants`), the Go side by `go/ast`-parsing `pkg/msgid/msgid.go` and pairing each exported constant with the `MSG_*` name in **its own doc comment**. (It was a hand-maintained `goMsgIDs` map until 2026-08-03, which made the Go direction opt-in — `MsgSneaky = 2` added to `pkg/msgid` alone left the whole suite green.) It asserts three things: `TestMessageIDMirrorMatchesHeader` (name-by-name equality, **both** directions — a constant added to only one side fails, in either direction), `TestMessageIDsAreApplicationLevel` (no value collides with a reserved `shm::MsgType`, and every value is >= `shm.MsgTypeAppStart`), and `TestMessageIDsAreUnique` (no duplicate, and nothing at or above `MSG_USER_START`). When you add an ID, add it to `pkg/msgid` **with a doc comment naming its `MSG_*` twin** and to `xll_ipc.h`; nothing else has to be edited, and a constant with no `MSG_*` in its doc comment fails the gate rather than being skipped by it.
+
 #### 18.6.1 Chunk reassembly — two independent reassemblers, and their deliberate asymmetries
 
 The chunk co-change pair (`internal/assets/files/src/xll_worker.cpp` ↔ `pkg/server/manager.go` + `pkg/server/handlers.go`) is a **mirror of rules, not a shared mechanism**. They are two reassemblers running in **opposite directions**, and the word "mirrors" in either file's comments must be read that way:
@@ -568,8 +574,30 @@ SAME `RegDeleteTreeW`.
 **The change.** Both calls are gone from the hook; they now live in
 `DllUnregisterServer` — the documented uninstall entry point — which is emitted for
 a **ribbon** project as well as an RTD one (it used to be `{{if .Rtd.Enabled}}`
-only). `LoadBehavior` stays **0** in `RegisterOfficeAddinKey`, so the surviving key
-autoloads nothing at Excel startup; it is inert until something connects it.
+only). `RegisterOfficeAddinKey` writes `LoadBehavior` **0** on a FRESH install, so
+the surviving key autoloads nothing at Excel startup; it is inert until something
+connects it.
+
+**`LoadBehavior` IS WRITTEN ONCE, NOT EVERY LOAD (2026-08-03).** The same function
+runs on every `xlAutoOpen` and used to re-write `0` unconditionally. That was
+harmless only for as long as the teardown deleted the key each session — there was
+never a prior value. Once the key SURVIVED, the unconditional write became a
+defect: Office records a user's tick in the COM Add-ins dialog as `LoadBehavior=3`,
+and the next load silently reset it to `0`. It now probes first and writes only
+when the value is **absent**; `FriendlyName`/`Description` stay unconditional
+(those describe the add-in, not its load policy). The probe passes a **NULL data
+buffer** — it asks about EXISTENCE, not the value — and the write is gated on
+`ERROR_FILE_NOT_FOUND` specifically, so a `LoadBehavior` of an unexpected type is
+preserved rather than "corrected". `RegCreateKeyExW` therefore needs
+`KEY_QUERY_VALUE | KEY_SET_VALUE`. Gated by
+`internal/assets/registry_addin_key_cpp_test.go`: a real-registry behavior harness
+(`testdata/registry_addin_key_native_test.cpp`, sandboxed with a per-process
+`RegOverridePredefKey` so the live Office hive is never opened) plus an always-on
+read-before-write shape assert for hosts without `g++`. **CONSEQUENCE, accepted:**
+once the user has ticked the box, Office may COM-activate `RibbonAddIn` during its
+OWN startup with no ordering guarantee against `xlAutoOpen`, so
+`OnConnection`'s `ConnectContextPublished()` refusal (below) becomes a normal
+outcome on that path rather than a corner case.
 
 There is deliberately **no ribbon half of `DllRegisterServer`**: the ribbon
 self-registers at `xlAutoOpen` inside `TryConnectRibbon`, whose friendly-name /

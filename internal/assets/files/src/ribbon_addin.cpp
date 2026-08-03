@@ -341,13 +341,36 @@ HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, D
 // — and it is gone. The row and a live InprocServer32 now survive the session,
 // which means Office can COM-activate this class in a session where the XLL was
 // NEVER LOADED: no ribbon XML, no images, no SHM host, no Go server, no
-// ConnectContext. LoadBehavior stays 0 so nothing autoloads at Excel startup, but
-// one tick in the dialog is enough to get here.
+// ConnectContext.
+//
+// TWO ROUTES GET HERE, and the second is why this guard cannot be a "can't
+// happen" assert. On a FRESH install LoadBehavior is 0 — RegisterOfficeAddinKey
+// writes it that way and nothing autoloads at Excel startup — so the only route
+// in is a manual tick in the COM Add-ins dialog. But a tick is recorded by Office
+// as LoadBehavior=3, and RegisterOfficeAddinKey PRESERVES an existing value
+// (2026-08-03: it used to overwrite it with 0 on every xlAutoOpen, silently
+// undoing the user's tick). From that tick onwards Office may therefore
+// COM-activate this class during its OWN startup, with no ordering guarantee
+// against the XLL's xlAutoOpen — so the refusal below is a NORMAL, expected
+// outcome on that path, not a corner case. Office's answer to it is its own
+// (typically demoting LoadBehavior to 2); ours is to refuse cleanly and say why.
 //
 // A half-initialised add-in that reports success is worse than none: it shows a
 // ribbon tab whose every button silently does nothing. E_FAIL is a refusal Office
-// understands and surfaces. The log line is what makes it diagnosable — it is
-// SAFE_LOG_WARN (not LogTeardownWarn): this is not a teardown path, and
+// understands and surfaces.
+//
+// WHERE THE WARN LINE ACTUALLY GOES (corrected 2026-08-03). The original comment
+// here claimed "the log line is what makes it diagnosable". That was FALSE for
+// this guard: the native log file is opened by InitNativeLogging inside
+// xlAutoOpen, and the whole premise of this branch is that xlAutoOpen never ran —
+// so g_logPath was empty and WriteLogUnconditional dropped the line silently,
+// precisely in the state the guard covers. The message survives now because that
+// function falls back to OutputDebugStringW while there is no log file (see "THE
+// NO-LOG-FILE SINK" in src/xll_log.cpp); read it with a debug-output viewer, NOT
+// in <proj>_native.log, which in this session does not exist. Do not "fix" this
+// by pointing a user at the log file, and do not remove that fallback.
+//
+// Still SAFE_LOG_WARN and not LogTeardownWarn: this is not a teardown path, and
 // g_isUnloading is false in the case that gets here.
 HRESULT __stdcall RibbonAddIn::OnConnection(IDispatch*, ext_ConnectMode, IDispatch*, SAFEARRAY**) {
     if (!xll::ribbon::ConnectContextPublished()) {
