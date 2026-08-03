@@ -699,6 +699,34 @@ std::string ContentHashToken(char typeTag, const XLOPER12* px) {
     //       the values keep "edited cell → new token → new topic → fresh
     //       compute" alive, which is the RTD freshness contract of §19.3 (a
     //       coordinates-only digest would freeze such a topic across edits).
+    //
+    // LATENT HAZARD FOR WHOEVER ADDS THE NEXT TAG (identified 2026-07-26, still
+    // unobservable — do NOT "fix" it here, just do not walk into it).
+    //
+    // A multi-area (union) reference — `(A1:B2,D1:E2)` — is not a shape the value
+    // digest can tell apart. xlCoerce SUCCEEDS on a union and answers with an
+    // ERROR value, so HashXLOPERIntoDepth folds `kTagRefVal` followed by
+    // `kTagErr` and nothing else: EVERY union produces the identical value part.
+    // Two different unions are therefore indistinguishable to HashXLOPERContent.
+    //
+    // Nothing observes that today, and for two different reasons — which is why
+    // it needs writing down rather than fixing:
+    //   * 'r' / 'a' (and MakeCacheKey, same story) escape it by construction:
+    //     HashXLOPERContentWithRefIdentity folds sheet + rects AHEAD of the
+    //     values, so two unions hash apart on identity even though their value
+    //     parts are equal.
+    //   * 'g' / 'n' escape it because ConvertGridArg REFUSES a union downstream
+    //     (GridArgStatus::kMultiArea — a grid is one rectangle), so no two unions
+    //     ever both reach a ship under a value-only token.
+    //
+    // So the guarantee for the value-only family rests entirely on that
+    // downstream refusal, NOT on the digest. A new value-only tag whose
+    // conversion accepts unions becomes a silent wrong-answer bug on its first
+    // day: two distinct unions, one token, second ship deduped away, consumer
+    // resolves the first one's cells. If you add a tag, either fold identity
+    // (join the 'r'/'a' family) or refuse unions in its converter — and say
+    // which in TestContentHashTokenDigestFamilies, which exists to make you read
+    // this paragraph.
     const bool coordinatePayload = (typeTag == 'r' || typeTag == 'a');
     const uint64_t h = coordinatePayload ? HashXLOPERContentWithRefIdentity(px)
                                          : HashXLOPERContent(px);

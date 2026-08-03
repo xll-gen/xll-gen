@@ -750,6 +750,98 @@ static void TestRefIdentityInToken() {
 }
 
 // ---------------------------------------------------------------------------
+// 4b-bis. a MULTI-AREA reference has no value digest at all
+// ---------------------------------------------------------------------------
+//
+// This is a LATENT hazard being pinned as a fact, not a bug being fixed (see the
+// paragraph in ContentHashToken). It is here because the safety of the value-only
+// digest family rests on something OUTSIDE the digest, and nothing was executing
+// that claim.
+//
+// Excel's xlCoerce SUCCEEDS on a union like (A1:B2,D1:E2) and answers with an
+// ERROR value. So HashXLOPERIntoDepth folds kTagRefVal followed by kTagErr and
+// nothing else: the value part of EVERY union is byte-identical, and no two
+// unions can be told apart by a value-only digest — not even a union and a plain
+// ref whose coerce failed for an unrelated reason.
+//
+// What actually keeps that from being a wrong answer today:
+//   * 'r' / 'a' and MakeCacheKey fold the reference IDENTITY ahead of the values,
+//     so they separate unions on sheet + rects. (HARD REQUIREMENT — asserted.)
+//   * 'g' / 'n' are safe only because ConvertGridArg REFUSES a union downstream
+//     (GridArgStatus::kMultiArea), so two unions never both reach a ship under a
+//     value-only token. (NOT a digest property — that is the whole point.)
+//
+// If a future value-only tag accepts unions, it is a silent wrong answer on day
+// one: two distinct unions, one token, the second ship deduped away, the consumer
+// resolving the first one's cells.
+//
+// NOTE ON THE 'g' ASSERTION BELOW: it asserts that the collision EXISTS. That is
+// deliberate — it records the current truth. If you make unions distinguishable
+// in the value digest, that is an improvement, not a break: update the assertion
+// and the ContentHashToken paragraph together. What must NEVER be quietly
+// weakened is the 'r'/'a'/MakeCacheKey half.
+static void TestMultiAreaRefHasNoValueDigest() {
+    xll::CacheManager::Instance().ClearRefCache();
+
+    // What Excel really returns when asked to coerce a union to xltypeMulti.
+    XLOPER12 coercedErr = Err(15); // xlerrValue
+    g_coerceResult = &coercedErr;
+
+    // Two unions that cover COMPLETELY different cells, and a third on another
+    // sheet. Nothing about their contents differs after the coerce.
+    RefHolder uA(0x1234, {Rect(0, 1, 0, 1), Rect(0, 1, 3, 4)});   // Sheet1!(A1:B2,D1:E2)
+    RefHolder uB(0x1234, {Rect(9, 10, 9, 10), Rect(20, 21, 0, 1)}); // Sheet1!(J10:K11,A21:B22)
+    RefHolder uSheet2(0x5678, {Rect(0, 1, 0, 1), Rect(0, 1, 3, 4)}); // Sheet2!(A1:B2,D1:E2)
+
+    // (1) The documented collision: the value-only family cannot see the
+    //     difference. Recorded as an executed fact so the comment cannot rot.
+    Check(xll::ContentHashToken('g', &uA.op) == xll::ContentHashToken('g', &uB.op),
+          "'g' (value-only) token CANNOT separate two disjoint unions — a union coerces to "
+          "an ERROR, so every union has the same value digest. 'g' is safe only because "
+          "ConvertGridArg refuses unions downstream (kMultiArea), NOT because of the digest");
+    Check(xll::ContentHashToken('g', &uA.op) == xll::ContentHashToken('g', &uSheet2.op),
+          "'g' token cannot even separate unions on DIFFERENT SHEETS");
+
+    // (2) The hard requirement: every digest that keys a payload carrying
+    //     coordinates separates them anyway, because identity is folded first.
+    Check(xll::ContentHashToken('r', &uA.op) != xll::ContentHashToken('r', &uB.op),
+          "'r' token MUST separate two disjoint unions (identity is folded ahead of the "
+          "error value)");
+    Check(xll::ContentHashToken('r', &uA.op) != xll::ContentHashToken('r', &uSheet2.op),
+          "'r' token MUST separate the same union shape on two different sheets");
+    Check(xll::ContentHashToken('a', &uA.op) != xll::ContentHashToken('a', &uB.op),
+          "'a' token MUST separate two disjoint unions (ConvertAny of a ref ships a Range)");
+
+    // (3) ...and so must the result-cache key, which folds identity for EVERY
+    //     reference argument precisely because it cannot see the declared arg type.
+    {
+        LPXLOPER12 argsA[1] = {&uA.op};
+        LPXLOPER12 argsB[1] = {&uB.op};
+        std::vector<LPXLOPER12> va(argsA, argsA + 1);
+        std::vector<LPXLOPER12> vb(argsB, argsB + 1);
+        Check(xll::MakeCacheKey("UnionFn", va) != xll::MakeCacheKey("UnionFn", vb),
+              "MakeCacheKey MUST separate two disjoint unions; a value-only key would serve "
+              "the result computed for a different union");
+    }
+
+    // (4) The identity fold has to be doing this on the RECTS, not on the area
+    //     COUNT: two unions with the same number of areas covering different cells
+    //     is the case a count-only fold would miss.
+    {
+        RefHolder twoAreas1(0x1234, {Rect(0, 0, 0, 0), Rect(5, 5, 5, 5)});
+        RefHolder twoAreas2(0x1234, {Rect(0, 0, 0, 0), Rect(6, 6, 6, 6)});
+        Check(xll::ContentHashToken('r', &twoAreas1.op) != xll::ContentHashToken('r', &twoAreas2.op),
+              "'r' token separates two 2-area unions differing in ONE rect (the fold covers "
+              "rects, not just the area count)");
+    }
+
+    XLOPER12 cellsA[2] = {Num(1.0), Num(2.0)};
+    XLOPER12 coercedA = Multi(1, 2, cellsA);
+    g_coerceResult = &coercedA;
+    xll::CacheManager::Instance().ClearRefCache();
+}
+
+// ---------------------------------------------------------------------------
 // 4c. an OVERSIZED reference must never be handed to xlCoerce
 // ---------------------------------------------------------------------------
 //
@@ -1100,6 +1192,7 @@ int main(int argc, char** argv) {
     TestRefArgs();
     TestIterativeCalcBypassesRefCache();
     TestRefIdentityInToken();
+    TestMultiAreaRefHasNoValueDigest();
     TestOversizedRefIsNotCoerced();
     TestConcurrentGetPut();
     TestConcurrentRefHash();

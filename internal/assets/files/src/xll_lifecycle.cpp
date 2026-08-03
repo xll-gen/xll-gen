@@ -313,13 +313,30 @@ namespace xll {
         //     DETACHED instead of waited on.
         //
         //     Why not the historical unconditional blocking join on the add-in-disable
-        //     path (review MED #3): MonitorProcess pops a MODAL MessageBoxW when it
-        //     finds the Go server dead (xll_launch.cpp), so a bare
-        //     g_monitorThread.join() there freezes Excel's STA until a human dismisses
-        //     that dialog. Bounded + detach removes the hang; the detach's own hazard
-        //     (running inside an image Excel unmaps right after OnDisconnection
-        //     returns) is covered by pinning below, which is why that is not a
-        //     regression of the bug this change fixes.
+        //     path (review MED #3): a bare g_monitorThread.join() here can park the STA
+        //     for as long as MonitorProcess takes to return, and Excel is frozen for
+        //     every millisecond of it.
+        //
+        //     ATTENTION, because the ORIGINAL reason is now HISTORY and reading it as
+        //     current would invite deleting this whole mechanism: the trigger used to be
+        //     that MonitorProcess popped a MODAL MessageBoxW when it found the Go server
+        //     dead, so the join waited on a dialog only a human could dismiss -- an
+        //     unbounded park. That dialog was REMOVED on 2026-08-02 (xll_launch.cpp now
+        //     logs at ERROR instead, and says "NEVER put a modal dialog in here"), so if
+        //     you go looking for it you will not find it. DO NOT conclude the bound is
+        //     therefore obsolete and restore the blocking join:
+        //       * §20.2.1 rule 3 is UNCONDITIONAL - no teardown step may park, whatever
+        //         the reason it might park for. The dialog was one instance of the class,
+        //         not the class.
+        //       * MonitorProcess still does bounded-but-real work before it returns
+        //         (WaitForSingleObject on the child, reading up to 1 KB of log tail),
+        //         and it can still be blocked by a slow or hung filesystem.
+        //       * A future edit can reintroduce a long-running step there. The bound
+        //         makes that a leak instead of a frozen Excel.
+        //     Bounded + detach removes the hang; the detach's own hazard (running inside
+        //     an image Excel unmaps right after OnDisconnection returns) is covered by
+        //     pinning below, which is why that is not a regression of the bug this
+        //     change fixes.
         const bool workerOut  = xll::WaitForWorkerExit(kThreadReapBudgetMs);
         const bool monitorOut = WaitForMonitorExit(kThreadReapBudgetMs);
 
@@ -993,7 +1010,11 @@ void xll::RunDestructiveTeardown() {
         // it, that thread is still parked on them; closing them under it lets the
         // handle VALUES be recycled by an unrelated object, whose signalling wakes
         // the monitor into the WAIT_OBJECT_0 branch and a GetExitCodeProcess on a
-        // foreign handle -> a modal MessageBoxW("Server Crash") during shutdown.
+        // FOREIGN handle -> a bogus "the server died" crash report, emitted during
+        // shutdown, about a process that never crashed. (Until 2026-08-02 that report
+        // was a modal MessageBoxW, which is why older notes describe this as a dialog;
+        // it is a native-log ERROR now. The handle-recycling defect is unchanged --
+        // only how loudly it lies.)
         // Leaking two handles is the strictly better trade, and it is the same
         // treatment DllMain's DETACH backstop already documents for this pair
         // (one-session leak; the OS reclaims them at process exit, §20.2).

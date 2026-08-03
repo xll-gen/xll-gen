@@ -263,9 +263,16 @@ void ArmConnectRetry() {
         if (armRc != xlretSuccess) {
             // Nothing is in flight — un-latch so a later xlAutoOpen may retry.
             g_ribbonRetryArmed.store(false, std::memory_order_release);
-            SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=" +
-                          std::to_string(armRc) + "); falling back to the calc-end retry only, so the "
-                          "ribbon tab may be delayed until the first recalculation.");
+            if (armRc == xll::kOnTimeNotScheduledTeardown) {
+                // Not a failure: the scheduler declined because teardown had
+                // already started. Warning here would describe a broken retry
+                // chain during an orderly shutdown. DEBUG keeps it traceable.
+                SAFE_LOG_DEBUG("Ribbon: OnTime connect retry not armed — teardown already started.");
+            } else {
+                SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc=" +
+                              std::to_string(armRc) + "); falling back to the calc-end retry only, so the "
+                              "ribbon tab may be delayed until the first recalculation.");
+            }
         }
     }
 }
@@ -321,9 +328,17 @@ void RunConnectRetryTick() {
     int reArmRc = xll::ScheduleOnTimeMacro(xll::RibbonConnectRetryMacroName(), nextDelaySec);
     if (reArmRc != xlretSuccess) {
         g_ribbonRetryArmed.store(false, std::memory_order_release);
-        SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=" +
-                      std::to_string(reArmRc) + "); the retry chain ENDS here and the calc-end "
-                      "fallback remains the only trigger.");
+        if (reArmRc == xll::kOnTimeNotScheduledTeardown) {
+            // The tick's own TeardownStarted() gate passed at entry, but
+            // TryConnectRibbon pumps the STA message loop, so Excel can deliver
+            // OnBeginShutdown while this dispatch is mid-flight. Ending the chain
+            // is then the CORRECT outcome, not a failure to report.
+            SAFE_LOG_DEBUG("Ribbon: OnTime connect retry chain ends — teardown started during this tick.");
+        } else {
+            SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc=" +
+                          std::to_string(reArmRc) + "); the retry chain ENDS here and the calc-end "
+                          "fallback remains the only trigger.");
+        }
     }
 }
 

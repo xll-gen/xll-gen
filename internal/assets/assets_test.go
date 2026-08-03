@@ -282,6 +282,17 @@ func TestOnTimeMacroNameLiterals(t *testing.T) {
 //     `nowRc` — which is 0 there — rendering as "rc=0 (xlretSuccess)" and reading
 //     as if the call had worked. The returned xltype is logged alongside it,
 //     because that is the only thing distinguishing the two failure shapes.
+//
+// And one from 2026-08-03:
+//
+//  4. THE GATE RETURNS A SENTINEL, NOT xlretFailed. Guard (1) made the teardown
+//     no-op look exactly like a genuine Excel rejection, and guard (2) made
+//     callers shout about it — so an orderly shutdown that caught a pending
+//     ribbon connect logged "the retry chain ENDS here", a WARN describing a bug
+//     that was not happening, in the log an operator reads for the real ones.
+//     kOnTimeNotScheduledTeardown is negative, so it cannot collide with an
+//     xlret (all non-negative bit values) and a caller that forgets to
+//     special-case it still reads "not scheduled".
 func TestScheduleOnTimeMacroGuards(t *testing.T) {
 	m, err := Assets()
 	if err != nil {
@@ -309,7 +320,7 @@ func TestScheduleOnTimeMacroGuards(t *testing.T) {
 	// g_isUnloading false so DisconnectData keeps working) is just as certainly a
 	// leaked OnTime dispatch as one placed during Phase 2. Gating on g_isUnloading
 	// alone would let it through. See xll_lifecycle.h.
-	gate := "if (xll::TeardownStarted()) return xlretFailed;"
+	gate := "if (xll::TeardownStarted()) return kOnTimeNotScheduledTeardown;"
 	if !strings.Contains(body, gate) {
 		t.Errorf("ScheduleOnTimeMacro is missing its own §20 teardown self-gate (%q); "+
 			"as public API it must not be able to place an Excel C-API command during "+
@@ -317,6 +328,15 @@ func TestScheduleOnTimeMacroGuards(t *testing.T) {
 	} else if gi, ni := strings.Index(body, gate), strings.Index(body, "xll::CallExcel(xlfNow"); ni >= 0 && gi > ni {
 		t.Errorf("ScheduleOnTimeMacro's unload gate comes AFTER the xlfNow C-API call; "+
 			"it must precede every Excel call (gate@%d, xlfNow@%d)", gi, ni)
+	}
+	// (4) The gate must NOT report an Excel status. Reverting to xlretFailed is
+	//     the specific regression: it compiles, it still means "not scheduled",
+	//     and the only visible symptom is a misleading WARN on a path nobody
+	//     runs a unit test over.
+	if strings.Contains(body, "TeardownStarted()) return xlretFailed") {
+		t.Errorf("ScheduleOnTimeMacro's teardown gate returns xlretFailed again; a deliberate " +
+			"no-op must not be indistinguishable from an Excel rejection, because callers warn " +
+			"about rejections and that WARN then fires on every orderly shutdown")
 	}
 
 	// (2) Both failure paths warn; neither may be INFO.
@@ -338,5 +358,72 @@ func TestScheduleOnTimeMacroGuards(t *testing.T) {
 		t.Errorf("ScheduleOnTimeMacro's xlfNow failure log omits the returned xltype; when " +
 			"xlfNow SUCCEEDS but returns a non-numeric operand the line reads " +
 			"\"rc=0 (xlretSuccess)\" and is actively misleading")
+	}
+}
+
+// TestOnTimeTeardownSentinelContract pins the sentinel itself and both sides of
+// the distinction it exists to make (2026-08-03).
+//
+// The value has to be NEGATIVE, and that is not a style preference: every Excel12
+// xlret is a non-negative bit value (xlretSuccess 0, xlretAbort 1, ...,
+// xlretNotClusterSafe 512), so a non-negative sentinel could collide with a real
+// status as the SDK grows, and 0 in particular would read as SUCCESS — silently
+// converting "we refused to schedule" into "scheduled", which is how a caller
+// ends up believing a retry chain is alive after teardown killed it.
+func TestOnTimeTeardownSentinelContract(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+	hdr, ok := m["include/xll_deferred_commands.h"]
+	if !ok {
+		t.Fatalf("embedded include/xll_deferred_commands.h not found in assets")
+	}
+	if want := "constexpr int kOnTimeNotScheduledTeardown = -1;"; !strings.Contains(hdr, want) {
+		t.Errorf("xll_deferred_commands.h must declare the teardown sentinel as %q — a negative "+
+			"value cannot collide with any xlret, and 0 would read as xlretSuccess", want)
+	}
+
+	code, ok := m["src/ribbon_connect.cpp"]
+	if !ok {
+		t.Fatalf("embedded src/ribbon_connect.cpp not found in assets")
+	}
+	// Stripped so the rationale comments — which quote the very log levels and
+	// sentinel name being asserted, in the opposite arrangement to the code —
+	// cannot satisfy an assertion the code does not.
+	code = stripCppCommentsAsset(code)
+
+	// Both arm sites must branch on the sentinel BEFORE warning, and must keep a
+	// WARN for every other rc: a real Excel rejection still silently ends the
+	// chain and still has to be operator-visible. Losing either half defeats the
+	// fix — suppressing everything would hide genuine rejections, suppressing
+	// nothing restores the misleading shutdown WARN.
+	sentinelChecks := strings.Count(code, "xll::kOnTimeNotScheduledTeardown")
+	if sentinelChecks != 2 {
+		t.Errorf("ribbon_connect.cpp checks the teardown sentinel %d time(s), want 2 "+
+			"(ArmConnectRetry's initial arm and RunConnectRetryTick's re-arm); an unchecked "+
+			"site logs WARN during orderly shutdown", sentinelChecks)
+	}
+	for _, want := range []string{
+		// The real-rejection WARNs stay.
+		`SAFE_LOG_WARN("Ribbon: OnTime connect retry could not be armed (xlcOnTime rc="`,
+		`SAFE_LOG_WARN("Ribbon: OnTime connect retry could not re-arm (xlcOnTime rc="`,
+		// The teardown path is DEBUG, not WARN.
+		`SAFE_LOG_DEBUG("Ribbon: OnTime connect retry not armed`,
+		`SAFE_LOG_DEBUG("Ribbon: OnTime connect retry chain ends`,
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("ribbon_connect.cpp missing %q", want)
+		}
+	}
+
+	// Both sites still un-latch g_ribbonRetryArmed on ANY non-success, sentinel
+	// included: nothing is in flight either way, and a stuck latch would block a
+	// later xlAutoOpen from starting a fresh chain (the false-positive-shutdown
+	// then re-enable path v0.8.41 has to survive).
+	if got := strings.Count(code, "g_ribbonRetryArmed.store(false, std::memory_order_release);"); got != 2 {
+		t.Errorf("ribbon_connect.cpp un-latches g_ribbonRetryArmed %d time(s), want 2 — the "+
+			"un-latch must stay OUTSIDE the sentinel branch so a stuck latch cannot survive "+
+			"a teardown-suppressed arm", got)
 	}
 }

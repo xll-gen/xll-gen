@@ -125,6 +125,20 @@ inline const wchar_t* RibbonConnectRetryMacroName() {
     return L"__xllgen_RibbonConnectRetry";
 }
 
+// ScheduleOnTimeMacro's "not scheduled, and that is correct" sentinel: the
+// add-in is tearing down, so no xlcOnTime was placed and NOTHING is wrong.
+//
+// Deliberately negative. Every Excel12 xlret code is a non-negative bit value
+// (xlretSuccess == 0, xlretFailed == 32, ...), so this can never collide with a
+// status Excel itself produced, and a caller that forgets to special-case it
+// still sees "not success" rather than a silent success.
+//
+// Why a sentinel instead of re-checking the teardown flags in the caller after a
+// failure: the flags can latch between the gate and the re-check, so a re-check
+// answers "are we tearing down NOW", not "is this rc the gate's". The sentinel
+// answers the question actually being asked.
+constexpr int kOnTimeNotScheduledTeardown = -1;
+
 // Generic xlcOnTime scheduler for a registered macro, reusing this TU's xlret
 // decoding (XlretName) so a scheduling failure is diagnosable rather than
 // silent. Reads the current serial time via xlfNow, adds delaySeconds (Excel
@@ -137,10 +151,19 @@ inline const wchar_t* RibbonConnectRetryMacroName() {
 // CALLERS MUST INSPECT THE RETURN VALUE. Discarding it turns a rejected arm into
 // a silently dead chain that is indistinguishable from "still waiting".
 //
-// UNLOAD SELF-GATE (§20): returns xlretFailed WITHOUT touching Excel when
-// xll::g_isUnloading is set. This is structural, not a caller contract — the
-// function is public API and must not be able to place a C-API command during
-// teardown even if a future caller forgets its own gate.
+// UNLOAD SELF-GATE (§20): returns kOnTimeNotScheduledTeardown (NOT an xlret)
+// WITHOUT touching Excel when xll::TeardownStarted() holds — that is,
+// g_isUnloading OR g_isQuiescing, so a schedule placed in the teardown's Phase 1
+// is caught too. This is structural, not a caller contract: the function is
+// public API and must not be able to place a C-API command during teardown even
+// if a future caller forgets its own gate.
+//
+// The gate returned xlretFailed until 2026-08-03, which made an intentional
+// teardown no-op indistinguishable from a genuine Excel rejection, so callers
+// that (correctly) warn about a dead re-arm chain emitted an alarming WARN on
+// every normal shutdown that happened to catch a pending connect. This is not a
+// narrow race: TryConnectRibbon pumps the STA message loop, so Excel can deliver
+// OnBeginShutdown in the middle of a tick that then tries to re-arm.
 //
 // CONTEXT CONTRACT (LOAD-BEARING, AGENTS.md §23.6 HIGH #2): MUST be called from
 // a VALID command/macro context — xlAutoOpen, or an Excel-dispatched macro

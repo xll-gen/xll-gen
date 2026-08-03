@@ -146,7 +146,13 @@ int ScheduleOnTimeMacro(const wchar_t* macroName, double delaySeconds) {
         // and local to the API rather than an unenforced caller contract.
         // TeardownStarted(): a schedule placed during Phase 1 (quiescing) is just
         // as certainly a leaked OnTime dispatch as one placed during Phase 2.
-        if (xll::TeardownStarted()) return xlretFailed;
+        //
+        // The sentinel, not xlretFailed: this is a DELIBERATE no-op, and callers
+        // legitimately warn when a re-arm fails because that silently ends their
+        // chain. Reporting it as an Excel rejection made normal shutdown log
+        // "the retry chain ENDS here" — a WARN that describes a bug that is not
+        // happening, on the exact path where the log is being read for real ones.
+        if (xll::TeardownStarted()) return kOnTimeNotScheduledTeardown;
         if (!macroName) return xlretFailed;
         ScopedXLOPER12Result xNow;
         int nowRc = xll::CallExcel(xlfNow, xNow);

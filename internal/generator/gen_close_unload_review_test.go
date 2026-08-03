@@ -19,7 +19,9 @@ import (
 // it, that thread is still parked on them, so Phase 2 closing them lets the handle
 // VALUES be recycled by an unrelated object; its signalling then wakes the monitor
 // into the WAIT_OBJECT_0 branch and a GetExitCodeProcess on a foreign handle, whose
-// visible end is a modal MessageBoxW("Server Crash") during shutdown. They must
+// visible end is a bogus "the server crashed" report during shutdown about a process
+// that never crashed. (That report was a modal MessageBoxW until 2026-08-02 and is a
+// native-log ERROR now; the handle-recycling defect is identical either way.) They must
 // therefore be gated on the SAME reap flag as `delete g_phost`. hJob is the exception:
 // closing it IS the server reap (KILL_ON_JOB_CLOSE) and nothing waits on it.
 func TestCloseUnloadPhase2HandleGating(t *testing.T) {
@@ -65,9 +67,17 @@ func TestCloseUnloadPhase2HandleGating(t *testing.T) {
 //
 // The no-park rule (§20.2.1 rule 3) is UNCONDITIONAL, so both paths use the bounded,
 // exit-flag-first reap. The add-in-DISABLE path cannot keep the historical
-// unconditional blocking join, because MonitorProcess pops a MODAL MessageBoxW when it
-// finds the Go server dead (xll_launch.cpp) and a bare g_monitorThread.join() would
-// then freeze Excel's STA until a human dismisses it.
+// unconditional blocking join: a bare g_monitorThread.join() parks the STA for however
+// long MonitorProcess takes to return, and Excel is frozen for all of it.
+//
+// The historical trigger was that MonitorProcess popped a MODAL MessageBoxW on finding
+// the Go server dead, making that park unbounded. That dialog was REMOVED on 2026-08-02
+// (xll_launch.cpp logs at ERROR now). This test still stands, and the assertion below is
+// deliberately about the SHAPE of the reap rather than about the dialog: rule 3 forbids
+// parking whatever the reason, MonitorProcess still does real bounded work (waiting on
+// the child, reading a log tail) that a hung filesystem can stretch, and a future edit
+// can add a slow step back. Anyone who deletes the bound because "there is no dialog
+// any more" has read a historical rationale as a current one.
 //
 // The detach that a budget miss falls back to would, on THAT path, leave a thread
 // running inside an image Excel unmaps as soon as OnDisconnection returns — so a miss
@@ -94,8 +104,8 @@ func TestCloseUnloadDisablePathBoundedReapAndPin(t *testing.T) {
 	// `if (hostShutdown)`.
 	if strings.Contains(bq, "if (hostShutdown) {") {
 		t.Errorf("the reap must be bounded on BOTH paths — §20.2.1 rule 3 is unconditional, and an "+
-			"unconditional blocking join on the disable path freezes the STA behind MonitorProcess's "+
-			"modal MessageBox\n---\n%s", bq)
+			"unconditional blocking join on the disable path parks Excel's STA for as long as "+
+			"MonitorProcess takes to return\n---\n%s", bq)
 	}
 	for _, want := range []string{
 		"xll::WaitForWorkerExit(kThreadReapBudgetMs)",
