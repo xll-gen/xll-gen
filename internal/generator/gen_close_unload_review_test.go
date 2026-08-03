@@ -201,9 +201,17 @@ func TestCloseUnloadDrainsFeedReapFlag(t *testing.T) {
 	if e := strings.Index(body, "std::thread("); e > 0 {
 		body = body[:e]
 	}
-	if !strings.Contains(body, "if (xll::TeardownStarted()) return;") {
+	// The gate is a BLOCK since 2026-08-03 (it also reports post-teardown use —
+	// backlog line 134/191, pinned by lifecycle_post_teardown_cpp_test.go), so
+	// assert the gate and its refusal separately rather than one literal statement.
+	// What must hold is unchanged: the refusal happens BEFORE the thread exists.
+	gate := strings.Index(body, "if (xll::TeardownStarted())")
+	if gate < 0 {
 		t.Errorf("SendCommandInvoke must refuse to spawn its detached sender once a teardown has "+
 			"started, BEFORE the thread exists\n---\n%s", body)
+	} else if !strings.Contains(body[gate:], "return;") {
+		t.Errorf("SendCommandInvoke's teardown gate must RETURN (refuse), not fall through\n---\n%s",
+			body[gate:])
 	}
 }
 

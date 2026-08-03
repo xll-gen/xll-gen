@@ -299,6 +299,34 @@ namespace xll {
     // thread (§23.6 Stage-4 remediation, 2026-06-17).
     void SetRtdServerTerminated();
 
+    // Reports, ONCE per session, that something called into the add-in AFTER the
+    // destructive teardown completed — i.e. Excel is demonstrably still alive
+    // (it just called us) but g_phost and the Go server are gone.
+    //
+    // WHY THIS EXISTS (backlog line 134/191, 2026-08-03). "Confirmed shutdown" is a
+    // promise about the ADD-IN's shutdown, not the PROCESS's, and it CANNOT be
+    // narrowed to "confirmed AND actually exiting": the only authoritative
+    // discriminator in the process is `lpReserved` at DLL_PROCESS_DETACH, which
+    // arrives strictly after every point at which the distinction could be acted on
+    // (Phase 2 has already deleted g_phost and closed hJob, and DETACH runs under
+    // the loader lock where nothing may be undone). Two reachable ways into this
+    // state, both measured:
+    //   * `Application.Quit()` from a COM client that KEEPS its `Application`
+    //     reference: OnBeginShutdown is delivered, the teardown runs to completion,
+    //     and EXCEL.EXE survives (8/8).
+    //   * unticking the COM Add-ins box: OnDisconnection(ext_dm_UserClosed) drives
+    //     the FULL destructive Phase 2 while the XLL stays LOADED and its UDFs stay
+    //     REGISTERED. The user turned off a ribbon and lost the whole add-in.
+    // Either way every UDF then hits its `g_phost == nullptr` guard and returns
+    // #VALUE! for the rest of the session — SILENTLY. That silence is the defect
+    // this function fixes; the recovery is to reload the add-in.
+    //
+    // CALL IT ONLY from a null-host guard on the STA (the generated UDF wrappers,
+    // RtdServer::ConnectData's entry gate, SendCommandInvoke's entry gate). It logs
+    // through LogTeardownWarn, so the same call-site restriction applies: never
+    // from DllMain, never from a detached thread.
+    void ReportPostTeardownUse(const char* site);
+
     // §23.6 host-shutdown teardown gate (remediation 2026-06-18). Returns true ONLY
     // when a CONFIRMED real host shutdown is in progress — i.e. GracefulTeardownOnce
     // ran its isHostShutdown Phase-1 branch (the unique real-quit signal). Reset to

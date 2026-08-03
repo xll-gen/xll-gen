@@ -135,9 +135,28 @@ extern "C" {
     __declspec(dllexport) HRESULT __stdcall DllRegisterServer() {
         return rtd::RegisterServer(g_hModule, GetRtdClsid(), g_szProgID, g_szFriendlyName);
     }
+    
 
+    // The documented UNINSTALL entry point (regsvr32 /u), and — since 2026-08-03 —
+    // the ONLY place the ribbon's Excel Addins key is removed. The graceful
+    // teardown used to delete it on every confirmed shutdown, which meant an
+    // add-in DISABLE also deleted the COM Add-ins dialog row the user needs to
+    // re-enable us (backlog line 120); that key's lifetime is INSTALLED, not
+    // SESSION. See GracefulComTeardownHook step (1a).
+    //
+    // Emitted for a RIBBON project too, not just an RTD one: without it a
+    // ribbon-only project would have no removal point at all and the row would be
+    // permanent per ProgID. There is deliberately no ribbon half of
+    // DllRegisterServer — the ribbon self-registers at xlAutoOpen inside
+    // TryConnectRibbon, whose friendly-name/description literals are published
+    // through xll::ribbon::ConnectContext; duplicating them here would be a
+    // drift hazard for no gain.
+    
     __declspec(dllexport) HRESULT __stdcall DllUnregisterServer() {
+        
+        
         return rtd::UnregisterServer(GetRtdClsid(), g_szProgID);
+        
     }
     
 }
@@ -1669,6 +1688,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncStr(LPXLOPER12 s) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncStr");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -1847,6 +1874,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncInt(int32_t i) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncInt");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -2012,6 +2047,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncFloat(double f) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncFloat");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -2177,6 +2220,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncBool(short b) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncBool");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -2342,6 +2393,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncAny(LPXLOPER12 a) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncAny");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -2506,6 +2565,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncGrid(LPXLOPER12 g) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncGrid");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -2697,6 +2764,14 @@ extern "C" __declspec(dllexport) FP12* __stdcall SyncNumGrid(FP12* ng) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncNumGrid");
         
         // FP12* (K%) functions cannot return an XLOPER12 sentinel; a null
         // FP12* is the established error convention (NumGridToFP12's own
@@ -2851,6 +2926,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncRange(LPXLOPER12 r) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncRange");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -3019,6 +3102,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncDate(double d) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncDate");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -3189,6 +3280,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncMulti(LPXLOPER12 s, in
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncMulti");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -3461,6 +3560,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall SyncCachedGrid(LPXLOPER12 
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("SyncCachedGrid");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -3632,6 +3739,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall CallerMacroRange(LPXLOPER1
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("CallerMacroRange");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -3830,6 +3945,14 @@ extern "C" __declspec(dllexport) void __stdcall AsyncStr(LPXLOPER12 s, LPXLOPER1
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("AsyncStr");
         
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
@@ -3929,6 +4052,14 @@ extern "C" __declspec(dllexport) void __stdcall AsyncInt(int32_t i, LPXLOPER12 a
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("AsyncInt");
         
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
@@ -4027,6 +4158,14 @@ extern "C" __declspec(dllexport) void __stdcall AsyncGrid(LPXLOPER12 g, LPXLOPER
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("AsyncGrid");
         
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
@@ -4157,6 +4296,14 @@ extern "C" __declspec(dllexport) void __stdcall AsyncNumGrid(FP12* ng, LPXLOPER1
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("AsyncNumGrid");
         
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
@@ -4256,6 +4403,14 @@ extern "C" __declspec(dllexport) void __stdcall AsyncAny(LPXLOPER12 a, LPXLOPER1
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("AsyncAny");
         
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.
@@ -4355,6 +4510,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdScalars(int32_t i, LPXL
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("RtdScalars");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -4474,6 +4637,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdComposite(LPXLOPER12 g,
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("RtdComposite");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -4679,6 +4850,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall RtdRangeAny(LPXLOPER12 r, 
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("RtdRangeAny");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -4875,6 +5054,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceScalar(int32_t i, doub
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("OnceScalar");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -5012,6 +5199,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceGrid(LPXLOPER12 s) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("OnceGrid");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -5187,6 +5382,14 @@ extern "C" __declspec(dllexport) FP12* __stdcall OnceNumGrid(LPXLOPER12 s) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("OnceNumGrid");
         
         // FP12* (K%) functions cannot return an XLOPER12 sentinel; a null
         // FP12* is the established error convention (NumGridToFP12's own
@@ -5354,6 +5557,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceComposite(LPXLOPER12 g
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("OnceComposite");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -5748,6 +5959,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceMemoize(int32_t i) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("OnceMemoize");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the
@@ -5874,6 +6093,14 @@ extern "C" __declspec(dllexport) LPXLOPER12 __stdcall OnceTTL(int32_t i) {
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("OnceTTL");
         
         // Sync (scalar/grid), RTD and scalar/grid rtd-once wrappers all return
         // LPXLOPER12; surface the shared error sentinel, identical to the

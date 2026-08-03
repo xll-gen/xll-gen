@@ -127,6 +127,46 @@ namespace xll {
         return g_hostShutdownTeardownArmed.load(std::memory_order_acquire);
     }
 
+    // POST-TEARDOWN USE reporter — see the contract in xll_lifecycle.h for the two
+    // measured ways into this state and for why the "confirmed shutdown" signal set
+    // cannot be narrowed instead (AGENTS.md §20.3 point 3).
+    //
+    // TWO THINGS HERE ARE THE FIX, and both look like details:
+    //
+    // 1. LogTeardownWarn, NOT LogWarn / SAFE_LOG_WARN. Phase 2 latches g_isUnloading
+    //    as its FIRST act and LogInfo/LogWarn/LogError all short-circuit on it
+    //    (§20.2.1 rule 4); SAFE_LOG_* wrap those same functions behind the same
+    //    flag, so a report routed through them is double-suppressed — invisible in
+    //    exactly the state it describes. Do not "restore consistency" here.
+    // 2. The one-shot CAS. The call sites are per-CELL null-host guards; a
+    //    recalculated sheet would otherwise write one line per cell per recalc.
+    //
+    // THREAD CONTEXT / COST. Called from a WORKSHEET-FUNCTION context on the STA.
+    // LogTeardownWarn takes g_logMutex (a std::timed_mutex with a bounded 50 ms
+    // wait), so the worst case is one cell's evaluation delayed <=50 ms, ONCE per
+    // session. Do NOT "improve" that to try_lock: try_lock drops the line under
+    // ordinary microsecond contention, which is how this fix would silently become
+    // a no-op again.
+    //
+    // It REPORTS and nothing else. Resurrecting the session (PrepareForFreshLoad +
+    // relaunch + StartWorker + a new notify window) is a separate design that must
+    // refuse on kUnrecoverable, refuse while g_isQuiescing is latched, and be bounded
+    // to one resurrection per session; it needs its own sign-off.
+    void ReportPostTeardownUse(const char* site) {
+        static std::atomic<bool> s_reported(false);
+        bool expected = false;
+        if (!s_reported.compare_exchange_strong(expected, true)) return;
+        LogTeardownWarn(std::string("POST-TEARDOWN USE at ") + (site ? site : "?") +
+                        ": the add-in was torn down by a CONFIRMED-shutdown signal, but Excel is still "
+                        "alive — it just called us. The likeliest causes are Application.Quit() from a "
+                        "COM client that holds the Application reference (OnBeginShutdown is delivered, "
+                        "Excel does not exit) and unticking this add-in in File > Options > Add-Ins > COM "
+                        "Add-Ins (which drives the same destructive teardown while the XLL stays loaded "
+                        "and its functions stay registered). The host and the server are gone, so every "
+                        "function will return #VALUE! for the rest of this session; reload the add-in to "
+                        "recover. Logged once per session.");
+    }
+
     // Phase-2 single-shot guard. The destructive teardown (RunDestructiveTeardown,
     // below) may be reached from TWO sites: RtdServer::ServerTerminate on the STA
     // (host-shutdown deferred path), and GracefulTeardownOnce itself synchronously

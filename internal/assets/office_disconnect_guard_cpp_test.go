@@ -184,3 +184,124 @@ func TestOnDisconnectionMarksOfficeDisconnectBeforeTeardown(t *testing.T) {
 		t.Errorf("DisconnectDepthGuard must fetch_add on construction and fetch_sub on destruction\n---\n%s", gBody)
 	}
 }
+
+// TestOnConnectionRefusesWithoutConnectContext pins the HAZARD GUARD that backlog
+// line 120's fix opens (2026-08-03).
+//
+// That fix stopped the graceful teardown from deleting
+// HKCU\Software\Microsoft\Office\Excel\Addins\<progId> and the ribbon's HKCU COM
+// registration, so the COM Add-ins dialog row and a live InprocServer32 now
+// SURVIVE the session that created them. That is the whole point — a user who
+// unticks the box has to be able to tick it back — but it also means Office can
+// COM-activate RibbonAddIn in a session where xlAutoOpen NEVER RAN: no ribbon XML,
+// no images, no SHM host, no Go server. LoadBehavior stays 0 so nothing autoloads
+// at startup, but one tick in the dialog is enough to get there.
+//
+// OnConnection was a bare `return S_OK`, so that tick produced a half add-in that
+// looks connected and does nothing. It must now consult
+// xll::ribbon::ConnectContextPublished() and REFUSE — a clean failure Office can
+// report, instead of a silent zombie.
+//
+// A BRANCH-STRUCTURE assert, like its neighbour above and for the same reason: a
+// substring check for "ConnectContextPublished" would stay green if the refusal
+// were softened back to S_OK.
+func TestOnConnectionRefusesWithoutConnectContext(t *testing.T) {
+	m, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets(): %v", err)
+	}
+
+	// --- The predicate must be declared in the connect header (its definition is
+	//     the file-static ContextReady in src/ribbon_connect.cpp). ---
+	hdr, ok := m["include/com/ribbon_connect.h"]
+	if !ok {
+		t.Fatalf("embedded asset include/com/ribbon_connect.h not found")
+	}
+	if !strings.Contains(stripCppCommentsAsset(hdr), "bool ConnectContextPublished();") {
+		t.Errorf("com/ribbon_connect.h must declare bool ConnectContextPublished() — the readiness " +
+			"predicate RibbonAddIn::OnConnection refuses on")
+	}
+
+	cpp, ok := m["src/ribbon_connect.cpp"]
+	if !ok {
+		t.Fatalf("embedded asset src/ribbon_connect.cpp not found")
+	}
+	cppCode := stripCppCommentsAsset(cpp)
+	defIdx := strings.Index(cppCode, "bool ConnectContextPublished()")
+	if defIdx < 0 {
+		t.Fatalf("src/ribbon_connect.cpp must define ConnectContextPublished()")
+	}
+	// It must be the EXISTING readiness check, not a second, drifting copy of the
+	// field list.
+	defBody := cppCode[defIdx:]
+	if e := strings.Index(defBody, "\n}"); e > 0 {
+		defBody = defBody[:e]
+	}
+	if !strings.Contains(defBody, "ContextReady(") {
+		t.Errorf("ConnectContextPublished() must delegate to the file-static ContextReady() — a second "+
+			"hand-written field list would drift from ConnectContext\n---\n%s", defBody)
+	}
+
+	src, ok := m["src/ribbon_addin.cpp"]
+	if !ok {
+		t.Fatalf("embedded asset src/ribbon_addin.cpp not found")
+	}
+	code := stripCppCommentsAsset(src)
+
+	ocIdx := strings.Index(code, "HRESULT __stdcall RibbonAddIn::OnConnection(")
+	if ocIdx < 0 {
+		t.Fatalf("RibbonAddIn::OnConnection not found in ribbon_addin.cpp")
+	}
+	body := code[ocIdx:]
+	if e := strings.Index(body, "HRESULT __stdcall RibbonAddIn::OnDisconnection("); e > 0 {
+		body = body[:e]
+	}
+
+	gateIdx := strings.Index(body, "xll::ribbon::ConnectContextPublished()")
+	if gateIdx < 0 {
+		t.Fatalf("RibbonAddIn::OnConnection must consult xll::ribbon::ConnectContextPublished(). "+
+			"Without it, ticking the COM Add-ins row (which now SURVIVES a disable, by design) in a "+
+			"session where xlAutoOpen never ran COM-activates a half add-in: no ribbon XML, no host, "+
+			"no server\n---\n%s", body)
+	}
+	// The refusal must be a FAILURE hresult, and it must be reached from the
+	// not-published branch — i.e. it precedes the success return.
+	failIdx := strings.Index(body, "E_FAIL")
+	okIdx := strings.Index(body, "return S_OK;")
+	if failIdx < 0 {
+		t.Errorf("OnConnection must return a FAILURE HRESULT (E_FAIL) when the context was never "+
+			"published — returning S_OK is exactly the half-add-in this guard exists to refuse\n---\n%s", body)
+	}
+	if okIdx < 0 {
+		t.Errorf("OnConnection must still return S_OK on the normal path\n---\n%s", body)
+	}
+	if failIdx >= 0 && okIdx >= 0 && failIdx > okIdx {
+		t.Errorf("the E_FAIL refusal must precede the success return (fail@%d ok@%d): a refusal after "+
+			"`return S_OK` is dead code\n---\n%s", failIdx, okIdx, body)
+	}
+	if !strings.Contains(body, "SAFE_LOG_WARN") {
+		t.Errorf("the refusal must log once at WARN, or a user who ticked the box gets a silent "+
+			"no-op with nothing to diagnose\n---\n%s", body)
+	}
+
+	// The late-bound IDispatch path must not bypass the refusal: Invoke used to
+	// blanket-return S_OK for all five extensibility DISPIDs, OnConnection
+	// included. A host that late-binds would then connect regardless.
+	invIdx := strings.Index(code, "HRESULT __stdcall RibbonAddIn::Invoke(")
+	if invIdx < 0 {
+		t.Fatalf("RibbonAddIn::Invoke not found")
+	}
+	inv := code[invIdx:]
+	if e := strings.Index(inv, "\n}\n"); e > 0 {
+		inv = inv[:e]
+	}
+	extIdx := strings.Index(inv, "kDispIdExtBase")
+	if extIdx < 0 {
+		t.Fatalf("Invoke must still handle the late-bound extensibility DISPIDs\n---\n%s", inv)
+	}
+	if !strings.Contains(inv, "OnConnection(") {
+		t.Errorf("Invoke must route the late-bound OnConnection DISPID to OnConnection() rather than "+
+			"blanket-returning S_OK, or a host that late-binds _IDTExtensibility2 bypasses the "+
+			"ConnectContextPublished() refusal entirely\n---\n%s", inv)
+	}
+}

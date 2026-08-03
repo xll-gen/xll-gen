@@ -86,6 +86,51 @@ func TestRegtestCMakePinsMatchVersions(t *testing.T) {
 	}
 }
 
+// TestGoModPinsMatchVersions guards xll-gen's OWN go.mod against drift from
+// internal/versions/versions.go. This is the 7th shared-dependency pin location
+// (AGENTS.md §18.2), and until 2026-08-03 it was the only one with no gate.
+//
+// It had already drifted. versions.go said shm v0.8.20 while go.mod said v0.8.18:
+// the shm v0.8.19 and v0.8.20 releases bumped the C++ pin and left the Go one
+// behind. History shows the two used to move together (v0.8.15 → v0.8.16 →
+// v0.8.18 in lockstep), so this was an omission, not a policy.
+//
+// WHY IT MATTERS, given that generated projects were unaffected: MVS picks the
+// higher version for a generated project (the showcase pins shm directly), so the
+// PRODUCT was fine. What was not fine is that xll-gen's own test suite compiled
+// pkg/server and pkg/rtd against the OLDER shm — precisely the packages that
+// import shm/go — so a Go-API regression introduced by shm v0.8.19/v0.8.20 could
+// not have been caught here. A stale pin in a test-only position is still a hole
+// in the thing the tests are for.
+//
+// sugar is deliberately NOT checked: versions.go does not carry a sugar pin (it
+// feeds C++ FetchContent tags, and sugar is Go-only), so go.mod is its single
+// source of truth and there is nothing to drift from.
+func TestGoModPinsMatchVersions(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	for repo, want := range map[string]string{
+		"shm":   versions.SHM,
+		"types": versions.Types,
+	} {
+		re := regexp.MustCompile(`github\.com/xll-gen/` + regexp.QuoteMeta(repo) + `\s+(v\S+)`)
+		m := re.FindStringSubmatch(content)
+		if len(m) < 2 {
+			t.Errorf("could not find the %s requirement in go.mod", repo)
+			continue
+		}
+		if got := m[1]; got != want {
+			t.Errorf("go.mod pins %s %s but versions.go pins %s — xll-gen's own packages would be "+
+				"built and TESTED against a different version than generated projects get "+
+				"(AGENTS.md §18.2)", repo, got, want)
+		}
+	}
+}
+
 // TestDoctorCMakeMinMatchesTemplate guards doctor's CMake floor against the
 // floor the generated project actually demands. `doctor` exists to block BEFORE
 // the build does; when minCMakeVersion sits below the template's

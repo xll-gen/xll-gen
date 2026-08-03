@@ -113,8 +113,12 @@ func TestRibbonConnectHeaderContract(t *testing.T) {
 		// neither, so the defaults are part of the contract).
 		"bool TryConnectRibbon(const char* phase, bool allowBounce = false,",
 		"RibbonAttempt* pOutcome = nullptr);",
-		// The disconnect half the graceful teardown hook calls, same defaults.
-		"bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allowBounce = false);",
+		// The disconnect half the graceful teardown hook calls, same defaults. The
+		// pFault out-param (2026-08-03, backlog line 121) is defaulted for the same
+		// reason: the teardown hook's SetRibbonConnected(false) passes neither it
+		// nor pNoApp.
+		"bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allowBounce = false,",
+		"RibbonConnectFault* pFault = nullptr);",
 		// The outcome classes are an enum class: a bool cannot express the third,
 		// UNCHARGEABLE class, which is the whole point of the 2026-07-26 fix.
 		"enum class RibbonAttempt {",
@@ -357,7 +361,7 @@ func TestRibbonConnectOutcomeClassification(t *testing.T) {
 	// kRejected must be classified at the site that actually RAN the Connect:
 	// after SetRibbonConnected returned false and after the noApp early return.
 	// Anything earlier re-introduces the mis-billing.
-	connectIdx := strings.Index(code, "if (SetRibbonConnected(true, &noApp, allowBounce)) {")
+	connectIdx := strings.Index(code, "if (SetRibbonConnected(true, &noApp, allowBounce, &fault)) {")
 	noAppIdx := strings.Index(code, "if (pOutcome) *pOutcome = RibbonAttempt::kNoApp;")
 	rejectedIdx := strings.Index(code, "if (pOutcome) *pOutcome = RibbonAttempt::kRejected;")
 	reentryIdx := strings.Index(code, "if (!s_inConnect.compare_exchange_strong(expected, true)) return false;")
@@ -748,5 +752,241 @@ func TestRibbonConnectContextReadyIsTerminal(t *testing.T) {
 	if !strings.Contains(ready, "g_ctx.hModule") {
 		t.Errorf("ContextReady does not check hModule; an unwired module handle would "+
 			"silently register EXCEL.EXE as the ribbon InprocServer32:\n%s", ready)
+	}
+}
+
+// TestRibbonConnectFaultClassification pins STAGE A of backlog line 121 — "ribbon
+// COM connect fails sporadically (~3/20 starts)".
+//
+// The item asks whether that is fixable in code. It was UNKNOWABLE FROM THE REPO,
+// and that was itself the defect: SetRibbonConnected collapsed THREE distinct
+// failures into one bare `false` and discarded every HRESULT.
+//
+//	(i)   Application.COMAddIns unreadable / not VT_DISPATCH
+//	(ii)  COMAddIns.Item(progId) failed — Excel does not list our ProgID at all.
+//	      Not racy: persistent for the session.
+//	(iii) the Connect PROPERTYPUT was rejected — the only genuine Office refusal
+//	      (Trust Center "Disable all Application Add-ins", or the ProgID sitting in
+//	      Excel's Resiliency\DisabledItems after an earlier crash).
+//
+// Three faults with completely different causes and completely different fixes,
+// reported identically. Until they are separable there is nothing to decide.
+//
+// BRANCH-STRUCTURE asserts, not behavioural ones: this is COM, so there is no
+// unit-testable surface (same discipline, and same reason, as
+// office_disconnect_guard_cpp_test.go — a substring assert stayed GREEN there with
+// a whole guard removed).
+func TestRibbonConnectFaultClassification(t *testing.T) {
+	t.Parallel()
+	hdr, code := ribbonConnectSources(t)
+
+	// --- The fault class is a NAMED type in the header, beside RibbonAttempt. ---
+	for _, want := range []string{
+		"enum class RibbonConnectFault {",
+		"kNoComAddInsProperty",
+		"kProgIdNotInCollection",
+		"kConnectPutRejected",
+		"RibbonConnectFault* pFault = nullptr);",
+	} {
+		if !strings.Contains(hdr, want) {
+			t.Errorf("include/com/ribbon_connect.h missing %q — the three connect failures must be "+
+				"separable by NAME, not by reading a bool", want)
+		}
+	}
+
+	// --- SetRibbonConnected: each COM step's HRESULT captured, each fault named. ---
+	scIdx := strings.Index(code, "bool SetRibbonConnected(bool connected")
+	if scIdx < 0 {
+		t.Fatalf("SetRibbonConnected definition not found")
+	}
+	sc := code[scIdx:]
+	if e := strings.Index(sc, "\nbool TryConnectRibbon("); e > 0 {
+		sc = sc[:e]
+	}
+
+	for _, want := range []string{
+		// The three HRESULTs, captured into locals rather than swallowed by
+		// SUCCEEDED(...) at the call site.
+		"hrAddins = xll::com::GetProperty(pApp, L\"COMAddIns\", &vAddins)",
+		"hrItem = xll::com::Invoke(vAddins.pdispVal, L\"Item\"",
+		"hrPut = xll::com::Invoke(vItem.pdispVal, L\"Connect\"",
+		// …and the three fault assignments.
+		"fault = RibbonConnectFault::kNoComAddInsProperty",
+		"fault = RibbonConnectFault::kProgIdNotInCollection",
+		"fault = RibbonConnectFault::kConnectPutRejected",
+	} {
+		if !strings.Contains(sc, want) {
+			t.Errorf("SetRibbonConnected missing %q\n---\n%s", want, sc)
+		}
+	}
+
+	// The MAPPING, not just the presence. The classification is a progressive
+	// narrowing -- `fault` starts at kNoComAddInsProperty and is downgraded to the next
+	// class only after the preceding COM call SUCCEEDED -- so which assignment sits
+	// between which calls IS the classification. Presence alone does not pin it:
+	// swapping kProgIdNotInCollection and kConnectPutRejected onto each other's branch
+	// left the earlier version of this test GREEN (verified), and that swap makes a
+	// ProgID missing from the collection report as "Office REJECTED the Connect
+	// property put" AND fire the registry sweep -- exactly the misdiagnosis this whole
+	// item exists to prevent.
+	order := []struct {
+		what  string
+		token string
+	}{
+		{"initial class (before any COM call)", "fault = RibbonConnectFault::kNoComAddInsProperty"},
+		{"the COMAddIns read", "hrAddins = xll::com::GetProperty"},
+		{"class after COMAddIns succeeded", "fault = RibbonConnectFault::kProgIdNotInCollection"},
+		{"the Item lookup", "hrItem = xll::com::Invoke"},
+		{"class after Item succeeded", "fault = RibbonConnectFault::kConnectPutRejected"},
+		{"the Connect put", "hrPut = xll::com::Invoke"},
+	}
+	prev := -1
+	prevWhat := ""
+	for _, step := range order {
+		at := strings.Index(sc, step.token)
+		if at < 0 {
+			continue // the presence loop above already reported it
+		}
+		if at < prev {
+			t.Errorf("classification out of order: %s (@%d) must come AFTER %s (@%d). The class is "+
+				"assigned by POSITION -- each one means \"everything before this point worked\" -- so "+
+				"a reordering silently mislabels a real failure\n---\n%s",
+				step.what, at, prevWhat, prev, sc)
+		}
+		prev, prevWhat = at, step.what
+	}
+
+	// The three HRESULTs must all reach the log line: naming the class without the
+	// HRESULT still leaves "why" unanswerable.
+	logIdx := strings.Index(sc, "SAFE_LOG_WARN")
+	if logIdx < 0 {
+		t.Fatalf("SetRibbonConnected must log the classified failure\n---\n%s", sc)
+	}
+	for _, want := range []string{"hrAddins", "hrItem", "hrPut"} {
+		if !strings.Contains(sc[logIdx:], want) {
+			t.Errorf("the diagnostic log must carry %s — a fault class with no HRESULT is still "+
+				"undiagnosable\n---\n%s", want, sc[logIdx:])
+		}
+	}
+
+	// --- THE GATE: the diagnostic must be inside `connected` ---
+	// SetRibbonConnected is ALSO the teardown-time DISCONNECT
+	// (GracefulComTeardownHook, inside Phase 1). That call runs on the STA in the
+	// ~80-100 ms window before Excel's FreeLibrary; adding registry reads and COM
+	// property gets there would be new work in exactly the window §20.2.1 exists to
+	// keep empty. Gating on the connect direction removes it entirely.
+	gateIdx := strings.Index(sc, "if (!ok && connected) {")
+	if gateIdx < 0 {
+		t.Fatalf("the whole diagnostic block must be gated on `if (!ok && connected)`: "+
+			"SetRibbonConnected(false) is the TEARDOWN disconnect, called from Phase 1, and must gain "+
+			"ZERO extra work\n---\n%s", sc)
+	}
+	if gateIdx > logIdx {
+		t.Errorf("the `connected` gate must PRECEDE the diagnostic log (gate@%d log@%d), or the "+
+			"teardown disconnect pays for it\n---\n%s", gateIdx, logIdx, sc)
+	}
+	// The environment dump is the most expensive part; it must be inside the same gate.
+	dumpIdx := strings.Index(sc, "DumpConnectEnvironmentOnce(")
+	if dumpIdx < 0 || dumpIdx < gateIdx {
+		t.Errorf("the one-shot environment dump must sit INSIDE the `connected` gate (gate@%d dump@%d)"+
+			"\n---\n%s", gateIdx, dumpIdx, sc)
+	}
+	// …and only for the one class that is a genuine Office refusal.
+	if !strings.Contains(sc[gateIdx:], "fault == RibbonConnectFault::kConnectPutRejected") {
+		t.Errorf("the environment dump must be reserved for kConnectPutRejected — the other two "+
+			"classes are not Office refusals and the dump would not explain them\n---\n%s", sc[gateIdx:])
+	}
+
+	// --- The dump is ONE-SHOT (atomic CAS) and READ-ONLY. ---
+	dIdx := strings.Index(code, "void DumpConnectEnvironmentOnce(")
+	if dIdx < 0 {
+		t.Fatalf("DumpConnectEnvironmentOnce definition not found")
+	}
+	dump := code[dIdx:]
+	if e := strings.Index(dump, "\n} // namespace"); e > 0 {
+		dump = dump[:e]
+	}
+	if !strings.Contains(dump, "compare_exchange_strong") {
+		t.Errorf("the environment dump must be latched by an atomic CAS: the connect retries up to 60 "+
+			"times, and 60 registry sweeps in the log is not a diagnostic\n---\n%s", dump)
+	}
+	// READ-ONLY is asserted over the WHOLE anonymous-namespace diagnostics block, not
+	// just over DumpConnectEnvironmentOnce's own body.
+	//
+	// The first version of this check scanned only from `void DumpConnectEnvironmentOnce(`
+	// onwards — but DescribeResiliencyDisabledItems, which does essentially ALL of the
+	// registry work (open, enumerate Office versions, enumerate values), is defined
+	// ABOVE it and therefore sat outside the scanned region. Verified hole: inserting
+	// RegSetValueExW into that helper left this test GREEN. The guard was scoped to the
+	// one part of the diagnostic that does not touch the registry.
+	// Delimited by BRACE MATCHING, not by a "} // namespace" marker: `code` has had its
+	// comments stripped, so that marker does not survive to be found. The first draft
+	// searched for it, silently failed to delimit, and had to be caught by re-running
+	// the mutation -- a reminder that a delimiter which can quietly not match turns an
+	// assertion into a no-op just as effectively as a wrong scope does.
+	diagStart := strings.Index(code, "namespace {")
+	if diagStart < 0 {
+		t.Fatalf("could not find the anonymous namespace opening the diagnostics block")
+	}
+	diagBlock := ""
+	{
+		depth := 0
+		for i := diagStart + len("namespace"); i < len(code); i++ {
+			if code[i] == '{' {
+				depth++
+			} else if code[i] == '}' {
+				depth--
+				if depth == 0 {
+					diagBlock = code[diagStart : i+1]
+					break
+				}
+			}
+		}
+	}
+	if diagBlock == "" {
+		t.Fatalf("unbalanced braces in the anonymous diagnostics namespace")
+	}
+	if !strings.Contains(diagBlock, "DescribeResiliencyDisabledItems") ||
+		!strings.Contains(diagBlock, "DumpConnectEnvironmentOnce") {
+		t.Fatalf("the scanned region must contain BOTH diagnostic helpers; if one moved out of the " +
+			"anonymous namespace this check silently stopped covering it")
+	}
+	for _, forbidden := range []string{"RegSetValue", "RegCreateKey", "RegDeleteKey", "RegDeleteTree"} {
+		if strings.Contains(diagBlock, forbidden) {
+			t.Errorf("the environment dump must be strictly READ-ONLY; found %q in the diagnostics "+
+				"block. A diagnostic that mutates the state it is diagnosing is worse than no "+
+				"diagnostic\n---\n%s", forbidden, diagBlock)
+		}
+	}
+	// The Office version segment must be ENUMERATED, not hard-coded: the Addins key
+	// we write is version-independent and this file must not acquire a second,
+	// silently-wrong Office-version assumption.
+	if strings.Contains(code, `Office\\16.0\\Excel`) {
+		t.Errorf("do not hard-code the Office version in the Resiliency probe — enumerate the " +
+			`subkeys of HKCU\Software\Microsoft\Office instead`)
+	}
+	if !strings.Contains(code, "RegEnumKeyExW") {
+		t.Errorf("the Resiliency probe must enumerate Office version subkeys (RegEnumKeyExW)")
+	}
+	if !strings.Contains(code, "DisabledItems") {
+		t.Errorf(`the environment dump must report Excel's Resiliency\DisabledItems state — an ` +
+			"earlier crash parking our ProgID there is the leading suspect for a rejected Connect")
+	}
+
+	// --- A2: the 60-attempt give-up line must name the DOMINANT class + its HRESULT. ---
+	capIdx := strings.Index(code, "Ribbon: COMAddIns connect failed after 60 attempts")
+	if capIdx < 0 {
+		t.Fatalf("the 60-attempt give-up log line is gone")
+	}
+	tail := code[capIdx:]
+	if e := strings.Index(tail, "\n    }"); e > 0 {
+		tail = tail[:e]
+	}
+	if !strings.Contains(tail, "Dominant fault") || !strings.Contains(tail, "FaultName(") {
+		t.Errorf("the give-up line must name the dominant fault class — an opaque \"failed after 60 "+
+			"attempts\" is the exact line that made this item unanswerable\n---\n%s", tail)
+	}
+	if !strings.Contains(tail, "HrToString(") {
+		t.Errorf("the give-up line must carry the dominant class's HRESULT\n---\n%s", tail)
 	}
 }

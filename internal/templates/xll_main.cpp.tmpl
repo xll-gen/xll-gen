@@ -195,9 +195,33 @@ extern "C" {
     __declspec(dllexport) HRESULT __stdcall DllRegisterServer() {
         return rtd::RegisterServer(g_hModule, GetRtdClsid(), g_szProgID, g_szFriendlyName);
     }
+    {{end}}
 
+    // The documented UNINSTALL entry point (regsvr32 /u), and — since 2026-08-03 —
+    // the ONLY place the ribbon's Excel Addins key is removed. The graceful
+    // teardown used to delete it on every confirmed shutdown, which meant an
+    // add-in DISABLE also deleted the COM Add-ins dialog row the user needs to
+    // re-enable us (backlog line 120); that key's lifetime is INSTALLED, not
+    // SESSION. See GracefulComTeardownHook step (1a).
+    //
+    // Emitted for a RIBBON project too, not just an RTD one: without it a
+    // ribbon-only project would have no removal point at all and the row would be
+    // permanent per ProgID. There is deliberately no ribbon half of
+    // DllRegisterServer — the ribbon self-registers at xlAutoOpen inside
+    // TryConnectRibbon, whose friendly-name/description literals are published
+    // through xll::ribbon::ConnectContext; duplicating them here would be a
+    // drift hazard for no gain.
+    {{if or .Rtd.Enabled .Ribbon.Enabled}}
     __declspec(dllexport) HRESULT __stdcall DllUnregisterServer() {
+        {{if .Ribbon.Enabled}}
+        rtd::UnregisterOfficeAddinKey(g_szRibbonProgID);
+        rtd::UnregisterServer(GetRibbonClsid(), g_szRibbonProgID);
+        {{end}}
+        {{if .Rtd.Enabled}}
         return rtd::UnregisterServer(GetRtdClsid(), g_szProgID);
+        {{else}}
+        return S_OK;
+        {{end}}
     }
     {{end}}
 }
@@ -268,8 +292,29 @@ static void GracefulComTeardownHook(bool revokeRtdClassObject) {
             CoRevokeClassObject(g_ribbonCookie);
             g_ribbonCookie = 0;
         }
-        rtd::UnregisterOfficeAddinKey(g_szRibbonProgID);
-        rtd::UnregisterServer(GetRibbonClsid(), g_szRibbonProgID);
+        // (1a) NO registry UNREGISTRATION here — deliberately (backlog line 120,
+        // 2026-08-03). This used to call rtd::UnregisterOfficeAddinKey +
+        // rtd::UnregisterServer for the ribbon, i.e. it RegDeleteTreeW'd
+        // HKCU\Software\Microsoft\Office\Excel\Addins\<progId> plus
+        // HKCU\Software\Classes\<progId> and CLSID\{...}\InprocServer32 on EVERY
+        // confirmed teardown — including the add-in-DISABLE teardown that the COM
+        // Add-ins dialog's own untick drives. That Addins key IS the dialog's row
+        // source, so unticking the box deleted the row the user needs to tick it
+        // back on, and the CLSID delete left even a row surviving from another hive
+        // with nothing to activate. The Addins key's lifetime is INSTALLED, not
+        // SESSION: TryConnectRibbon creates it with LoadBehavior=0 (so nothing
+        // autoloads at Excel startup — the key is inert until something connects
+        // it) and DllUnregisterServer, the documented uninstall entry point,
+        // removes it. Accepted cost: an uninstalled/moved XLL leaves a dialog row
+        // behind until DllUnregisterServer runs. The guard against a ticked stale
+        // row producing a half-initialised add-in is
+        // RibbonAddIn::OnConnection's xll::ribbon::ConnectContextPublished()
+        // refusal (src/ribbon_addin.cpp).
+        //
+        // Everything ABOVE this comment is the 2026-07-30 mso.dll NULL-vtable
+        // crash fix and its ORDER is load-bearing (AGENTS.md Confirmed-Correct
+        // Decisions, "Office add-in disconnect re-entrancy"); it must not be
+        // perturbed, not even reordered.
         // (1b) GDI+ down only after disconnect: loadImage callbacks arrive on
         // this same STA thread, so none can be in flight here. Created
         // pictures survive (plain GDI bitmaps, independent of GDI+).
@@ -1190,6 +1235,14 @@ extern "C" __declspec(dllexport) {{if eq .Mode "async"}}void{{else}}{{if and (is
     // the same error value the SHM-failure path returns. Mirrors the
     // g_isUnloading guard convention used in xll_worker.cpp / lifecycle.
     if (g_phost == nullptr) {
+        // A null host in a REGISTERED function means the destructive teardown
+        // already completed and Excel is nevertheless still calling us — the
+        // mid-session destruction of backlog line 134/191. Report it ONCE per
+        // session (the latch lives in the asset, because this guard is per-CELL)
+        // through the one logger g_isUnloading does not swallow. Without this the
+        // whole failure is silent: the native log ends at "Phase 2 EXIT" and every
+        // cell just shows #VALUE!. See xll::ReportPostTeardownUse.
+        xll::ReportPostTeardownUse("{{.Name}}");
         {{if eq .Mode "async"}}
         // Async UDFs return void; Excel was told the result would arrive via
         // xlAsyncReturn. With the host gone there is nothing to send — bail.

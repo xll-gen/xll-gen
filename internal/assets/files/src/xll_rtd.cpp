@@ -362,6 +362,18 @@ HRESULT __stdcall RtdServer::ConnectData(long TopicID, SAFEARRAY** Strings, VARI
     // topic left to serve. The per-attempt TeardownStarted() re-checks inside the lambda
     // stay as the cover for a teardown that begins after the thread has started.
     if (xll::TeardownStarted()) {
+        // POST-TEARDOWN USE (backlog line 134/191): a ConnectData arriving while
+        // Phase 2 has ALREADY COMPLETED means the add-in was destroyed and the
+        // session went on living. Gated on `g_isUnloading && !g_phost` — Phase 2's
+        // own marks — rather than on TeardownStarted(): the latter is also true
+        // during a GENUINE quit's Phase 1, where an arriving ConnectData is entirely
+        // normal (Excel serializes its RTD teardown after OnBeginShutdown returns),
+        // so reporting there would cry wolf on every clean shutdown. Reported from
+        // HERE, the STA entry gate, and never from the detached lambda below:
+        // LogTeardownWarn must not be called from a detached thread (§20.2.1 rule 4).
+        if (xll::g_isUnloading.load(std::memory_order_acquire) && !g_phost) {
+            xll::ReportPostTeardownUse("RtdServer::ConnectData");
+        }
         if (pvarOut) {
             VariantInit(pvarOut);
             *pvarOut = xll::MakeGettingDataVariant();

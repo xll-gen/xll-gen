@@ -362,12 +362,26 @@ func TestCancelQuitTemplateXllAutoClose(t *testing.T) {
 	for _, want := range []string{
 		"SetRibbonConnected(false)",
 		"CoRevokeClassObject(g_ribbonCookie)",
-		"UnregisterOfficeAddinKey(g_szRibbonProgID)",
 		"ShutdownRibbonImageEngine()",
 	} {
 		if !strings.Contains(hookBody, want) {
 			t.Errorf("GracefulComTeardownHook missing relocated step %q\n---\n%s", want, hookBody)
 		}
+	}
+	// `UnregisterOfficeAddinKey(g_szRibbonProgID)` was on that list until 2026-08-03
+	// and is DELIBERATELY GONE (backlog line 120). The Excel Addins key is the COM
+	// Add-ins dialog's row source, so deleting it on an add-in DISABLE removed the
+	// row the user needs to re-enable us; its lifetime is INSTALLED
+	// (DllUnregisterServer), not SESSION. Asserted negatively here so the old step
+	// cannot be "restored" as a leak fix, and positively — plus the whole
+	// DllUnregisterServer half — in gen_addin_key_lifetime_test.go.
+	// Over COMMENT-STRIPPED source: the hook's replacement comment NAMES the removed
+	// call (it has to — that is where the reason is recorded), so a raw-text search
+	// would report a false failure. Exactly the trap stripCppComments exists for.
+	strippedHook := stripCppComments(hookBody)
+	if strings.Contains(strippedHook, "UnregisterOfficeAddinKey") {
+		t.Errorf("GracefulComTeardownHook must NOT unregister the Excel Addins key any more; see "+
+			"TestTeardownHookDoesNotUnregisterTheAddinKey\n---\n%s", strippedHook)
 	}
 }
 

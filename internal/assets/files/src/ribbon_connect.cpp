@@ -21,13 +21,17 @@
 #include "com/ribbon_image.h"        // SetRibbonImages
 #include "rtd/factory.h"             // rtd::ClassFactory
 #include "rtd/registry.h"            // rtd::RegisterServer / RegisterOfficeAddinKey
+#include "types/utility.h"           // WideToUtf8 (Resiliency probe)
 #include "types/xlcall.h"            // xlretSuccess
 #include "xll_deferred_commands.h"   // xll::ScheduleOnTimeMacro / RibbonConnectRetryMacroName
 #include "xll_lifecycle.h"           // xll::TeardownStarted / xll::g_isUnloading
 #include "xll_log.h"                 // SAFE_LOG_*
 
 #include <cstdio>
+#include <cwctype>                   // std::towlower (case-folded Resiliency search)
+#include <iterator>                  // std::size
 #include <string>
+#include <vector>
 
 namespace xll {
 namespace ribbon {
@@ -81,12 +85,175 @@ bool ContextReady(const char* site) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Connect-failure DIAGNOSTICS (2026-08-03, backlog line 121). None of this runs
+// on the DISCONNECT direction: SetRibbonConnected(false) is the teardown-time
+// call made from GracefulComTeardownHook inside Phase 1, on the STA, in the
+// ~80-100 ms window before Excel's FreeLibrary (AGENTS.md §20.2.1). Everything
+// below is behind `if (!ok && connected)`.
+
+const char* FaultName(RibbonConnectFault f) {
+    switch (f) {
+        case RibbonConnectFault::kNoComAddInsProperty:   return "Application.COMAddIns unreadable";
+        case RibbonConnectFault::kProgIdNotInCollection: return "our ProgID is not in Excel's COMAddIns collection";
+        case RibbonConnectFault::kConnectPutRejected:    return "Office REJECTED the Connect property put";
+        default:                                        return "none";
+    }
+}
+
+std::string HrToString(HRESULT hr) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
+    return buf;
+}
+
+// Per-class tallies so the give-up line can name the DOMINANT failure instead of
+// whichever one happened last. Written only on the connect direction, read once.
+std::atomic<int>  s_faultCount[4]{};
+std::atomic<long> s_faultLastHr[4]{};
+
+void RecordFault(RibbonConnectFault f, HRESULT hr) {
+    const int i = static_cast<int>(f);
+    if (i <= 0 || i > 3) return;
+    s_faultCount[i].fetch_add(1, std::memory_order_relaxed);
+    s_faultLastHr[i].store(static_cast<long>(hr), std::memory_order_relaxed);
+}
+
+RibbonConnectFault DominantFault(HRESULT* pHr) {
+    int best = 0, bestCount = 0;
+    for (int i = 1; i <= 3; ++i) {
+        const int c = s_faultCount[i].load(std::memory_order_relaxed);
+        if (c > bestCount) { bestCount = c; best = i; }
+    }
+    if (pHr) *pHr = static_cast<HRESULT>(best ? s_faultLastHr[best].load(std::memory_order_relaxed) : 0);
+    return static_cast<RibbonConnectFault>(best);
+}
+
+// READ-ONLY probe of Office's crash-resiliency disable list. There is no
+// documented per-ProgID key: the values under
+// HKCU\Software\Microsoft\Office\<ver>\Excel\Resiliency\DisabledItems have opaque
+// hashed NAMES and carry the item identity inside their REG_BINARY data as UTF-16
+// text. So enumerate, count, and substring-search the blobs.
+//
+// The <ver> segment is ENUMERATED, not hard-coded "16.0": the Addins key we write
+// is version-independent (Office\Excel\Addins), and a second, silently-wrong
+// Office-version assumption in the same file is how a diagnostic starts lying.
+std::string DescribeResiliencyDisabledItems() {
+    std::wstring needle = g_ctx.progId ? g_ctx.progId : L"";
+    for (auto& ch : needle) ch = static_cast<wchar_t>(std::towlower(ch));
+
+    HKEY hOffice = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Office", 0,
+                      KEY_ENUMERATE_SUB_KEYS, &hOffice) != ERROR_SUCCESS) {
+        return "Resiliency: HKCU Office key unreadable";
+    }
+
+    std::string result;
+    for (DWORD i = 0;; ++i) {
+        wchar_t ver[256];
+        DWORD verLen = static_cast<DWORD>(std::size(ver));
+        if (RegEnumKeyExW(hOffice, i, ver, &verLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+
+        std::wstring sub = std::wstring(ver) + L"\\Excel\\Resiliency\\DisabledItems";
+        HKEY hDisabled = nullptr;
+        if (RegOpenKeyExW(hOffice, sub.c_str(), 0, KEY_QUERY_VALUE, &hDisabled) != ERROR_SUCCESS) continue;
+
+        DWORD nValues = 0, maxNameLen = 0, maxDataLen = 0;
+        RegQueryInfoKeyW(hDisabled, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                         &nValues, &maxNameLen, &maxDataLen, nullptr, nullptr);
+        std::vector<wchar_t> name(maxNameLen + 1u, 0);
+        std::vector<BYTE> data(maxDataLen + sizeof(wchar_t), 0);
+        bool present = false;
+        for (DWORD v = 0; v < nValues && !present; ++v) {
+            DWORD nameLen = static_cast<DWORD>(name.size());
+            DWORD dataLen = maxDataLen;
+            if (RegEnumValueW(hDisabled, v, name.data(), &nameLen, nullptr, nullptr,
+                              data.data(), &dataLen) != ERROR_SUCCESS) continue;
+            std::wstring blob(reinterpret_cast<const wchar_t*>(data.data()), dataLen / sizeof(wchar_t));
+            for (auto& ch : blob) ch = static_cast<wchar_t>(std::towlower(ch));
+            if (!needle.empty() && blob.find(needle) != std::wstring::npos) present = true;
+        }
+        RegCloseKey(hDisabled);
+
+        if (!result.empty()) result += ", ";
+        result += "Resiliency[" + WideToUtf8(ver) + "]: " + std::to_string(nValues) +
+                  " disabled item(s), this ProgID " + (present ? "PRESENT" : "absent");
+    }
+    RegCloseKey(hOffice);
+    if (result.empty()) result = "Resiliency: no DisabledItems key under any Office version";
+    return result;
+}
+
+// ONE-SHOT environment dump, on the STA, strictly read-only, and only for
+// kConnectPutRejected (the one class that IS an Office refusal). Latched by a CAS
+// because the connect retries up to 60 times and 60 registry sweeps in the log is
+// not a diagnostic. Never writes: a probe that mutates the state it is measuring
+// is worse than no probe (the same read-only discipline the UIA harnesses follow).
+void DumpConnectEnvironmentOnce(IDispatch* pApp) {
+    static std::atomic<bool> s_dumped{false};
+    bool expected = false;
+    if (!s_dumped.compare_exchange_strong(expected, true)) return;
+
+    std::string out = "Ribbon: connect environment (one-shot) — ";
+
+    // 1. The Addins key we ourselves wrote, and its LoadBehavior. It stays 0 by
+    //    design (we connect programmatically, never at Excel startup), so a 0 here
+    //    is CORRECT — what matters is whether the key is present at all.
+    std::wstring addinsKey = L"Software\\Microsoft\\Office\\Excel\\Addins\\";
+    addinsKey += (g_ctx.progId ? g_ctx.progId : L"");
+    HKEY hAddin = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, addinsKey.c_str(), 0, KEY_QUERY_VALUE, &hAddin) == ERROR_SUCCESS) {
+        DWORD loadBehavior = 0, type = 0, cb = sizeof(loadBehavior);
+        if (RegQueryValueExW(hAddin, L"LoadBehavior", nullptr, &type,
+                             reinterpret_cast<LPBYTE>(&loadBehavior), &cb) == ERROR_SUCCESS &&
+            type == REG_DWORD) {
+            out += "Addins key present, LoadBehavior=" + std::to_string(loadBehavior);
+        } else {
+            out += "Addins key present, LoadBehavior unreadable";
+        }
+        RegCloseKey(hAddin);
+    } else {
+        out += "Addins key ABSENT";
+    }
+
+    // 2. Has Excel disabled us after an earlier crash?
+    out += "; " + DescribeResiliencyDisabledItems();
+
+    // 3. How many COM add-ins does Excel list at all? Zero is the Trust Center
+    //    "Disable all Application Add-ins" signature.
+    VARIANT vAddins; VariantInit(&vAddins);
+    if (pApp && SUCCEEDED(xll::com::GetProperty(pApp, L"COMAddIns", &vAddins)) &&
+        vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
+        VARIANT vCount; VariantInit(&vCount);
+        if (SUCCEEDED(xll::com::GetProperty(vAddins.pdispVal, L"Count", &vCount))) {
+            VARIANT vI4; VariantInit(&vI4);
+            if (SUCCEEDED(VariantChangeType(&vI4, &vCount, 0, VT_I4))) {
+                out += "; COMAddIns.Count=" + std::to_string(vI4.lVal);
+            }
+            VariantClear(&vI4);
+        }
+        VariantClear(&vCount);
+    } else {
+        out += "; COMAddIns.Count unavailable";
+    }
+    VariantClear(&vAddins);
+
+    SAFE_LOG_WARN(out);
+}
+
 } // namespace
 
 void SetConnectContext(const ConnectContext& ctx) { g_ctx = ctx; }
 
-bool SetRibbonConnected(bool connected, bool* pNoApp, bool allowBounce) {
+// See the header for WHY this is public. It is deliberately the SAME predicate
+// the connect machinery uses (ContextReady), not a second copy of the field list:
+// ConnectContext gains fields over time and a hand-written duplicate would drift
+// into approving a partially wired context.
+bool ConnectContextPublished() { return ContextReady("OnConnection"); }
+
+bool SetRibbonConnected(bool connected, bool* pNoApp, bool allowBounce, RibbonConnectFault* pFault) {
     if (pNoApp) *pNoApp = false;
+    if (pFault) *pFault = RibbonConnectFault::kNone;
     if (!ContextReady("SetRibbonConnected")) return false;
     IDispatch* pApp = allowBounce ? g_ctx.acquireAppOrBounce() : g_ctx.acquireApp();
     if (!pApp) {
@@ -95,24 +262,58 @@ bool SetRibbonConnected(bool connected, bool* pNoApp, bool allowBounce) {
     }
 
     bool ok = false;
+    // Each step's HRESULT is CAPTURED, not consumed by SUCCEEDED() at the call
+    // site: the three of them are the whole diagnostic (backlog line 121). The
+    // fault starts at the FIRST step and advances as each one passes, so whichever
+    // step we did not get past is the one named.
+    RibbonConnectFault fault = RibbonConnectFault::kNoComAddInsProperty;
+    HRESULT hrAddins = E_FAIL, hrItem = E_FAIL, hrPut = E_FAIL;
     {
         VARIANT vAddins; VariantInit(&vAddins);
-        if (SUCCEEDED(xll::com::GetProperty(pApp, L"COMAddIns", &vAddins)) && vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
+        hrAddins = xll::com::GetProperty(pApp, L"COMAddIns", &vAddins);
+        if (SUCCEEDED(hrAddins) && vAddins.vt == VT_DISPATCH && vAddins.pdispVal) {
+            fault = RibbonConnectFault::kProgIdNotInCollection;
             VARIANT vProg; VariantInit(&vProg);
             vProg.vt = VT_BSTR;
             vProg.bstrVal = SysAllocString(g_ctx.progId);
             VARIANT vItem; VariantInit(&vItem);
-            if (SUCCEEDED(xll::com::Invoke(vAddins.pdispVal, L"Item", DISPATCH_METHOD | DISPATCH_PROPERTYGET, { vProg }, &vItem))
-                && vItem.vt == VT_DISPATCH && vItem.pdispVal) {
+            hrItem = xll::com::Invoke(vAddins.pdispVal, L"Item", DISPATCH_METHOD | DISPATCH_PROPERTYGET, { vProg }, &vItem);
+            if (SUCCEEDED(hrItem) && vItem.vt == VT_DISPATCH && vItem.pdispVal) {
+                fault = RibbonConnectFault::kConnectPutRejected;
                 VARIANT vConn; VariantInit(&vConn);
                 vConn.vt = VT_BOOL;
                 vConn.boolVal = connected ? VARIANT_TRUE : VARIANT_FALSE;
-                ok = SUCCEEDED(xll::com::Invoke(vItem.pdispVal, L"Connect", DISPATCH_PROPERTYPUT, { vConn }, nullptr));
+                hrPut = xll::com::Invoke(vItem.pdispVal, L"Connect", DISPATCH_PROPERTYPUT, { vConn }, nullptr);
+                ok = SUCCEEDED(hrPut);
             }
             VariantClear(&vItem);
             VariantClear(&vProg);  // frees the BSTR (caller owns args per dispatch_helpers contract)
         }
         VariantClear(&vAddins);
+    }
+    if (ok) fault = RibbonConnectFault::kNone;
+    if (pFault) *pFault = fault;
+
+    // DIAGNOSTIC, CONNECT DIRECTION ONLY. `connected == false` is the teardown
+    // disconnect (GracefulComTeardownHook, Phase 1, on the STA in the window
+    // before Excel's FreeLibrary) and must gain ZERO extra work — no log, no COM
+    // property get, and above all no registry read. Hence the `&& connected`.
+    //
+    // SAFE_LOG_* and not LogTeardown*: g_isUnloading is still false at hook time
+    // on both teardown paths, so these are not suppressed, and this is not a
+    // teardown site.
+    if (!ok && connected) {
+        const HRESULT stepHr = (fault == RibbonConnectFault::kNoComAddInsProperty)   ? hrAddins
+                             : (fault == RibbonConnectFault::kProgIdNotInCollection) ? hrItem
+                                                                                     : hrPut;
+        RecordFault(fault, stepHr);
+        SAFE_LOG_WARN(std::string("Ribbon: COMAddIns connect step FAILED — ") + FaultName(fault) +
+                      " (COMAddIns hr=" + HrToString(hrAddins) +
+                      ", Item hr=" + HrToString(hrItem) +
+                      ", Connect put hr=" + HrToString(hrPut) + ").");
+        if (fault == RibbonConnectFault::kConnectPutRejected) {
+            DumpConnectEnvironmentOnce(pApp);
+        }
     }
     pApp->Release();
     return ok;
@@ -209,7 +410,8 @@ bool TryConnectRibbon(const char* phase, bool allowBounce, RibbonAttempt* pOutco
     //    GetExcelApplicationOrBounce materializes that window when no document
     //    is open, so this normally succeeds on the very first attempt.
     bool noApp = false;
-    if (SetRibbonConnected(true, &noApp, allowBounce)) {
+    RibbonConnectFault fault = RibbonConnectFault::kNone;
+    if (SetRibbonConnected(true, &noApp, allowBounce, &fault)) {
         if (pOutcome) *pOutcome = RibbonAttempt::kConnected;
         g_ribbonConnectState.store(1, std::memory_order_release);
         SAFE_LOG_INFO(std::string("Ribbon: COM add-in connected (") + phase + ").");
@@ -230,11 +432,23 @@ bool TryConnectRibbon(const char* phase, bool allowBounce, RibbonAttempt* pOutco
 
     // Real connect failure (Application reachable but Connect rejected): bound
     // it so a pathological host doesn't retry forever.
+    //
+    // The cap is NOT an unboundedness bug and must not be "fixed" as one: state=2
+    // latches and every subsequent entry short-circuits on the state gate above.
+    // What it actually costs is 60 STA COM round-trips — each an
+    // XLMAIN->XLDESK->EXCEL7 walk plus a COMAddIns property get — spread over ~a
+    // minute of retries. The defect was that all 60 were UNDIAGNOSABLE, which is
+    // what the fault classification below fixes: name the DOMINANT class (not
+    // whichever happened last) and carry its HRESULT.
     if (pOutcome) *pOutcome = RibbonAttempt::kRejected;
+    (void)fault; // classified inside SetRibbonConnected; tallied per class there
     static std::atomic<int> s_attempts{0};
     if (s_attempts.fetch_add(1) + 1 >= 60) {
         g_ribbonConnectState.store(2, std::memory_order_release);
-        SAFE_LOG_WARN("Ribbon: COMAddIns connect failed after 60 attempts; ribbon UI disabled.");
+        HRESULT domHr = S_OK;
+        const RibbonConnectFault dom = DominantFault(&domHr);
+        SAFE_LOG_WARN(std::string("Ribbon: COMAddIns connect failed after 60 attempts; ribbon UI disabled. "
+                      "Dominant fault: ") + FaultName(dom) + " (last hr=" + HrToString(domHr) + ").");
     }
     return false;
 }

@@ -138,7 +138,13 @@ namespace rtd {
     }
 
     /**
-     * @brief Removes the Excel Addins key (best-effort; re-created on next load).
+     * @brief Removes the Excel Addins key. UNINSTALL ONLY.
+     *
+     * Called from DllUnregisterServer and from nowhere else (2026-08-03, AGENTS.md
+     * §18.11.5). It used to run on every confirmed teardown, which meant the
+     * add-in-DISABLE teardown deleted the very row the COM Add-ins dialog needs to
+     * let the user re-enable us — this key IS that dialog's row source. The key's
+     * lifetime is INSTALLED, not SESSION.
      */
     inline HRESULT UnregisterOfficeAddinKey(const wchar_t* progID) {
         if (!progID || !*progID) return E_INVALIDARG;

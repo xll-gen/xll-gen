@@ -127,6 +127,64 @@ struct ConnectContext {
 // outlive the process.
 void SetConnectContext(const ConnectContext& ctx);
 
+// True once xlAutoOpen has published a COMPLETE ConnectContext (every field of
+// the struct above). It is the same readiness predicate the connect machinery
+// gates itself on, exposed because ONE other site now needs it:
+// RibbonAddIn::OnConnection.
+//
+// WHY (backlog line 120, 2026-08-03). The graceful teardown no longer deletes
+// HKCU\…\Excel\Addins\<progId> or the ribbon's HKCU COM registration, so the COM
+// Add-ins dialog row and a live InprocServer32 both SURVIVE the session that
+// created them. That is the point — a user who unticks the box must be able to
+// tick it back — but it also means Office can COM-activate RibbonAddIn in a
+// session where xlAutoOpen never ran: no ribbon XML published, no images, no
+// SHM host, no Go server. LoadBehavior stays 0 so nothing autoloads at startup,
+// but a tick in the dialog is enough. Half an add-in is worse than none, so
+// OnConnection refuses with E_FAIL when this is false.
+//
+// Deliberately NOT a "did xlAutoOpen run" flag of its own: the context IS the
+// contract between the generated TU and this one (see ConnectContext), so asking
+// whether it was published is exactly the right question, and there is only one
+// thing to keep true.
+bool ConnectContextPublished();
+
+// WHICH COM STEP FAILED (2026-08-03, backlog line 121: "ribbon COM connect fails
+// sporadically, ~3/20 starts"). SetRibbonConnected used to collapse three
+// completely different failures into one bare `false` and discard every HRESULT,
+// so the field report could not be classified — and until it can be, there is
+// nothing to decide. The three are NOT variants of one problem:
+//
+//   * kNoComAddInsProperty   — Application.COMAddIns is unreadable or not
+//                              VT_DISPATCH. An automation-surface fault; nothing
+//                              about our add-in.
+//   * kProgIdNotInCollection — COMAddIns.Item(progId) failed: Excel does not list
+//                              our ProgID AT ALL. Deliberately called out as its
+//                              own class because it is NOT racy — it is
+//                              persistent for the session — and it has a named
+//                              suspect: whether Excel has re-read the Addins hive
+//                              since TryConnectRibbon wrote our key moments
+//                              earlier (see backlog line 120, which stopped the
+//                              teardown from deleting that key, so it is now
+//                              already present when Excel builds the collection
+//                              at startup).
+//   * kConnectPutRejected    — the Connect PROPERTYPUT ran and Office REFUSED.
+//                              The only genuine refusal of the three: Trust
+//                              Center "Disable all Application Add-ins", or the
+//                              ProgID parked in Excel's
+//                              Resiliency\DisabledItems after an earlier crash.
+//                              This class (and only this class) triggers the
+//                              one-shot read-only environment dump.
+//
+// kNone means "connected", or "we never reached the COM steps" (unpublished
+// context / no Application object — the latter is reported through pNoApp, which
+// stays a separate out-param because it feeds a separate retry BUDGET).
+enum class RibbonConnectFault {
+    kNone = 0,
+    kNoComAddInsProperty,
+    kProgIdNotInCollection,
+    kConnectPutRejected,
+};
+
 // Sets Application.COMAddIns.Item(progId).Connect = <connected>. Used both
 // to connect at xlAutoOpen and — critically — to DISCONNECT at teardown:
 // revoking the class object does not release the live add-in instance Excel
@@ -151,7 +209,11 @@ void SetConnectContext(const ConnectContext& ctx);
 // temp-workbook bounce to materialize it. Only the xlAutoOpen first-attempt
 // path passes true; the calc-end retry path (a workbook already exists there)
 // must never bounce. See GetExcelApplicationOrBounce in xll_main.cpp.
-bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allowBounce = false);
+//
+// pFault (optional, out): WHICH of the three post-Application COM steps failed —
+// see RibbonConnectFault below. Always written.
+bool SetRibbonConnected(bool connected, bool* pNoApp = nullptr, bool allowBounce = false,
+                        RibbonConnectFault* pFault = nullptr);
 
 // Ribbon COM add-in bootstrap, made idempotent + retryable. The COMAddIns
 // connect (step 4) needs the in-process Application object, which is reachable

@@ -78,7 +78,21 @@ namespace xll { namespace ribbon {
         // when Phase 2 deletes g_phost. A teardown means the session is going away, so
         // dropping a ribbon click here costs nothing. The in-lambda re-checks remain the
         // cover for a teardown that starts mid-flight.
-        if (xll::TeardownStarted()) return;
+        if (xll::TeardownStarted()) {
+            // POST-TEARDOWN USE (backlog line 134/191): a ribbon click after Phase 2
+            // COMPLETED means the add-in was destroyed and the session went on
+            // living — the commonest way in is the user unticking this add-in in the
+            // COM Add-ins dialog, which runs the full destructive teardown while the
+            // XLL stays loaded and the ribbon tab stays on screen. Gated on Phase 2's
+            // own marks (g_isUnloading latched AND g_phost null), not on
+            // TeardownStarted(), which is also true during a genuine quit's Phase 1.
+            // Reported from HERE, the STA, never from the detached lambda below:
+            // LogTeardownWarn must not be called from a detached thread (§20.2.1).
+            if (xll::g_isUnloading.load(std::memory_order_acquire) && !g_phost) {
+                xll::ReportPostTeardownUse("SendCommandInvoke");
+            }
+            return;
+        }
         // Log on the calling (STA) thread, not in the detached lambda, so
         // logging never races teardown.
         xll::LogDebug("CommandInvoke dispatch: " + commandNameUtf8);
@@ -174,6 +188,11 @@ namespace xll { namespace ribbon {
 
 #ifdef XLL_RIBBON_ENABLED
 #include "com/ribbon_image.h"
+// ConnectContextPublished() — OnConnection's readiness refusal. Included INSIDE
+// the gate: com/ribbon_connect.h #errors without XLL_RIBBON_ENABLED (its
+// definitions are compiled only for ribbon builds), and everything above this
+// point is compiled in non-ribbon builds too (WaitForCommandDrain et al.).
+#include "com/ribbon_connect.h"
 
 namespace {
     // Some hosts late-bind _IDTExtensibility2 members through IDispatch
@@ -248,8 +267,16 @@ HRESULT __stdcall RibbonAddIn::GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT c
 
 HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, DISPPARAMS* pDispParams,
                                       VARIANT* pVarResult, EXCEPINFO*, UINT*) {
-    // Late-bound extensibility members (see kExtNames): all no-ops returning S_OK.
-    if (dispIdMember >= kDispIdExtBase && dispIdMember < kDispIdExtBase + 5) return S_OK;
+    // Late-bound extensibility members (see kExtNames). Four of the five are
+    // no-ops returning S_OK — but OnConnection is NOT a no-op any more (it refuses
+    // an activation xlAutoOpen never prepared), so it is routed to the real body.
+    // A blanket S_OK here would let a host that late-binds _IDTExtensibility2
+    // through IDispatch bypass that refusal entirely and get the half add-in the
+    // guard exists to prevent.
+    if (dispIdMember == kDispIdExtBase) {
+        return OnConnection(nullptr, ext_cm_AfterStartup, nullptr, nullptr);
+    }
+    if (dispIdMember > kDispIdExtBase && dispIdMember < kDispIdExtBase + 5) return S_OK;
 
     if (dispIdMember == kDispIdLoadImage) {
         // loadImage(imageId As String) As IPictureDisp — imageId arrives as
@@ -303,7 +330,35 @@ HRESULT __stdcall RibbonAddIn::Invoke(DISPID dispIdMember, REFIID, LCID, WORD, D
     return S_OK; // returns immediately — never wait for the Go handler (STA deadlock)
 }
 
-HRESULT __stdcall RibbonAddIn::OnConnection(IDispatch*, ext_ConnectMode, IDispatch*, SAFEARRAY**) { return S_OK; }
+// REFUSES a COM activation that xlAutoOpen never prepared (backlog line 120,
+// 2026-08-03).
+//
+// This used to be a bare `return S_OK`, which was fine while the graceful teardown
+// deleted HKCU\…\Excel\Addins\<progId> and the ribbon's HKCU COM registration on
+// every confirmed shutdown: nothing could reach us that xlAutoOpen had not just
+// wired. That deletion was itself the defect — it removed the COM Add-ins dialog
+// row on an add-in DISABLE, so a user who unticked the box could not tick it back
+// — and it is gone. The row and a live InprocServer32 now survive the session,
+// which means Office can COM-activate this class in a session where the XLL was
+// NEVER LOADED: no ribbon XML, no images, no SHM host, no Go server, no
+// ConnectContext. LoadBehavior stays 0 so nothing autoloads at Excel startup, but
+// one tick in the dialog is enough to get here.
+//
+// A half-initialised add-in that reports success is worse than none: it shows a
+// ribbon tab whose every button silently does nothing. E_FAIL is a refusal Office
+// understands and surfaces. The log line is what makes it diagnosable — it is
+// SAFE_LOG_WARN (not LogTeardownWarn): this is not a teardown path, and
+// g_isUnloading is false in the case that gets here.
+HRESULT __stdcall RibbonAddIn::OnConnection(IDispatch*, ext_ConnectMode, IDispatch*, SAFEARRAY**) {
+    if (!xll::ribbon::ConnectContextPublished()) {
+        SAFE_LOG_WARN("Ribbon: OnConnection REFUSED — xlAutoOpen never published the connect context in "
+                      "this process, so there is no ribbon XML, host or server to serve. This happens when "
+                      "the COM Add-ins dialog row is ticked in a session where the XLL itself was not "
+                      "loaded; load the add-in (Excel: Add-ins ▸ Browse to the .xll) instead.");
+        return E_FAIL;
+    }
+    return S_OK;
+}
 
 HRESULT __stdcall RibbonAddIn::OnDisconnection(ext_DisconnectMode RemoveMode, SAFEARRAY**) {
     // CONFIRMED-shutdown signal. Both modes mean a real teardown that does NOT
