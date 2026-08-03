@@ -110,10 +110,34 @@ func TestGenServer_TeardownDrainsBeforeUnmapping(t *testing.T) {
 			"(want server.NewLifecycle(asyncBatcher, rtd.GlobalRtd)):\n%s", srv)
 	}
 
-	// 4. A job-worker drain failure still reaches the valve.
-	if !strings.Contains(srv, "lifecycle.MarkJobDrainFailed()") {
-		t.Errorf("a job-worker drain timeout is not reported to the lifecycle, so the unmap " +
-			"would proceed under a handler that may still be sending")
+	// 4. The job-worker drain still reaches the valve. The drain itself moved to
+	//    pkg/server (server.RunAndDrain) with the rest of the message loop, so
+	//    what is left here is the wiring: THIS project's pool and THIS project's
+	//    lifecycle must both be handed to it. Pass nil for either and a timed-out
+	//    drain stops vetoing the unmap.
+	//
+	//    WHERE THE OLD ASSERTION WENT: `lifecycle.MarkJobDrainFailed()` was a
+	//    grep over generated text that could not tell whether the line was
+	//    reachable on the timeout path. It is now
+	//    TestRunAndDrain_TimedOutJobDrainVetoesTheUnmap in pkg/server, which
+	//    asserts the OUTCOME (Lifecycle.wouldUnmap() == false) on a real
+	//    Lifecycle. The ordering it also could not see (Handle before Start,
+	//    Wait before Drain, a fatal Start error) is
+	//    TestRunAndDrain_HandleIsInstalledBeforeStart /
+	//    _JobDrainWaitsForTheWorkerRoutinesToExit / _StartFailureIsFatal.
+	if !strings.Contains(srv, "server.RunAndDrain(client, dispatch, jobPool, lifecycle)") {
+		t.Errorf("Serve does not hand the message loop to server.RunAndDrain with this " +
+			"project's pool AND lifecycle; a job-worker drain timeout would then not reach " +
+			"the valve and the unmap would proceed under a handler that may still be sending")
+	}
+	// The loop must not be re-inlined alongside the call: a second Handle/Start
+	// pair would start shm's workers twice, and a re-inlined drain would run
+	// without reporting to the lifecycle (§18.6.1's do-not-re-inline rule).
+	for _, gone := range []string{"client.Handle(dispatch)", "client.Start()", "client.Wait()", "jobPool.Drain("} {
+		if strings.Contains(srv, gone) {
+			t.Errorf("server.go still contains %q; the message loop belongs to "+
+				"server.RunAndDrain and a re-inlined copy would bypass its unit tests", gone)
+		}
 	}
 
 	// 5. Done() is exported so a handler's long-lived goroutine can stop pushing.

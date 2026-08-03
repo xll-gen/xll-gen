@@ -499,36 +499,23 @@ start_worker:
     
     
 
-    {
-        // Register the calc-end DEFERRED COMMAND RUNNER macro (macroType=2).
-        // HandleCalculationEnded schedules this via xlcOnTime so the
-        // cell-mutating commands (xlSet) and date-format application
-        // (COM Range.NumberFormat) run OUTSIDE the xleventCalculationEnded
-        // callback — fixing the rtd-once-window reentrancy crash (0xc0000005).
-        // Registered unconditionally because CalculationEnded itself is (the
-        // date-format drain is always-on). Idempotent: re-registering the same
-        // procedure name is harmless. The macro is auto-unregistered when the
-        // DLL unloads, so no explicit teardown is needed (§20.2). See
-        // include/xll_deferred_commands.h.
-        ScopedXLOPER12Result xRegId;
-        int regRes = xll::RegisterFunction(
-            *xDLL,
-            xll::DeferredRunnerMacroName(), // Procedure (exported symbol below)
-            L"I",                           // TypeText: "I" = 2-byte signed int (matches the short return below; macroType=2 ignores the value). See §19.2.
-            xll::DeferredRunnerMacroName(), // FunctionText (hidden; xlcOnTime targets it)
-            L"",                            // ArgumentText: none
-            2,                              // macroType=2 (registered macro; xlcOnTime-callable)
-            L"",                            // Category (unused)
-            L"",                            // Shortcut (none)
-            L"",                            // HelpTopic
-            L"",                            // FunctionHelp
-            {},                             // ArgumentHelp
-            *xRegId
-        );
-        if (regRes != xlretSuccess) {
-            SAFE_LOG_ERROR("Failed to register deferred calc-end runner macro. Code: " + std::to_string(regRes));
-        }
-    }
+    // Register the xlcOnTime-schedulable MACROS (macroType=2). The registration
+    // shape — TypeText "I", macroType 2, FunctionText == Procedure, hidden, and
+    // "a rejected registration is logged, not fatal" — is identical for every
+    // such macro and carried no template variables, so it is
+    // xll::RegisterOnTimeMacro in xll_lifecycle.h (executed by
+    // internal/assets/testdata/ontime_macro_native_test.cpp). What is generated
+    // is WHICH macros this project registers.
+    //
+    // The calc-end DEFERRED COMMAND RUNNER: HandleCalculationEnded schedules it
+    // via xlcOnTime so the cell-mutating commands (xlSet) and the date-format
+    // application (COM Range.NumberFormat) run OUTSIDE the
+    // xleventCalculationEnded callback — the rtd-once-window reentrancy crash
+    // fix (0xc0000005). Registered unconditionally because CalculationEnded
+    // itself is (the date-format drain is always-on). Auto-unregistered when the
+    // DLL unloads, so no explicit teardown is needed (§20.2). See
+    // include/xll_deferred_commands.h; the exported proc is below.
+    xll::RegisterOnTimeMacro(*xDLL, xll::DeferredRunnerMacroName(), "deferred calc-end runner");
 
     
 

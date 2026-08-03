@@ -79,6 +79,30 @@ func anyDateType(fns []config.Function) bool {
 	return false
 }
 
+// anyNonRtdLike reports whether the project declares at least one function
+// that is NOT rtd/rtd-once, i.e. at least one function that gets a generated
+// sync/async handler body in server.go.
+//
+// This is the exact complement of the `{{if not (isRtdLike .Mode)}}` guard that
+// wraps the handler bodies, and it exists to gate the `"runtime/debug"` import
+// in server.go.tmpl: debug.Stack() is only emitted inside those bodies (the
+// sync and async panic recovers), so a project whose functions are all
+// rtd/rtd-once used to emit
+//
+//	generated/server.go:11:2: "runtime/debug" imported and not used
+//
+// (shipped defect, v0.8.53). Keep this predicate and the handler-body guard in
+// lockstep — see AGENTS.md §18.12.2 and
+// TestGeneratedGoHasNoUnusedImports/all-rtd.
+//
+// Delegates to config.AnyNonRtdLike for the same reason isRtdLike delegates to
+// config.IsRtdLike: internal/regtest asks the identical question about the
+// identical function list, and two copies of a predicate that decides what gets
+// EMITTED is how the v0.8.53 defect shipped.
+func anyNonRtdLike(fns []config.Function) bool {
+	return config.AnyNonRtdLike(fns)
+}
+
 // Helper to check if a specific event type is registered
 func hasEvent(eventType string, events []config.Event) bool {
 	for _, e := range events {
@@ -167,6 +191,7 @@ func GetCommonFuncMap() template.FuncMap {
 		"failUnhandledType": failUnhandledType,
 		"hasEvent":          hasEvent,
 		"anyDateType":       anyDateType,
+		"anyNonRtdLike":     anyNonRtdLike,
 		"getEventHandler":   getEventHandler,
 		"escapeCppString":   escapeCppString,
 		"derefBool": func(b *bool) bool {
@@ -291,10 +316,9 @@ func GetCommonFuncMap() template.FuncMap {
 		// isRtdLike reports whether a mode routes through the RTD topic
 		// lifecycle (xlfRtd wrapper, RTD push results). Both "rtd" and
 		// "rtd-once" share the C++ wrapper shape and the server-side skip of
-		// the sync/async handler glue.
-		"isRtdLike": func(mode string) bool {
-			return mode == "rtd" || mode == "rtd-once"
-		},
+		// the sync/async handler glue. Delegates to config.IsRtdLike, the SSOT
+		// shared with internal/regtest's funcmap and with anyNonRtdLike.
+		"isRtdLike": config.IsRtdLike,
 		// anyRtdOnce reports whether the project declares at least one
 		// rtd-once function. Used to gate emission of the C++ RtdOnceResults
 		// machinery and the once-set initializer.

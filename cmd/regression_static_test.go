@@ -44,15 +44,28 @@ func TestGenerate_Fixes(t *testing.T) {
 	// with "select {" / "default:" -- submit never blocks the dispatch thread, a
 	// panicking job does not kill its worker, the drain waits then gives up -- are
 	// executed by TestJobPool_* in pkg/server.
+	//
+	// The DRAIN CALL moved too (2026-08-03), together with the message loop it
+	// has to follow, into server.RunAndDrain. "jobPool.Drain(server.JobDrainTimeout)"
+	// here was a grep that could not see the one thing that matters -- that the
+	// drain runs after client.Wait() and before the deferred shutdownAndClose,
+	// and that a timeout reports to the lifecycle. Those are executed by
+	// TestRunAndDrain_* in pkg/server; what stays checkable HERE is that this
+	// project's pool and lifecycle are the ones handed over.
 	checkContent(t, filepath.Join(projectDir, "generated/server.go"),
 		[]string{
 			"server.NewJobPool(",
 			"jobPool.Submit(func() {",
-			"jobPool.Drain(server.JobDrainTimeout)",
+			"server.RunAndDrain(client, dispatch, jobPool, lifecycle)",
 		},
 		[]string{
 			// The pool must not be re-inlined into the template.
 			"case jobQueue <- func() {",
+			// Neither may the message loop: a second Handle/Start pair would
+			// start shm's workers twice and a re-inlined drain would skip the
+			// MarkJobDrainFailed report.
+			"jobPool.Drain(",
+			"client.Handle(dispatch)",
 		})
 
 	// Check xll_log.cpp fixes

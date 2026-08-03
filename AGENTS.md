@@ -247,21 +247,26 @@ The integration tests in `internal/regtest` rely on a fixed set of files that mu
 2.  **Mock Host**: `internal/regtest/testdata/mock_host.cpp` hardcodes message IDs (e.g., `133`) and payload structures based on `xll.yaml`.
 3.  **Go Server**: `internal/regtest/testdata/server.go` implements handlers matching `xll.yaml`.
 **Constraint**: Any change to `testdata/xll.yaml` (e.g., adding a function) requires updating `mock_host.cpp` (new ID/case) and `server.go`.
+**`TestRegression` does NOT exercise `internal/templates/regtest_main.cpp.tmpl`.** `cmd/regression_test.go` writes the hand-written fixture `testdata/mock_host.cpp` (embedded as `regtest.MockHostCpp`) as the simulation `main.cpp`; the template is reachable only through `regtest.Run()`, i.e. the `xll-gen regtest` subcommand, which sits behind `//go:build regtest` and is compiled by nothing in the suite. So a green `TestRegression` is **no evidence at all** about that template — it was sending `(shm::MsgType)(11 + i)` (transport-reserved, and 129 off the product's base) for an unknown span of time while the suite stayed green. The template's output is now pinned by `internal/regtest/simmain_msgtype_test.go::TestGenerateSimMainSendsMsgUserStartIDs`, which renders it and asserts on the bytes. If you change `regtest_main.cpp.tmpl`, that test — not `TestRegression` — is your gate.
+
 **Add functions APPEND-ONLY.** `mock_host.cpp` hardcodes each function's message ID as a literal (`(shm::MsgType)140`, `141`, …) and the generator assigns `MsgUserStart + index` (§18.6), so inserting a function anywhere but the END silently shifts every later ID and every mock-host case after it starts talking to the wrong handler. The compile still succeeds; only the assertions fail, and they fail confusingly. (Followed for `ErrEmptyString`/`ErrEmptyInt` at 153/154, added 2026-07-29.)
 
 ### 18.6 Message ID Allocation
 Message IDs are distributed across multiple definitions and must match exactly.
 1.  **Definitions**: the Go-side single source of truth is the leaf package `pkg/msgid` (e.g., `MsgUserStart = 140`, `MsgCalculationEnded = 131`, `MsgRtdConnect = 133`); `pkg/server/types.go` re-exports them as aliases (`MsgRtdUpdate = msgid.MsgRtdUpdate`, etc.) so all `server.Msg*` references — including generated code — keep compiling, and `pkg/rtd` imports `pkg/msgid` directly (no shadow copy). The C++ mirror is `internal/assets/files/include/xll_ipc.h` (the `MSG_*` #defines, e.g. `MSG_USER_START = 140`). `pkg/msgid/msgid_test.go` pins the numeric values. The Go side (`pkg/msgid`) and the C++ side (`xll_ipc.h`) must match exactly.
-2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` manually calculates user IDs (`140 + $i`).
-3.  **Generator (Go)**: `internal/templates/server.go.tmpl` manually calculates user IDs (`140 + $i`).
+2.  **Generator (C++)**: `internal/templates/xll_main.cpp.tmpl` emits `{{add MsgUserStart $i}}` (it hardcoded `140 + $i` until 2026-08-03).
+3.  **Generator (Go)**: `internal/templates/server.go.tmpl` emits `{{add (MsgUserStart) $i}}` (it hardcoded `140 + $i` until 2026-08-03).
+3a. **Regtest simulator**: `internal/templates/regtest_main.cpp.tmpl` is the THIRD template site and is easy to forget — it had a hardcoded `11 + $i` until 2026-08-03. All three now use the `MsgUserStart` funcmap helper (`internal/generator/funcmap.go` for the product templates, `internal/regtest/generator.go` for the simulator), so no template writes the number.
 4.  **Events**: `internal/generator/funcmap.go` hardcodes event IDs (e.g., `"131"` for `CalculationEnded`).
-**Constraint**: If `MSG_USER_START` changes in `xll_ipc.h`, both templates, `pkg/server`, and `mock_host.cpp` must be updated.
+**Constraint**: If `MSG_USER_START` changes, it must change in `pkg/msgid` AND `xll_ipc.h` AND `mock_host.cpp` (which hardcodes each function's ID as a literal, §18 "Add functions APPEND-ONLY"). The three templates no longer need editing — they read the value through the `MsgUserStart` funcmap helper, which resolves to `pkg/msgid` on both generator paths. `funcmap.go`'s hardcoded EVENT IDs (item 4) are a separate, still-manual mirror.
 
 **Every ID here is APPLICATION-layer, and it shares ONE numbering space with shm's transport enum.** An xll-gen message ID is not a private tag: it is written into the shm slot header as `msgType` (`SendAckOrChunk` returns it; the generated dispatch switch matches on it), so it sits in the same space as `shm::MsgType` (`shm/include/shm/IPCUtils.h`). Values **below `APP_START` = 128 are reserved by the transport** — `NORMAL` 0, `HEARTBEAT_REQ` 1, `HEARTBEAT_RESP` 2, `SHUTDOWN` 3, `FLATBUFFER` 10, `GUEST_CALL` 11, `STREAM_START` 13, `STREAM_CHUNK` 14, `SYSTEM_ERROR` 127 — and must never be allocated to a `MSG_*`. `MsgAck` / `MSG_ACK` violated this: it was **2**, i.e. `HEARTBEAT_RESP`, and rode out as the real response `msgType` on `HandleChunk`'s and `HandleSetRefCache`'s ACK replies, so a host that ever branched on the transport meaning would mis-route them. **Renumbered to 139 on 2026-08-03** (the last free slot below `MsgUserStart` 140). That renumber deliberately did **NOT** bump `SHM_VERSION`: `SHM_VERSION` describes the transport *bytes*, and no wire struct changed.
 
-**Current allocation** (both mirrors): 128 `MSG_BATCH_ASYNC_RESPONSE`, 129 `MSG_CHUNK`, 130 `MSG_SETREFCACHE`, 131 `MSG_CALCULATION_ENDED`, 132 `MSG_CALCULATION_CANCELED`, 133-136 RTD (`CONNECT`/`DISCONNECT`/`UPDATE`/`HEARTBEAT`), 137 `MSG_COMMAND_INVOKE`, 138 `MSG_RTD_ONCE_GRID`, 139 `MSG_ACK`, 140+ `MSG_USER_START` + i. **The 128-139 range is now FULL** — the next system ID has to raise `MSG_USER_START`, which by the constraint above means both templates, `funcmap.go`, `pkg/server` and `mock_host.cpp` move with it.
+**Current allocation** (both mirrors): 128 `MSG_BATCH_ASYNC_RESPONSE`, 129 `MSG_CHUNK`, 130 `MSG_SETREFCACHE`, 131 `MSG_CALCULATION_ENDED`, 132 `MSG_CALCULATION_CANCELED`, 133-136 RTD (`CONNECT`/`DISCONNECT`/`UPDATE`/`HEARTBEAT`), 137 `MSG_COMMAND_INVOKE`, 138 `MSG_RTD_ONCE_GRID`, 139 `MSG_ACK`, 140+ `MSG_USER_START` + i. **The 128-139 range is now FULL** — the next system ID has to raise `MSG_USER_START`, which by the constraint above means `pkg/msgid`, `xll_ipc.h` and `mock_host.cpp` move with it (the templates follow automatically through the `MsgUserStart` funcmap helper).
 
 **The mirror is machine-gated, not prose-gated (2026-08-03).** `pkg/msgid/msgid_test.go` only pins the Go values against a second hand-written copy of the same numbers, so it can never notice the C++ side drifting. The real gate is `internal/assets/msgid_mirror_test.go`. **Both sides are read from source, neither is hand-copied into the test**: the C++ side by parsing the `MSG_*` `#define`s out of the **shipped** `include/xll_ipc.h` (same technique as `TestChunkReceiverCapsMatchGoConstants`), the Go side by `go/ast`-parsing `pkg/msgid/msgid.go` and pairing each exported constant with the `MSG_*` name in **its own doc comment**. (It was a hand-maintained `goMsgIDs` map until 2026-08-03, which made the Go direction opt-in — `MsgSneaky = 2` added to `pkg/msgid` alone left the whole suite green.) It asserts three things: `TestMessageIDMirrorMatchesHeader` (name-by-name equality, **both** directions — a constant added to only one side fails, in either direction), `TestMessageIDsAreApplicationLevel` (no value collides with a reserved `shm::MsgType`, and every value is >= `shm.MsgTypeAppStart`), and `TestMessageIDsAreUnique` (no duplicate, and nothing at or above `MSG_USER_START`). When you add an ID, add it to `pkg/msgid` **with a doc comment naming its `MSG_*` twin** and to `xll_ipc.h`; nothing else has to be edited, and a constant with no `MSG_*` in its doc comment fails the gate rather than being skipped by it.
+
+**The mirror gate is structurally blind to numbers typed into TEMPLATES (2026-08-03).** `msgid_mirror_test.go` reads the CONSTANTS — `pkg/msgid/msgid.go` and the `MSG_*` `#define`s — and both were correct the whole time `regtest_main.cpp.tmpl` was emitting `(shm::MsgType)({{add 11 $i}})`. A literal in a template bypasses both mirrors: the constants stay in perfect agreement while the emitted C++ talks on a different wire. The second gate is therefore `internal/templates/msgtype_literal_test.go::TestTemplateMsgTypeCastsAreApplicationLevel`, which scans every `*.tmpl` for `(shm::MsgType)` casts, extracts the BASE operand (looking through `{{add …}}`), and fails any raw number below `shm.MsgTypeAppStart`. Symbolic bases pass unexamined — their values are already pinned by the constant mirror. **The rule the two gates jointly enforce: never write a message-ID number in a template; write `MsgUserStart` (or another `pkg/msgid` constant exposed through the funcmap).**
 
 #### 18.6.1 Chunk reassembly — two independent reassemblers, and their deliberate asymmetries
 
@@ -811,6 +816,185 @@ inside `{{if .Functions}}` / `{{if .Rtd.Enabled}}`. Removing them broke a projec
 with neither on an unused-import error, so the template's "force usage" block
 gained `var _ = fmt.Sprintf`
 (`gen_log_bootstrap_test.go::TestGenServer_LogBootstrapCompilesWithoutFunctionsOrRtd`).
+
+#### 18.12.2 Gate a template import on the condition that emits its USE (2026-08-03)
+
+v0.8.53 shipped a project shape that does not compile. A project whose
+functions are **all** `mode: rtd` / `rtd-once` rendered
+
+```
+generated/server.go:11:2: "runtime/debug" imported and not used
+```
+
+`server.go.tmpl` gated the import on `{{if .Functions}}` — "the project has any
+function at all" — while `debug.Stack()` is emitted only inside the sync and
+async handler bodies, which are wrapped in `{{if not (isRtdLike .Mode)}}`. The
+two conditions are not the same, and no test ever rendered a shape where they
+differ: every golden/parse fixture contains at least one sync function.
+
+**The rule.** An import's gate must be the condition that emits a USE, not a
+looser proxy for it. When the uses sit behind ONE condition, mirror it exactly
+(`{{if anyNonRtdLike .Functions}}` for `runtime/debug`, `{{if anyDateType
+.Functions}}` for `"time"` in `interface.go.tmpl`). When the uses are scattered
+behind several INDEPENDENT conditions, do NOT hand-write the disjunction —
+that is the same fragility one level up. Add a `var _ = pkg.Sym` to the
+"force usage" block instead, as `fmt` (§18.12.1) and now `context` do.
+`context` has no unconditional use either: every mention is inside
+`{{if .Rtd.Enabled}}`, `{{if .Commands}}`, a custom `{{range .Events}}` branch,
+or a non-rtd-like handler body.
+
+**The predicate is shared.** `config.IsRtdLike` (`internal/config/config.go`) is
+the SSOT. `internal/generator`'s `isRtdLike`/`anyNonRtdLike` and
+`internal/regtest`'s funcmap all delegate to it; two copies of a predicate that
+decides what gets EMITTED is exactly how this defect shipped.
+
+**The gate.** `internal/generator/gen_unused_import_test.go` ::
+`TestGeneratedGoHasNoUnusedImports` renders `server.go.tmpl` and
+`interface.go.tmpl` over a project-shape matrix (all-sync / all-async / all-rtd
+/ all-rtd-once / mixed / no-functions, times commands and events) and reports
+any import whose package identifier never appears as the qualifier of a selector
+expression. It is a go/parser AST scan, so it needs no module graph and belongs
+in the fast suite.
+
+**The golden WAS regenerated.** `internal/generator/testdata/golden/server.go.golden`
+gained one line — `var _ = context.Background` in the force-usage block. Do not
+read "goldens unchanged" anywhere about this change; that claim was wrong. The
+new line is the fix itself (`context` is the second import, after `fmt`, whose
+uses are all conditional), so a golden diff showing only that line is the
+expected outcome, and a golden WITHOUT it means the fix has been reverted.
+
+*What it does NOT catch*: every other compile error — unknown identifiers, type
+mismatches, missing methods, unused LOCALS. Full type-checking of the rendered
+`server.go` is impossible at template-render time regardless of budget, because
+it imports `<mod>/<pkg>/ipc`, which flatc has not generated yet. Only the
+serialized compile phase covers that.
+
+**Sibling found and fixed in the same pass**: `regtest_main.cpp.tmpl` looped
+`{{range .Functions}}` unconditionally, so `xll-gen regtest` sent a
+request/response probe for rtd(-once) functions too — a message the generated Go
+dispatch has no `case` for (`default: return 0, 0`) — and then parsed
+`ipc::<Name>Response` out of a zero-copy slot nothing had written, i.e. the
+request bytes. It reported "Success" with no signal behind it, and on an all-rtd
+project every probe was of that kind. Now gated on `isRtdLike`, with `$i` still
+the index into the FULL function list so message IDs do not renumber
+(`internal/regtest/simmain_rtd_test.go`).
+
+**Skipping the probes was only half of that, and the other half is the same
+bug.** On an all-rtd project the skip removes EVERY probe block, so the
+rendered `main()` ran nothing, left `failures == 0` and returned 0 — and
+`internal/regtest/runner.go` decides pass/fail on the child's exit code alone
+(`if exitCode == 0 { "Simulation PASSED" }`). `xll-gen regtest` therefore
+printed PASSED for a run with no probes at all: the identical "green with no
+signal", moved up one level. The host now renders a `NO PROBEABLE FUNCTIONS`
+diagnostic and `return 2` INSTEAD of the whole probe/summary body
+(`{{if not (anyNonRtdLike .Functions)}} … {{else}} … {{end}}`, so the success
+`return 0` is not merely unreached but not emitted). The predicate is
+`config.AnyNonRtdLike`, shared with `internal/generator`'s `anyNonRtdLike` for
+the same SSOT reason as `IsRtdLike`. **Generalise it:** whenever a `{{range}}`
+over user declarations is newly gated, ask what the ZERO-iteration render does
+— the mixed fixture that motivates the gate can never reach that case, so it
+needs its own row.
+`TestGenerateSimMainSkipsRtdFunctions` is now two subtests, `mixed` and
+`all-rtd`; the `all-rtd` row asserts both halves (no probes AND the
+announcement + non-zero exit + absence of `return 0;`), and FAIL-before was
+demonstrated by rewriting the gate to `{{if false}}` — 3 failures.
+
+**Known, NOT fixed** (report, no code change): `mode: rtd` with
+`rtd.enabled: false` passes `config.Validate` — only `rtd-once` is checked
+(the `mode == "rtd-once" && !config.Rtd.Enabled` guard in `Config.Validate`,
+`internal/config/config.go` — no line number on purpose: the first draft of this
+section cited `:868` and the same change's `IsRtdLike` insertion had already
+moved it). Such a project COMPILES but is dead at
+runtime: no `XLL_RTD_ENABLED`, no COM server registration, and the wrapper calls
+`xlfRtd(L"<rtd.prog_id>", ...)` with a prog id that `validateRtd` does not
+require to be non-empty when `enabled` is false. The Go side emits the
+`<Name>_RTD` interface method but no `MsgRtdConnect` case to call it. Fixing it
+is a validation-policy decision (reject vs. auto-enable), not part of the
+unused-import family.
+
+#### 18.12.3 The message loop and the xlcOnTime macro registrations are STATIC code (2026-08-03)
+
+Two more blocks left the templates. Neither had a template variable in it, and
+neither was covered by anything but a grep over the rendered text.
+
+* **Go**: the tail of `Serve` — `client.Handle(dispatch)`, `client.Start()` with
+  its fatal error, `client.Wait()`, and the job-pool drain that reports a
+  timeout to the lifecycle — is now **`server.RunAndDrain`**
+  (`pkg/server/run.go`). The template keeps the one WIRING line:
+  `server.RunAndDrain(client, dispatch, jobPool, lifecycle)`.
+* **C++**: the two 18-line `xlfRegister` calls that registered the
+  calc-end deferred runner and the ribbon-connect retry as `macroType=2` macros
+  are now **`xll::RegisterOnTimeMacro`**, inline in
+  `internal/assets/files/include/xll_lifecycle.h`. The template keeps the two
+  call sites — WHICH macros this project registers is genuinely generated (the
+  ribbon one sits inside `{{if .Ribbon.Enabled}}`).
+  **Not "byte-identical" — the ARGUMENT SHAPE was.** An earlier draft of this
+  entry said the two blocks were byte-identical; they were not. They used
+  different locals (`xRegId`/`regRes` vs `xRibbonRetryRegId`/`rrRegRes`),
+  different leading comments, and different `SAFE_LOG_ERROR` literals. What was
+  identical is every one of the twelve `RegisterFunction` arguments except the
+  macro name — which is what makes the extraction correct, and the reason the
+  helper takes `what` as a separate label rather than trying to reconstitute two
+  different log lines. Repeating "byte-identical" would invite the next reader to
+  expect a mechanical diff that never existed.
+
+**Why inline rather than `src/xll_lifecycle.cpp`:** so a translation unit can
+EXECUTE it against a stubbed `RegisterFunction`. Compiling
+`src/xll_lifecycle.cpp` offline would drag in shm, the worker and the ribbon
+add-in; the header alone needs only the types headers plus the shm *include
+path*.
+
+**What the greps could not see, and the new tests execute:**
+* Handle must precede Start (shm spins its workers up in `Start`; a `Start` with
+  no handler installed brings the server up with no dispatch at all and every UDF
+  times out with nothing in the log).
+* `Wait` must precede `Drain`, and `Drain` must precede the caller's deferred
+  `shutdownAndClose`.
+* A timed-out drain must call `MarkJobDrainFailed` — the test asserts the
+  OUTCOME (`Lifecycle.wouldUnmap() == false`), not the presence of the call.
+* `macroType` must be **2**. A rendered `2,` in an argument list says nothing
+  about which parameter it lands on; registered as `1` the symbol still exists
+  and every `xlcOnTime` schedule targeting it is silently rejected.
+* A rejected `xlfRegister` must be logged and SURVIVED (aborting `xlAutoOpen`
+  loses the whole add-in, not just the deferred work), and the register-ID
+  operand Excel filled in must be released via `xlFree`.
+
+**Where the tests are.** BODY: `pkg/server/run_test.go` (`TestRunAndDrain_*`) and
+`internal/assets/ontime_macro_cpp_test.go` +
+`internal/assets/testdata/ontime_macro_native_test.cpp`. WIRING (with
+do-not-re-inline guards, §18.6.1 discipline):
+`internal/generator/gen_teardown_drain_test.go`,
+`internal/generator/gen_calcend_defer_test.go`,
+`internal/generator/gen_ribbon_connect_test.go`,
+`cmd/regression_static_test.go`.
+
+**Measured residue.** Counting REAL code lines (excluding comments, blank lines
+and pure-template lines; `{{/* */}}` comments stripped first because they quote
+`{{if}}` and break naive depth tracking):
+
+| template | total | comment | real code | of that, depth-0 and action-free |
+|---|---|---|---|---|
+| `xll_main.cpp.tmpl` | 2134 → 2100 | 876 | 797 → 763 | 118 → 101 (32 are `#include`s) |
+| `server.go.tmpl`    | 615 → 592  | 106 → 97 | 361 → 349 | 81 → 69 (13 are imports) |
+
+`xll_main.cpp.tmpl` has MORE comment lines (876) than code lines (763). Any
+"template-independent %" quoted off raw line counts is wrong for that reason.
+
+**Deliberately NOT moved** (each was read and rejected, not overlooked):
+* `xll_main.cpp.tmpl` L590-635, the `xll::PrepareForFreshLoad()` verdict switch
+  (~14 code lines). It is the §20.2.1 pinned-image reload path; a mistake there
+  is a silently half-dead add-in, and it cannot be validated without a real
+  Excel run.
+* `xll_main.cpp.tmpl` L713-739, the `shm::HostConfig` sizing policy
+  (`workers*2+2`, the `<1` clamp, 4 guest slots, 1 MB payload). Genuinely a pure
+  function, but three of the fifteen lines carry template values and the helper
+  would have to take or return an shm type, which is the dependency the offline
+  harnesses exist to avoid.
+* `GetExcelApplicationOrBounce` (the body IS the `ribbon.bounce` branch),
+  `g_ribbonCookie` (moving it forces `GracefulComTeardownHook` — the v0.8.42
+  `mso.dll` fix — through an accessor), `main.go.tmpl` / `xll.yaml.tmpl` (user
+  scaffolds), `CMakeLists.txt.tmpl` (deliberately readable/editable), and
+  `server.go.tmpl`'s per-function dispatch (`{{range}}` bodies).
 
 ## 19. Excel XLL Registration Rules
 
@@ -3031,9 +3215,12 @@ The review found hazards in the FIX, not in the original defect. Each is pinned 
   background work beside a still-running detached thread is worse than refusing).
 * **HIGH #1 — pin + quiesce exist ONLY in COM add-in builds.** `GracefulTeardownOnce`'s only call
   sites are `RibbonAddIn::OnBeginShutdown`/`OnDisconnection`, compiled under `XLL_RIBBON_ENABLED`,
-  which `CMakeLists.txt.tmpl` defines only when the project has **BOTH** commands **AND**
-  `ribbon.enabled`. `XLL_RTD_ENABLED` is independent. **So `rtd.enabled: true` with no ribbon and no
-  commands has NO teardown at all and the unmap hazard is unmitigated** — and the 0/N verification
+  which `CMakeLists.txt.tmpl` defines on **`.Ribbon.Enabled` ALONE** (`CMakeLists.txt.tmpl:240`;
+  it was nested inside `.Commands` until 2026-08-02 — see the comment block above that line for why
+  the nesting was removed). Commands are still required in practice, but by a DIFFERENT mechanism:
+  `internal/config/config.go:1072-1073` rejects `ribbon.enabled` with zero commands, so a validated
+  config cannot reach ribbon-without-commands. `XLL_RTD_ENABLED` is independent. **So `rtd.enabled:
+  true` with no ribbon has NO teardown at all and the unmap hazard is unmitigated** — and the 0/N verification
   was obtained on a ribbon+commands project. §20.2.1 rule 1 and this section must be read with that
   dependency in mind. `generate` now WARNS on that shape
   (`cmd/generate.go::rtdWithoutComAddInWarning`, unit-tested). **BACKLOG:** register a minimal

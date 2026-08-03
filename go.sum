@@ -13,10 +13,10 @@ github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiT
 github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
-github.com/xll-gen/shm v0.9.0 h1:rzbjjFKTh2p7tMKCVyfJwfuK1GzlXMMBuWjjADWPWHA=
-github.com/xll-gen/shm v0.9.0/go.mod h1:1iExphNnTM6uYky3usR8LqOUR0mz1urvdgd8W6PiJ88=
-github.com/xll-gen/sugar v0.8.14 h1:M+5EDotY/q4E2RT4a6otNgA2eRxNawIfQvi9yWoIuHM=
-github.com/xll-gen/sugar v0.8.14/go.mod h1:k/kQONVQoOsOZVPcLhJLtvU1GW690GMj3jYEtTnakvY=
+github.com/xll-gen/shm v0.9.1 h1:GVzrGZSCNX5Xesx/bRJu1fPKvDJugDvE5PldSFpbOW4=
+github.com/xll-gen/shm v0.9.1/go.mod h1:1iExphNnTM6uYky3usR8LqOUR0mz1urvdgd8W6PiJ88=
+github.com/xll-gen/sugar v0.8.15 h1:beWxphPjNJ0mquYcsYqyZpk0qmnGr6xcPW/QXYRQ+m0=
+github.com/xll-gen/sugar v0.8.15/go.mod h1:k/kQONVQoOsOZVPcLhJLtvU1GW690GMj3jYEtTnakvY=
 github.com/xll-gen/types v0.2.21 h1:ajNKZpYmgmzJMbl5HUZhS3h9w2egqzlv7H0kdTlCBoA=
 github.com/xll-gen/types v0.2.21/go.mod h1:QYoTxSTmx6mEsRYqeAjq3sWSyUyr9PM0MoDGTAHUY7o=
 go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=

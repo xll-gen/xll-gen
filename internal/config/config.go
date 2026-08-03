@@ -512,6 +512,45 @@ var validEventTypes = map[string]bool{
 	"CalculationCanceled": true,
 }
 
+// IsRtdLike reports whether a function mode routes through the RTD topic
+// lifecycle (xlfRtd wrapper, RTD push results) rather than through the
+// request/response wire. Both "rtd" and "rtd-once" do; "sync" and "async" do
+// not.
+//
+// SSOT for the predicate. Three template funcmaps used to answer this question
+// and the answer decides what is EMITTED (the sync/async handler bodies in
+// server.go.tmpl, the "runtime/debug" import that only those bodies use, the
+// probe block in regtest_main.cpp.tmpl). Divergence between two copies of the
+// predicate is how v0.8.53 shipped an all-rtd project that did not compile, so
+// every consumer delegates here.
+//
+// Modes are lowercased by ApplyDefaults, so an exact comparison is correct for
+// any config that has been through it; a raw Config built in a test with an
+// empty Mode reads as non-rtd-like, matching the sync default.
+func IsRtdLike(mode string) bool {
+	return mode == "rtd" || mode == "rtd-once"
+}
+
+// AnyNonRtdLike reports whether the project declares at least one function that
+// is NOT rtd/rtd-once — i.e. at least one function that gets a generated
+// sync/async handler body in server.go AND a `case MsgUserStart+i` in the Go
+// dispatch.
+//
+// Same SSOT argument as IsRtdLike: two consumers ask this question about the
+// SAME function list and must agree, because both use it to decide whether the
+// non-rtd-like machinery gets emitted at all — internal/generator gates the
+// "runtime/debug" import on it (§18.12.2), and internal/regtest gates the
+// simulation host's "there is nothing here I can probe" diagnostic on it
+// (§18.12.2, the vacuous all-rtd pass).
+func AnyNonRtdLike(fns []Function) bool {
+	for _, f := range fns {
+		if !IsRtdLike(f.Mode) {
+			return true
+		}
+	}
+	return false
+}
+
 // rtdCompositeReturnTypes are composite return types rejected for the RTD
 // modes (rtd / rtd-once). Unlike sync/async, grid/numgrid cannot ride the RTD
 // push path (RtdUpdate's Any union would stringify them), so they are rejected

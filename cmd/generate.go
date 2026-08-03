@@ -70,12 +70,24 @@ func runGenerate() error {
 // WHY (AGENTS.md §20.2.1 / §23.6 Stage 5). The whole graceful teardown —
 // xll::GracefulTeardownOnce, and therefore Phase 1's image PIN and quiesce and
 // Phase 2 — is reached ONLY from RibbonAddIn::OnBeginShutdown / OnDisconnection,
-// which are compiled under XLL_RIBBON_ENABLED. The CMake template defines that macro
-// only when the project has BOTH commands and ribbon.enabled. XLL_RTD_ENABLED is
-// independent. So `rtd.enabled: true` with no ribbon and no commands produces an XLL
-// with live streaming RTD topics and NO teardown at all: Excel unmaps the image while
-// the worker thread and the hidden notify window are still live, which is exactly the
-// 100%-reproducible close-time crash that the pin fixes for ribbon/command projects.
+// which are compiled under XLL_RIBBON_ENABLED. XLL_RTD_ENABLED is independent. So
+// `rtd.enabled: true` with no COM add-in produces an XLL with live streaming RTD
+// topics and NO teardown at all: Excel unmaps the image while the worker thread and
+// the hidden notify window are still live, which is exactly the 100%-reproducible
+// close-time crash that the pin fixes for ribbon projects.
+//
+// CORRECTED 2026-08-03: this comment used to say the CMake template defines
+// XLL_RIBBON_ENABLED "only when the project has BOTH commands and ribbon.enabled".
+// That stopped being true on 2026-08-02 — CMakeLists.txt.tmpl now gates the macro on
+// `.Ribbon.Enabled` ALONE, deliberately (a commands-less ribbon config built directly
+// in a test used to become a link error against src/ribbon_addin.cpp,
+// src/ribbon_connect.cpp and src/scratch_book.cpp). The GATE BELOW IS UNCHANGED and
+// still correct: config.Validate independently rejects a ribbon with no commands, so
+// "ribbon" and "ribbon + commands" name the same set of reachable projects, and the
+// extra term costs nothing. Only the stated MECHANISM was wrong — which matters,
+// because the mechanism is what the next reader will reason from when they implement
+// the real fix. The corrected statement is pinned by
+// internal/generator/gen_rtd_teardown_gap_test.go::TestRibbonMacroGateIsRibbonEnabledAlone.
 //
 // Advisory (warn, not an error): the shape is legal, the crash needs live streaming
 // topics at close, and the real fix — registering a minimal IDTExtensibility2 for

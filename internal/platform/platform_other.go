@@ -9,3 +9,6 @@ func excelPath() (string, bool) { return "", false }
 
 // detectExcelSecurityAddins has no meaning off Windows (no registry).
 func detectExcelSecurityAddins() []string { return nil }
+
+// excelTrustedLocationFor has no meaning off Windows (no registry).
+func excelTrustedLocationFor(string) (string, bool) { return "", false }

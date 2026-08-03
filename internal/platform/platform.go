@@ -86,6 +86,18 @@ func MatchesSecurityAddin(id string) bool {
 // best-effort: registry errors are treated as "not found".
 func DetectExcelSecurityAddins() []string { return detectExcelSecurityAddins() }
 
+// ExcelTrustedLocationFor reports which Excel Trusted Location entry covers
+// `dir`, returning that entry's configured Path and true on a hit. Returns
+// ("", false) when nothing covers it, on a registry error, or on a non-Windows
+// developer host. Read-only.
+//
+// Trusted-location membership -- NOT path length -- is what decides whether
+// Excel will load a built XLL at all; see the measurement recorded on
+// excelTrustedLocationFor in platform_windows.go. A miss here is the leading
+// explanation for "Excel is up but there is no server process and no native
+// log", because Excel refuses silently: no dialog, no log, no warning.
+func ExcelTrustedLocationFor(dir string) (string, bool) { return excelTrustedLocationFor(dir) }
+
 // FindBuiltExe locates an executable that cmake produced under `buildDir`.
 // CMake's output layout differs between single-config generators (Make,
 // Ninja, MinGW Makefiles — output at `buildDir/<name>`) and multi-config

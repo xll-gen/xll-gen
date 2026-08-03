@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include "types/xlcall.h"
+#include "types/ScopedXLOPER12.h" // ScopedXLOPER12Result, used by RegisterOnTimeMacro below
 #include <string>
 #include <vector>
 #include <thread>
@@ -37,6 +38,64 @@ namespace xll {
         const std::vector<std::wstring>& argumentHelp,
         XLOPER12& xRegId
     );
+
+    // RegisterOnTimeMacro registers `name` as an xlcOnTime-callable MACRO whose
+    // Excel-visible procedure IS the exported C symbol of the same name. Both
+    // schedulable macros the generated add-in has -- the calc-end deferred
+    // command runner and the ribbon-connect retry tick -- used to spell this out
+    // as two 18-line xlfRegister calls in xll_main.cpp.tmpl -- not byte-identical
+    // of it carried a template variable, so it is one function here and the
+    // template keeps only the WIRING: which macros this project registers.
+    //
+    // The four constants are NOT options:
+    //   * TypeText "I" -- 2-byte signed int, matching the `short __stdcall`
+    //     exports. macroType 2 ignores the returned value, but the type string
+    //     still has to describe the signature (AGENTS.md §19.2).
+    //   * macroType 2 -- a REGISTERED MACRO. Excel resolves an ON.TIME target by
+    //     name against macro registrations; registered as a worksheet function
+    //     (1) the symbol exists but every xlcOnTime schedule targeting it is
+    //     rejected, which is a silent loss of the deferred work.
+    //   * FunctionText == Procedure -- xlcOnTime targets the FunctionText, so
+    //     the scheduled name, the registered name and the exported symbol are
+    //     all the one literal the caller passed (the name accessors in
+    //     xll_deferred_commands.h are that single source of truth).
+    //   * empty ArgumentText / Category / Shortcut / help -- the macro takes no
+    //     arguments and stays hidden from the user's function list.
+    //
+    // A failure is LOGGED, NOT FATAL: the add-in still loads, it just loses
+    // whatever that macro deferred. Re-registering the same procedure name is
+    // harmless, so this is idempotent across a probe-unload reload.
+    //
+    // `what` is the human-readable label used in the failure log line only.
+    // Returns true when Excel accepted the registration.
+    //
+    // Defined inline so a translation unit can EXECUTE it against a stubbed
+    // RegisterFunction without dragging in src/xll_lifecycle.cpp (which needs
+    // shm, the worker and the ribbon add-in) -- see
+    // internal/assets/ontime_macro_cpp_test.go.
+    inline bool RegisterOnTimeMacro(const XLOPER12& xDLL, const wchar_t* name, const char* what) {
+        ScopedXLOPER12Result xRegId;
+        const int rc = RegisterFunction(
+            xDLL,
+            name,  // Procedure (the exported symbol)
+            L"I",  // TypeText
+            name,  // FunctionText (hidden; xlcOnTime targets it)
+            L"",   // ArgumentText: none
+            2,     // macroType=2 (registered macro; xlcOnTime-callable)
+            L"",   // Category (unused)
+            L"",   // Shortcut (none)
+            L"",   // HelpTopic
+            L"",   // FunctionHelp
+            {},    // ArgumentHelp
+            *xRegId
+        );
+        if (rc != xlretSuccess) {
+            SAFE_LOG_ERROR(std::string("Failed to register ") + what +
+                           " macro. Code: " + std::to_string(rc));
+            return false;
+        }
+        return true;
+    }
 
     // Unloading Flag. Meaning: "the DESTRUCTIVE teardown has begun — g_phost is
     // being or has been destroyed and the Go server reaped; touch NOTHING that

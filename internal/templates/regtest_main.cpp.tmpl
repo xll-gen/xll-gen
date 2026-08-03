@@ -19,7 +19,27 @@ int main() {
     }
 
     cout << "READY" << endl;
-
+{{if not (anyNonRtdLike .Functions)}}{{/* NO PROBEABLE FUNCTIONS.
+     Every function is rtd / rtd-once, so the per-function `isRtdLike` skip
+     below removes EVERY probe block and main() would fall through with
+     failures == 0 and return 0. internal/regtest/runner.go decides pass/fail on
+     the exit code alone, so that renders as "Simulation PASSED" for a run that
+     executed nothing — the same vacuous green the per-function skip was added
+     to remove, moved up one level. Announce it and fail instead: a regtest that
+     cannot probe anything must not look like a regtest that probed everything.
+     Pinned by internal/regtest/simmain_rtd_test.go
+     (TestGenerateSimMainSkipsRtdFunctions/all-rtd). */}}
+    // This project declares no function the simulation host can probe.
+    cerr << "NO PROBEABLE FUNCTIONS: every declared function is mode rtd or "
+            "rtd-once." << endl;
+    cerr << "  The regtest probe is a request/response round trip, and the "
+            "generated Go dispatch" << endl;
+    cerr << "  emits a case only for sync/async functions; rtd results arrive "
+            "out-of-band on the" << endl;
+    cerr << "  RTD push path. Reporting success here would be a green light "
+            "with nothing behind it." << endl;
+    return 2;
+{{else}}
     // Wait for Guest to connect
     cout << "Waiting for guest..." << endl;
     auto start = chrono::steady_clock::now();
@@ -31,7 +51,19 @@ int main() {
     cout << "Sending requests..." << endl;
     int failures = 0;
 
-{{range $i, $fn := .Functions}}
+{{range $i, $fn := .Functions}}{{/* SKIP rtd / rtd-once. This probe is a
+     request/response round trip: it Sends MsgUserStart+$i and then reads
+     ipc::<Name>Response back out of the SAME zero-copy slot. The generated Go
+     dispatch emits `case MsgUserStart+$i` only for non-rtd-like modes
+     (server.go.tmpl, `{{if not (isRtdLike .Mode)}}`) — an rtd(-once) function's
+     result arrives out-of-band on the RTD push path and its ID lands in
+     `default: return 0, 0`. Probing one therefore sent a message nothing
+     handles and then parsed a Response out of a buffer nothing wrote (the
+     request bytes), reporting "Success" with no signal behind it; on an
+     all-rtd project EVERY probe was of that kind.
+     $i stays the index in the FULL function list — same as server.go.tmpl and
+     xll_main.cpp.tmpl — so skipping one must NOT renumber the rest.
+     See internal/regtest/simmain_rtd_test.go. */}}{{if not (isRtdLike .Mode)}}
     {
         cout << "Testing {{.Name}}..." << endl;
         auto slot = host.GetZeroCopySlot();
@@ -96,7 +128,14 @@ int main() {
         builder.Finish(req);
 
         // Send
-        if (!slot.Send(builder.GetSize(), (shm::MsgType)({{add 11 $i}}), 2000)) {
+        {{/* Message ID must be MsgUserStart + index — the SAME expression the
+             generated XLL sends on (xll_main.cpp.tmpl) and the generated Go
+             dispatch switches on (server.go.tmpl). It was a hardcoded `11 + $i`
+             until 2026-08-03, which both disagreed with the product and landed
+             inside shm's transport-reserved range (GUEST_CALL 11, STREAM_START
+             13, STREAM_CHUNK 14 — all below APP_START 128). Never write a
+             number here; see AGENTS.md §18.6. */}}
+        if (!slot.Send(builder.GetSize(), (shm::MsgType)({{add MsgUserStart $i}}), 2000)) {
             cerr << "  Send failed!" << endl;
             failures++;
         } else {
@@ -119,8 +158,9 @@ int main() {
             {{end}}
         }
     }
-{{end}}
+{{end}}{{end}}
 
     if (failures > 0) return 1;
     return 0;
+{{end}}
 }

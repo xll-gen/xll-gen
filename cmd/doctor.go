@@ -36,7 +36,7 @@ var doctorCmd = &cobra.Command{
 		printHeader("🩺 Running System Diagnosis...")
 
 		checkSystem()
-		checkProjectPathLength()
+		checkExcelTrustedLocation()
 		checkCompiler()
 		checkFlatc()
 		checkGo()
@@ -342,31 +342,36 @@ func compareVersions(a, b []int) int {
 	return 0
 }
 
-// xllPathBudget is the working-directory length above which `doctor` warns.
+// checkExcelTrustedLocation warns when the project directory is not covered by
+// an Excel Trusted Location, because that is what makes Excel refuse the built
+// XLL *silently* — no dialog, no warning, no native log, no server process. The
+// only symptom is "Excel is up but there is no server exe", which reads exactly
+// like a product defect and has already cost one debugging session.
 //
-// Excel silently refuses to load an XLL from a long path: no dialog, no warning,
-// no native log, no server process. Measured 2026-07-29 — the same add-in loaded
-// fine from a 55-character path and not at all from ~175 characters, with
-// RequireAddinSig=0 and an empty DisabledItems, so it was neither the signature
-// policy nor resiliency. The only symptom is "Excel is up but there is no server
-// exe", which reads exactly like a product defect and cost a debugging session.
+// THIS CHECK REPLACED A PATH-LENGTH WARNING THAT NAMED THE WRONG CAUSE. The old
+// one warned above 150 characters and told the user to move the project
+// somewhere shorter. Its evidence was a 2026-07-29 A/B in which a ~175-character
+// path failed and a 55-character path worked — but that A/B moved TWO variables
+// at once: the short path was also inside the trusted root. A 2x2 on 2026-08-03
+// that varied the two independently (same XLL bytes, RequireAddinSig=0, empty
+// DisabledItems) settled it:
 //
-// The number: MAX_PATH is 260, and the deepest artifact under the project root
-// is roughly `build\cpp\_deps\<dep>-src\include\...` plus the generated tree, so
-// the build needs well over 100 characters of headroom before the XLL itself is
-// even placed. 150 leaves that headroom while staying quiet for ordinary
-// locations. It is advisory: this is a WARN, never a gate, because the real
-// threshold depends on the deepest path each dependency creates and we would
-// rather be occasionally noisy than silent in the case that actually bites.
+//	 31 chars, outside trusted -> did NOT load
+//	157 chars, outside trusted -> did NOT load
+//	168 chars, INSIDE trusted  -> loaded
+//	 76 chars, INSIDE trusted  -> loaded   (control)
 //
-// NOT the same thing as the long-path opt-in: even with LongPathsEnabled, Excel's
-// own add-in loader is the component that gives up, so a passing registry flag is
-// not evidence this is safe.
-const xllPathBudget = 150
-
-// checkProjectPathLength warns when the current directory is deep enough that
-// Excel may silently decline to load the built XLL.
-func checkProjectPathLength() {
+// Length is exonerated; membership decides. A user-facing diagnostic that names
+// the wrong cause is worse than none — it sends someone who needs to add a
+// trusted location off to shorten paths instead. Do not reinstate the length
+// warning for XLL LOADING. (MAX_PATH headroom can still break the cmake BUILD,
+// via `build\cpp\_deps\<dep>-src\include\...`, but that fails loudly with a
+// build error, which is a different failure mode and needs no advisory.)
+//
+// Advisory, never a gate: this reads only the per-user hive, so a location
+// trusted by machine policy reads as a miss. The check is therefore biased
+// toward a false NEGATIVE and never toward a false positive.
+func checkExcelTrustedLocation() {
 	if runtime.GOOS != "windows" {
 		return
 	}
@@ -374,10 +379,10 @@ func checkProjectPathLength() {
 	if err != nil {
 		return // nothing actionable; other checks carry the diagnosis
 	}
-	if n := len(wd); n > xllPathBudget {
-		printWarning("Project path", fmt.Sprintf("%d characters — long enough that Excel may refuse to load the built XLL SILENTLY (no dialog, no log, no server process)", n))
-		printWarning("Recommendation", "If the add-in appears not to load and the native log is missing entirely, move the project somewhere shorter (e.g. C:\\dev\\<project>) and rebuild before looking for a product defect.")
+	if entry, ok := platform.ExcelTrustedLocationFor(wd); ok {
+		printSuccess("Excel trusted location", fmt.Sprintf("covered by %q", entry))
 		return
 	}
-	printSuccess("Project path", fmt.Sprintf("%d characters", len(wd)))
+	printWarning("Excel trusted location", "this project directory is not covered by a per-user Excel Trusted Location — Excel may refuse to load the built XLL SILENTLY (no dialog, no log, no server process)")
+	printWarning("Recommendation", "If the add-in appears not to load and the native log is missing entirely, add this folder in Excel: File > Options > Trust Center > Trust Center Settings > Trusted Locations (tick 'Subfolders of this location are also trusted'), before looking for a product defect.")
 }

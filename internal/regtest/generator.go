@@ -7,6 +7,7 @@ import (
 
 	"github.com/xll-gen/xll-gen/internal/config"
 	"github.com/xll-gen/xll-gen/internal/templates"
+	"github.com/xll-gen/xll-gen/pkg/msgid"
 )
 
 // generateSimMain generates the C++ main file for the simulation host.
@@ -18,6 +19,27 @@ func generateSimMain(cfg *config.Config, dir string) error {
 
 	funcMap := template.FuncMap{
 		"add": func(a, b int) int { return a + b },
+		// MsgUserStart mirrors internal/generator/funcmap.go's helper of the
+		// same name so the simulation host computes user-function message IDs
+		// from the SAME base as the generated XLL and the generated Go dispatch
+		// (pkg/msgid is the Go-side SSOT, AGENTS.md §18.6). Without it the
+		// template had to write a number, and the number it wrote (11) was both
+		// wrong and transport-reserved.
+		"MsgUserStart": func() int { return msgid.MsgUserStart },
+		// isRtdLike gates the per-function probe block. It MUST answer the same
+		// way internal/generator's funcmap does, because the probe is only
+		// meaningful for a function the generated Go dispatch has a
+		// `case MsgUserStart+i` for — hence the shared config.IsRtdLike SSOT
+		// rather than a second copy of the predicate here.
+		"isRtdLike": config.IsRtdLike,
+		// anyNonRtdLike answers "does this project have ANY function this host
+		// can probe at all?". Gating only the per-function block on isRtdLike
+		// left an all-rtd project rendering a main() with ZERO probes:
+		// `failures` stayed 0, main returned 0, and runner.go reports success
+		// on the exit code alone — the same "green with no signal" the
+		// per-function skip was meant to remove, just moved up one level.
+		// Shared with internal/generator through config.AnyNonRtdLike.
+		"anyNonRtdLike": config.AnyNonRtdLike,
 	}
 
 	t, err := template.New("regtest_main").Funcs(funcMap).Parse(tmplContent)

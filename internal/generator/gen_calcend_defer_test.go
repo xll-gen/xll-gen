@@ -66,7 +66,7 @@ func TestCalcEnd_DeferredRunner_AssetDoesNotMutateCellsInEvent(t *testing.T) {
 	}
 	// And it MUST hand the returned response off to the deferral mechanism.
 	if !strings.Contains(body, "DeferCalcEndCommands(") {
-		t.Errorf("HandleCalculationEnded must route calc-end commands through " +
+		t.Errorf("HandleCalculationEnded must route calc-end commands through "+
 			"xll::DeferCalcEndCommands so they run OUTSIDE the event callback:\n%s", body)
 	}
 	// The synchronous round-trip stays (IPC blocking is NOT the crash; it invokes
@@ -100,9 +100,29 @@ func TestCalcEnd_DeferredRunner_GeneratedTemplateRegistersAndExports(t *testing.
 	cpp := renderCppMain(t, cfg)
 
 	// The runner macro must be registered as a macro (macroType=2) so xlcOnTime
-	// can schedule it by name.
-	if !strings.Contains(cpp, "xll::DeferredRunnerMacroName()") {
-		t.Errorf("template must register the deferred runner macro via DeferredRunnerMacroName():\n%s", cpp)
+	// can schedule it by name. The registration SHAPE moved to
+	// xll::RegisterOnTimeMacro (xll_lifecycle.h) and is EXECUTED by
+	// internal/assets/testdata/ontime_macro_native_test.cpp — including the
+	// macroType 2 this comment used to assert by proximity alone. What stays
+	// here is the WIRING: that the project registers it, under the shared
+	// single-source-of-truth name rather than a re-typed literal that could
+	// drift from the export below.
+	if !strings.Contains(cpp, `xll::RegisterOnTimeMacro(*xDLL, xll::DeferredRunnerMacroName(), "deferred calc-end runner");`) {
+		t.Errorf("template must register the deferred runner macro via "+
+			"xll::RegisterOnTimeMacro(*xDLL, xll::DeferredRunnerMacroName(), ...):\n%s", cpp)
+	}
+	// And it must not be re-inlined alongside the call: a hand-rolled
+	// xlfRegister here would bypass the executed shape assertions and could
+	// silently register macroType 1 (the user-function loop below uses exactly
+	// that), which xlcOnTime cannot target. The old boilerplate named the
+	// accessor TWICE (Procedure and FunctionText), so "appears more than once"
+	// is the re-inline signature.
+	// Counted on CODE only: the prose above the export also names the accessor.
+	if n := strings.Count(stripCppComments(cpp), "xll::DeferredRunnerMacroName()"); n != 1 {
+		t.Errorf("xll::DeferredRunnerMacroName() appears %d times in xll_main.cpp, want 1 "+
+			"(the RegisterOnTimeMacro call); a second use means the xlfRegister boilerplate "+
+			"was re-inlined and bypasses the executed shape assertions in "+
+			"internal/assets/testdata/ontime_macro_native_test.cpp", n)
 	}
 	// The exported runner proc must exist with the matching symbol name.
 	if !strings.Contains(cpp, "__xllgen_RunDeferredCalcEnd()") {

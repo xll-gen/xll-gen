@@ -12,11 +12,19 @@ import (
 //
 // The close-time image PIN and the Phase-1 quiesce live in xll::GracefulTeardownOnce,
 // whose ONLY call sites are RibbonAddIn::OnBeginShutdown / OnDisconnection — compiled
-// under XLL_RIBBON_ENABLED, which the CMake template defines only when the project has
-// BOTH commands and a ribbon. XLL_RTD_ENABLED is independent. So `rtd.enabled: true`
-// with no ribbon and no commands produces an XLL that has live streaming RTD topics and
-// NO graceful teardown at all — the unmap hazard is fully unmitigated there, and the
-// 0/22 real-Excel verification was obtained on a ribbon+commands project.
+// under XLL_RIBBON_ENABLED, which CMakeLists.txt.tmpl defines on `.Ribbon.Enabled`
+// ALONE (corrected 2026-08-03; it was nested under `.Commands` until 2026-08-02, and
+// the "needs BOTH" wording outlived that change here and in cmd/generate.go).
+// XLL_RTD_ENABLED is independent. So `rtd.enabled: true` with no ribbon and no
+// commands produces an XLL that has live streaming RTD topics and NO graceful teardown
+// at all — the unmap hazard is fully unmitigated there, and the 0/22 real-Excel
+// verification was obtained on a ribbon+commands project.
+//
+// The `len(Commands) > 0` term in the gate is BELT-AND-BRACES, not the macro's
+// condition: config.Validate rejects a ribbon with no commands, so the two spellings
+// select the same reachable projects. The macro gate itself is pinned separately by
+// internal/generator/gen_rtd_teardown_gap_test.go::TestRibbonMacroGateIsRibbonEnabledAlone,
+// which is where a re-nesting regression would surface.
 //
 // The generator cannot fix that shape cheaply (the real fix is registering a minimal
 // IDTExtensibility2 for every RTD build), but it must not be SILENT about it.
@@ -47,7 +55,7 @@ func TestRtdWithoutComAddInWarning(t *testing.T) {
 			warn: true,
 		},
 		{
-			name: "rtd with commands but no ribbon is unprotected (XLL_RIBBON_ENABLED needs both)",
+			name: "rtd with commands but no ribbon is unprotected (commands bring no IDTExtensibility2)",
 			cfg: &config.Config{
 				Rtd:      config.RtdConfig{Enabled: true},
 				Commands: cmds,
@@ -55,7 +63,7 @@ func TestRtdWithoutComAddInWarning(t *testing.T) {
 			warn: true,
 		},
 		{
-			name: "rtd with ribbon but no commands is unprotected (XLL_RIBBON_ENABLED needs both)",
+			name: "rtd with ribbon but no commands: warned (config.Validate rejects this shape anyway)",
 			cfg: &config.Config{
 				Rtd:    config.RtdConfig{Enabled: true},
 				Ribbon: config.RibbonConfig{Tab: "Demo"},

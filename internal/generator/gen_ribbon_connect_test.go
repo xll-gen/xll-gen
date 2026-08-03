@@ -376,8 +376,16 @@ func TestXllMainRibbonOnTimeConnectRetry(t *testing.T) {
 				// The export is a THIN SHIM into the asset: SEH boundary, call,
 				// return 1 — the same shape __xllgen_RunDeferredCalcEnd has.
 				"xll::ribbon::RunConnectRetryTick();",
-				// The macro is registered (macroType=2) so xlcOnTime can target it.
-				"Failed to register ribbon-connect OnTime retry macro.",
+				// The macro is registered so xlcOnTime can target it. The
+				// registration SHAPE (macroType 2, TypeText "I",
+				// FunctionText == Procedure, non-fatal on rejection, register id
+				// released) moved to xll::RegisterOnTimeMacro in
+				// xll_lifecycle.h and is EXECUTED by
+				// internal/assets/testdata/ontime_macro_native_test.cpp; the old
+				// needle here was the failure log line, which could not tell
+				// macroType 2 from macroType 1. What stays checkable is that
+				// this project registers it, under the shared name.
+				`xll::RegisterOnTimeMacro(*xDLL, xll::RibbonConnectRetryMacroName(), "ribbon-connect OnTime retry");`,
 				// xlAutoOpen arms the chain. The arm must be issued from HERE and
 				// cannot move into the asset's own initialization: xlAutoOpen is a
 				// VALID command context for xlc*, a COM-event context is not
